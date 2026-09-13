@@ -140,7 +140,7 @@ class InsuranceManagerTests(unittest.TestCase):
         self.assertEqual(result["matches"][0]["status"], "deductible_may_exceed_expense")
         self.assertIn("does not exceed", result["matches"][0]["notes"][0])
 
-    def test_an_expired_policy_still_matches_a_receipt_from_when_it_was_in_force(self) -> None:
+    def test_an_expired_policy_is_retained_as_history_but_never_matches(self) -> None:
         record = self.save()
         self.database.save_insurance_policy_version(
             user_id=self.user_id,
@@ -164,9 +164,50 @@ class InsuranceManagerTests(unittest.TestCase):
             },
         )
 
-        self.assertEqual(result["matchCount"], 1)
+        self.assertEqual(result["matchCount"], 0)
+        self.assertEqual(self.database.list_insurance_policies(user_id=self.user_id), [])
+        history = self.database.list_insurance_policies(user_id=self.user_id, include_archived=True)
+        self.assertEqual(len(history), 1)
+        self.assertEqual(history[0]["status"], "expired")
+        self.assertFalse(history[0]["isCurrentlyActive"])
         self.assertEqual(result["expense"]["date"], "2026-07-02")
         self.assertEqual(result["expense"]["amount"], "250.00")
+
+    def test_date_ended_policy_is_automatically_omitted_and_never_matches(self) -> None:
+        record = self.save(version_data=version(start="2025-01-01", end="2025-12-31"))
+
+        self.assertIsNone(record["currentVersion"])
+        self.assertFalse(record["isCurrentlyActive"])
+        self.assertEqual(self.database.list_insurance_policies(user_id=self.user_id), [])
+        result = self.database.check_insurance_expense(
+            user_id=self.user_id,
+            expense={"date": "2025-06-10", "amount": "500", "currency": "USD", "category": "vet"},
+        )
+        self.assertEqual(result["matchCount"], 0)
+
+    def test_changing_issuer_archives_old_policy_and_creates_a_replacement(self) -> None:
+        original = self.save()
+        replacement = self.database.save_insurance_policy_version(
+            user_id=self.user_id,
+            policy={
+                "id": original["id"],
+                "name": "Milo pet insurance",
+                "insurer": "Better Cover",
+                "policyType": "pet",
+                "coveredSubject": "Milo",
+                "status": "active",
+            },
+            version=version(source_text="Replacement policy wording."),
+        )
+
+        self.assertNotEqual(replacement["id"], original["id"])
+        self.assertEqual(replacement["replacedPolicyId"], original["id"])
+        active = self.database.list_insurance_policies(user_id=self.user_id)
+        self.assertEqual([record["insurer"] for record in active], ["Better Cover"])
+        history = self.database.list_insurance_policies(user_id=self.user_id, include_archived=True)
+        self.assertEqual(len(history), 2)
+        archived = next(record for record in history if record["id"] == original["id"])
+        self.assertTrue(archived["archivedAt"])
 
     def test_summary_only_match_stays_provisional_even_with_an_evidence_label(self) -> None:
         data = version(source_text="")

@@ -1502,6 +1502,7 @@ def _tool_save_insurance_policy(context: LoopContext, args: dict[str, Any]) -> d
         return _error("choice_required", str(exc))
     result = _insurance_policy_for_model(record)
     result["versionCreated"] = bool(record.get("versionCreated"))
+    result["replacedPolicyId"] = record.get("replacedPolicyId")
     latest = result.get("latestVersion") if isinstance(result.get("latestVersion"), dict) else {}
     result["sourceStatus"] = "source_stored" if latest.get("sourceStored") else "summary_only"
     result["note"] = (
@@ -2946,6 +2947,8 @@ TOOLS: list[ToolSpec] = [
         name="save_insurance_policy",
         description=(
             "Save a policy the person has supplied, or append a renewal/endorsement as a new immutable version. "
+            "A change to another insurer is a replacement policy: pass the old policy_id with the new insurer so "
+            "the old record is archived and a separate active policy is created. "
             "Use only facts present in their words or policy source; never invent coverage, limits, exclusions, "
             "dates or evidence. policy_id identifies an existing policy when known, else null. policy_number may "
             "be the number they gave; only a masked hint is retained. Each coverage is a searchable interpretation. "
@@ -3003,8 +3006,9 @@ TOOLS: list[ToolSpec] = [
     ToolSpec(
         name="show_insurance_policies",
         description=(
-            "Read the person's insurance manager. policy_name reads one matching policy with its latest structured "
-            "coverage and source status; null lists all policies. Use this before answering what insurance they have, "
+            "Read the person's currently active insurance manager. Expired, cancelled, archived and date-ended "
+            "policies are omitted. policy_name reads one matching policy with its latest structured coverage and "
+            "source status; null lists all active policies. Use this before answering what insurance they have, "
             "when it expires, what is covered, or which original policy wording is still missing."
         ),
         parameters=_params({"policy_name": {"type": ["string", "null"]}}),
@@ -3013,8 +3017,9 @@ TOOLS: list[ToolSpec] = [
     ToolSpec(
         name="check_insurance_expense",
         description=(
-            "Screen one receipt or expense against the saved insurance policies. This finds potential claims, never "
-            "guarantees coverage. Use the receipt date so the policy version active then is selected. category is a "
+            "Screen one receipt or expense against policies that are active today. Expired, cancelled, archived and "
+            "date-ended policies are ignored. This finds potential claims, never guarantees coverage. Use the receipt "
+            "date so the applicable version of a still-current policy is selected. category is a "
             "plain coverage category such as veterinary, vehicle, home, medical, travel, cyber or liability; use the "
             "closest honest category, or an empty string if unknown. Pass only details the receipt or person supplied."
         ),
@@ -3308,6 +3313,9 @@ AGENT_LOOP_INSTRUCTIONS = (
     "these months' into 'nothing at all', and say what was left out and offer to go there next.\n"
     "Insurance: policies are versioned records, not remembered facts. Use save_insurance_policy only for "
     "policy facts the person or an exact source supplied; a renewal or endorsement becomes a new version. "
+    "A new insurer is a replacement policy, not a version: archive the old policy by saving the replacement with "
+    "its policy_id. Only policies active today are listed or checked; expired, cancelled, archived and date-ended "
+    "policies remain historical records and must not produce receipt matches. "
     "Use show_insurance_policies before answering what they have or what it covers. A search_receipts or "
     "read_folder result may carry insuranceChecks because documented receipts are screened automatically. "
     "When it reports potential claims, mention the matching policy, deductible, estimated filing date and cited evidence, "

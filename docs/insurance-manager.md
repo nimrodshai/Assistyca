@@ -9,6 +9,17 @@ The two are stored separately on an immutable policy version. Renewals and
 endorsements append versions; they do not overwrite the wording that applied
 to an older receipt.
 
+The normal manager and every receipt check use only policies that are active
+today. A policy marked expired or cancelled, an archived policy, or an active
+record whose effective dates have ended is retained as quiet history but is
+not listed and cannot produce a receipt match.
+
+The system derives date expiry from the saved effective dates; it does not
+poll insurers. A cancellation, renewal, or replacement therefore needs to be
+supplied by the owner or an exact policy source. A renewal with the same insurer
+appends a version. Changing insurer archives the old policy and creates a new
+policy, preserving both records without mixing their wording.
+
 ## Policy shape
 
 `insurance_policies` holds the stable identity the owner recognises: insurer,
@@ -31,10 +42,11 @@ account cascades through the policy versions and their sources.
 ## Receipt screening
 
 Every receipt included in an answer or written to a receipt bundle is screened
-against the account's saved policies. Screening:
+against the account's policies that are active today. Screening:
 
 1. Normalizes the date, amount, currency, vendor, subject, and expense hints.
-2. Selects the immutable policy version in force on the receipt date.
+2. Selects the immutable version in force on the receipt date from a policy
+   that is still current today.
 3. Ranks matching structured coverage categories.
 4. Compares the receipt amount with a same-currency deductible when possible.
 5. Carries the supporting section/page pointer, conditions, exclusions, and
@@ -69,7 +81,7 @@ and the insurer's required documents.
 - `save_insurance_policy` creates a policy or appends a version from supplied
   facts. If a policy photo is attached to the turn, the original image is
   preserved with the structured interpretation.
-- `show_insurance_policies` lists the manager or reads one policy.
+- `show_insurance_policies` lists or reads current active policies.
 - `check_insurance_expense` screens one expense explicitly.
 - `archive_insurance_policy` removes a policy from active matching while
   retaining its history.
