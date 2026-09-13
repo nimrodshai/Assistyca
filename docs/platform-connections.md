@@ -183,8 +183,32 @@ fails, and that failure carries `skippedMailboxes` too, so every mailbox that
 was tried is named rather than only the first.
 
 Provider messages are written for the person who reads them in chat, so they
-never carry an HTTP status. The code stays in the error's `code` field and in
-the logs, where the technical detail panel picks it up.
+never carry an HTTP status. The response and the connection metadata retain
+the safe diagnostic fields `code`, `providerCode`, and `providerSubtype`; the
+admin turn table shows those values too. Logs use the structured
+`oauth.token_failed` and `mailbox.read_failed` events and never include a
+credential or OAuth response description.
+
+Token failures have three different recovery paths:
+
+| Failure | Connection state | What the person is told |
+| --- | --- | --- |
+| provider 429/5xx, `server_error`, `temporarily_unavailable`, network or malformed response | stays `connected` | try the mailbox again shortly |
+| `invalid_client`, `invalid_scope`, `unauthorized_client`, or another OAuth setup error | stays `connected` | Assistyca support must fix the provider configuration |
+| rejected or revoked grant, including Google `invalid_grant` and `invalid_rapt` | becomes `needs_attention` | sign in again with the fresh Google or Microsoft link returned in the chat |
+
+Google does not generally identify which revocation cause produced
+`invalid_grant`, so the stored code proves that Google rejected the grant but
+does not justify inventing a more specific cause. Its documented causes include
+the person revoking access, a Gmail-scoped token after a password change, six
+months without use, refresh-token limits, and a Workspace session policy.
+There is one deployment trap to check first: an External OAuth app left in
+**Testing** gets refresh tokens that expire after seven days when sensitive
+scopes are requested. The production Google project must therefore be
+published (and verified where its Gmail scopes require it), not left in
+Testing. See Google's
+[OAuth production-readiness guide](https://developers.google.com/identity/protocols/oauth2/production-readiness/overview)
+and [OAuth refresh-token documentation](https://developers.google.com/identity/protocols/oauth2).
 
 ### Searching two mailboxes with one query
 

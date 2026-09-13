@@ -374,7 +374,10 @@ def summarize_receipt_records(records: Iterable[dict[str, Any]]) -> dict[str, An
 
 
 EXPORT_FORMATS = ("csv", "xlsx", "pdf")
-EXPORT_COLUMNS = ("Date", "Vendor", "Paid to", "Type", "Amount", "Currency", "Subject", "Mailbox", "File", "Notes")
+EXPORT_COLUMNS = (
+    "Date", "Vendor", "Paid to", "Type", "Amount", "Currency", "Subject",
+    "Insurance screen", "Mailbox", "File", "Notes",
+)
 
 
 def export_filename(start: str, end: str, fmt: str) -> str:
@@ -401,6 +404,7 @@ def _export_rows(records: Iterable[dict[str, Any]]) -> list[list[str]]:
             normalize_amount(record.get("amount")),
             _clean(record.get("currency"), 8),
             _clean(record.get("subject")),
+            receipt_collector.describe_receipt_insurance_match(record),
             _clean(record.get("mailbox")),
             ", ".join(_clean(item.get("filename")) for item in files if isinstance(item, dict)),
             _clean(record.get("notes"), RECEIPT_MANAGER_MAX_NOTES),
@@ -417,6 +421,13 @@ def _summary_lines(records: list[dict[str, Any]], *, range_label: str) -> list[l
         ["Receipts", str(summary["byKind"][RECEIPT_KIND_RECEIPT]["count"])],
         ["Invoices", str(summary["byKind"][RECEIPT_KIND_INVOICE]["count"])],
         ["Without an amount", str(summary["missingAmountCount"])],
+        [
+            "Potential insurance claims",
+            str(sum(
+                1 for record in records
+                if int((record.get("insuranceCheck") or {}).get("matchCount") or 0) > 0
+            )),
+        ],
     ]
     for code, value in summary["totals"].items():
         lines.append([f"Total {code}", f"{value:,.2f}"])
@@ -457,7 +468,7 @@ def write_receipt_export_xlsx(records: list[dict[str, Any]], *, range_label: str
             "xl/worksheets/sheet1.xml",
             receipt_collector._xlsx_sheet(
                 [list(EXPORT_COLUMNS), *_export_rows(records)],
-                widths=[12, 24, 22, 10, 12, 10, 44, 24, 30, 40],
+                widths=[12, 24, 22, 10, 12, 10, 44, 64, 24, 30, 40],
             ),
         )
         archive.writestr(
@@ -511,12 +522,16 @@ def write_receipt_export_pdf(records: list[dict[str, Any]], *, range_label: str)
     ]))
     story.extend([summary_table, Spacer(1, 10)])
 
-    table_rows: list[list[Any]] = [[Paragraph(escape(column), head) for column in EXPORT_COLUMNS[:9]]]
+    table_rows: list[list[Any]] = [[Paragraph(escape(column), head) for column in EXPORT_COLUMNS[:8]]]
     for row in _export_rows(records):
-        table_rows.append([Paragraph(escape(value), cell) for value in row[:9]])
+        table_rows.append([Paragraph(escape(value), cell) for value in row[:8]])
     if len(table_rows) == 1:
-        table_rows.append([Paragraph("No receipts in this period.", cell)] + [""] * 8)
-    table = Table(table_rows, colWidths=[20 * mm, 34 * mm, 30 * mm, 16 * mm, 20 * mm, 16 * mm, 60 * mm, 36 * mm, 41 * mm], repeatRows=1)
+        table_rows.append([Paragraph("No receipts in this period.", cell)] + [""] * 7)
+    table = Table(
+        table_rows,
+        colWidths=[18 * mm, 28 * mm, 25 * mm, 14 * mm, 18 * mm, 14 * mm, 48 * mm, 92 * mm],
+        repeatRows=1,
+    )
     table.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#172231")),
         ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#d7dee7")),

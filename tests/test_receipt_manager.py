@@ -273,8 +273,8 @@ class ExportTests(unittest.TestCase):
     def test_csv_lists_the_receipts_then_the_figures(self) -> None:
         text = receipt_manager.write_receipt_export_csv(self.RECORDS, range_label="2026-08-01 to 2026-08-31").decode("utf-8-sig")
         lines = text.splitlines()
-        self.assertEqual(lines[0], "Date,Vendor,Paid to,Type,Amount,Currency,Subject,Mailbox,File,Notes")
-        self.assertIn("2026-08-02,Bezeq,,Invoice,100,ILS,Invoice 12,owner@gmail.com,,Office line", lines)
+        self.assertEqual(lines[0], "Date,Vendor,Paid to,Type,Amount,Currency,Subject,Insurance screen,Mailbox,File,Notes")
+        self.assertIn("2026-08-02,Bezeq,,Invoice,100,ILS,Invoice 12,,owner@gmail.com,,Office line", lines)
         self.assertIn("Total ILS,100.00", lines)
         self.assertIn("Total USD,25.00", lines)
         self.assertIn("Invoices,1", lines)
@@ -415,6 +415,53 @@ class ApiTests(unittest.TestCase):
         self.assertTrue(gone["deleted"])
         status, _, _ = self._request("GET", f"/api/receipts/{receipt_id}")
         self.assertEqual(status, 404)
+
+    def test_a_receipt_added_by_hand_is_screened_against_saved_policies(self) -> None:
+        self.server.database.save_insurance_policy_version(
+            user_id=self.user_id,
+            policy={
+                "name": "Milo pet insurance",
+                "insurer": "Good Cover",
+                "policyType": "pet",
+                "coveredSubject": "Milo",
+                "status": "active",
+            },
+            version={
+                "effectiveFrom": "2026-01-01",
+                "effectiveTo": "2026-12-31",
+                "summary": "Pet cover for Milo.",
+                "reviewStatus": "reviewed",
+                "sourceName": "milo-policy.txt",
+                "sourceText": "Veterinary treatment is covered after the deductible.",
+                "coverages": [{
+                    "category": "veterinary",
+                    "summary": "Eligible veterinary treatment.",
+                    "coveredSubjects": ["Milo"],
+                    "deductibleAmount": "100",
+                    "currency": "USD",
+                    "claimDeadlineDays": 30,
+                    "evidence": {"section": "Veterinary expenses", "pages": "12"},
+                }],
+            },
+        )
+        status, payload, _ = self._request("POST", "/api/receipts", {
+            "vendor": "City Veterinary Clinic",
+            "amount": "240",
+            "currency": "USD",
+            "receiptDate": "2026-09-01",
+            "notes": "Treatment for Milo",
+        })
+
+        self.assertEqual(status, 200)
+        check = payload["receipt"]["insuranceCheck"]
+        self.assertEqual(check["matchCount"], 1)
+        self.assertEqual(check["matches"][0]["policyName"], "Milo pet insurance")
+        self.assertEqual(check["matches"][0]["status"], "likely_worth_claiming")
+
+        status, listing, _ = self._request("GET", "/api/receipts")
+        self.assertEqual(status, 200)
+        self.assertEqual(listing["insurancePotentialClaimCount"], 1)
+        self.assertEqual(listing["receipts"][0]["insuranceCheck"]["matchCount"], 1)
 
     def test_another_account_cannot_see_or_change_these_receipts(self) -> None:
         record = self._seed()[0]

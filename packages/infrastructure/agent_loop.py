@@ -22,6 +22,7 @@ request.
 
 from __future__ import annotations
 
+import base64
 import json
 import re
 import time
@@ -168,6 +169,10 @@ class LoopContext:
     # What each offered link is for, in a few words, so a channel that can
     # show a button under the reply has something to write on it.
     link_labels: dict[str, str] = field(default_factory=dict)
+    # Some recovery links are not optional prose. If a provider rejected the
+    # saved sign-in, the client needs the newly minted link even when the
+    # language model forgets to repeat it.
+    required_links: list[str] = field(default_factory=list)
     # A calendar choice a tool asked for, surfaced to the channel that can
     # show a picker.
     calendar_choice: list[dict[str, Any]] | None = None
@@ -187,6 +192,9 @@ class LoopContext:
     # The phone this turn came from, on WhatsApp. Signing out unlinks that
     # phone and no other; on the portal there is no phone and no sign_out.
     sender_wa_id: str = ""
+    # A photo supplied with this turn. Its bytes never enter the text prompt,
+    # but a policy save can preserve the original beside its interpretation.
+    attached_photo: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -265,7 +273,7 @@ def _run_lookup(context: LoopContext, proposal_type: str, fields: dict[str, Any]
             f"{first} Telling them apart takes a decision that can only be collected in the Assistyca portal chat for now.".strip(),
         )
     if status != 200:
-        return _lookup_failure(response, status, proposal_type)
+        return _lookup_failure(context, response, status, proposal_type)
     records = response.get("answerRecords") if isinstance(response.get("answerRecords"), list) else []
     data: dict[str, Any] = {
         "summary": str(response.get("answer") or response.get("summary") or response.get("message") or "").strip()[:2000],
@@ -280,6 +288,15 @@ def _run_lookup(context: LoopContext, proposal_type: str, fields: dict[str, Any]
     grouped = _group_records(records)
     if grouped:
         data["groupedFigures"] = grouped
+    mailbox_failures = _normalize_mailbox_failures(response)
+    if mailbox_failures:
+        # One mailbox may fail while another still answers. The total is real
+        # for what was read, but incomplete for the account, so the model gets
+        # both the warning and the exact next step instead of silently
+        # presenting a partial total as the whole one.
+        data["answerIsPartial"] = True
+        data["mailboxFailures"] = mailbox_failures
+        data["nextSteps"] = _mailbox_failure_options(context, mailbox_failures, include_retry=True)
     manager = response.get("receiptManager") if isinstance(response.get("receiptManager"), dict) else {}
     if manager:
         # The receipts this search read are now kept on the receipts page,
@@ -299,6 +316,10 @@ def _run_lookup(context: LoopContext, proposal_type: str, fields: dict[str, Any]
             _offer_link(context, link, RECEIPTS_LINK_LABEL)
         if link:
             data["receiptsPage"] = link
+    if proposal_type in {"custom", "saved-files"}:
+        insurance_checks = _check_receipt_records_against_insurance(context, records)
+        if insurance_checks:
+            data["insuranceChecks"] = insurance_checks
     return _ok(data)
 
 
@@ -361,9 +382,80 @@ def _tool_open_receipts(context: LoopContext, args: dict[str, Any]) -> dict[str,
     return _ok(data)
 
 
-def _lookup_failure(response: dict[str, Any], status: int, proposal_type: str) -> dict[str, Any]:
+_MAILBOX_AUTHORIZATION_ERRORS = frozenset({"gmail_authorization_failed", "outlook_authorization_failed"})
+_MAILBOX_CONFIGURATION_ERRORS = frozenset({
+    "google_oauth_configuration_error",
+    "microsoft_oauth_configuration_error",
+})
+
+
+def _mailbox_provider(value: Any, error: str = "") -> str:
+    provider = str(value or "").strip().lower()
+    code = str(error or "").strip().lower()
+    if "microsoft" in provider or "outlook" in provider or code.startswith("outlook_") or code.startswith("microsoft_"):
+        return "microsoft"
+    if "google" in provider or "gmail" in provider or code.startswith("gmail_") or code.startswith("google_"):
+        return "google"
+    return ""
+
+
+def _normalize_mailbox_failures(response: dict[str, Any]) -> list[dict[str, str]]:
+    raw_failures = response.get("skippedMailboxes") if isinstance(response.get("skippedMailboxes"), list) else []
+    failures: list[dict[str, str]] = []
+    for raw in raw_failures[:8]:
+        if not isinstance(raw, dict):
+            continue
+        code = str(raw.get("code") or "").strip().lower()
+        provider = _mailbox_provider(raw.get("provider"), code)
+        action = (
+            "reconnect"
+            if code in _MAILBOX_AUTHORIZATION_ERRORS or (code == "email_setup_required" and provider)
+            else "contact_support"
+            if code in _MAILBOX_CONFIGURATION_ERRORS
+            else "retry"
+        )
+        failure: dict[str, str] = {
+            "mailbox": " ".join(str(raw.get("mailbox") or "").split())[:160],
+            "provider": provider,
+            "code": code,
+            "providerCode": str(raw.get("providerCode") or "").strip().lower()[:80],
+            "providerSubtype": str(raw.get("providerSubtype") or "").strip().lower()[:80],
+            "whatHappened": " ".join(str(raw.get("message") or "").split())[:400],
+            "action": action,
+        }
+        failures.append({key: value for key, value in failure.items() if value})
+    return failures
+
+
+def _mailbox_failure_options(
+    context: LoopContext,
+    failures: list[dict[str, str]],
+    *,
+    include_retry: bool,
+) -> list[dict[str, str]]:
+    options: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for failure in failures:
+        provider = failure.get("provider", "")
+        if failure.get("action") != "reconnect" or not provider or provider in seen:
+            continue
+        seen.add(provider)
+        label = "Reconnect Google" if provider == "google" else "Reconnect Microsoft"
+        link = str(context.connect_links.get(provider) or "").strip()
+        if link:
+            _offer_link(context, link, label)
+            if link not in context.required_links:
+                context.required_links.append(link)
+        options.append(make_option("reconnect", provider=provider, label=label, link=link))
+    if include_retry and any(failure.get("action") == "retry" for failure in failures):
+        options.append(make_option("retry"))
+    return options
+
+
+def _lookup_failure(context: LoopContext, response: dict[str, Any], status: int, proposal_type: str) -> dict[str, Any]:
     error = str(response.get("error") or "").strip().lower()
-    if error in {"email_setup_required", "mailbox_not_connected"}:
+    mailbox_failures = _normalize_mailbox_failures(response)
+    if error in {"email_setup_required", "mailbox_not_connected"} and not mailbox_failures:
         return _error("source_not_connected", "No mailbox is connected, so the inbox cannot be read.", source="mailbox")
     if error == "calendar_setup_required":
         return _error("source_not_connected", "The calendar is not connected, so it cannot be read.", source="calendar")
@@ -373,7 +465,50 @@ def _lookup_failure(response: dict[str, Any], status: int, proposal_type: str) -
         return _error("rate_limited", "Too many requests at once; this one was not taken.", can_retry=True)
     if error in {"delivery_not_supported", "proposal_runner_not_found", "folder_required"}:
         return _error("not_supported", "That kind of lookup cannot run from here yet.")
-    return _error("provider_unavailable", f"The {proposal_type} lookup could not be completed just now.", can_retry=True)
+    if not mailbox_failures and proposal_type in {"custom", "email-digest"}:
+        provider = _mailbox_provider("", error)
+        action = (
+            "reconnect"
+            if error in _MAILBOX_AUTHORIZATION_ERRORS
+            else "contact_support"
+            if error in _MAILBOX_CONFIGURATION_ERRORS
+            else "retry"
+        )
+        mailbox_failures = [{
+            "provider": provider,
+            "code": error,
+            "whatHappened": " ".join(str(response.get("message") or "").split())[:400],
+            "action": action,
+        }]
+        mailbox_failures = [{key: value for key, value in failure.items() if value} for failure in mailbox_failures]
+    if mailbox_failures:
+        actions = {failure.get("action") for failure in mailbox_failures}
+        code = "source_needs_attention" if actions == {"reconnect"} else "provider_unavailable"
+        can_retry = "retry" in actions
+        upstream_code = next((failure.get("providerCode", "") for failure in mailbox_failures if failure.get("providerCode")), "")
+        upstream_subtype = next((failure.get("providerSubtype", "") for failure in mailbox_failures if failure.get("providerSubtype")), "")
+        what_happened = " ".join(str(response.get("message") or "").split())[:400]
+        if not what_happened:
+            what_happened = "None of the connected mailboxes could be read."
+        return _error(
+            code,
+            what_happened,
+            can_retry=can_retry,
+            options=_mailbox_failure_options(context, mailbox_failures, include_retry=can_retry),
+            source="mailbox",
+            backendCode=error,
+            providerCode=upstream_code,
+            providerSubtype=upstream_subtype,
+            mailboxFailures=mailbox_failures,
+        )
+    return _error(
+        "provider_unavailable",
+        " ".join(str(response.get("message") or "").split())[:400]
+        or f"The {proposal_type} lookup could not be completed just now.",
+        can_retry=True,
+        backendCode=error,
+        providerCode=str(response.get("providerCode") or "").strip().lower(),
+    )
 
 
 def _trim_records(records: list[Any]) -> list[dict[str, str]]:
@@ -401,6 +536,67 @@ def _group_records(records: list[Any]) -> dict[str, Any]:
     except Exception:  # noqa: BLE001 - figures are an aid, never a reason to fail the turn
         return {}
     return grouped if isinstance(grouped, dict) else {}
+
+
+def _check_receipt_records_against_insurance(context: LoopContext, records: list[Any]) -> dict[str, Any]:
+    """Screen receipt rows against saved policies without making a coverage decision."""
+
+    try:
+        policies = context.database.list_insurance_policies(user_id=context.user_id)
+    except Exception:  # noqa: BLE001 - insurance is an aid to a receipt result, never a reason it fails
+        return {}
+    if not policies:
+        return {"checkedReceiptCount": 0, "potentialClaimCount": 0, "status": "no_policies_saved"}
+
+    checked = 0
+    possible: list[dict[str, Any]] = []
+    for raw in records[:MAX_RECORDS_TO_MODEL]:
+        if not isinstance(raw, dict):
+            continue
+        status = str(raw.get("status") or "").casefold()
+        if status.startswith("not a receipt") or status.startswith("skipped"):
+            continue
+        expense = {
+            "date": raw.get("date"),
+            "amount": raw.get("amount"),
+            "currency": raw.get("currency"),
+            "category": raw.get("category") or raw.get("expenseCategory"),
+            "description": raw.get("description") or raw.get("notes") or raw.get("snippet"),
+            "vendor": raw.get("vendor") or raw.get("paidTo") or raw.get("from"),
+            "subject": raw.get("subject"),
+            "receiptReference": raw.get("sourceRef") or raw.get("messageId") or raw.get("id"),
+        }
+        try:
+            result = context.database.check_insurance_expense(user_id=context.user_id, expense=expense)
+        except ValueError:
+            # A malformed date or amount on one receipt does not hide the
+            # other receipts or make the mailbox lookup fail.
+            expense["date"] = ""
+            expense["amount"] = ""
+            result = context.database.check_insurance_expense(user_id=context.user_id, expense=expense)
+        checked += 1
+        matches = result.get("matches") if isinstance(result.get("matches"), list) else []
+        if not matches:
+            continue
+        possible.append({
+            "receiptReference": str(expense.get("receiptReference") or ""),
+            "vendor": str(expense.get("vendor") or ""),
+            "date": str(expense.get("date") or ""),
+            "amount": str(expense.get("amount") or ""),
+            "currency": str(expense.get("currency") or ""),
+            "matches": matches[:3],
+        })
+
+    return {
+        "checkedReceiptCount": checked,
+        "potentialClaimCount": len(possible),
+        "status": "potential_claims_found" if possible else "no_relevant_policy",
+        "receipts": possible,
+        "guidance": (
+            "These are screening results, not coverage decisions. Use the cited policy wording and ask for "
+            "missing event details before suggesting that the person file."
+        ),
+    }
 
 
 def _tool_read_inbox(context: LoopContext, args: dict[str, Any]) -> dict[str, Any]:
@@ -747,7 +943,7 @@ def describe_delete_account(context: LoopContext) -> str:
 
     return (
         f"delete the Assistyca account for {context.email} permanently: the saved Google and Microsoft "
-        "sign-ins are revoked, every saved receipt, list, reminder, remembered fact and this chat's history "
+        "sign-ins are revoked, every saved receipt, insurance policy and source document, list, reminder, remembered fact and this chat's history "
         "is erased, every linked phone is unlinked, and none of it can be brought back"
     )
 
@@ -1003,6 +1199,166 @@ def _tool_cancel_scheduled(context: LoopContext, args: dict[str, Any]) -> dict[s
     if status != 200 or not response.get("ok"):
         return _error("internal", "Could not cancel that just now.", can_retry=True)
     return _ok({"cancelled": _describe_scheduled(context, target)})
+def _coverage_from_tool(raw: Any) -> dict[str, Any]:
+    item = raw if isinstance(raw, dict) else {}
+    return {
+        "category": item.get("category"),
+        "summary": item.get("summary"),
+        "coveredSubjects": item.get("covered_subjects") or [],
+        "conditions": item.get("conditions") or [],
+        "exclusions": item.get("exclusions") or [],
+        "limitAmount": item.get("limit_amount"),
+        "deductibleAmount": item.get("deductible_amount"),
+        "currency": item.get("currency"),
+        "claimDeadlineDays": item.get("claim_deadline_days"),
+        "evidence": {
+            "section": item.get("evidence_section"),
+            "pages": item.get("evidence_pages"),
+            "quote": item.get("evidence_quote"),
+        },
+    }
+
+
+def _insurance_policy_for_model(record: dict[str, Any]) -> dict[str, Any]:
+    current = record.get("currentVersion") if isinstance(record.get("currentVersion"), dict) else {}
+    latest = record.get("latestVersion") if isinstance(record.get("latestVersion"), dict) else current
+    return {
+        "policyId": int(record.get("id") or 0),
+        "name": str(record.get("name") or ""),
+        "insurer": str(record.get("insurer") or ""),
+        "policyNumberHint": str(record.get("policyNumberHint") or ""),
+        "policyType": str(record.get("policyType") or ""),
+        "coveredSubject": str(record.get("coveredSubject") or ""),
+        "status": str(record.get("status") or ""),
+        "versionCount": len(record.get("versions") or []),
+        "latestVersion": latest,
+        "currentVersion": current,
+    }
+
+
+def _tool_save_insurance_policy(context: LoopContext, args: dict[str, Any]) -> dict[str, Any]:
+    coverages = [_coverage_from_tool(entry) for entry in (args.get("coverages") or [])]
+    source_document = b""
+    source_name = args.get("source_name")
+    source_mime_type = args.get("source_mime_type")
+    photo = context.attached_photo if isinstance(context.attached_photo, dict) else {}
+    data_url = str(photo.get("dataUrl") or "")
+    if data_url.startswith("data:") and ";base64," in data_url:
+        try:
+            source_document = base64.b64decode(data_url.split(",", 1)[1], validate=True)
+            source_name = photo.get("fileName") or source_name or "policy-photo"
+            source_mime_type = photo.get("mimeType") or source_mime_type
+        except (TypeError, ValueError):
+            source_document = b""
+    try:
+        record = context.database.save_insurance_policy_version(
+            user_id=context.user_id,
+            policy={
+                "id": args.get("policy_id"),
+                "name": args.get("name"),
+                "insurer": args.get("insurer"),
+                "policyNumber": args.get("policy_number"),
+                "policyType": args.get("policy_type"),
+                "coveredSubject": args.get("covered_subject"),
+                "status": args.get("status"),
+            },
+            version={
+                "effectiveFrom": args.get("effective_from"),
+                "effectiveTo": args.get("effective_to"),
+                "summary": args.get("summary"),
+                "coverages": coverages,
+                "reviewStatus": "reviewed" if args.get("human_reviewed") is True else "unreviewed",
+                "sourceName": source_name,
+                "sourceMimeType": source_mime_type,
+                "sourceReference": args.get("source_reference"),
+                "sourceText": args.get("source_text"),
+            },
+            source_document=source_document,
+        )
+    except (KeyError, ValueError) as exc:
+        return _error("choice_required", str(exc))
+    result = _insurance_policy_for_model(record)
+    result["versionCreated"] = bool(record.get("versionCreated"))
+    latest = result.get("latestVersion") if isinstance(result.get("latestVersion"), dict) else {}
+    result["sourceStatus"] = "source_stored" if latest.get("sourceStored") else "summary_only"
+    result["note"] = (
+        "The original source and its structured summary are kept separately."
+        if latest.get("sourceStored")
+        else "Only a structured summary is saved. Tell the person that matches stay provisional until the original policy wording is attached."
+    )
+    return _ok(result)
+
+
+def _find_insurance_policy(context: LoopContext, name: Any) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    wanted = " ".join(str(name or "").split()).casefold()
+    policies = context.database.list_insurance_policies(user_id=context.user_id)
+    exact = [record for record in policies if str(record.get("name") or "").casefold() == wanted]
+    loose = [
+        record for record in policies
+        if wanted and wanted in " ".join([
+            str(record.get("name") or ""),
+            str(record.get("insurer") or ""),
+            str(record.get("coveredSubject") or ""),
+        ]).casefold()
+    ]
+    matches = exact or loose
+    if len(matches) == 1:
+        return matches[0], None
+    if not matches:
+        return None, _error("nothing_found", "No saved insurance policy matches that name.")
+    return None, _error(
+        "choice_required",
+        "More than one saved policy matches that name. Ask which one they mean.",
+        policies=[str(record.get("name") or "") for record in matches[:10]],
+    )
+
+
+def _tool_show_insurance_policies(context: LoopContext, args: dict[str, Any]) -> dict[str, Any]:
+    name = str(args.get("policy_name") or "").strip()
+    if name:
+        record, problem = _find_insurance_policy(context, name)
+        if problem:
+            return problem
+        return _ok({"policies": [_insurance_policy_for_model(record or {})], "policyCount": 1})
+    records = context.database.list_insurance_policies(user_id=context.user_id)
+    return _ok({
+        "policies": [_insurance_policy_for_model(record) for record in records[:40]],
+        "policyCount": len(records),
+        "note": "Original policy contents are not placed into every chat turn; each version says whether its source is stored.",
+    })
+
+
+def _tool_check_insurance_expense(context: LoopContext, args: dict[str, Any]) -> dict[str, Any]:
+    try:
+        result = context.database.check_insurance_expense(
+            user_id=context.user_id,
+            expense={
+                "date": args.get("date"),
+                "amount": args.get("amount"),
+                "currency": args.get("currency"),
+                "category": args.get("category"),
+                "description": args.get("description"),
+                "vendor": args.get("vendor"),
+                "subject": args.get("subject"),
+                "receiptReference": args.get("receipt_reference"),
+            },
+        )
+        return _ok(result)
+    except ValueError as exc:
+        return _error("choice_required", str(exc))
+
+
+def _tool_archive_insurance_policy(context: LoopContext, args: dict[str, Any]) -> dict[str, Any]:
+    record, problem = _find_insurance_policy(context, args.get("policy_name"))
+    if problem:
+        return problem
+    archived = context.database.archive_insurance_policy(
+        user_id=context.user_id,
+        policy_id=int((record or {}).get("id") or 0),
+    )
+    if not archived:
+        return _error("nothing_found", "That insurance policy is not active in the manager.")
+    return _ok({"archived": str((record or {}).get("name") or "")})
 
 
 def _tool_remember_fact(context: LoopContext, args: dict[str, Any]) -> dict[str, Any]:
@@ -1738,7 +2094,7 @@ TOOLS: list[ToolSpec] = [
         name="delete_account",
         description=(
             "Delete the person's whole Assistyca account and every piece of data stored in it, permanently: "
-            "saved sign-ins revoked, receipts, lists, reminders, facts and chat history erased, phones "
+            "saved sign-ins revoked, receipts, insurance policies and their sources, lists, reminders, facts and chat history erased, phones "
             "unlinked. For 'delete my account', 'delete my data', 'erase everything you have on me', 'forget "
             "me', 'remove me from Assistyca'. Never for signing out or for disconnecting one source."
         ),
@@ -1945,6 +2301,104 @@ TOOLS: list[ToolSpec] = [
         run=_tool_show_lists,
     ),
     ToolSpec(
+        name="save_insurance_policy",
+        description=(
+            "Save a policy the person has supplied, or append a renewal/endorsement as a new immutable version. "
+            "Use only facts present in their words or policy source; never invent coverage, limits, exclusions, "
+            "dates or evidence. policy_id identifies an existing policy when known, else null. policy_number may "
+            "be the number they gave; only a masked hint is retained. Each coverage is a searchable interpretation. "
+            "Evidence is the exact section/page pointer and a short supporting excerpt, or null when unavailable. "
+            "human_reviewed is true only when a person explicitly reviewed the extraction. source_text is exact policy "
+            "wording supplied in chat, not a generated summary; otherwise null. Saving summary-only data is allowed "
+            "but its receipt matches remain provisional."
+        ),
+        parameters=_params({
+            "policy_id": {"type": ["integer", "null"]},
+            "name": {"type": "string"},
+            "insurer": {"type": "string"},
+            "policy_number": {"type": ["string", "null"]},
+            "policy_type": {"type": "string"},
+            "covered_subject": {"type": "string"},
+            "status": {"type": "string", "enum": ["active", "expired", "cancelled"]},
+            "effective_from": {"type": "string"},
+            "effective_to": {"type": ["string", "null"]},
+            "summary": {"type": "string"},
+            "coverages": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "category": {"type": "string"},
+                        "summary": {"type": "string"},
+                        "covered_subjects": {"type": "array", "items": {"type": "string"}},
+                        "conditions": {"type": "array", "items": {"type": "string"}},
+                        "exclusions": {"type": "array", "items": {"type": "string"}},
+                        "limit_amount": {"type": ["string", "null"]},
+                        "deductible_amount": {"type": ["string", "null"]},
+                        "currency": {"type": ["string", "null"]},
+                        "claim_deadline_days": {"type": ["integer", "null"]},
+                        "evidence_section": {"type": ["string", "null"]},
+                        "evidence_pages": {"type": ["string", "null"]},
+                        "evidence_quote": {"type": ["string", "null"]},
+                    },
+                    "required": [
+                        "category", "summary", "covered_subjects", "conditions", "exclusions",
+                        "limit_amount", "deductible_amount", "currency", "claim_deadline_days",
+                        "evidence_section", "evidence_pages", "evidence_quote",
+                    ],
+                },
+            },
+            "source_name": {"type": ["string", "null"]},
+            "source_mime_type": {"type": ["string", "null"]},
+            "source_reference": {"type": ["string", "null"]},
+            "source_text": {"type": ["string", "null"]},
+            "human_reviewed": {"type": "boolean"},
+        }),
+        side_effect=True,
+        run=_tool_save_insurance_policy,
+    ),
+    ToolSpec(
+        name="show_insurance_policies",
+        description=(
+            "Read the person's insurance manager. policy_name reads one matching policy with its latest structured "
+            "coverage and source status; null lists all policies. Use this before answering what insurance they have, "
+            "when it expires, what is covered, or which original policy wording is still missing."
+        ),
+        parameters=_params({"policy_name": {"type": ["string", "null"]}}),
+        run=_tool_show_insurance_policies,
+    ),
+    ToolSpec(
+        name="check_insurance_expense",
+        description=(
+            "Screen one receipt or expense against the saved insurance policies. This finds potential claims, never "
+            "guarantees coverage. Use the receipt date so the policy version active then is selected. category is a "
+            "plain coverage category such as veterinary, vehicle, home, medical, travel, cyber or liability; use the "
+            "closest honest category, or an empty string if unknown. Pass only details the receipt or person supplied."
+        ),
+        parameters=_params({
+            "date": {"type": ["string", "null"]},
+            "amount": {"type": ["string", "null"]},
+            "currency": {"type": ["string", "null"]},
+            "category": {"type": "string"},
+            "description": {"type": "string"},
+            "vendor": {"type": ["string", "null"]},
+            "subject": {"type": ["string", "null"]},
+            "receipt_reference": {"type": ["string", "null"]},
+        }),
+        run=_tool_check_insurance_expense,
+    ),
+    ToolSpec(
+        name="archive_insurance_policy",
+        description=(
+            "Remove one policy from active insurance matching while retaining its history. Use when the person asks "
+            "to remove or archive a policy. policy_name is the policy, insurer or covered subject in their words."
+        ),
+        parameters=_params({"policy_name": {"type": "string"}}),
+        side_effect=True,
+        run=_tool_archive_insurance_policy,
+    ),
+    ToolSpec(
         name="remember_fact",
         description=(
             "Keep something durable the person told you about how their business works: how a vendor bills, "
@@ -2030,7 +2484,7 @@ AGENT_LOOP_INSTRUCTIONS = (
     "When the person asks what you can do, what actions there are, or how this works, answer from that, "
     "shaped by what is connected and by what knownFacts says they do - every example you offer is one "
     "someone in their line of work would actually send - and cover every kind of thing they have: the diary, the mail, the receipts "
-    "and what they add up to, reminders, standing actions that run on a schedule, and their lists. Lists and "
+    "and what they add up to, insurance policies and potential claims, reminders, standing actions that run on a schedule, and their lists. Lists and "
     "receipts are each a page of the person's "
     "own that they may not know they have, so name both every time, and put CONTEXT.listsPage and "
     "CONTEXT.receiptsPage each on its own line so they can open them.\n"
@@ -2038,7 +2492,12 @@ AGENT_LOOP_INSTRUCTIONS = (
     "account; do not call one for small talk or a question you can answer from the conversation. Read every "
     "result before you write. A result with ok=true holds what was read or done. A result with ok=false says "
     "what got in the way: tell the person in their terms and offer the way forward the result names, such as "
-    "the connect_link. A tool marked UNAVAILABLE will not work; do not call it, call connect_link instead and "
+    "the connect_link. When a mailbox result says source_needs_attention or a mailboxFailures entry says "
+    "action=reconnect, the saved sign-in was rejected: never tell the person to retry it. Ask them to sign in "
+    "again, name the affected mailbox, and put the reconnect option's link in the reply exactly as given. When "
+    "an otherwise successful result has answerIsPartial=true, answer from what was read but plainly say the "
+    "total is incomplete and follow every mailboxFailures next step. A tool marked UNAVAILABLE will not work; "
+    "do not call it, call connect_link instead and "
     "give the link. Never say you are checking, never promise to do something later, never invent a result: "
     "do it now with a tool, or say why you cannot. Never say something was done, scheduled, sent or "
     "disconnected unless a tool result in this turn says ok, and list those tools in claimsCompleted.\n"
@@ -2050,6 +2509,14 @@ AGENT_LOOP_INSTRUCTIONS = (
     "about why an amount changed is answered by naming the individual items that account for it. Never "
     "invent a record, an amount, a date, or a fact that is not in a result. An empty records list means it "
     "ran and found nothing: say what you looked for, where, and that there was nothing, in a line or two.\n"
+    "Insurance: policies are versioned records, not remembered facts. Use save_insurance_policy only for "
+    "policy facts the person or an exact source supplied; a renewal or endorsement becomes a new version. "
+    "Use show_insurance_policies before answering what they have or what it covers. A search_receipts or "
+    "read_folder result may carry insuranceChecks because documented receipts are screened automatically. "
+    "When it reports potential claims, mention the matching policy, deductible, estimated filing date and cited evidence, "
+    "and ask only for the missing event facts named by conditions or exclusions. Call it a potential claim or "
+    "something likely worth claiming, never guaranteed coverage or an approved claim. A summary_only match is "
+    "always provisional: say the original wording is still needed. No relevant match needs no insurance warning.\n"
     "CONTEXT.today and CONTEXT.now are the date and the clock where the person is; read them for anything "
     "that depends on the time of day, and never guess the time.\n"
     "Public web: call search_web whenever a practical answer needs current information from the open web; do not "
@@ -2362,6 +2829,7 @@ def run_agent_loop(
         reply_payload = {"reply": reply_text, "claimsCompleted": [], "rememberFact": None, "forgetFact": None}
 
     reply = _guard_reply(str(reply_payload.get("reply") or ""), context.links_offered)
+    reply = _append_required_links(reply, context.required_links)
     links_in_reply = _links_in_reply(reply, context)
     claims = [str(c) for c in (reply_payload.get("claimsCompleted") or []) if isinstance(c, str)]
     overclaimed = [c for c in claims if c not in completed]
@@ -2410,12 +2878,32 @@ def _execute(context: LoopContext, tool: ToolSpec, args: dict[str, Any], tool_ca
     ok = bool(outcome.get("ok"))
     if ok and tool.side_effect:
         completed.append(tool.name)
-    tool_calls.append({
+    error_data = outcome.get("error") if isinstance(outcome.get("error"), dict) else {}
+    diagnostic_data = error_data or outcome
+    diagnostic_parts: list[str] = []
+    provider_code = str(diagnostic_data.get("providerCode") or "").strip()
+    if provider_code:
+        diagnostic_parts.append(provider_code)
+    mailbox_failures = diagnostic_data.get("mailboxFailures")
+    if isinstance(mailbox_failures, list):
+        for failure in mailbox_failures[:8]:
+            if not isinstance(failure, dict):
+                continue
+            failure_detail = ":".join(
+                str(failure.get(key) or "").strip()
+                for key in ("code", "providerCode", "providerSubtype")
+            ).strip(":")
+            if failure_detail and failure_detail not in diagnostic_parts:
+                diagnostic_parts.append(failure_detail)
+    call_record = {
         "name": tool.name,
         "ok": ok,
-        "code": "" if ok else str((outcome.get("error") or {}).get("code") or ""),
+        "code": "" if ok else str(error_data.get("code") or ""),
         "ms": int((time.monotonic() - started) * 1000),
-    })
+    }
+    if diagnostic_parts:
+        call_record["detail"] = ", ".join(diagnostic_parts)[:240]
+    tool_calls.append(call_record)
     return outcome
 
 
@@ -2498,6 +2986,18 @@ def _links_in_reply(reply: str, context: LoopContext) -> list[dict[str, str]]:
             seen.add(bare)
             found.append({"url": bare, "label": context.link_labels.get(bare) or "Open"})
     return found
+
+
+def _append_required_links(reply: str, required_links: list[str]) -> str:
+    """Keep a required recovery link even when generated prose omitted it."""
+
+    missing = [link for link in required_links if link and link not in reply]
+    if not missing:
+        return reply
+    suffix = "\n".join(missing)
+    room = max(0, MAX_REPLY_LENGTH - len(suffix) - 1)
+    prefix = reply[:room].rstrip()
+    return f"{prefix}\n{suffix}".strip()
 
 
 def _guard_reply(reply: str, links_offered: list[str]) -> str:

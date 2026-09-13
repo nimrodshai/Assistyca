@@ -315,6 +315,115 @@ class LoopMechanicsTests(unittest.TestCase):
         self.assertEqual(output["error"]["code"], "internal")
         self.assertEqual(result.tool_calls[0]["code"], "internal")
 
+    def test_a_rejected_google_sign_in_explains_reconnection_and_returns_a_fresh_link(self) -> None:
+        api = FakeApi({
+            "/api/agent/proposals/run": ({
+                "ok": False,
+                "error": "gmail_authorization_failed",
+                "message": "Google says the saved sign-in expired or was revoked.",
+                "skippedMailboxes": [{
+                    "mailbox": "personal@gmail.com",
+                    "provider": "google_gmail",
+                    "code": "gmail_authorization_failed",
+                    "providerCode": "invalid_grant",
+                    "message": "Google says the saved sign-in expired or was revoked.",
+                }],
+            }, 409),
+        })
+        model = ScriptedModel([
+            _model_round(_call("search_receipts", "c1", what="Apple receipts in August", vendor="Apple", months="2026-08")),
+            # The reconnect link is required recovery data, so the loop must
+            # retain it even if generated prose forgets to repeat it.
+            _model_round(reply=_reply("Google rejected the saved sign-in for personal@gmail.com. Please sign in again.")),
+        ])
+        result = run_agent_loop(
+            context=_context(api, connected={"gmail": True}, links={"google": GOOGLE}),
+            call_model=model,
+            user_message="How much did I pay Apple in August?",
+            conversation=[],
+            today="2026-09-04",
+        )
+
+        failure = json.loads(model.inputs[1][-1]["output"])["error"]
+        self.assertEqual(failure["code"], "source_needs_attention")
+        self.assertFalse(failure["canRetry"])
+        self.assertEqual(failure["backendCode"], "gmail_authorization_failed")
+        self.assertEqual(failure["providerCode"], "invalid_grant")
+        self.assertEqual(failure["mailboxFailures"][0]["action"], "reconnect")
+        self.assertEqual(failure["options"][0]["link"], GOOGLE)
+        self.assertIn(GOOGLE, result.reply)
+        self.assertEqual(result.links, [{"url": GOOGLE, "label": "Reconnect Google"}])
+        self.assertIn("invalid_grant", result.tool_calls[0]["detail"])
+
+    def test_a_temporary_google_failure_stays_retryable_and_does_not_offer_login(self) -> None:
+        api = FakeApi({
+            "/api/agent/proposals/run": ({
+                "ok": False,
+                "error": "gmail_oauth_provider_error",
+                "message": "Google could not be reached just now.",
+                "skippedMailboxes": [{
+                    "mailbox": "personal@gmail.com",
+                    "provider": "google_gmail",
+                    "code": "gmail_oauth_provider_error",
+                    "providerCode": "temporarily_unavailable",
+                    "message": "Google could not be reached just now.",
+                }],
+            }, 502),
+        })
+        model = ScriptedModel([
+            _model_round(_call("search_receipts", "c1", what="Apple receipts in August", vendor="Apple", months="2026-08")),
+            _model_round(reply=_reply("Google could not be reached just now. Please try the receipt search again shortly.")),
+        ])
+        result = run_agent_loop(
+            context=_context(api, connected={"gmail": True}, links={"google": GOOGLE}),
+            call_model=model,
+            user_message="How much did I pay Apple in August?",
+            conversation=[],
+            today="2026-09-04",
+        )
+
+        failure = json.loads(model.inputs[1][-1]["output"])["error"]
+        self.assertEqual(failure["code"], "provider_unavailable")
+        self.assertTrue(failure["canRetry"])
+        self.assertEqual(failure["mailboxFailures"][0]["action"], "retry")
+        self.assertEqual(failure["options"], [{"kind": "retry"}])
+        self.assertEqual(result.links, [])
+
+    def test_a_partial_receipt_answer_names_the_skipped_mailbox_and_offers_reconnection(self) -> None:
+        api = FakeApi({
+            "/api/agent/proposals/run": ({
+                "ok": True,
+                "answer": "Apple total: USD 49.00.",
+                "answerRecords": [{"vendor": "Apple", "amount": "49.00", "currency": "USD"}],
+                "skippedMailboxes": [{
+                    "mailbox": "personal@gmail.com",
+                    "provider": "google_gmail",
+                    "code": "gmail_authorization_failed",
+                    "providerCode": "invalid_grant",
+                    "message": "Google rejected the saved sign-in.",
+                }],
+            }, 200),
+        })
+        model = ScriptedModel([
+            _model_round(_call("search_receipts", "c1", what="Apple receipts in August", vendor="Apple", months="2026-08")),
+            _model_round(reply=_reply(f"I found USD 49.00, but that total is incomplete because personal@gmail.com needs a new sign-in:\n{GOOGLE}")),
+        ])
+        result = run_agent_loop(
+            context=_context(api, connected={"gmail": True}, links={"google": GOOGLE}),
+            call_model=model,
+            user_message="How much did I pay Apple in August?",
+            conversation=[],
+            today="2026-09-04",
+        )
+
+        answer = json.loads(model.inputs[1][-1]["output"])
+        self.assertTrue(answer["ok"])
+        self.assertTrue(answer["answerIsPartial"])
+        self.assertEqual(answer["mailboxFailures"][0]["mailbox"], "personal@gmail.com")
+        self.assertEqual(answer["nextSteps"][0]["link"], GOOGLE)
+        self.assertIn("incomplete", result.reply)
+        self.assertIn(GOOGLE, result.reply)
+
     def test_facts_are_written_through_the_store(self) -> None:
         context = _context()
         model = ScriptedModel([

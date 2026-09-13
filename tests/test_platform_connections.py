@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import io
 import json
 import sqlite3
 import tempfile
@@ -12,7 +13,11 @@ from urllib import parse as urllib_parse
 from urllib import request as urllib_request
 from unittest import mock
 
+from packages.infrastructure.calendar_summary import CalendarAuthorizationError
+from packages.infrastructure.calendar_summary import CalendarSummaryError
 from packages.infrastructure.credential_vault import CredentialVault
+from packages.infrastructure.outlook_summary import OutlookAuthorizationError
+from packages.infrastructure.outlook_summary import OutlookSummaryError
 from packages.infrastructure.portal_auth.server import GOOGLE_CALENDAR_LIST_OAUTH_SCOPE
 from packages.infrastructure.portal_auth.server import GOOGLE_CALENDAR_OAUTH_SCOPE
 from packages.infrastructure.portal_auth.server import GOOGLE_DRIVE_OAUTH_SCOPE
@@ -132,6 +137,95 @@ class PlatformConnectionTests(unittest.TestCase):
 
     def _cookie(self) -> str:
         return self._cookie_for(self.server, self.base_url)
+
+    def _handler(self):  # type: ignore[no-untyped-def]
+        handler_class = getattr(self.server.RequestHandlerClass, "func", self.server.RequestHandlerClass)
+        handler = object.__new__(handler_class)
+        handler.server = self.server
+        return handler
+
+    @staticmethod
+    def _oauth_http_error(request, *, status: int, payload: dict[str, object]):  # type: ignore[no-untyped-def]
+        return urllib_error.HTTPError(
+            getattr(request, "full_url", str(request)),
+            status,
+            "provider rejected request",
+            {},
+            io.BytesIO(json.dumps(payload).encode("utf-8")),
+        )
+
+    def test_temporary_token_service_errors_do_not_impersonate_a_disconnection(self) -> None:
+        handler = self._handler()
+
+        def google_error(request, **_kwargs):  # type: ignore[no-untyped-def]
+            raise self._oauth_http_error(
+                request,
+                status=503,
+                payload={"error": "temporarily_unavailable"},
+            )
+
+        with _provider_endpoint_patch(google_error):
+            with self.assertRaises(CalendarSummaryError) as google_problem:
+                handler._post_google_oauth_token_request({"grant_type": "refresh_token"})
+        self.assertEqual(google_problem.exception.code, "google_oauth_provider_error")
+        self.assertEqual(google_problem.exception.provider_code, "temporarily_unavailable")
+
+        def microsoft_error(request, **_kwargs):  # type: ignore[no-untyped-def]
+            raise self._oauth_http_error(
+                request,
+                status=503,
+                payload={"error": "temporarily_unavailable", "error_codes": [90033]},
+            )
+
+        with _provider_endpoint_patch(microsoft_error):
+            with self.assertRaises(OutlookSummaryError) as microsoft_problem:
+                handler._post_microsoft_oauth_token_request({"grant_type": "refresh_token"})
+        self.assertEqual(microsoft_problem.exception.code, "outlook_oauth_provider_error")
+        self.assertEqual(microsoft_problem.exception.provider_subtype, "90033")
+
+    def test_rejected_refresh_grants_keep_the_provider_reason_and_require_login(self) -> None:
+        handler = self._handler()
+
+        def google_error(request, **_kwargs):  # type: ignore[no-untyped-def]
+            raise self._oauth_http_error(
+                request,
+                status=400,
+                payload={"error": "invalid_grant", "error_subtype": "invalid_rapt"},
+            )
+
+        with _provider_endpoint_patch(google_error):
+            with self.assertRaises(CalendarAuthorizationError) as google_problem:
+                handler._post_google_oauth_token_request({"grant_type": "refresh_token"})
+        self.assertEqual(google_problem.exception.provider_code, "invalid_grant")
+        self.assertEqual(google_problem.exception.provider_subtype, "invalid_rapt")
+
+        def microsoft_error(request, **_kwargs):  # type: ignore[no-untyped-def]
+            raise self._oauth_http_error(
+                request,
+                status=400,
+                payload={"error": "invalid_grant", "error_codes": [700082]},
+            )
+
+        with _provider_endpoint_patch(microsoft_error):
+            with self.assertRaises(OutlookAuthorizationError) as microsoft_problem:
+                handler._post_microsoft_oauth_token_request({"grant_type": "refresh_token"})
+        self.assertEqual(microsoft_problem.exception.provider_code, "invalid_grant")
+        self.assertEqual(microsoft_problem.exception.provider_subtype, "700082")
+
+    def test_bad_oauth_client_configuration_is_a_support_problem_not_a_user_login_problem(self) -> None:
+        handler = self._handler()
+
+        def google_error(request, **_kwargs):  # type: ignore[no-untyped-def]
+            raise self._oauth_http_error(
+                request,
+                status=401,
+                payload={"error": "invalid_client"},
+            )
+
+        with _provider_endpoint_patch(google_error):
+            with self.assertRaises(CalendarSummaryError) as problem:
+                handler._post_google_oauth_token_request({"grant_type": "refresh_token"})
+        self.assertEqual(problem.exception.code, "google_oauth_configuration_error")
 
     def test_platform_connection_list_requires_authentication(self) -> None:
         request = urllib_request.Request(f"{self.base_url}/api/platform-connections")

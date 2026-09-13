@@ -220,7 +220,29 @@ def describe_response(path: str, request: dict[str, Any], status: int, payload: 
         if normalize_text(request.get("mode")).lower() == "answer":
             name = f"{name}:answer"
         described["outcome"] = "tool"
-        described["tool_call"] = {"name": name, "ok": ok, "code": "" if ok else (error_code or f"http_{status}"), "ms": int(latency_ms)}
+        details: list[str] = []
+        provider_code = normalize_text(payload.get("providerCode"))
+        if provider_code:
+            details.append(provider_code)
+        failures = payload.get("skippedMailboxes") if isinstance(payload.get("skippedMailboxes"), list) else []
+        for failure in failures[:8]:
+            if not isinstance(failure, dict):
+                continue
+            detail = ":".join(
+                normalize_text(failure.get(key))
+                for key in ("code", "providerCode", "providerSubtype")
+            ).strip(":")
+            if detail and detail not in details:
+                details.append(detail)
+        tool_call = {
+            "name": name,
+            "ok": ok,
+            "code": "" if ok else (error_code or f"http_{status}"),
+            "ms": int(latency_ms),
+        }
+        if details:
+            tool_call["detail"] = ", ".join(details)[:240]
+        described["tool_call"] = tool_call
         return described
 
     if path == COMPOSE_PATH:
@@ -234,12 +256,16 @@ def describe_response(path: str, request: dict[str, Any], status: int, payload: 
 
 
 def normalize_tool_call(call: dict[str, Any]) -> dict[str, Any]:
-    return {
+    normalized = {
         "name": normalize_text(call.get("name") or call.get("tool"))[:80],
         "ok": bool(call.get("ok")),
         "code": normalize_text(call.get("code"))[:80],
         "ms": safe_int(call.get("ms") or call.get("durationMs")),
     }
+    detail = normalize_text(call.get("detail"))[:240]
+    if detail:
+        normalized["detail"] = detail
+    return normalized
 
 
 class TurnRecorder:

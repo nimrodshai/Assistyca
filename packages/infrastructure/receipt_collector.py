@@ -220,6 +220,7 @@ def create_receipt_bundle(
     url_prefix: str = "/output/agent_receipts",
     ask: Callable[[str], str] | None = None,
     decisions: Any = None,
+    insurance_check: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Write Excel and PDF receipt exports, returning artifact metadata.
 
@@ -245,7 +246,18 @@ def create_receipt_bundle(
     # A bundle is written without anyone at the keyboard, so it takes the
     # answers already given and leaves anything still open counted as it is.
     collected = collect_receipt_rows(items, ask=ask, decisions=decisions)
-    rows, skipped_rows = collected.receipts, collected.skipped
+    rows = screen_receipt_rows_for_insurance(collected.receipts, insurance_check=insurance_check)
+    skipped_rows = collected.skipped
+    insurance_matches = [
+        {
+            "receiptIndex": str(row.get("index") or ""),
+            "vendor": str(row.get("vendor") or ""),
+            "date": str(row.get("date") or ""),
+            "matches": list((row.get("insuranceCheck") or {}).get("matches") or []),
+        }
+        for row in rows
+        if int((row.get("insuranceCheck") or {}).get("matchCount") or 0) > 0
+    ]
     metadata = {
         "createdAt": created.isoformat(),
         "outputFolder": logical_folder,
@@ -270,6 +282,8 @@ def create_receipt_bundle(
             for row in skipped_rows
         ],
         "summary": summarize_receipt_rows(rows),
+        "insuranceScreenedCount": len(rows) if insurance_check is not None else 0,
+        "insurancePotentialClaimCount": len(insurance_matches),
         "exportVersion": RECEIPT_EXPORT_VERSION,
     }
     previous = load_previous_receipt_summary(
@@ -306,6 +320,9 @@ def create_receipt_bundle(
         "receiptCount": len(rows),
         "reviewCount": metadata["reviewCount"],
         "skippedCount": len(skipped_rows),
+        "insuranceScreenedCount": metadata["insuranceScreenedCount"],
+        "insurancePotentialClaimCount": len(insurance_matches),
+        "insuranceMatches": insurance_matches,
         "artifacts": {
             "excel": {
                 "name": RECEIPT_EXCEL_FILENAME,
@@ -444,6 +461,7 @@ def answer_receipt_question(
     month_label: str = "",
     ask: Callable[[str], str] | None = None,
     decisions: Any = None,
+    insurance_check: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Answer a one-off spending question, writing no files.
 
@@ -465,6 +483,7 @@ def answer_receipt_question(
         vendor=vendor,
         month_label=month_label,
         questions=collected.questions,
+        insurance_check=insurance_check,
     )
     # The rows this question was about, and only those: the mailbox search
     # casts a wide net, and a person who asked for one vendor's receipt does
@@ -480,6 +499,7 @@ def answer_receipt_rows(
     vendor: Any = "",
     month_label: str = "",
     questions: Any = None,
+    insurance_check: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Answer a spending question from receipt rows that are already collected.
 
@@ -490,6 +510,7 @@ def answer_receipt_rows(
     """
 
     matched = filter_receipt_rows_by_vendor(receipts, vendor)
+    matched = screen_receipt_rows_for_insurance(matched, insurance_check=insurance_check)
     summary = summarize_receipt_rows(matched)
     totals = summary.get("totals") if isinstance(summary.get("totals"), dict) else {}
 
@@ -521,6 +542,14 @@ def answer_receipt_rows(
             missing_word = "receipt" if missing == 1 else "receipts"
             answer += f" Another {missing} {missing_word} named no amount I could read."
 
+    potential_claims = [
+        row for row in matched
+        if int((row.get("insuranceCheck") or {}).get("matchCount") or 0) > 0
+    ]
+    if potential_claims:
+        claim_word = "receipt" if len(potential_claims) == 1 else "receipts"
+        answer += f" I also found {len(potential_claims)} {claim_word} that may match a saved insurance policy."
+
     return {
         "answer": answer,
         "receiptCount": count,
@@ -544,11 +573,99 @@ def answer_receipt_rows(
         # much"; a question about why a month jumped, or what a charge was
         # for, can only be answered from the individual receipts behind it.
         "records": describe_receipt_records(matched, month_label=month_label),
+        "insurancePotentialClaimCount": len(potential_claims),
+        "insuranceChecks": [row["insuranceCheck"] for row in potential_claims],
         # What could not be decided without the owner. The figures above are
         # computed as though these were separate payments, which is the higher
         # of the two answers and the one that can be argued with.
         "questions": list(questions or []),
     }
+
+
+def insurance_expense_from_receipt(row: dict[str, Any]) -> dict[str, Any]:
+    """The event facts a receipt can honestly contribute to a policy check."""
+
+    return {
+        "date": row.get("date"),
+        "amount": row.get("amount"),
+        "currency": row.get("currency"),
+        "category": row.get("category") or row.get("expenseCategory"),
+        "description": row.get("bodyPreview") or row.get("snippet") or row.get("notes"),
+        "vendor": row.get("paidTo") or row.get("vendor"),
+        "subject": row.get("subject"),
+        "receiptReference": row.get("sourceRef") or row.get("messageId") or row.get("id"),
+    }
+
+
+def screen_receipt_rows_for_insurance(
+    rows: list[dict[str, Any]],
+    *,
+    insurance_check: Callable[[dict[str, Any]], dict[str, Any]] | None,
+) -> list[dict[str, Any]]:
+    """Attach an auditable screening result to every documented receipt."""
+
+    if insurance_check is None:
+        return list(rows)
+    screened: list[dict[str, Any]] = []
+    for original in rows:
+        row = dict(original)
+        try:
+            raw_result = insurance_check(insurance_expense_from_receipt(row))
+            result = raw_result if isinstance(raw_result, dict) else {}
+            matches = [entry for entry in (result.get("matches") or []) if isinstance(entry, dict)][:5]
+            row["insuranceCheck"] = {
+                "status": str(result.get("status") or "no_relevant_policy"),
+                "matchCount": len(matches),
+                "matches": matches,
+                "guidance": str(result.get("guidance") or ""),
+            }
+        except Exception:  # noqa: BLE001 - one policy check never loses the receipt itself
+            row["insuranceCheck"] = {
+                "status": "screening_unavailable",
+                "matchCount": 0,
+                "matches": [],
+                "guidance": "The insurance screen could not be completed; retry it before relying on this record.",
+            }
+        screened.append(row)
+    return screened
+
+
+def describe_receipt_insurance_match(row: dict[str, Any]) -> str:
+    """A compact, cautious claim-screen result for exports and answer records."""
+
+    insurance_check = row.get("insuranceCheck") if isinstance(row.get("insuranceCheck"), dict) else {}
+    insurance_matches = [
+        entry for entry in (insurance_check.get("matches") or [])
+        if isinstance(entry, dict)
+    ]
+    if not insurance_matches:
+        return ""
+    match = insurance_matches[0]
+    parts = [
+        f"{_clean_text(match.get('status')).replace('_', ' ')} under {_clean_text(match.get('policyName'))}",
+        _clean_text(match.get("coverageSummary")),
+    ]
+    deductible = _clean_text(match.get("deductibleAmount"))
+    insurance_currency = _clean_text(match.get("currency"))
+    if deductible:
+        parts.append(f"deductible {deductible} {insurance_currency}".strip())
+    if _clean_text(match.get("claimDeadlineEstimate")):
+        parts.append(
+            f"estimated filing date {_clean_text(match.get('claimDeadlineEstimate'))} if the receipt date is the event date"
+        )
+    evidence = match.get("evidence") if isinstance(match.get("evidence"), dict) else {}
+    evidence_pointer = ", ".join(
+        value for value in (
+            _clean_text(evidence.get("section")),
+            f"pages {_clean_text(evidence.get('pages'))}" if _clean_text(evidence.get("pages")) else "",
+        ) if value
+    )
+    parts.append(
+        f"source evidence: {evidence_pointer}"
+        if _clean_text(match.get("evidenceStatus")) == "source_backed" and evidence_pointer
+        else "summary only; original wording still needed"
+    )
+    return "; ".join(part for part in parts if part)
 
 
 def describe_receipt_amounts(rows: list[dict[str, Any]]) -> list[dict[str, str]]:
@@ -715,6 +832,9 @@ def describe_receipt_records(
             "detail": _short_text(row.get("bodyPreview") or row.get("snippet"), RECEIPT_RECORD_DETAIL_CHARS),
             "mailbox": _clean_text(row.get("mailbox")),
         }
+        insurance_summary = describe_receipt_insurance_match(row)
+        if insurance_summary:
+            record["insurancePotentialClaim"] = insurance_summary
         records.append({key: value for key, value in record.items() if value})
     return records
 
@@ -1083,7 +1203,7 @@ def split_receipt_rows(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]]
 
 
 def write_receipts_xlsx(path: Path, rows: list[dict[str, Any]], metadata: dict[str, Any]) -> None:
-    receipt_headers = ["#", "Date", "Vendor", "Subject", "Amount", "Currency", "Status", "Source", "Source ref", "Attachments", "Notes"]
+    receipt_headers = ["#", "Date", "Vendor", "Subject", "Amount", "Currency", "Status", "Insurance screen", "Source", "Source ref", "Attachments", "Notes"]
     receipt_values = [
         [
             row["index"],
@@ -1093,6 +1213,7 @@ def write_receipts_xlsx(path: Path, rows: list[dict[str, Any]], metadata: dict[s
             row["amount"],
             row["currency"],
             row["status"],
+            describe_receipt_insurance_match(row),
             row["source"],
             row["sourceRef"],
             _format_attachment_list(row),
@@ -1107,6 +1228,8 @@ def write_receipts_xlsx(path: Path, rows: list[dict[str, Any]], metadata: dict[s
         ["Candidate receipts", str(metadata.get("receiptCount") or 0)],
         ["Needs review", str(metadata.get("reviewCount") or 0)],
         ["Not counted as receipts", str(metadata.get("skippedCount") or 0)],
+        ["Insurance checks run", str(metadata.get("insuranceScreenedCount") or 0)],
+        ["Potential insurance claims", str(metadata.get("insurancePotentialClaimCount") or 0)],
     ]
     for currency, total in _currency_totals(rows).items():
         summary_values.append([f"Total {currency}", f"{total:.2f}"])
@@ -1117,7 +1240,7 @@ def write_receipts_xlsx(path: Path, rows: list[dict[str, Any]], metadata: dict[s
         archive.writestr("xl/workbook.xml", _xlsx_workbook())
         archive.writestr("xl/_rels/workbook.xml.rels", _xlsx_workbook_relationships())
         archive.writestr("xl/styles.xml", _xlsx_styles())
-        archive.writestr("xl/worksheets/sheet1.xml", _xlsx_sheet([receipt_headers, *receipt_values], widths=[6, 24, 22, 44, 14, 12, 16, 30, 22, 34, 42]))
+        archive.writestr("xl/worksheets/sheet1.xml", _xlsx_sheet([receipt_headers, *receipt_values], widths=[6, 24, 22, 44, 14, 12, 16, 58, 30, 22, 34, 42]))
         archive.writestr("xl/worksheets/sheet2.xml", _xlsx_sheet([["Metric", "Value"], *summary_values], widths=[24, 70]))
 
 
@@ -1278,6 +1401,15 @@ def write_receipts_pdf(path: Path, rows: list[dict[str, Any]], metadata: dict[st
         ]
         for label, value in details:
             story.append(Paragraph(_pdf_escape(f"{label}: {value or 'Not available'}"), body_style))
+        insurance_summary = describe_receipt_insurance_match(row)
+        if insurance_summary:
+            story.append(Spacer(1, 6))
+            story.append(Paragraph("Potential insurance claim", heading_style))
+            story.append(Paragraph(_pdf_escape(insurance_summary), body_style))
+            story.append(Paragraph(
+                "This is a screening result, not a coverage decision. Check the cited wording, event facts, conditions and exclusions before filing.",
+                small_style,
+            ))
         story.append(Spacer(1, 10))
         story.append(Paragraph("From the email", heading_style))
         story.append(Paragraph(
@@ -1361,6 +1493,7 @@ def _receipt_summary_story(
     review_count = int(metadata.get("reviewCount") or 0)
     vendor_count = len(summary.get("vendorCounts") or {})
     missing_amounts = int(summary.get("missingAmountCount") or 0)
+    potential_claim_count = int(metadata.get("insurancePotentialClaimCount") or 0)
 
     page_title_style = ParagraphStyle(
         "ReceiptSummaryTitle",
@@ -1419,6 +1552,17 @@ def _receipt_summary_story(
     card_table.setStyle(TableStyle(card_style))
     story.append(card_table)
     story.append(Spacer(1, 10))
+    if potential_claim_count:
+        claim_word = "receipt" if potential_claim_count == 1 else "receipts"
+        story.append(Paragraph("Potential insurance claims", styles["heading"]))
+        story.append(Paragraph(
+            _pdf_escape(
+                f"{potential_claim_count} {claim_word} may match a saved policy. Each receipt page names the policy, "
+                "deductible, estimated filing date and evidence available. These are screening results, not coverage decisions."
+            ),
+            styles["body"],
+        ))
+        story.append(Spacer(1, 8))
 
     # Who we paid, as a share of the month.
     money_label = f" ({currency})" if currency else ""
@@ -1717,6 +1861,7 @@ def _write_basic_receipts_pdf(path: Path, rows: list[dict[str, Any]], metadata: 
         f"Receipts found: {metadata.get('receiptCount') or 0}",
         f"Vendors paid: {len(summary.get('vendorCounts') or {})}",
         f"Need review: {metadata.get('reviewCount') or 0}",
+        f"Potential insurance claims: {metadata.get('insurancePotentialClaimCount') or 0}",
     ]
     if previous_label:
         summary_page.append(_spend_headline(total, previous_total, currency, month_label, previous_label))
@@ -1747,7 +1892,7 @@ def _write_basic_receipts_pdf(path: Path, rows: list[dict[str, Any]], metadata: 
     pages.append(summary_page)
 
     for row in rows:
-        pages.append([
+        receipt_page = [
             f"Receipt {row['index']}: {row['vendor']}",
             row["subject"],
             f"Date: {_format_receipt_date(row['date']) or 'Not available'}",
@@ -1758,9 +1903,20 @@ def _write_basic_receipts_pdf(path: Path, rows: list[dict[str, Any]], metadata: 
             "",
             "Source preview",
             row.get("bodyPreview") or row["snippet"] or "No email text was available.",
+        ]
+        insurance_summary = describe_receipt_insurance_match(row)
+        if insurance_summary:
+            receipt_page.extend([
+                "",
+                "Potential insurance claim",
+                insurance_summary,
+                "Screening result only; check the cited wording, event facts, conditions and exclusions before filing.",
+            ])
+        receipt_page.extend([
             "",
             _format_attachment_list(row) or "No receipt image attachment was available. The source message is recorded for review.",
         ])
+        pages.append(receipt_page)
 
     _write_simple_pdf(path, pages)
     # This writer lays out the cover, the summary, then one page per receipt, so

@@ -94,6 +94,26 @@ class DescribeResponseTests(unittest.TestCase):
         described = describe_response("/api/agent/proposals/run", {"proposalType": "gmail", "mode": "answer"}, 200, {"ok": False, "error": "gmail_not_connected"}, latency_ms=40)
         self.assertEqual(described["tool_call"], {"name": "gmail:answer", "ok": False, "code": "gmail_not_connected", "ms": 40})
 
+    def test_a_lookup_run_keeps_provider_diagnostics_for_the_admin_turn(self) -> None:
+        described = describe_response(
+            "/api/agent/proposals/run",
+            {"proposalType": "custom"},
+            409,
+            {
+                "ok": False,
+                "error": "gmail_authorization_failed",
+                "skippedMailboxes": [{
+                    "code": "gmail_authorization_failed",
+                    "providerCode": "invalid_grant",
+                    "providerSubtype": "invalid_rapt",
+                }],
+            },
+        )
+        self.assertEqual(
+            described["tool_call"]["detail"],
+            "gmail_authorization_failed:invalid_grant:invalid_rapt",
+        )
+
     def test_a_composer_that_failed_counts_as_a_fallback(self) -> None:
         described = describe_response("/api/agent/answer/compose", {}, 503, {"ok": False, "error": "answer_unavailable"})
         self.assertTrue(described["fallback_used"])

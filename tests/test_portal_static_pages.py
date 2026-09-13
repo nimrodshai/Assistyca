@@ -176,6 +176,11 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn("Here is what I found in the rest of your mail", script)
         self.assertIn("const skippedNote = describeAgentAnswerSkippedMailboxes(results);", script)
 
+    def test_admin_turns_show_the_provider_failure_detail(self) -> None:
+        script = (self.root / "portal" / "app.js").read_text(encoding="utf-8")
+
+        self.assertIn("const diagnostic = call.detail || status;", script)
+
     def test_the_chat_is_told_about_every_mailbox_not_only_gmail(self) -> None:
         # The chat answered "I don't see Outlook connected" about a run that
         # had just read Outlook, because only Gmail was ever described to it.
