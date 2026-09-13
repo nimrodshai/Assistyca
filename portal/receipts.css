@@ -718,6 +718,12 @@ body {
   background: rgba(10, 16, 22, 0.45);
   backdrop-filter: blur(10px) saturate(120%);
   -webkit-backdrop-filter: blur(10px) saturate(120%);
+  opacity: 0;
+  transition: opacity 220ms ease;
+}
+
+.sheet.is-open {
+  opacity: 1;
 }
 
 .sheet-panel {
@@ -729,6 +735,27 @@ body {
   border-radius: var(--radius-lg);
   background: var(--surface);
   box-shadow: var(--shadow);
+  opacity: 0;
+  transform: translateY(18px) scale(0.96);
+  transition: opacity 200ms ease, transform 280ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.sheet.is-open .sheet-panel {
+  opacity: 1;
+  transform: none;
+}
+
+.sheet.is-closing .sheet-panel {
+  transform: translateY(10px) scale(0.98);
+  transition: opacity 160ms ease, transform 180ms ease-in;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sheet,
+  .sheet-panel,
+  .sheet.is-closing .sheet-panel {
+    transition: none;
+  }
 }
 
 .sheet-panel h2 {
