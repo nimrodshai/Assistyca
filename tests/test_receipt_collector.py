@@ -12,11 +12,25 @@ from packages.infrastructure.receipt_collector import build_receipt_spend_view
 from packages.infrastructure.receipt_collector import create_receipt_bundle
 from packages.infrastructure.receipt_collector import extract_receipt_rows
 from packages.infrastructure.receipt_collector import filter_receipt_rows_by_vendor
+from packages.infrastructure.receipt_collector import looks_like_receipt_candidate
 from packages.infrastructure.receipt_collector import normalize_receipt_output_folder
 from packages.infrastructure.receipt_collector import split_receipt_rows
 from packages.infrastructure.receipt_collector import answer_receipt_question
 from packages.infrastructure.receipt_collector import describe_receipt_sources
 from packages.infrastructure.receipt_collector import summarize_receipt_rows
+
+
+class ReceiptCandidateTests(unittest.TestCase):
+    def test_receipt_words_amounts_and_attached_invoice_names_are_candidates(self) -> None:
+        self.assertTrue(looks_like_receipt_candidate({"subject": "Your receipt"}))
+        self.assertTrue(looks_like_receipt_candidate({"bodyText": "We charged your card $25.00"}))
+        self.assertTrue(looks_like_receipt_candidate({"attachmentNames": ["invoice-4411.pdf"]}))
+
+    def test_an_ordinary_new_letter_never_reaches_the_receipt_judge(self) -> None:
+        self.assertFalse(looks_like_receipt_candidate({
+            "subject": "Kitchen quote",
+            "bodyText": "Could you send the drawings by Friday?",
+        }))
 
 
 class ReceiptCollectorExportTests(unittest.TestCase):

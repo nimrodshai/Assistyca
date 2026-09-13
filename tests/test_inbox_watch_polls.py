@@ -119,7 +119,9 @@ class FakeMailbox:
         self.changes: list[str] = []
         self.messages: dict[str, dict] = {}
         self.reset_next = False
+        self.repeat_changes = False
         self.calls: list[str] = []
+        self.saved_attachments: dict[str, list[dict]] = {}
 
     def read_change_cursor(self, access_token: str) -> str:
         self.calls.append("cursor")
@@ -130,7 +132,9 @@ class FakeMailbox:
         if self.reset_next:
             self.reset_next = False
             return {"messageIds": [], "cursor": "", "reset": True}
-        ids, self.changes = list(self.changes), []
+        ids = list(self.changes)
+        if not self.repeat_changes:
+            self.changes = []
         self.cursor = f"h-{int(self.cursor.split('-')[1]) + 1}"
         return {"messageIds": ids, "cursor": self.cursor, "reset": False}
 
@@ -143,6 +147,18 @@ class FakeMailbox:
         self.calls.append(f"unread:{message_id}")
         message = self.messages.get(message_id)
         return None if message is None else bool(message.get("unread"))
+
+    def save_message_attachments(
+        self,
+        access_token: str,
+        *,
+        message_id: str,
+        output_dir: Path | str,
+        url_prefix: str = "",
+        filename_prefix: str = "",
+    ) -> list[dict]:
+        self.calls.append(f"attachments:{message_id}")
+        return [dict(entry) for entry in self.saved_attachments.get(message_id, [])]
 
 
 class PollEndpointTests(unittest.TestCase):
@@ -166,7 +182,9 @@ class PollEndpointTests(unittest.TestCase):
         self.session_token = str((result or {}).get("token") or "")
         self.mailbox = FakeMailbox()
         self.asks: list[str] = []
+        self.receipt_asks: list[str] = []
         self.reads: dict[str, dict] = {}
+        self.receipt_reads: dict[str, dict | None] = {}
 
         def readers(_handler, session, *, token_cache=None):
             records = [{"id": "conn-1", "accountAddress": "owner@example.com", "secretFingerprint": "fp-1"}]
@@ -174,6 +192,17 @@ class PollEndpointTests(unittest.TestCase):
 
         def prompt_ask(_handler, **kwargs):
             def ask(prompt: str) -> str:
+                if kwargs.get("tool_name") == "portal_receipt_judge":
+                    self.receipt_asks.append(prompt)
+                    verdicts = []
+                    for candidate in json.loads(prompt.split("CONTEXT\n", 1)[1])["messages"]:
+                        verdict = self.receipt_reads.get(
+                            candidate.get("subject", ""),
+                            {"isReceipt": False, "reason": "not a receipt", "confidence": "high"},
+                        )
+                        if verdict is not None:
+                            verdicts.append({"ref": candidate["ref"], **verdict})
+                    return json.dumps({"verdicts": verdicts})
                 self.asks.append(prompt)
                 reads = []
                 for candidate in json.loads(prompt.split("CONTEXT\n", 1)[1])["messages"]:
@@ -265,6 +294,116 @@ class PollEndpointTests(unittest.TestCase):
         self.assertEqual(self.database.list_inbox_watch_messages(user_id=self.user_id, statuses=("notified",))[0]["messageId"], "m-letter")
         self.assertEqual(self.database.list_held_inbox_watch_messages(user_id=self.user_id), [])
 
+    def test_a_new_receipt_is_fully_mapped_to_the_manager_before_alert_filters(self) -> None:
+        self._poll()
+        subject = "Invoice 4411 paid"
+        self.mailbox.messages = {
+            "m-receipt": {
+                "id": "m-receipt",
+                "threadId": "t-receipt",
+                "from": "Stripe <receipts@stripe.com>",
+                "subject": subject,
+                "date": "Thu, 10 Sep 2026 08:30:00 +0000",
+                "receivedAt": datetime(2026, 9, 10, 8, 30, tzinfo=timezone.utc).isoformat(),
+                "snippet": "Payment received for Render.",
+                "bodyText": "Payment received for Render. Total charged: $25.00",
+                "attachmentNames": ["invoice-4411.pdf"],
+                "labels": ["INBOX", "UNREAD"],
+                "unread": True,
+                # Receipt delivery can carry bulk headers; that should keep it
+                # out of urgent alerts, not out of Receipts Manager.
+                "bulk": True,
+            }
+        }
+        self.receipt_reads[subject] = {
+            "isReceipt": True,
+            "paidTo": "Render",
+            "reason": "a completed card payment",
+            "confidence": "high",
+        }
+        self.mailbox.saved_attachments["m-receipt"] = [{
+            "filename": "invoice-4411.pdf",
+            "mimeType": "application/pdf",
+            "size": 1200,
+            "status": "saved",
+            "url": "/output/agent_receipts/owner/Receipt%20manager/2026-09/invoice-4411.pdf",
+        }]
+        self.mailbox.changes = ["m-receipt"]
+
+        result = self._poll()
+        self.assertEqual(
+            (
+                result["receiptCandidates"], result["receiptsJudged"], result["receiptsStored"],
+                result["receiptsAdded"], result["receiptsUnsure"], result["receiptFilesSaved"],
+            ),
+            (1, 1, 1, 1, 0, 1),
+        )
+        self.assertEqual((result["read"], result["skipped"], result["notified"]), (0, 1, 0))
+        self.assertEqual(len(self.receipt_asks), 1)
+        self.assertEqual(self.asks, [])
+        record = self.database.find_account_receipt_by_message(
+            user_id=self.user_id,
+            mailbox="owner@example.com",
+            message_id="m-receipt",
+        )
+        self.assertIsNotNone(record)
+        self.assertEqual(
+            (
+                record["status"], record["kind"], record["vendor"], record["paidTo"],
+                record["amount"], record["currency"], record["receiptDate"], record["mailbox"],
+            ),
+            ("confirmed", "invoice", "Stripe", "Render", "25.00", "USD", "2026-09-10", "owner@example.com"),
+        )
+        self.assertEqual(record["subject"], subject)
+        self.assertEqual(record["reason"], "a completed card payment")
+        self.assertIn("Payment received for Render", record["snippet"])
+        self.assertEqual(record["attachments"][0]["filename"], "invoice-4411.pdf")
+        self.assertEqual(self.database.count_receipt_mail_reads(user_id=self.user_id), 1)
+
+        # Provider delta feeds may repeat an id. The inbox ledger and the
+        # mailbox-aware manager key make that a no-op, including model cost.
+        self.mailbox.changes = ["m-receipt"]
+        again = self._poll()
+        self.assertEqual((again["new"], again["receiptsAdded"]), (0, 0))
+        self.assertEqual(len(self.receipt_asks), 1)
+        self.assertEqual(len(self.database.list_account_receipts(user_id=self.user_id)), 1)
+
+    def test_a_receipt_candidate_is_kept_as_unsure_when_the_judge_cannot_answer(self) -> None:
+        self._poll()
+        subject = "Payment confirmation"
+        self.mailbox.messages = {
+            "m-unsure": {
+                "id": "m-unsure",
+                "threadId": "t-unsure",
+                "from": "Shop <billing@shop.com>",
+                "subject": subject,
+                "date": "Thu, 10 Sep 2026 09:00:00 +0000",
+                "receivedAt": datetime(2026, 9, 10, 9, 0, tzinfo=timezone.utc).isoformat(),
+                "bodyText": "Total charged: $18.50",
+                "attachmentNames": [],
+                "labels": ["INBOX"],
+                "unread": False,
+                "bulk": True,
+            }
+        }
+        self.receipt_reads[subject] = None
+        self.mailbox.changes = ["m-unsure"]
+
+        result = self._poll()
+        self.assertEqual(
+            (result["receiptCandidates"], result["receiptsJudged"], result["receiptsAdded"], result["receiptsUnsure"]),
+            (1, 0, 1, 1),
+        )
+        record = self.database.find_account_receipt_by_message(
+            user_id=self.user_id,
+            mailbox="owner@example.com",
+            message_id="m-unsure",
+        )
+        self.assertEqual(record["status"], "unsure")
+        self.assertIn("could not tell automatically", record["reason"])
+        # No verdict is ledgered, so a later explicit receipt search retries it.
+        self.assertEqual(self.database.count_receipt_mail_reads(user_id=self.user_id), 0)
+
     def test_a_message_the_person_opened_is_let_go_quietly(self) -> None:
         self._poll()
         received = (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()
@@ -301,6 +440,47 @@ class PollEndpointTests(unittest.TestCase):
         stored = self.database.get_inbox_watch_cursor(user_id=self.user_id, connection_id="conn-1")
         self.assertEqual(stored["cursor"], "h-9")
         self.assertIn("started again", stored["lastError"])
+
+    def test_a_burst_larger_than_one_poll_is_drained_before_the_cursor_moves(self) -> None:
+        self._poll()
+        ids = [f"m-{index:02d}" for index in range(31)]
+        received = datetime.now(timezone.utc).isoformat()
+        self.mailbox.messages = {
+            message_id: {
+                "id": message_id,
+                "threadId": f"t-{message_id}",
+                "from": "Dana <dana@client.co.il>",
+                "subject": f"Ordinary letter {message_id}",
+                "bodyText": "Just keeping you posted.",
+                "labels": ["INBOX"],
+                "unread": False,
+                "bulk": False,
+                "receivedAt": received,
+            }
+            for message_id in ids
+        }
+        # Delta/history returns the same window while the stored cursor is
+        # held. Known message ids let the next poll take the next slice.
+        self.mailbox.changes = ids
+        self.mailbox.repeat_changes = True
+
+        first = self._poll()
+        self.assertEqual((first["new"], first["backlog"]), (30, 1))
+        self.assertEqual(
+            self.database.get_inbox_watch_cursor(user_id=self.user_id, connection_id="conn-1")["cursor"],
+            "h-1",
+        )
+
+        second = self._poll()
+        self.assertEqual((second["new"], second["backlog"]), (1, 0))
+        self.assertNotEqual(
+            self.database.get_inbox_watch_cursor(user_id=self.user_id, connection_id="conn-1")["cursor"],
+            "h-1",
+        )
+        self.assertEqual(
+            len(self.database.list_inbox_watch_messages(user_id=self.user_id, statuses=("skipped",), limit=50)),
+            31,
+        )
 
 
 if __name__ == "__main__":

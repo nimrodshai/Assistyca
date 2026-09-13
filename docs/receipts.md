@@ -28,10 +28,21 @@ which calls `receipt_manager.store_collected_receipts`):
   never part of a total.
 - A message the judge ruled out with confidence, and a second email about a
   payment already counted, are not kept.
-- The email is the key (`account_receipts` has one row per user and
-  message id), so a search run twice never keeps a receipt twice. A later
+- The email is the key (`account_receipts` has one row per user, source
+  mailbox and message id), so a search or inbox poll run twice never keeps a
+  receipt twice, while equal opaque ids from two connected mailboxes remain
+  two receipts. A later
   run refreshes what it read - subject, file - but never what the owner
   decided: their yes or no, the kind they chose, an amount they typed.
+
+The inbox watch uses the same path for new mail as it arrives. It first keeps
+only messages with receipt clues, then uses the existing receipt judge,
+collector, ledger and manager store. This means a receipt sent from a bulk or
+machine address is still filed even though that same message is correctly
+excluded from urgent-mail alerts. Gmail supplies attachment names from the
+full message already fetched; Outlook reads the small attachment metadata
+listing when Graph says a message has files. Both providers therefore map the
+same source fields and fetch the vendor's receipt file into the manager.
 
 ## What a search reads twice, and what it does not
 

@@ -143,6 +143,35 @@ class StoreTests(unittest.TestCase):
         self.assertEqual((second["stored"], second["added"]), (2, 0))
         self.assertEqual(len(self.database.list_account_receipts(user_id=self.user_id)), 2)
 
+    def test_equal_provider_ids_in_two_mailboxes_remain_two_receipts(self) -> None:
+        gmail = message("opaque-1", verdict={"isReceipt": True})
+        outlook = message(
+            "opaque-1",
+            sender="Bezeq <billing@bezeq.co.il>",
+            subject="Invoice paid",
+            body="Total charged ILS 100.00",
+            verdict={"isReceipt": True},
+        )
+        outlook["mailbox"] = "owner@outlook.com"
+        rows, skipped = self._rows(gmail, outlook)
+        outcome = receipt_manager.store_collected_receipts(
+            self.database,
+            user_id=self.user_id,
+            receipts=rows,
+            skipped=skipped,
+        )
+        self.assertEqual((outcome["stored"], outcome["added"]), (2, 2))
+        kept = self.database.list_account_receipts(user_id=self.user_id)
+        self.assertEqual({record["mailbox"] for record in kept}, {"owner@gmail.com", "owner@outlook.com"})
+        self.assertEqual(
+            self.database.find_account_receipt_by_message(
+                user_id=self.user_id,
+                mailbox="owner@outlook.com",
+                message_id="opaque-1",
+            )["vendor"],
+            "Bezeq",
+        )
+
     def test_the_owners_ruling_outlives_the_next_search(self) -> None:
         rows, skipped = self._rows(message("m1", verdict={"isReceipt": False, "confidence": "low"}))
         stored = receipt_manager.store_collected_receipts(self.database, user_id=self.user_id, receipts=rows, skipped=skipped)

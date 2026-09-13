@@ -983,6 +983,33 @@ def extract_receipt_rows(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return rows
 
 
+def looks_like_receipt_candidate(item: Any) -> bool:
+    """Whether a newly arrived message is worth putting to the receipt judge.
+
+    The inbox watch sees every message, unlike a receipt search whose provider
+    query already narrowed the field. Keep this first pass mechanical and
+    deliberately broad: a receipt word in the message or an attached filename,
+    or any amount carrying a currency marker, is enough. The model still makes
+    the decision, so an advert quoting a price is only a candidate, never a
+    receipt by itself.
+    """
+
+    source = item if isinstance(item, dict) else {}
+    names = source.get("attachmentNames") if isinstance(source.get("attachmentNames"), list) else []
+    text = " ".join(
+        part
+        for part in (
+            _clean_text(source.get("subject")),
+            _clean_text(html.unescape(str(source.get("snippet") or ""))),
+            _clean_text(source.get("bodyText")),
+            " ".join(_clean_text(name) for name in names if _clean_text(name)),
+        )
+        if part
+    )
+    amount, _currency = _extract_amount(text)
+    return bool(amount or _RECEIPT_EVIDENCE_RE.search(text))
+
+
 @dataclass(frozen=True)
 class ReceiptRows:
     """The rows a total is built from, and what is still open about them."""

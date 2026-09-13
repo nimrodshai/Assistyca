@@ -320,6 +320,10 @@ class GmailDigestRunner:
             "receivedAt": _internal_date(message),
             "snippet": str(message.get("snippet") or "").strip(),
             "bodyText": _extract_body_text(message),
+            # The full message is already in hand. Carry the vendor's own
+            # filenames into the receipt judgement and manager mapping at no
+            # extra provider cost.
+            "attachmentNames": list_attachment_filenames(message),
             "labels": labels,
             "unread": "UNREAD" in labels,
             "bulk": _announces_bulk(message),

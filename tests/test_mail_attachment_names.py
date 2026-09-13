@@ -11,10 +11,13 @@ from __future__ import annotations
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from packages.infrastructure.gmail_summary import GmailDigestRunner
 from packages.infrastructure.gmail_summary import list_attachment_filenames
+from packages.infrastructure.outlook_summary import OutlookDigestRunner
 from packages.infrastructure.receipt_judge import describe_attached_files
 
 
@@ -61,6 +64,56 @@ class GmailAttachmentNameTests(unittest.TestCase):
 
     def test_a_message_that_was_never_opened_names_nothing_rather_than_guessing(self) -> None:
         self.assertEqual(list_attachment_filenames({}), [])
+
+    def test_the_inbox_watch_message_carries_the_attachment_names(self) -> None:
+        runner = GmailDigestRunner()
+        raw = {
+            "id": "m-1",
+            "threadId": "t-1",
+            "labelIds": ["INBOX", "UNREAD"],
+            "payload": {
+                "headers": [
+                    {"name": "From", "value": "Render <billing@render.com>"},
+                    {"name": "Subject", "value": "Your invoice"},
+                    {"name": "Date", "value": "Fri, 14 Aug 2026 09:00:00 +0000"},
+                ],
+                "parts": [part("invoice-4411.pdf")],
+            },
+        }
+        with mock.patch.object(runner, "_get_json", return_value=raw):
+            item = runner.fetch_message("token", "m-1")
+        self.assertEqual((item or {}).get("attachmentNames"), ["invoice-4411.pdf"])
+
+
+class OutlookAttachmentNameTests(unittest.TestCase):
+    def test_the_inbox_watch_reads_document_names_and_ignores_inline_pictures(self) -> None:
+        runner = OutlookDigestRunner()
+        message = {
+            "id": "m-1",
+            "conversationId": "t-1",
+            "subject": "Your paperwork",
+            "from": {"emailAddress": {"name": "Render", "address": "billing@render.com"}},
+            "receivedDateTime": "2026-08-14T09:00:00Z",
+            "bodyPreview": "Payment received",
+            "body": {"contentType": "text", "content": "Payment received. Total $25.00"},
+            "hasAttachments": True,
+            "isRead": False,
+            "isDraft": False,
+            "internetMessageHeaders": [],
+        }
+        attachments = {
+            "value": [
+                {"id": "a-1", "name": "invoice-4411.pdf", "contentType": "application/pdf", "size": 1200},
+                {"id": "a-2", "name": "logo.png", "contentType": "image/png", "size": 100, "isInline": True},
+            ]
+        }
+
+        def get_json(url: str, _token: str, **_kwargs) -> dict:
+            return attachments if "/attachments?" in url else message
+
+        with mock.patch.object(runner, "_get_json", side_effect=get_json):
+            item = runner.fetch_message("token", "m-1")
+        self.assertEqual((item or {}).get("attachmentNames"), ["invoice-4411.pdf"])
 
 
 class TheNamesReachTheJudgementTests(unittest.TestCase):

@@ -198,6 +198,7 @@ from packages.infrastructure.receipt_grouping import group_receipt_records
 from packages.infrastructure.receipt_collector import convert_receipt_amounts
 from packages.infrastructure.receipt_collector import create_receipt_bundle
 from packages.infrastructure.receipt_collector import format_receipt_month_label
+from packages.infrastructure.receipt_collector import looks_like_receipt_candidate
 from packages.infrastructure.receipt_collector import merge_receipt_amount_entries
 from packages.infrastructure.receipt_collector import normalize_receipt_output_folder
 from packages.infrastructure.receipt_collector import resolve_receipt_bundle_folder
@@ -9117,7 +9118,12 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             max_output_tokens=inbox_watch.READ_MAX_OUTPUT_TOKENS,
             failure_label="Inbox watch reading",
         )
-        counts = {"new": 0, "read": 0, "held": 0, "skipped": 0, "notified": 0, "released": 0, "deferred": 0, "started": 0}
+        counts = {
+            "new": 0, "read": 0, "held": 0, "skipped": 0, "notified": 0,
+            "released": 0, "deferred": 0, "started": 0, "backlog": 0,
+            "receiptCandidates": 0, "receiptsJudged": 0, "receiptsStored": 0,
+            "receiptsAdded": 0, "receiptsUnsure": 0, "receiptFilesSaved": 0,
+        }
         failures: list[dict[str, str]] = []
         readers_by_mailbox: dict[str, tuple[Any, str]] = {}
         hold = timedelta(minutes=config.hold_minutes)
@@ -9149,13 +9155,37 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                     continue
                 ids = [str(value) for value in (changes.get("messageIds") or [])]
                 known = self.database.known_inbox_watch_message_ids(user_id=user_id, mailbox=mailbox_name, message_ids=ids)
-                fresh_ids = [value for value in ids if value not in known][: inbox_watch.MAX_MESSAGES_PER_POLL]
+                pending_ids = [value for value in ids if value not in known]
+                fresh_ids = pending_ids[: inbox_watch.MAX_MESSAGES_PER_POLL]
+                backlog = max(0, len(pending_ids) - len(fresh_ids))
+                counts["backlog"] += backlog
                 items: list[dict[str, Any]] = []
                 for message_id in fresh_ids:
                     item = runner.fetch_message(access_token, message_id)
                     if item is not None:
                         items.append({**item, "mailbox": mailbox_name})
+                    else:
+                        # A deleted id must still become known. Otherwise a
+                        # held cursor would retry it forever and never drain
+                        # the new-mail backlog behind it.
+                        counts["skipped"] += 1
+                        self.database.record_inbox_watch_message(
+                            user_id=user_id,
+                            entry={
+                                "mailbox": mailbox_name,
+                                "messageId": message_id,
+                                "status": "skipped",
+                                "reason": "gone",
+                            },
+                        )
                 counts["new"] += len(items)
+                receipt_result = self._keep_inbox_watch_receipts(session, items=items)
+                counts["receiptCandidates"] += int(receipt_result.get("candidates") or 0)
+                counts["receiptsJudged"] += int(receipt_result.get("judged") or 0)
+                counts["receiptsStored"] += int(receipt_result.get("stored") or 0)
+                counts["receiptsAdded"] += int(receipt_result.get("added") or 0)
+                counts["receiptsUnsure"] += int(receipt_result.get("unsure") or 0)
+                counts["receiptFilesSaved"] += int(receipt_result.get("filesSaved") or 0)
                 to_read: list[dict[str, Any]] = []
                 for item in items:
                     reason = inbox_watch.skip_reason(item, owner_addresses=owner_addresses)
@@ -9184,7 +9214,13 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                             self.database.record_inbox_watch_message(user_id=user_id, entry={
                                 **item, "messageId": item["id"], "status": "skipped", "reason": normalize_text(decision.get("reason")), "read": read,
                             })
-                self.database.save_inbox_watch_cursor(user_id=user_id, connection_id=connection_id, mailbox=mailbox_name, cursor=str(changes.get("cursor") or stored["cursor"]))
+                if not backlog:
+                    self.database.save_inbox_watch_cursor(
+                        user_id=user_id,
+                        connection_id=connection_id,
+                        mailbox=mailbox_name,
+                        cursor=str(changes.get("cursor") or stored["cursor"]),
+                    )
             except (GmailAuthorizationError, OutlookAuthorizationError) as exc:
                 INBOX_WATCH_TOKEN_CACHE.forget(connection_id)
                 failures.append({"mailbox": mailbox_name, "message": str(exc)})
@@ -9257,6 +9293,57 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         if counts["new"] or counts["notified"] or failures:
             print(json.dumps({"event": "inbox_watch_poll", "mailboxes": len(records), **counts, "failures": len(failures)}, ensure_ascii=True, sort_keys=True), flush=True)
         return {"ok": True, "mailboxes": len(records), **counts, "failures": failures}
+
+    def _keep_inbox_watch_receipts(self, session: Any, *, items: list[dict[str, Any]]) -> dict[str, Any]:
+        """Judge and keep receipt-like messages found by the inbox poll.
+
+        A provider-side receipt search starts with a broad receipt query. The
+        inbox watch starts with every new message, so a cheap clue check first
+        keeps ordinary correspondence out of the receipt model call. Every
+        candidate then goes through the same judge, collector, ledger and
+        manager mapping as an on-demand search.
+
+        If the judge cannot answer, the candidate is kept as unsure rather
+        than silently lost when the change cursor advances. It is deliberately
+        not written to the judgement ledger, so a later receipt search can
+        try the model again and settle it.
+        """
+
+        candidates = [item for item in items if looks_like_receipt_candidate(item)]
+        if not candidates:
+            return {}
+        ledger = self._mail_read_ledger(session.email)
+        try:
+            judged = self._judge_receipt_items(
+                candidates,
+                billing_email=session.email,
+                ledger=ledger,
+            )
+            judged_count = sum(1 for item in judged if receipt_ledger.has_verdict(item))
+            safe_items = [
+                item
+                if receipt_ledger.has_verdict(item)
+                else {
+                    **item,
+                    "receiptVerdict": {
+                        "isReceipt": False,
+                        "reason": "I could not tell automatically whether this records a payment",
+                        "paidTo": "",
+                        "confidence": "low",
+                    },
+                }
+                for item in judged
+            ]
+            answer = answer_receipt_question(safe_items)
+            stored = self._keep_search_receipts(session, answers=[answer])
+        except Exception as exc:  # One receipt mapping must not stop the inbox cursor or urgent-mail alerts.
+            print(f"Inbox watch could not map receipt candidates: {exc}", flush=True)
+            return {"candidates": len(candidates), "judged": 0}
+        return {
+            "candidates": len(candidates),
+            "judged": judged_count,
+            **stored,
+        }
 
     def _upcoming_calendar_events(self, session: Any, *, zone: ZoneInfo, days: int) -> list[dict[str, Any]]:
         """The next days of the person's chosen calendars as title and day,

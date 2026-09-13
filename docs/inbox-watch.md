@@ -19,8 +19,11 @@ Friday.
    since the last delta link. The first poll only records where the
    mailbox stands, so nothing older than the connection is ever alerted.
    A cursor the provider no longer holds starts again from now and says
-   so on the cursor row. Access tokens are cached for fifty minutes so a
-   poll refreshes them once an hour, not twenty times.
+   so on the cursor row. A burst above the 30-message read ceiling holds the
+   old cursor and drains the remaining ids on later polls; a message that
+   vanished is recorded as gone, so it cannot block that backlog. Access
+   tokens are cached for fifty minutes so a poll refreshes them once an hour,
+   not twenty times.
 3. **Cheap filters first.** Mailings (an unsubscribe header, bulk or
    list precedence, auto-submitted), Gmail's promotions and social tabs,
    the person's own mail, and machine senders such as `no-reply` are
@@ -33,13 +36,22 @@ Friday.
    happens, the deadline, urgency, confidence. Mailbox ids never reach
    the model. Every message the watch looked at is written to
    `inbox_watch_messages`, so nothing is judged or told twice.
-5. **The decision, in code.** Skip when nothing is asked, the model is
+5. **Receipts are kept while the mail is already open.** Before the urgency
+   filters, each new message with a receipt word, receipt-like filename or a
+   currency amount goes through the existing receipt judge. Confirmed items
+   and low-confidence questions are mapped into Receipts Manager with their
+   provider mailbox, message id, vendor, paid-to name, subject, dates, amount,
+   currency, kind, explanation, email preview and attached file. The receipt
+   ledger remembers the verdict, so a later search does not judge it again.
+   A judge outage leaves the candidate as an unsure item for the owner rather
+   than losing it when the mailbox cursor advances.
+6. **The decision, in code.** Skip when nothing is asked, the model is
    unsure, the moment has passed, it is more than seven days out, or the
    calendar already holds an event that day with a matching title. Hold
    everything else for ten minutes; anything happening today skips the
    hold. When the hold runs out the message is checked again: if the
    person opened it themselves it is let go without a word.
-6. **Telling.** Alerts wait through quiet hours (22:00 to 07:00) and are
+7. **Telling.** Alerts wait through quiet hours (22:00 to 07:00) and are
    capped at five a day. Several due at once go as one message. The
    message is a one-off `run_task` scheduled action, so the model writes
    it in the person's language from the exact facts, with the plain

@@ -165,7 +165,7 @@ CREATE INDEX IF NOT EXISTS idx_account_receipts_user_date
 ON account_receipts(user_id, receipt_date DESC, id DESC);
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_account_receipts_message
-ON account_receipts(user_id, message_id) WHERE message_id <> '';
+ON account_receipts(user_id, mailbox, message_id) WHERE message_id <> '';
 """
 
 RECEIPT_MAIL_READS_TABLE_SQL = """
@@ -1359,6 +1359,7 @@ class PortalDatabase:
                 self._ensure_agent_turns_table(conn)
                 self._ensure_account_lists_tables(conn)
                 conn.executescript(ACCOUNT_RECEIPTS_TABLE_SQL)
+                self._migrate_account_receipts_table(conn)
                 conn.executescript(RECEIPT_MAIL_READS_TABLE_SQL)
                 conn.executescript(MAILBOX_FINDINGS_TABLE_SQL)
                 conn.executescript(INBOX_WATCH_TABLE_SQL)
@@ -1385,6 +1386,21 @@ class PortalDatabase:
         """
 
         conn.executescript(AGENT_TURNS_TABLE_SQL)
+
+    @staticmethod
+    def _migrate_account_receipts_table(conn: sqlite3.Connection) -> None:
+        """Key a provider message by the mailbox that owns its opaque id.
+
+        Gmail and Graph ids are only unique inside their own provider/account.
+        The old user/message index could therefore make a receipt arriving in
+        a second connected mailbox overwrite the first one.
+        """
+
+        conn.execute("DROP INDEX IF EXISTS idx_account_receipts_message")
+        conn.execute(
+            "CREATE UNIQUE INDEX idx_account_receipts_message "
+            "ON account_receipts(user_id, mailbox, message_id) WHERE message_id <> ''"
+        )
 
     def _migrate_feature_tables(self, conn: sqlite3.Connection) -> None:
         """Drop the per-client tool access columns. Every client sees every active tool."""
@@ -7195,15 +7211,27 @@ class PortalDatabase:
             ).fetchone()
         return self._receipt_row_to_record(row)
 
-    def find_account_receipt_by_message(self, *, user_id: int, message_id: str) -> dict[str, Any] | None:
+    def find_account_receipt_by_message(
+        self,
+        *,
+        user_id: int,
+        message_id: str,
+        mailbox: str = "",
+    ) -> dict[str, Any] | None:
         key = normalize_text(message_id)
         if not key:
             return None
         with self._connection() as conn:
-            row = conn.execute(
-                "SELECT * FROM account_receipts WHERE user_id = ? AND message_id = ? LIMIT 1",
-                (int(user_id), key),
-            ).fetchone()
+            if normalize_text(mailbox):
+                row = conn.execute(
+                    "SELECT * FROM account_receipts WHERE user_id = ? AND mailbox = ? AND message_id = ? LIMIT 1",
+                    (int(user_id), normalize_text(mailbox), key),
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    "SELECT * FROM account_receipts WHERE user_id = ? AND message_id = ? ORDER BY id ASC LIMIT 1",
+                    (int(user_id), key),
+                ).fetchone()
         return self._receipt_row_to_record(row)
 
     def count_account_receipts(self, *, user_id: int) -> int:
@@ -7247,8 +7275,8 @@ class PortalDatabase:
             existing = None
             if message_id:
                 existing = conn.execute(
-                    "SELECT * FROM account_receipts WHERE user_id = ? AND message_id = ? LIMIT 1",
-                    (int(user_id), message_id),
+                    "SELECT * FROM account_receipts WHERE user_id = ? AND mailbox = ? AND message_id = ? LIMIT 1",
+                    (int(user_id), values["mailbox"], message_id),
                 ).fetchone()
             if existing is None:
                 count = int(conn.execute(

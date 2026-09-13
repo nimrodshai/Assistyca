@@ -34,7 +34,7 @@ GRAPH_INBOX_MESSAGES_API_URL = "https://graph.microsoft.com/v1.0/me/mailFolders/
 GRAPH_INBOX_DELTA_API_URL = "https://graph.microsoft.com/v1.0/me/mailFolders/inbox/messages/delta"
 GRAPH_DELTA_MAX_PAGES = 5
 GRAPH_WATCH_MESSAGE_FIELDS = (
-    "id,conversationId,subject,from,toRecipients,receivedDateTime,bodyPreview,body,isRead,isDraft,internetMessageHeaders"
+    "id,conversationId,subject,from,toRecipients,receivedDateTime,bodyPreview,body,hasAttachments,isRead,isDraft,internetMessageHeaders"
 )
 GRAPH_TIMEOUT_SECONDS = 20
 GRAPH_MAX_DIGEST_MESSAGES = 10
@@ -373,6 +373,7 @@ class OutlookDigestRunner:
         precedence = headers.get("precedence", "").lower()
         auto = headers.get("auto-submitted", "").lower()
         recipients = message.get("toRecipients") if isinstance(message.get("toRecipients"), list) else []
+        has_attachments = bool(message.get("hasAttachments"))
         return {
             "id": str(message.get("id") or message_id).strip(),
             "threadId": str(message.get("conversationId") or "").strip(),
@@ -385,6 +386,11 @@ class OutlookDigestRunner:
             "receivedAt": received.astimezone(timezone.utc).isoformat() if received else "",
             "snippet": str(message.get("bodyPreview") or "").strip(),
             "bodyText": _extract_body_text(message),
+            # Graph does not include attachment names on the message itself.
+            # Fetch the small metadata listing only when it says files exist,
+            # so the receipt judge and manager can distinguish invoice.pdf
+            # from an inline notification with no document behind it.
+            "attachmentNames": self.list_message_attachment_names(token, message_id=message_id) if has_attachments else [],
             "labels": [],
             "unread": not bool(message.get("isRead")),
             "bulk": bool(headers.get("list-unsubscribe")) or precedence in {"bulk", "list", "junk"} or (bool(auto) and auto != "no"),
@@ -583,6 +589,39 @@ class OutlookDigestRunner:
             filename_prefix=filename_prefix,
         )
 
+    def _list_message_attachments(self, access_token: str, *, message_id: str) -> list[dict[str, Any]]:
+        encoded_message_id = urllib_parse.quote(str(message_id or "").strip(), safe="")
+        if not encoded_message_id:
+            return []
+        list_params = urllib_parse.urlencode({
+            "$select": "id,name,contentType,size,isInline",
+            "$top": str(mail_attachments.MAX_RECEIPT_ATTACHMENTS_PER_MESSAGE),
+        })
+        listing = self._get_json(
+            f"{GRAPH_MESSAGES_API_URL}/{encoded_message_id}/attachments?{list_params}",
+            access_token,
+        )
+        raw_attachments = listing.get("value") if isinstance(listing.get("value"), list) else []
+        return [entry for entry in raw_attachments if isinstance(entry, dict)]
+
+    def list_message_attachment_names(self, access_token: str, *, message_id: str) -> list[str]:
+        """Names of the receipt-like files a Graph message carries.
+
+        Inline pictures are part of the email's layout, not paperwork the
+        sender attached. The same file-type gate used by the saver keeps the
+        judgement and the later download in agreement.
+        """
+
+        names: list[str] = []
+        for entry in self._list_message_attachments(access_token, message_id=message_id):
+            if bool(entry.get("isInline")):
+                continue
+            mime_type = str(entry.get("contentType") or "").strip().lower()
+            filename = str(entry.get("name") or "").strip()
+            if mail_attachments.is_receipt_attachment(mime_type, filename):
+                names.append(filename)
+        return names
+
     def _save_receipt_attachments(
         self,
         access_token: str,
@@ -595,21 +634,15 @@ class OutlookDigestRunner:
         if output_dir is None:
             return []
         encoded_message_id = urllib_parse.quote(message_id, safe="")
-        list_params = urllib_parse.urlencode({
-            "$select": "id,name,contentType,size",
-            "$top": str(mail_attachments.MAX_RECEIPT_ATTACHMENTS_PER_MESSAGE),
-        })
-        listing = self._get_json(
-            f"{GRAPH_MESSAGES_API_URL}/{encoded_message_id}/attachments?{list_params}",
-            access_token,
-        )
-        raw_attachments = listing.get("value") if isinstance(listing.get("value"), list) else []
+        raw_attachments = self._list_message_attachments(access_token, message_id=message_id)
 
         attachments: list[dict[str, Any]] = []
         for raw_attachment in raw_attachments:
             if len(attachments) >= mail_attachments.MAX_RECEIPT_ATTACHMENTS_PER_MESSAGE:
                 break
             if not isinstance(raw_attachment, dict):
+                continue
+            if bool(raw_attachment.get("isInline")):
                 continue
             mime_type = str(raw_attachment.get("contentType") or "").strip().lower()
             filename = str(raw_attachment.get("name") or "").strip()
