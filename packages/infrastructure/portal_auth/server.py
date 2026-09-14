@@ -12592,23 +12592,37 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 pass
         return links
 
-    def _send_whatsapp_oauth_page(self, *, ok: bool, message: str) -> None:
+    def _send_whatsapp_oauth_page(self, *, ok: bool, message: str = "", label: str = "") -> None:
         """Where the browser lands after a sign-in that started in WhatsApp.
 
         Not the portal: the person was never there and has no reason to be.
-        One sentence and a way back to the chat.
+        On success it says the one thing the person came to find out and
+        hands them back to the chat, where everything else is said; a page
+        that explains at length only keeps them from the one place the
+        assistant can answer. A failure still has to say what went wrong,
+        because there is nothing to go back to until it is fixed.
         """
 
         number = resolve_assistyca_display_number()
-        back = f'<p><a href="https://wa.me/{number}">Back to WhatsApp</a></p>' if number else "<p>You can go back to WhatsApp.</p>"
-        title = "Connected" if ok else "Not connected"
+        back = (
+            f'<p style="margin-top:1.75rem"><a href="https://wa.me/{number}" '
+            'style="display:inline-block;background:#25d366;color:#fff;text-decoration:none;'
+            'padding:0.75rem 1.5rem;border-radius:999px;font-weight:600">Back to WhatsApp</a></p>'
+            if number
+            else "<p>You can go back to WhatsApp.</p>"
+        )
+        if ok:
+            heading = f"{normalize_text(label)} connected! \U0001f642".lstrip()
+        else:
+            heading = "Not connected"
         safe_message = html.escape(normalize_text(message))
+        body = f"<p>{safe_message}</p>" if safe_message else ""
         self._send_html(
             HTTPStatus.OK,
             "<!doctype html><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
-            f"<title>{title} - Assistyca</title>"
+            f"<title>{html.escape(heading)} - Assistyca</title>"
             "<body style=\"font-family:system-ui,sans-serif;max-width:32rem;margin:15vh auto;padding:0 1.25rem;line-height:1.5\">"
-            f"<h1 style=\"font-size:1.4rem\">{title}</h1><p>{safe_message}</p>{back}</body>",
+            f"<h1 style=\"font-size:1.4rem\">{html.escape(heading)}</h1>{body}{back}</body>",
         )
 
     def _finish_whatsapp_oauth(self, state: dict[str, Any], *, code: str, provider: str) -> None:
@@ -12626,13 +12640,15 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         label = "Google" if provider == "google" else "Microsoft"
         wa_id = normalize_whatsapp_number(state.get("waId"))
 
-        def finish(ok: bool, text: str) -> None:
+        def finish(ok: bool, text: str, *, page: str = "") -> None:
+            # The chat hears the whole thing; the page shows only what the
+            # browser needs, which after a success is nothing but the news.
             if wa_id:
                 try:
                     send_assistyca_text(recipient_wa_id=wa_id, text=text)
                 except Exception as exc:  # noqa: BLE001 - the page still says what happened
                     print(f"WhatsApp sign-in note could not be sent: {exc}", flush=True)
-            self._send_whatsapp_oauth_page(ok=ok, message=text)
+            self._send_whatsapp_oauth_page(ok=ok, message=text if not ok else page, label=label)
 
         if state.get("expired"):
             finish(False, f"That {label} sign-in link had expired. Ask me again and I'll send a fresh one.")
@@ -12723,17 +12739,17 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                         send_assistyca_text(recipient_wa_id=wa_id, text=build_calendar_choice_text(available))
                     except Exception as exc:  # noqa: BLE001
                         print(f"WhatsApp calendar list could not be sent: {exc}", flush=True)
-            self._send_whatsapp_oauth_page(ok=True, message="Connected. Back in WhatsApp, tell me which calendars to read.")
+            self._send_whatsapp_oauth_page(ok=True, label=label, message="One question waiting for you in the chat: which calendars to read.")
             return
 
         # The mailbox is read now, unasked, so the person hears that the
         # silence of the next few minutes is work rather than absence.
         looking = (
-            " I'm looking through the last year of your mail now; if I spot something worth knowing, I'll write in a few minutes."
+            " I'm going through the last year of your mail now; if something needs your attention I'll tell you in a few minutes."
             if mailbox_connected and load_finding_scan_config().enabled
             else ""
         )
-        finish(True, f"{linked or 'Your '}{connected} connected. Ask me anything about your inbox or your schedule.{looking}")
+        finish(True, f"{linked or 'Your '}{connected} connected — ask me anything about your inbox or your schedule.{looking}")
 
     def _build_google_calendar_oauth_state(
         self,
