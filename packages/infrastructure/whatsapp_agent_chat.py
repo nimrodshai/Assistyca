@@ -990,13 +990,14 @@ def held_for_seconds(asked_at: Any) -> float:
     return max(0.0, (datetime.now(timezone.utc) - held).total_seconds())
 
 
-def build_resume_ask(question: Any, *, asked_at: Any = "", opening: str = "") -> str:
-    """The ask that offers a held question back after the sign-in it waited on.
+def build_resume_ask(question: Any, *, asked_at: Any = "", waited_seconds: float | None = None, opening: str = "") -> str:
+    """The assembled ask, for when no model can write one.
 
     Their words, quoted, because a tidied-up summary is a worse reminder than
     the thing they typed. How long it waited changes what is asked: a moment
     ago it is whether to go ahead, an hour later it is whether they still care
-    about the answer at all.
+    about the answer at all. The wait comes either from when the question was
+    held or, for a caller that has already worked it out, in seconds.
     """
 
     held = normalize_text(question)
@@ -1004,9 +1005,95 @@ def build_resume_ask(question: Any, *, asked_at: Any = "", opening: str = "") ->
         return ""
     lead = normalize_text(opening)
     lead = f"{lead} " if lead else ""
-    if held_for_seconds(asked_at) >= RESUME_ASK_STALE_AFTER_SECONDS:
+    waited = held_for_seconds(asked_at) if waited_seconds is None else max(0.0, float(waited_seconds or 0.0))
+    if waited >= RESUME_ASK_STALE_AFTER_SECONDS:
         return f'{lead}A while back you asked: "{held}" - do you still want that answer?'
     return f'{lead}You asked: "{held}" - want me to pull that up now?'
+
+
+# What the ask may not be: a link to open, a word about the machinery, or a
+# statement instead of a question. It has to ask, because a yes is what runs
+# the question and nothing has run yet.
+RESUME_ASK_MAX_REPLY_LENGTH = 600
+RESUME_ASK_MAX_OUTPUT_TOKENS = 600
+_RESUME_ASK_FORBIDDEN_WORDS = ("openai", "gpt", "llm", "api", "endpoint", "oauth", "json", "server log")
+
+RESUME_ASK_INSTRUCTIONS = (
+    "You are Assistyca, the assistant for this account, writing one short WhatsApp message. The person "
+    "asked you something, it needed an account they had not finished signing in to, and they have just "
+    "this second finished signing in. Say what is connected now, give them their own question back so they "
+    "know which one you mean, and ask whether to go ahead with it. Ask - never assume, and never say you "
+    "have looked, read, found, worked out or totalled anything, because nothing has run yet: their answer "
+    "is what starts it. Keep it warm and brief, do not apologise, do not explain how any of it works, and "
+    "never mention providers, models, servers or sign-ins beyond the fact that they are connected. "
+    "Plain text only: no links, no markdown, no headings, three sentences at most."
+)
+
+
+def build_resume_ask_prompt(
+    *,
+    question: Any,
+    connected: str,
+    waited_seconds: float = 0.0,
+    phone_just_linked: bool = False,
+    also_happening: str = "",
+    conversation: list[dict[str, str]] | None = None,
+) -> str:
+    """The report the ask is written from: everything here is something code knows."""
+
+    waited = max(0.0, float(waited_seconds or 0.0))
+    context = {
+        "connected": " ".join(str(connected or "").split())[:120],
+        "theirQuestion": normalize_text(question)[:400],
+        "waitedMinutes": int(waited // 60),
+        "theyMayHaveMovedOn": waited >= RESUME_ASK_STALE_AFTER_SECONDS,
+        "phoneJustLinked": bool(phone_just_linked),
+        "alsoHappening": " ".join(str(also_happening or "").split())[:300],
+        "recentConversation": [
+            {"role": str(item.get("role") or ""), "text": normalize_text(item.get("text"))[:400]}
+            for item in (conversation or [])[-4:]
+            if isinstance(item, dict)
+        ],
+    }
+    return (
+        "Write the message for CONTEXT.\n"
+        "connected is what has just been connected, in the words to use for it. theirQuestion is what they "
+        "asked before the sign-in got in the way, in their own words: quote it or name it closely enough "
+        "that they know which one you mean, and never answer it here. waitedMinutes is how long it has been "
+        "waiting. theyMayHaveMovedOn true means it has been sitting long enough that they might not want it "
+        "any more, so ask whether they still want that answer at all rather than whether to go ahead now; "
+        "false means it is still the thing they were in the middle of, so simply offer to get on with it. "
+        "phoneJustLinked true means this sign-in also tied this phone to their account, worth a clause and "
+        "no more. alsoHappening, when it is not empty, is already under way and they should hear it: say it "
+        "in passing, never as the point of the message.\n"
+        "A yes from them runs their question and a no drops it, so the message has to be answerable in one "
+        "word. Read recentConversation so this follows on from it rather than starting again.\n\n"
+        f"CONTEXT\n{json.dumps(context, ensure_ascii=False)}"
+    )
+
+
+def guard_resume_ask(text: Any, *, fallback: str) -> str:
+    """Keep the written ask only when it is still an ask, and says nothing it must not.
+
+    The checks are the ones code can make: nothing that looks like a link,
+    nothing about the machinery, and a question mark, because a message that
+    does not ask cannot be answered with yes. Anything else falls back to the
+    assembled sentence, which passes all three by construction.
+    """
+
+    assembled = str(fallback or "").strip()
+    ask = str(text or "").strip()
+    if ask.startswith("```"):
+        ask = "\n".join(line for line in ask.splitlines() if not line.strip().startswith("```")).strip()
+    if not ask or "?" not in ask:
+        return assembled
+    if _REPLY_URL_PATTERN.search(ask) or "www." in ask.lower():
+        return assembled
+    if any(word in ask.lower() for word in _RESUME_ASK_FORBIDDEN_WORDS):
+        return assembled
+    if len(ask) > RESUME_ASK_MAX_REPLY_LENGTH:
+        return assembled
+    return ask
 
 
 def _pending_is_fresh(pending: dict[str, Any]) -> bool:
@@ -1823,9 +1910,30 @@ class WhatsAppAgentChat:
         return result
 
     def _ask_resume_held_question(self, *, held: str, held_at: str, opening: str, outcome: str) -> dict[str, Any]:
-        """Offer a held question back, and wait on the yes before running it."""
+        """Offer a held question back, and wait on the yes before running it.
 
-        ask = build_resume_ask(held, asked_at=held_at, opening=opening)
+        The server writes the words from what is known here - what they asked,
+        what has just been settled, how long it waited - and the assembled
+        sentence stands in when it cannot, so the offer is always made.
+        """
+
+        waited = held_for_seconds(held_at)
+        ask = build_resume_ask(held, waited_seconds=waited, opening=opening)
+        try:
+            response, status = self._api("POST", "/api/agent/resume-ask", {
+                "question": held,
+                "connected": opening,
+                "waitedSeconds": waited,
+                "conversation": [
+                    {"role": item["role"], "text": item["text"]}
+                    for item in self.database.list_recent_whatsapp_agent_messages(
+                        user_id=self.user_id, limit=AGENT_CHAT_HISTORY_LIMIT)
+                ][-6:],
+            })
+            if status == 200:
+                ask = normalize_text(response.get("ask")) or ask
+        except WhatsAppAgentChatError as exc:
+            print(f"WhatsApp resume ask could not be written: {exc}", flush=True)
         self.database.save_whatsapp_agent_pending(
             user_id=self.user_id,
             pending={

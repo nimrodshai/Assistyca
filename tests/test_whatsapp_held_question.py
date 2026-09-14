@@ -25,7 +25,12 @@ from types import SimpleNamespace
 from unittest import mock
 
 from packages.infrastructure.portal_auth.server import PortalConfig, create_server, sign_oauth_state_payload
-from packages.infrastructure.whatsapp_agent_chat import _pending_is_fresh, build_resume_ask
+from packages.infrastructure.whatsapp_agent_chat import (
+    _pending_is_fresh,
+    build_resume_ask,
+    build_resume_ask_prompt,
+    guard_resume_ask,
+)
 
 
 VAULT_KEY = base64.urlsafe_b64encode(b"0123456789abcdef0123456789abcdef").decode("ascii")
@@ -50,6 +55,15 @@ def _loop_round(*items: dict, reply: dict | None = None) -> SimpleNamespace:
 
 def _tool_call(name: str, call_id: str, **args) -> dict:
     return {"type": "function_call", "name": name, "call_id": call_id, "arguments": json.dumps(args)}
+
+
+def _composed(text: str) -> SimpleNamespace:
+    """A plain composed message, as the ask composer reads one."""
+
+    return SimpleNamespace(output_text=text, raw_response={"output": []}, input_tokens=10, output_tokens=5)
+
+
+COMPOSED_ASK = "Gmail and calendar are connected. Shall I work out what you paid Apple in August now?"
 
 
 class TheAskItselfTests(unittest.TestCase):
@@ -79,6 +93,33 @@ class TheAskItselfTests(unittest.TestCase):
 
     def test_nothing_held_is_nothing_asked(self) -> None:
         self.assertEqual(build_resume_ask("", opening="Connected."), "")
+
+    def test_what_is_written_has_to_be_an_ask_and_nothing_else(self) -> None:
+        fallback = build_resume_ask(QUESTION, opening="Connected.")
+        good = "Gmail is connected. Shall I work out what you paid Apple in August?"
+        self.assertEqual(guard_resume_ask(good, fallback=fallback), good)
+        # A message that does not ask cannot be answered with yes.
+        self.assertEqual(guard_resume_ask("Gmail is connected, pulling your Apple total.", fallback=fallback), fallback)
+        # There is nothing to open here, so nothing that looks like a link.
+        self.assertEqual(guard_resume_ask("Connected. Check https://example.com - shall I?", fallback=fallback), fallback)
+        # And nothing about the machinery behind it.
+        self.assertEqual(guard_resume_ask("The oauth token is saved. Shall I?", fallback=fallback), fallback)
+        self.assertEqual(guard_resume_ask("", fallback=fallback), fallback)
+
+    def test_the_report_carries_what_code_knows_and_no_more(self) -> None:
+        prompt = build_resume_ask_prompt(
+            question=QUESTION,
+            connected="Your Gmail and calendar are",
+            waited_seconds=90 * 60,
+            also_happening="I'm going through the last year of your mail now.",
+            conversation=[{"role": "user", "text": QUESTION}],
+        )
+        report = json.loads(prompt.split("CONTEXT\n", 1)[1])
+        self.assertEqual(report["theirQuestion"], QUESTION)
+        self.assertEqual(report["waitedMinutes"], 90)
+        self.assertTrue(report["theyMayHaveMovedOn"])
+        self.assertIn("going through the last year", report["alsoHappening"])
+        self.assertEqual(report["recentConversation"][0]["text"], QUESTION)
 
 
 class HeldQuestionOverWhatsAppTests(unittest.TestCase):
@@ -142,11 +183,13 @@ class HeldQuestionOverWhatsAppTests(unittest.TestCase):
         with urllib_request.urlopen(request, timeout=60) as response:
             return json.loads(response.read().decode("utf-8"))
 
-    def _callback(self) -> int:
+    def _callback(self, *, composed: str | None = COMPOSED_ASK) -> int:
         state = sign_oauth_state_payload(SESSION_SECRET, {
             "version": 1, "channel": "whatsapp", "provider": "google", "email": EMAIL, "waId": PHONE,
             "purpose": "connect", "issuedAt": int(time.time()), "nonce": "n", "scopeIds": ["gmail", "calendar"]})
         query = urllib_parse.urlencode({"code": "auth-code", "state": state})
+        if composed is not None:
+            self.model.side_effect = [_composed(composed)]
         with (
             mock.patch(f"{HANDLER}._exchange_google_calendar_oauth_code",
                        return_value={"access_token": "at", "refresh_token": "rt", "scope": "x"}),
@@ -186,15 +229,22 @@ class HeldQuestionOverWhatsAppTests(unittest.TestCase):
         self._ask_something_that_needs_gmail()
         self.assertEqual(self._callback(), 200)
 
+        # The message is written for this moment, not filled into a form:
+        # what code knows goes to the model, and what it writes goes out.
+        report = json.loads(str(self.model.call_args.kwargs["prompt"]).split("CONTEXT\n", 1)[1])
+        self.assertEqual(report["theirQuestion"], QUESTION, "their words, not a summary of them")
+        self.assertEqual(report["connected"], "Your Gmail and calendar are")
+        self.assertFalse(report["theyMayHaveMovedOn"], "asked seconds ago")
         offer = self._texts()[-1]
-        self.assertIn(f'"{QUESTION}"', offer)
-        self.assertIn("want me to pull that up now?", offer)
+        self.assertEqual(offer, COMPOSED_ASK)
         self.assertNotIn("Ask me anything about your inbox", offer)
-        self.assertEqual(self._pending().get("kind"), "resume_question")
-        # And the offer is in the transcript, so the model can see what was asked.
+        pending = self._pending()
+        self.assertEqual(pending.get("kind"), "resume_question")
+        self.assertEqual(pending.get("text"), QUESTION, "what runs on a yes is still their question, word for word")
+        # And the offer is in the transcript, so the model can see what it asked.
         history = self.database.list_recent_whatsapp_agent_messages(user_id=int(self.user["id"]), limit=5)
         self.assertEqual(history[-1]["role"], "assistant")
-        self.assertIn(QUESTION, history[-1]["text"])
+        self.assertEqual(history[-1]["text"], COMPOSED_ASK)
 
     def test_yes_answers_the_question_they_never_retyped(self) -> None:
         self._ask_something_that_needs_gmail()
@@ -251,12 +301,37 @@ class HeldQuestionOverWhatsAppTests(unittest.TestCase):
                 json_response(handler, HTTPStatus.OK, {"ok": True, "selectedCalendars": parse_json_body(handler)["calendars"]})
 
             save.side_effect = _save
-            self.model.side_effect = AssertionError("the held question must not run before they say so")
+            # One model call only, and it writes the offer - it does not answer.
+            self.model.side_effect = [_composed(COMPOSED_ASK)]
             self._webhook("all", message_id="wamid.q5")
 
+        self.assertEqual(self._texts()[-1], COMPOSED_ASK)
+        self.assertEqual(self._pending().get("kind"), "resume_question")
+
+    def test_an_hour_later_the_model_is_told_they_may_have_moved_on(self) -> None:
+        self._ask_something_that_needs_gmail()
+        held = self._pending()
+        self.database.save_whatsapp_agent_pending(
+            user_id=int(self.user["id"]),
+            pending={**held, "askedAt": (datetime.now(timezone.utc) - timedelta(hours=3)).isoformat()},
+        )
+        self._callback()
+
+        report = json.loads(str(self.model.call_args.kwargs["prompt"]).split("CONTEXT\n", 1)[1])
+        self.assertTrue(report["theyMayHaveMovedOn"])
+        self.assertEqual(report["waitedMinutes"], 180)
+
+    def test_a_composer_that_cannot_run_still_offers_the_question_back(self) -> None:
+        # No model, no silence: the assembled sentence goes instead, and the
+        # sign-in still ends on a page rather than an error.
+        self._ask_something_that_needs_gmail()
+        self.model.side_effect = RuntimeError("no model today")
+
+        self.assertEqual(self._callback(composed=None), 200)
+
         offer = self._texts()[-1]
-        self.assertIn("I'll read", offer)
         self.assertIn(f'"{QUESTION}"', offer)
+        self.assertIn("want me to pull that up now?", offer)
         self.assertEqual(self._pending().get("kind"), "resume_question")
 
     def test_anything_else_is_answered_and_the_offer_stays_up(self) -> None:
@@ -270,7 +345,7 @@ class HeldQuestionOverWhatsAppTests(unittest.TestCase):
         self.assertIn("Tuesday looks clear.", self._texts()[-1])
         self.assertEqual(self._pending().get("kind"), "resume_question", "the offer is still standing")
         context = json.loads(str(self.model.call_args.kwargs["input"][0]["content"]).split("CONTEXT\n", 1)[1])
-        self.assertIn(QUESTION, context["openQuestion"]["question"], "the model can see what is on the table")
+        self.assertEqual(context["openQuestion"]["question"], COMPOSED_ASK, "the model can see what is on the table")
 
 
 if __name__ == "__main__":

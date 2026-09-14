@@ -259,7 +259,12 @@ from packages.infrastructure.agent_turns import turn_metrics
 from packages.infrastructure.whatsapp_agent_chat import WhatsAppAgentChat
 from packages.infrastructure.whatsapp_agent_chat import WhatsAppAgentChatError
 from packages.infrastructure.whatsapp_agent_chat import CLAIM_CODE_TTL_SECONDS
+from packages.infrastructure.whatsapp_agent_chat import RESUME_ASK_INSTRUCTIONS
+from packages.infrastructure.whatsapp_agent_chat import RESUME_ASK_MAX_OUTPUT_TOKENS
 from packages.infrastructure.whatsapp_agent_chat import build_resume_ask
+from packages.infrastructure.whatsapp_agent_chat import build_resume_ask_prompt
+from packages.infrastructure.whatsapp_agent_chat import guard_resume_ask
+from packages.infrastructure.whatsapp_agent_chat import held_for_seconds
 from packages.infrastructure.whatsapp_agent_chat import build_whatsapp_claim_link
 from packages.infrastructure.whatsapp_agent_chat import extract_whatsapp_claim_code
 from packages.infrastructure.whatsapp_agent_chat import find_email_in_text
@@ -4281,6 +4286,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             or path == "/api/agent/proposals/run"
             or path == "/api/agent/answer/compose"
             or path == "/api/agent/recover"
+            or path == "/api/agent/resume-ask"
             or path == "/api/agent/loop"
             or path == "/api/agent/folders/save"
             or path == "/api/agent/folders/delete"
@@ -4379,6 +4385,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             or path == "/api/agent/proposals/run"
             or path == "/api/agent/answer/compose"
             or path == "/api/agent/recover"
+            or path == "/api/agent/resume-ask"
             or path == "/api/agent/loop"
             or path == "/api/agent/folders/save"
             or path == "/api/agent/folders/delete"
@@ -10004,6 +10011,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         "/api/agent/turn": "_handle_agent_turn",
         "/api/agent/loop": "_handle_agent_loop",
         "/api/agent/recover": "_handle_agent_recover",
+        "/api/agent/resume-ask": "_handle_agent_resume_ask",
         "/api/agent/proposals/run": "_handle_agent_proposal_run",
         "/api/agent/answer/compose": "_handle_agent_answer_compose",
         "/api/agent/proposals/revise": "_handle_agent_proposal_revision",
@@ -10425,6 +10433,113 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             return fallback, False
         reply = guard_recovery_reply(result.output_text, situation, fallback=fallback)
         return reply, reply != fallback
+
+    def _compose_resume_ask(
+        self,
+        *,
+        question: str,
+        connected: str,
+        email: str,
+        waited_seconds: float = 0.0,
+        phone_just_linked: bool = False,
+        also_happening: str = "",
+        conversation: list[dict[str, str]] | None = None,
+    ) -> tuple[str, bool]:
+        """The words that offer a held question back: the model's, or assembled ones.
+
+        Everything the message says is something code knows - what connected,
+        what they asked, how long it waited - and the model's part is saying
+        it the way the rest of the chat talks. When it cannot run, the
+        assembled sentence goes instead, so the question is always offered
+        back and never quietly dropped for want of a model.
+        """
+
+        fallback = build_resume_ask(
+            question,
+            asked_at="",
+            waited_seconds=waited_seconds,
+            opening=f"{connected} connected." if connected else "",
+        )
+        model = resolve_task_model(AGENT_RECOVERY_COMPLEXITY, "PORTAL_ASSISTANT_MODEL", "OPENAI_MODEL")
+        prompt = build_resume_ask_prompt(
+            question=question,
+            connected=connected,
+            waited_seconds=waited_seconds,
+            phone_just_linked=phone_just_linked,
+            also_happening=also_happening,
+            conversation=conversation or [],
+        )
+        try:
+            result = call_openai_response(
+                tool_name="portal_resume_ask_composer",
+                tool_id="portal_agent",
+                billing_email=email,
+                prompt=prompt,
+                model=model,
+                instructions=RESUME_ASK_INSTRUCTIONS,
+                reasoning=resolve_task_reasoning(AGENT_RECOVERY_COMPLEXITY, "PORTAL_RECOVERY_REASONING_EFFORT"),
+                max_output_tokens=RESUME_ASK_MAX_OUTPUT_TOKENS,
+                temperature=AGENT_ANSWER_TEMPERATURE,
+                usage_recorder=self.database,
+                price_resolver=self.database.get_model_price,
+                config=load_openai_config(
+                    default_model=model,
+                    strict_tracking=False,
+                    include_prompt_in_metadata=False,
+                ),
+                metadata={"source": "portal_agent", "resumeAsk": "1"},
+            )
+        except OpenAIError as exc:
+            print(f"Resume ask composer failed: {exc.message}", flush=True)
+            return fallback, False
+        except Exception as exc:  # noqa: BLE001 - a sign-in must not end in an error page
+            print(f"Resume ask composer failed: {exc!r}", flush=True)
+            return fallback, False
+        ask = guard_resume_ask(result.output_text, fallback=fallback)
+        return ask, ask != fallback
+
+    def _handle_agent_resume_ask(self) -> None:
+        """Write the message that offers a held question back after a sign-in.
+
+        The WhatsApp chat reaches this when the sign-in raised a question of
+        ours first - which calendars to read - and theirs comes back only once
+        that is settled. The callback that finishes a sign-in composes the
+        same way, in process; the words come from one place either way.
+        """
+
+        authenticated = self._require_authenticated_user()
+        if authenticated is None:
+            return
+        session, authenticated_user = authenticated
+        if not self._require_active_trial(authenticated_user):
+            return
+        try:
+            payload = parse_json_body(self, max_bytes=MAX_PUBLIC_REQUEST_BODY_BYTES)
+        except ValueError as exc:
+            json_response(self, HTTPStatus.BAD_REQUEST, {"ok": False, "error": "invalid_json", "message": str(exc)})
+            return
+
+        question = normalize_text(payload.get("question"))
+        if not question:
+            json_response(self, HTTPStatus.BAD_REQUEST, {
+                "ok": False,
+                "error": "invalid_resume_ask_request",
+                "message": "There is nothing to offer back without the question that was held.",
+            })
+            return
+        try:
+            waited_seconds = float(payload.get("waitedSeconds") or 0.0)
+        except (TypeError, ValueError):
+            waited_seconds = 0.0
+        ask, composed = self._compose_resume_ask(
+            question=question,
+            connected=normalize_contact_single_line(payload.get("connected"), 120),
+            email=session.email,
+            waited_seconds=waited_seconds,
+            also_happening=normalize_contact_single_line(payload.get("alsoHappening"), 300),
+            conversation=normalize_recovery_conversation(payload.get("conversation")),
+        )
+        json_response(self, HTTPStatus.OK, {"ok": True, "ask": ask, "composed": composed})
 
     def _respond_recovered(
         self,
@@ -12766,11 +12881,20 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         if held_text:
             # They asked something, it needed this sign-in, and now the
             # sign-in is done: their own question is the last word, offered
-            # back in their words rather than left for them to retype.
-            ask = build_resume_ask(
-                held_text,
-                asked_at=held_at,
-                opening=f"{linked or 'Your '}{connected} connected.{looking}",
+            # back rather than left for them to retype. What the message says
+            # is all known here - what connected, what they asked, how long it
+            # waited - and the model writes it, so it sounds like the rest of
+            # the chat rather than like a form that was filled in.
+            history = self.database.list_recent_whatsapp_agent_messages(user_id=user_id, limit=6)
+            ask, _composed = self._compose_resume_ask(
+                question=held_text,
+                connected=f"{linked or 'Your '}{connected}".strip(),
+                email=email,
+                waited_seconds=held_for_seconds(held_at),
+                phone_just_linked=bool(linked),
+                also_happening=looking,
+                conversation=[{"role": str(item.get("role") or ""), "text": normalize_text(item.get("text"))}
+                              for item in history],
             )
             self.database.save_whatsapp_agent_pending(
                 user_id=user_id,

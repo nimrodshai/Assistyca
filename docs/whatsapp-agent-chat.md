@@ -474,10 +474,19 @@ worth asking is still worth asking about later.
 
 The sign-in offers it back. `_finish_whatsapp_oauth` reads the slot before the
 calendar picker can write over it, and the last word after connecting is their
-own question, quoted: *You asked: "How much did I pay to Apple on aug?" - want
-me to pull that up now?* Past an hour the ask changes rather than disappears -
-*A while back you asked ... do you still want that answer?* - because the point
-of the wait is that they may have moved on. It is never answered unasked: the
+own question. The message is written by the model, not assembled: everything in
+it is something code knows - what connected, what they asked in their own
+words, how many minutes it waited, whether the mailbox scan is already under
+way - and that report goes to `_compose_resume_ask`, which is the recovery
+composer's twin. `guard_resume_ask` keeps what comes back only if it is still
+an ask: a question mark, no links, nothing about the machinery, and inside the
+length. Anything else falls back to `build_resume_ask`, the assembled sentence,
+so the question is offered back even with no model to write the offer. Past an
+hour `theyMayHaveMovedOn` goes true and the message asks whether they still
+want that answer at all, rather than whether to go ahead now - because the
+point of the wait is that they may have moved on. The chat reaches the same
+composer over `POST /api/agent/resume-ask` when the calendar picker had to be
+settled first. It is never answered unasked: the
 slot becomes `kind: resume_question`, a plain *yes* runs the original words
 through a fresh turn, a plain *no* drops it, and anything else goes to the
 model with the offer in view as an ordinary `openQuestion` of kind
