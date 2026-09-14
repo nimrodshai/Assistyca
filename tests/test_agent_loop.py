@@ -354,6 +354,9 @@ class LoopMechanicsTests(unittest.TestCase):
         self.assertIn(GOOGLE, result.reply)
         self.assertEqual(result.links, [{"url": GOOGLE, "label": "Reconnect Google"}])
         self.assertIn("invalid_grant", result.tool_calls[0]["detail"])
+        # Their question was fine; only the sign-in was in the way. A channel
+        # that can hold it until they sign in is told so.
+        self.assertEqual(result.blocked_on_connection, "mailbox")
 
     def test_a_temporary_google_failure_stays_retryable_and_does_not_offer_login(self) -> None:
         api = FakeApi({
@@ -386,6 +389,7 @@ class LoopMechanicsTests(unittest.TestCase):
         self.assertEqual(failure["code"], "provider_unavailable")
         self.assertTrue(failure["canRetry"])
         self.assertEqual(failure["mailboxFailures"][0]["action"], "retry")
+        self.assertEqual(result.blocked_on_connection, "", "a provider having a bad minute is not a sign-in to wait for")
         self.assertEqual(failure["options"], [{"kind": "retry"}])
         self.assertEqual(result.links, [])
 

@@ -259,6 +259,7 @@ from packages.infrastructure.agent_turns import turn_metrics
 from packages.infrastructure.whatsapp_agent_chat import WhatsAppAgentChat
 from packages.infrastructure.whatsapp_agent_chat import WhatsAppAgentChatError
 from packages.infrastructure.whatsapp_agent_chat import CLAIM_CODE_TTL_SECONDS
+from packages.infrastructure.whatsapp_agent_chat import build_resume_ask
 from packages.infrastructure.whatsapp_agent_chat import build_whatsapp_claim_link
 from packages.infrastructure.whatsapp_agent_chat import extract_whatsapp_claim_code
 from packages.infrastructure.whatsapp_agent_chat import find_email_in_text
@@ -10704,6 +10705,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             "calendarChoiceRequested": result.calendar_choice_requested,
             "links": result.links,
             "fallbackUsed": result.fallback_used,
+            "blockedOnConnection": result.blocked_on_connection,
         })
 
     def _apply_agent_facts(self, user_id: int, turn: dict[str, Any]) -> None:
@@ -12707,6 +12709,12 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         print(json.dumps({"event": "whatsapp_oauth_connected", "provider": provider, "purpose": purpose,
                           "senderWaId": self._mask_whatsapp_log_identifier(wa_id)}, ensure_ascii=True, sort_keys=True), flush=True)
 
+        # A question of theirs may have been waiting on exactly this sign-in.
+        # It is read now, before the calendar picker writes over the slot it
+        # sits in, so it comes back to them either way.
+        user_id = int(user.get("id") or 0)
+        held_text, held_at = self._held_whatsapp_question(user_id)
+
         # The question about which calendars to read is asked now, at the
         # moment of connecting, not after the person's first real question.
         # One calendar is no question at all.
@@ -12721,11 +12729,17 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                     metadata_updates={CALENDAR_SELECTION_METADATA_KEY: available},
                 )
             elif not selected and len(available) > 1:
-                self.database.save_whatsapp_agent_pending(
-                    user_id=int(user.get("id") or 0),
-                    pending={"kind": "calendar_choice", "calendars": available[:8], "selected": [], "question": "",
-                             "askedAt": datetime.now(timezone.utc).isoformat()},
-                )
+                pending: dict[str, Any] = {
+                    "kind": "calendar_choice", "calendars": available[:8], "selected": [], "question": "",
+                    "askedAt": datetime.now(timezone.utc).isoformat(),
+                }
+                if held_text:
+                    # Answered after the picker is settled, and only if they
+                    # still want it - the picker is the question in front of
+                    # them now.
+                    pending["resumeQuestion"] = held_text
+                    pending["heldAt"] = held_at
+                self.database.save_whatsapp_agent_pending(user_id=user_id, pending=pending)
                 picker = build_calendar_choice_interactive(available)
 
         if picker is not None:
@@ -12749,7 +12763,52 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             if mailbox_connected and load_finding_scan_config().enabled
             else ""
         )
+        if held_text:
+            # They asked something, it needed this sign-in, and now the
+            # sign-in is done: their own question is the last word, offered
+            # back in their words rather than left for them to retype.
+            ask = build_resume_ask(
+                held_text,
+                asked_at=held_at,
+                opening=f"{linked or 'Your '}{connected} connected.{looking}",
+            )
+            self.database.save_whatsapp_agent_pending(
+                user_id=user_id,
+                pending={"kind": "resume_question", "text": held_text, "question": ask, "heldAt": held_at,
+                         "askedAt": datetime.now(timezone.utc).isoformat()},
+            )
+            if wa_id:
+                try:
+                    send_assistyca_text(recipient_wa_id=wa_id, text=ask)
+                    self.database.save_whatsapp_agent_message(user_id=user_id, role="assistant", text=ask)
+                except Exception as exc:  # noqa: BLE001 - the page still says what happened
+                    print(f"WhatsApp sign-in note could not be sent: {exc}", flush=True)
+            self._send_whatsapp_oauth_page(
+                ok=True, label=label,
+                message="Your last question is waiting for you in the chat.",
+            )
+            return
+
         finish(True, f"{linked or 'Your '}{connected} connected — ask me anything about your inbox or your schedule.{looking}")
+
+    def _held_whatsapp_question(self, user_id: int) -> tuple[str, str]:
+        """The question waiting on a sign-in for this account, and when it was asked.
+
+        Empty when nothing is waiting, or when what is waiting is a question
+        of ours the person still owes an answer to - that one is theirs to
+        settle, and not something a sign-in picks up.
+        """
+
+        if user_id <= 0:
+            return "", ""
+        try:
+            pending = self.database.get_whatsapp_agent_pending(user_id=user_id)
+        except Exception as exc:  # noqa: BLE001 - a slot that cannot be read holds nothing
+            print(f"WhatsApp held question could not be read: {exc}", flush=True)
+            return "", ""
+        if not isinstance(pending, dict) or normalize_text(pending.get("kind")) != "held_question":
+            return "", ""
+        return normalize_text(pending.get("text")), normalize_text(pending.get("askedAt"))
 
     def _build_google_calendar_oauth_state(
         self,

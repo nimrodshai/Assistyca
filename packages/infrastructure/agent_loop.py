@@ -173,6 +173,12 @@ class LoopContext:
     # saved sign-in, the client needs the newly minted link even when the
     # language model forgets to repeat it.
     required_links: list[str] = field(default_factory=list)
+    # Set when a lookup could not run because an account is not connected, or
+    # because the provider rejected the saved sign-in. The question itself is
+    # fine; only the sign-in is in the way. A channel that can hold the
+    # question until the person signs in reads this to know it is worth
+    # holding, and which source they will be signing in to.
+    blocked_on_connection: str = ""
     # A calendar choice a tool asked for, surfaced to the channel that can
     # show a picker.
     calendar_choice: list[dict[str, Any]] | None = None
@@ -222,6 +228,9 @@ class LoopResult:
     fallback_reason: str = ""
     duration_ms: int = 0
     turn_id: str = ""
+    # Which source a lookup wanted and could not have: "mailbox", "calendar",
+    # and so on, or "" when nothing was blocked. Empty is the normal turn.
+    blocked_on_connection: str = ""
 
 
 # -- tools --------------------------------------------------------------------
@@ -456,8 +465,10 @@ def _lookup_failure(context: LoopContext, response: dict[str, Any], status: int,
     error = str(response.get("error") or "").strip().lower()
     mailbox_failures = _normalize_mailbox_failures(response)
     if error in {"email_setup_required", "mailbox_not_connected"} and not mailbox_failures:
+        context.blocked_on_connection = context.blocked_on_connection or "mailbox"
         return _error("source_not_connected", "No mailbox is connected, so the inbox cannot be read.", source="mailbox")
     if error == "calendar_setup_required":
+        context.blocked_on_connection = context.blocked_on_connection or "calendar"
         return _error("source_not_connected", "The calendar is not connected, so it cannot be read.", source="calendar")
     if status == 402:
         return _error("not_supported", str(response.get("message") or "The trial has ended."))
@@ -484,6 +495,8 @@ def _lookup_failure(context: LoopContext, response: dict[str, Any], status: int,
     if mailbox_failures:
         actions = {failure.get("action") for failure in mailbox_failures}
         code = "source_needs_attention" if actions == {"reconnect"} else "provider_unavailable"
+        if "reconnect" in actions:
+            context.blocked_on_connection = context.blocked_on_connection or "mailbox"
         can_retry = "retry" in actions
         upstream_code = next((failure.get("providerCode", "") for failure in mailbox_failures if failure.get("providerCode")), "")
         upstream_subtype = next((failure.get("providerSubtype", "") for failure in mailbox_failures if failure.get("providerSubtype")), "")
@@ -2856,6 +2869,7 @@ def run_agent_loop(
         fallback_reason=fallback_reason,
         duration_ms=int((time.monotonic() - started) * 1000),
         turn_id=turn_id,
+        blocked_on_connection=context.blocked_on_connection,
     )
 
 
@@ -2864,6 +2878,7 @@ def _execute(context: LoopContext, tool: ToolSpec, args: dict[str, Any], tool_ca
     have = connected_sources(context.tool_context)
     missing = [source for source in tool.requires if source not in have]
     if missing:
+        context.blocked_on_connection = context.blocked_on_connection or missing[0]
         outcome = _error(
             "source_not_connected",
             f"{_SOURCE_WORDS.get(missing[0], 'a needed account is not connected')}. Use connect_link and give the person the link.",

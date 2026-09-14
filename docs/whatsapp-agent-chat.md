@@ -458,6 +458,33 @@ same `DELETE /api/platform-connections/<id>` the portal's button calls, once
 per connection, so Google's grant is revoked the same way, and the reply says
 what happened - including when Google did not confirm the revocation.
 
+## A question that waits for a sign-in
+
+"How much did I pay to Apple on aug?" (2026-09-14) got the reconnect link and
+then "ask me the same thing again": the link and the question travelled apart,
+and the question fell on the floor between the WhatsApp turn and the OAuth
+callback, which is a different request that knows only what its signed state
+carries. Now the loop says so - `blocked_on_connection` is set wherever a
+lookup is turned away for want of a connected source (`_execute`'s guard) or
+because the provider rejected the saved sign-in (`_lookup_failure`) - and the
+chat keeps the question in `pending_json` as `kind: held_question`. Nothing is
+waiting on the person there, so it never swallows their next message and,
+unlike every other open question, it never goes stale on the clock: a question
+worth asking is still worth asking about later.
+
+The sign-in offers it back. `_finish_whatsapp_oauth` reads the slot before the
+calendar picker can write over it, and the last word after connecting is their
+own question, quoted: *You asked: "How much did I pay to Apple on aug?" - want
+me to pull that up now?* Past an hour the ask changes rather than disappears -
+*A while back you asked ... do you still want that answer?* - because the point
+of the wait is that they may have moved on. It is never answered unasked: the
+slot becomes `kind: resume_question`, a plain *yes* runs the original words
+through a fresh turn, a plain *no* drops it, and anything else goes to the
+model with the offer in view as an ordinary `openQuestion` of kind
+`confirmation`, leaving the offer standing. When connecting also raises the
+calendar picker, that question is settled first and theirs rides along as
+`resumeQuestion`, asked once the picker is done.
+
 ## A fresh morning is a fresh conversation
 
 The signup concierge gets firmer each turn the email is not given. That count
