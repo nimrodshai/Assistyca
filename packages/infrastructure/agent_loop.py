@@ -201,6 +201,10 @@ class LoopContext:
     # A photo supplied with this turn. Its bytes never enter the text prompt,
     # but a policy save can preserve the original beside its interpretation.
     attached_photo: dict[str, Any] = field(default_factory=dict)
+    # The yes this run is spending, when one was given. A tool that writes
+    # to the person's accounts sends it with the request, and the runner at
+    # the other end refuses the request without it.
+    approval_token: str = ""
 
 
 @dataclass
@@ -1740,6 +1744,16 @@ def _write_failure(response: dict[str, Any], status: int, *, source: str) -> dic
     return _error("provider_unavailable", message or "That could not be done just now.", can_retry=True)
 
 
+def _with_approval(context: LoopContext, payload: dict[str, Any]) -> dict[str, Any]:
+    """The request, plus the yes it is being made on.
+
+    The token travels beside the request rather than inside it: what was
+    approved is the request itself, and the runner compares the two.
+    """
+
+    return {**payload, "approvalToken": context.approval_token} if context.approval_token else payload
+
+
 def _send_email_payload(context: LoopContext, args: dict[str, Any]) -> dict[str, Any]:
     return {
         "to": [str(item) for item in (args.get("to") or []) if str(item or "").strip()],
@@ -1772,7 +1786,7 @@ def _preflight_send_email(context: LoopContext, args: dict[str, Any]) -> dict[st
 
 def _tool_send_email(context: LoopContext, args: dict[str, Any]) -> dict[str, Any]:
     payload = _send_email_payload(context, args)
-    response, status = context.api("POST", "/api/agent/email/send", payload)
+    response, status = context.api("POST", "/api/agent/email/send", _with_approval(context, payload))
     if status == 200 and response.get("ok"):
         sent = response.get("sent") if isinstance(response.get("sent"), dict) else {}
         return _ok({
@@ -1866,7 +1880,7 @@ def _preflight_create_calendar_event(context: LoopContext, args: dict[str, Any])
 
 def _tool_create_calendar_event(context: LoopContext, args: dict[str, Any]) -> dict[str, Any]:
     payload = _event_payload(context, args, action="create")
-    response, status = context.api("POST", "/api/agent/calendar/events", payload)
+    response, status = context.api("POST", "/api/agent/calendar/events", _with_approval(context, payload))
     if status == 200 and response.get("ok"):
         event = response.get("event") if isinstance(response.get("event"), dict) else {}
         return _ok({"event": _trim_records([event])[0] if event else {}, "calendar": str(response.get("calendar") or "")})
@@ -1910,7 +1924,7 @@ def _preflight_update_calendar_event(context: LoopContext, args: dict[str, Any])
 
 def _tool_update_calendar_event(context: LoopContext, args: dict[str, Any]) -> dict[str, Any]:
     payload = _event_payload(context, args, action="cancel" if args.get("cancel") else "update")
-    response, status = context.api("POST", "/api/agent/calendar/events", payload)
+    response, status = context.api("POST", "/api/agent/calendar/events", _with_approval(context, payload))
     if status == 200 and response.get("ok"):
         event = response.get("event") if isinstance(response.get("event"), dict) else {}
         return _ok({
@@ -2815,7 +2829,12 @@ def run_agent_loop(
                 elif pending is not None:
                     outcome = _error("not_supported", "One question at a time: a confirmation is already being asked for.")
                 else:
-                    pending = {"tool": name, "arguments": args, "describe": _describe_call(context, tool, args)}
+                    pending = {
+                        "tool": name,
+                        "arguments": args,
+                        "describe": _describe_call(context, tool, args),
+                        "request": _request_of(context, tool, args),
+                    }
                     outcome = _error(
                         "confirmation_required",
                         "This needs the person's yes first. Ask for it in words, naming exactly what will happen"
@@ -2944,7 +2963,32 @@ def _execute_confirmed(context: LoopContext, confirmed_call: dict[str, Any], too
     tool = TOOLS_BY_NAME.get(name)
     if tool is None:
         return {"tool": name, "arguments": args, "result": _error("not_supported", "That action no longer exists.")}
-    return {"tool": name, "arguments": args, "result": _execute(context, tool, args, tool_calls, completed)}
+    # The token is on the context only while the action the person agreed to
+    # is running, so nothing else in the turn can reach for it.
+    context.approval_token = str(confirmed_call.get("approvalToken") or "")
+    try:
+        result = _execute(context, tool, args, tool_calls, completed)
+    finally:
+        context.approval_token = ""
+    return {"tool": name, "arguments": args, "result": result}
+
+
+def _request_of(context: LoopContext, tool: ToolSpec, args: dict[str, Any]) -> dict[str, Any] | None:
+    """The exact request this proposal would send, for the yes to be tied to.
+
+    Only the tools that write to the person's Google accounts have one: the
+    account actions say everything in their name and send no request to
+    compare. What comes back here is what the runner will receive word for
+    word, which is what lets the two be checked against each other.
+    """
+
+    if tool.name == "send_email":
+        return _send_email_payload(context, args)
+    if tool.name == "create_calendar_event":
+        return _event_payload(context, args, action="create")
+    if tool.name == "update_calendar_event":
+        return _event_payload(context, args, action="cancel" if args.get("cancel") else "update")
+    return None
 
 
 def _describe_call(context: LoopContext, tool: ToolSpec, args: dict[str, Any]) -> str:

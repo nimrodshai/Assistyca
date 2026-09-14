@@ -5145,6 +5145,38 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             context["gmail"] = {**context["gmail"], "writeAccess": gmail_can_send}
         return context
 
+    def _refuse_without_approval(self, *, user_id: int, tool: str, payload: dict[str, Any]) -> bool:
+        """The last lock before an account is written to.
+
+        Everything above this - the loop that proposes, the channel that
+        asks, the ledger that holds the yes - can be got wrong or got
+        around. This cannot: without a yes armed for this tool and this
+        exact request, nothing leaves. The yes is spent here rather than
+        after the write, so a request that fails at Google is asked about
+        again instead of running twice on one agreement.
+
+        True when the request was refused and the answer is already sent.
+        """
+
+        token = normalize_text(payload.get("approvalToken"))
+        spent = (
+            self.database.spend_agent_approval(approval_id=token, user_id=user_id, tool=tool, request=payload)
+            if token
+            else None
+        )
+        if spent is not None:
+            return False
+        print(f"agent.approval.refused tool={tool} user={user_id} hadToken={bool(token)}", flush=True)
+        json_response(self, HTTPStatus.FORBIDDEN, {
+            "ok": False,
+            "error": "approval_required",
+            "message": (
+                "This needs the person's yes before it can run, and the yes on this request does not cover it. "
+                "Ask them plainly, naming exactly what will happen, and run it when they agree."
+            ),
+        })
+        return True
+
     def _handle_agent_email_send_post(self) -> None:
         """Send one email from a connected Gmail mailbox.
 
@@ -5235,6 +5267,13 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         mailbox_name = name_of(record)
         if check_only:
             json_response(self, HTTPStatus.OK, {"ok": True, "checked": True, "mailbox": mailbox_name})
+            return
+
+        if self._refuse_without_approval(
+            user_id=int((authenticated_user or {}).get("id") or 0),
+            tool="send_email",
+            payload=payload,
+        ):
             return
 
         try:
@@ -5387,6 +5426,13 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             return
         if check_only:
             json_response(self, HTTPStatus.OK, {"ok": True, "checked": True, "calendar": calendar_label, "calendarId": calendar_id})
+            return
+
+        if self._refuse_without_approval(
+            user_id=int((authenticated_user or {}).get("id") or 0),
+            tool="create_calendar_event" if action == "create" else "update_calendar_event",
+            payload=payload,
+        ):
             return
 
         ciphertext = normalize_text(self.database.get_platform_connection_ciphertext(
@@ -10649,15 +10695,18 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         timezone_name = normalize_contact_single_line(payload.get("timezone"), 120) or "UTC"
         channel = normalize_contact_single_line(payload.get("channel"), 20).lower() or "portal"
         tool_context = self._with_google_write_access(session.email, normalize_agent_tool_context(payload.get("toolContext")))
-        confirmed_call = payload.get("confirmedCall") if isinstance(payload.get("confirmedCall"), dict) else None
-        declined_call = payload.get("declinedCall") if isinstance(payload.get("declinedCall"), dict) else None
+        # An answer to a held question names the question and nothing else.
+        # What the yes runs comes out of the approvals ledger, so a caller
+        # cannot describe an action here and have it carried out.
+        confirmed_approval_id = normalize_text((payload.get("confirmedCall") or {}).get("approvalId")) if isinstance(payload.get("confirmedCall"), dict) else ""
+        declined_approval_id = normalize_text((payload.get("declinedCall") or {}).get("approvalId")) if isinstance(payload.get("declinedCall"), dict) else ""
         open_question = payload.get("openQuestion") if isinstance(payload.get("openQuestion"), dict) else None
         # A photo sent with the message goes to the model as an image; the
         # context and the logs only name it.
         photo_context = normalize_agent_photo_context(payload.get("photoContext"))
         if not user_message and photo_context:
             user_message = AGENT_PHOTO_DEFAULT_TEXT
-        if not user_message and not confirmed_call:
+        if not user_message and not confirmed_approval_id:
             json_response(self, HTTPStatus.BAD_REQUEST, {"ok": False, "error": "invalid_agent_turn", "message": "Tell me what you want help with."})
             return
         if looks_like_agent_secret(user_message):
@@ -10677,6 +10726,34 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             return
 
         user_id = int((self.database.get_user(session.email) or {}).get("id") or 0)
+        confirmed_call: dict[str, Any] | None = None
+        declined_call: dict[str, Any] | None = None
+        if confirmed_approval_id:
+            armed = self.database.arm_agent_approval(approval_id=confirmed_approval_id, user_id=user_id)
+            if armed is None:
+                # The question is no longer open: answered already, timed
+                # out, or never this account's to answer. Nothing runs on a
+                # yes we cannot place, and the person is told plainly.
+                print(f"agent.approval.unarmed id={confirmed_approval_id} user={user_id}", flush=True)
+                self._respond_recovered(
+                    session,
+                    build_situation(
+                        "not_supported",
+                        request=user_message,
+                        what_happened="That was waiting on a yes for too long, so I didn't act on it.",
+                        can_retry=True,
+                        options=[make_option("retry")],
+                    ),
+                    conversation=conversation,
+                    channel=channel,
+                    timezone_name=timezone_name,
+                )
+                return
+            confirmed_call = {"tool": armed["tool"], "arguments": armed["arguments"], "approvalToken": armed["id"]}
+        if declined_approval_id:
+            declined = self.database.decline_agent_approval(approval_id=declined_approval_id, user_id=user_id)
+            if declined is not None:
+                declined_call = {"tool": declined["tool"], "arguments": declined["arguments"]}
         facts = self.database.list_account_facts(user_id=user_id) if user_id > 0 else []
         authorization = normalize_text(self.headers.get("Authorization"))
         port = int(self.server.server_address[1])  # type: ignore[attr-defined]
@@ -10813,7 +10890,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             "turnId": result.turn_id,
             "toolCalls": result.tool_calls,
             "completed": result.completed,
-            "pendingConfirmation": result.pending_confirmation,
+            "pendingConfirmation": self._open_agent_approval(user_id, result.pending_confirmation),
             "answersOpenQuestion": result.answers_open_question,
             "calendarChoice": result.calendar_choice,
             "calendarChoiceSelected": result.calendar_choice_selected,
@@ -10822,6 +10899,39 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             "fallbackUsed": result.fallback_used,
             "blockedOnConnection": result.blocked_on_connection,
         })
+
+    def _open_agent_approval(self, user_id: int, pending: dict[str, Any] | None) -> dict[str, Any] | None:
+        """Write a proposed action down, and hand back only its name and id.
+
+        The tool and its arguments stay here. What goes back to the channel
+        is what it needs to ask the question and, later, to say which
+        question is being answered - never enough to ask for the action
+        itself.
+        """
+
+        if not isinstance(pending, dict) or not pending:
+            return None
+        # Only one question is open at a time, so a yes can never reach back
+        # past whatever is in front of the person now.
+        self.database.retire_open_agent_approvals(user_id=user_id)
+        try:
+            approval = self.database.open_agent_approval(
+                user_id=user_id,
+                tool=normalize_text(pending.get("tool")),
+                arguments=pending.get("arguments") if isinstance(pending.get("arguments"), dict) else {},
+                request=pending.get("request") if isinstance(pending.get("request"), dict) else None,
+                description=normalize_text(pending.get("describe")),
+            )
+        except Exception as exc:  # noqa: BLE001 - a question that cannot be held is asked again, not crashed on
+            print(f"agent.approval.open_failed user={user_id} error={exc!r}", flush=True)
+            return None
+        if approval is None:
+            return None
+        return {
+            "id": approval["id"],
+            "tool": approval["tool"],
+            "describe": approval["description"],
+        }
 
     def _apply_agent_facts(self, user_id: int, turn: dict[str, Any]) -> None:
         """Write down, or drop, what this turn decided is worth remembering.

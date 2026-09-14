@@ -2107,10 +2107,12 @@ class WhatsAppAgentChat:
         }
         if photo:
             payload["photoContext"] = photo
+        # An answer names the question and nothing else: what a yes runs is
+        # held server-side, so this channel cannot ask for an action of its own.
         if confirmed_call:
-            payload["confirmedCall"] = {"tool": confirmed_call.get("tool"), "arguments": confirmed_call.get("arguments") or {}}
+            payload["confirmedCall"] = {"approvalId": normalize_text(confirmed_call.get("approvalId"))}
         if declined_call:
-            payload["declinedCall"] = {"tool": declined_call.get("tool"), "arguments": declined_call.get("arguments") or {}}
+            payload["declinedCall"] = {"approvalId": normalize_text(declined_call.get("approvalId"))}
         if open_question:
             payload["openQuestion"] = open_question
 
@@ -2150,14 +2152,18 @@ class WhatsAppAgentChat:
                             record_user=False,
                         )
                 pending_confirmation = turn.get("pendingConfirmation") if isinstance(turn.get("pendingConfirmation"), dict) else None
-                if pending_confirmation:
+                approval_id = normalize_text((pending_confirmation or {}).get("id"))
+                if pending_confirmation and approval_id:
+                    # Only the id is kept. The action itself stays in the
+                    # ledger, so what the yes releases is what was proposed
+                    # and described, not anything this side put together.
                     outcome = "confirmation_asked"
                     self.database.save_whatsapp_agent_pending(
                         user_id=self.user_id,
                         pending={
                             "kind": "tool_confirmation",
+                            "approvalId": approval_id,
                             "tool": normalize_text(pending_confirmation.get("tool")),
-                            "arguments": pending_confirmation.get("arguments") if isinstance(pending_confirmation.get("arguments"), dict) else {},
                             "question": reply[:500],
                             "askedAt": datetime.now(timezone.utc).isoformat(),
                         },

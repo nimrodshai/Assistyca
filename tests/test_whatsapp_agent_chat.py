@@ -1357,18 +1357,26 @@ class WhatsAppLoopTests(_WhatsAppApiCase):
         # A reminder no longer waits for a yes, but a held call of any tool
         # exercises the same hold-and-answer machinery, and this one is the
         # simplest to run and to check.
-        self.database.save_whatsapp_agent_pending(
-            user_id=int(self.user["id"]),
-            pending={"kind": "tool_confirmation", "tool": "schedule_message",
-                     "arguments": {"time_local": "12:40", "date_policy": "tomorrow", "message_text": "Stretch."},
-                     "question": "Text you tomorrow at 12:40: Stretch. Yes?", "askedAt": datetime.now(timezone.utc).isoformat()},
+        self._hold(
+            "schedule_message",
+            "Text you tomorrow at 12:40: Stretch. Yes?",
+            arguments={"time_local": "12:40", "date_policy": "tomorrow", "message_text": "Stretch."},
         )
 
-    def _hold(self, tool: str, question: str) -> None:
+    def _hold(self, tool: str, question: str, arguments: dict | None = None) -> None:
+        """Hold an action the way the server does: in the ledger, by id.
+
+        The chat keeps the id and the words it asked; what a yes would run
+        stays server-side, which is what the answer is checked against.
+        """
+
+        approval = self.database.open_agent_approval(
+            user_id=int(self.user["id"]), tool=tool, arguments=arguments or {}, request=None, description=question,
+        )
         self.database.save_whatsapp_agent_pending(
             user_id=int(self.user["id"]),
-            pending={"kind": "tool_confirmation", "tool": tool, "arguments": {}, "question": question,
-                     "askedAt": datetime.now(timezone.utc).isoformat()},
+            pending={"kind": "tool_confirmation", "approvalId": approval["id"], "tool": tool,
+                     "question": question, "askedAt": datetime.now(timezone.utc).isoformat()},
         )
 
     def test_a_yes_to_signing_out_unlinks_this_phone_and_keeps_the_account(self) -> None:
@@ -1467,11 +1475,7 @@ class WhatsAppLoopTests(_WhatsAppApiCase):
         self.assertIsNotNone(self.database.get_whatsapp_agent_pending(user_id=int(self.user["id"])))
 
     def test_a_no_clears_the_question_and_the_model_acknowledges(self) -> None:
-        self.database.save_whatsapp_agent_pending(
-            user_id=int(self.user["id"]),
-            pending={"kind": "tool_confirmation", "tool": "disconnect", "arguments": {"targets": ["google"]},
-                     "question": "Disconnect Google?", "askedAt": datetime.now(timezone.utc).isoformat()},
-        )
+        self._hold("disconnect", "Disconnect Google?", arguments={"targets": ["google"]})
         with mock.patch(
             "packages.infrastructure.portal_auth.server.call_openai_response",
             side_effect=[_loop_round(reply={"reply": "Okay, nothing changed."})],

@@ -621,7 +621,9 @@ class DisconnectOverWhatsAppTests(unittest.TestCase):
         pending = self.database.get_whatsapp_agent_pending(user_id=int(self.user["id"]))
         self.assertEqual(pending["kind"], "tool_confirmation")
         self.assertEqual(pending["tool"], "disconnect")
-        self.assertEqual(pending["arguments"], {"targets": ["google"]})
+        held = self.database.get_agent_approval(approval_id=pending["approvalId"], user_id=int(self.user["id"]))
+        self.assertEqual((held["tool"], held["arguments"]), ("disconnect", {"targets": ["google"]}),
+                         "what the yes would run is held server-side, not in the chat")
         self.assertEqual(self._connected(), ["calendar", "email"], "nothing goes before the yes")
         self.revoke.assert_not_called()
 
