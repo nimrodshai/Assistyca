@@ -228,10 +228,17 @@ window.addEventListener("DOMContentLoaded", () => {
     const text = value.trim();
     return text.charAt(0).toUpperCase() + text.slice(1);
   };
-  const nameInput = form.querySelector('input[name="name"]');
+  const firstNameInput = form.querySelector('input[name="firstName"]');
+  const lastNameInput = form.querySelector('input[name="lastName"]');
   const businessInput = form.querySelector('input[name="business"]');
-  nameInput.addEventListener("blur", () => {
-    nameInput.value = capitalizeName(nameInput.value);
+  // Two fields, one answer: what the server is told is still a single name.
+  const fullName = () => [capitalizeName(firstNameInput.value), capitalizeName(lastNameInput.value)]
+    .filter(Boolean)
+    .join(" ");
+  [firstNameInput, lastNameInput].forEach((input) => {
+    input.addEventListener("blur", () => {
+      input.value = capitalizeName(input.value);
+    });
   });
   businessInput.addEventListener("blur", () => {
     businessInput.value = capitalizeSentence(businessInput.value);
@@ -355,7 +362,9 @@ window.addEventListener("DOMContentLoaded", () => {
         error.textContent = String(message || "");
       }
       if (!first) {
-        first = field.querySelector("input") || field.querySelector("select");
+        // A question can hold more than one box; land on the empty one.
+        const boxes = Array.from(field.querySelectorAll("input, select"));
+        first = boxes.find((box) => !String(box.value || "").trim()) || boxes[0];
         firstStep = steps.findIndex((step) => step.contains(field));
       }
     });
@@ -376,12 +385,11 @@ window.addEventListener("DOMContentLoaded", () => {
       return chosenKind() ? {} : { kind: "Pick the one that fits you." };
     }
     if (index === 1) {
-      const name = capitalizeName(nameInput.value);
-      if (name.length < 2) {
-        return { name: "Enter your full name." };
+      if (capitalizeName(firstNameInput.value).length < 2) {
+        return { name: "Enter your first name." };
       }
-      if (name.split(/\s+/).length < 2) {
-        return { name: "Enter your first and last name." };
+      if (capitalizeName(lastNameInput.value).length < 2) {
+        return { name: "Enter your last name." };
       }
       return {};
     }
@@ -399,7 +407,8 @@ window.addEventListener("DOMContentLoaded", () => {
   // Enter moves on without the field ever losing focus, so tidy it here too.
   const tidyStep = (index) => {
     if (index === 1) {
-      nameInput.value = capitalizeName(nameInput.value);
+      firstNameInput.value = capitalizeName(firstNameInput.value);
+      lastNameInput.value = capitalizeName(lastNameInput.value);
     }
     if (index === 3) {
       businessInput.value = capitalizeSentence(businessInput.value);
@@ -496,7 +505,7 @@ window.addEventListener("DOMContentLoaded", () => {
     const data = new FormData(form);
     const values = {
       kind: chosenKind() || "business",
-      name: capitalizeName(String(data.get("name") || "")),
+      name: fullName(),
       phone: internationalNumber(),
       country: countrySelect.value,
       business: capitalizeSentence(String(data.get("business") || "")),
