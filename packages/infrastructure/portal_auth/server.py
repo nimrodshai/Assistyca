@@ -2037,19 +2037,35 @@ def capitalize_sentence(value: Any) -> str:
     return text[:1].upper() + text[1:]
 
 
-def registration_facts(*, name: str, business: str) -> list[tuple[str, str]]:
+REGISTRATION_KINDS = ("business", "family")
+
+
+def normalize_registration_kind(value: Any) -> str:
+    """Who the assistant is being asked to help: a business, or a family.
+
+    Anything else is a business, which is where this started and what an old
+    registration row - written before the page asked - means by saying nothing.
+    """
+
+    return "family" if normalize_text(value).lower() == "family" else "business"
+
+
+def registration_facts(*, name: str, business: str, kind: str = "business") -> list[tuple[str, str]]:
     """What a registration tells the agent, as the facts it already reads.
 
-    The agent learns about a business through `remember_fact`; a registration
-    is the same knowledge arriving before the first message, so it is stored
-    the same way rather than in a field the agent would never look at.
+    The agent learns about someone through `remember_fact`; a registration is
+    the same knowledge arriving before the first message, so it is stored the
+    same way rather than in a field the agent would never look at. A family
+    answered a different question, so its answer is filed under a different
+    key: "what they do" would read as a job.
     """
 
     facts: list[tuple[str, str]] = []
     if normalize_text(name):
         facts.append(("name", f"Their name is {normalize_text(name)}."))
     if normalize_text(business):
-        facts.append(("what they do", normalize_text(business)))
+        key = "their family" if normalize_registration_kind(kind) == "family" else "what they do"
+        facts.append((key, normalize_text(business)))
     return facts
 
 
@@ -13763,6 +13779,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         try:
             registered_name = normalize_text(registration.get("name"))
             registered_business = normalize_text(registration.get("business"))
+            registered_kind = normalize_registration_kind(registration.get("kind"))
             self.database.register_user(
                 email,
                 display_name=registered_name or sender_name,
@@ -13779,8 +13796,13 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             if registration:
                 # What they typed on the page is what the agent knows from the
                 # first turn: the same facts it would otherwise have to be told.
+                # businessSummary is the profile field the agent reads for
+                # context whoever the person is; a family's line goes in the
+                # same place, under a name that predates families.
                 self.database.update_user_profile(email, profile={"businessSummary": registered_business})
-                for key, fact in registration_facts(name=registered_name, business=registered_business):
+                for key, fact in registration_facts(
+                    name=registered_name, business=registered_business, kind=registered_kind,
+                ):
                     self.database.save_account_fact(user_id=int(user.get("id") or 0), key=key, fact=fact)
         except (ValueError, KeyError, sqlite3.Error) as exc:
             print(f"WhatsApp signup could not create the account: {exc}", flush=True)
@@ -13895,10 +13917,13 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
     def _handle_register_post(self) -> None:
         """Take a registration from the web page and text the phone first.
 
-        The page asks for a name, a phone and what they do - no email, so no
-        account: accounts are keyed on an email, and that is asked for in the
-        chat. The phone gets an ordinary signup row that already carries the
-        name and business, and the welcome goes out as the approved template
+        The page asks who this is for - a business or a family - then a name,
+        a phone and a line about them; no email, so no account: accounts are
+        keyed on an email, and that is asked for in the chat. The kind is
+        carried from here all the way to the first WhatsApp message, so a
+        parent who registered about the school run is not greeted as a firm.
+        The phone gets an ordinary signup row that already carries the
+        name and what they wrote, and the welcome goes out as the approved template
         because we are speaking first, outside Meta's service window. When the
         phone replies it is a stranger with a signup open, and the signup
         conversation takes it from there; until then a typed number is only a
@@ -13932,6 +13957,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             })
             return
 
+        kind = normalize_registration_kind(payload.get("kind"))
         name = capitalize_name(normalize_contact_single_line(payload.get("name"), CONTACT_NAME_MAX_LENGTH))
         phone = normalize_whatsapp_number(payload.get("phone"))
         business = capitalize_sentence(
@@ -13939,12 +13965,18 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         )
 
         field_errors: dict[str, str] = {}
+        if normalize_text(payload.get("kind")).lower() not in REGISTRATION_KINDS:
+            field_errors["kind"] = "Pick the one that fits you."
         if len(name) < 2:
             field_errors["name"] = "Enter your name."
         if not 8 <= len(phone) <= 15 or phone.startswith("0"):
             field_errors["phone"] = "Enter the WhatsApp number you will text from, with its country."
         if len(business) < 2:
-            field_errors["business"] = "Tell me what you do, in a few words."
+            field_errors["business"] = (
+                "Tell me about your family, in a few words."
+                if kind == "family"
+                else "Tell me what you do, in a few words."
+            )
         if field_errors:
             json_response(self, HTTPStatus.BAD_REQUEST, {
                 "ok": False,
@@ -13992,7 +14024,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             return
 
         try:
-            self.database.start_web_registration(wa_id=phone, name=name, business=business)
+            self.database.start_web_registration(wa_id=phone, name=name, business=business, kind=kind)
         except (ValueError, sqlite3.Error) as exc:
             print(f"Web registration could not be saved: {exc}", flush=True)
             json_response(self, HTTPStatus.INTERNAL_SERVER_ERROR, {
@@ -14002,7 +14034,10 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             })
             return
 
-        welcome = f"{self._write_registration_welcome(name=name, business=business)} {REGISTRATION_NOT_YOU_TEXT}"
+        welcome = (
+            f"{self._write_registration_welcome(name=name, business=business, kind=kind)} "
+            f"{REGISTRATION_NOT_YOU_TEXT}"
+        )
         # The signup conversation starts with the welcome, so the reply to it
         # is answered as a reply and not as a first hello.
         self.database.append_whatsapp_signup_message(wa_id=phone, role="assistant", text=welcome)
@@ -14025,6 +14060,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             json.dumps(
                 {
                     "event": "web_registration_completed",
+                    "kind": kind,
                     "phone": self._mask_whatsapp_log_identifier(phone),
                     "welcomeSent": bool(sent_message_id),
                     "sendError": send_error[:200],
@@ -14049,7 +14085,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             "phone": phone,
         })
 
-    def _write_registration_welcome(self, *, name: str, business: str) -> str:
+    def _write_registration_welcome(self, *, name: str, business: str, kind: str = "business") -> str:
         """The first message to a web registrant, by the model or the fixed line.
 
         Unbilled, like the signup concierge: there is no account yet and this
@@ -14067,7 +14103,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             result = call_openai_response(
                 tool_name="whatsapp_registration_welcome",
                 tool_id="whatsapp_signup",
-                prompt=build_registration_welcome_prompt(name=name, business=business),
+                prompt=build_registration_welcome_prompt(name=name, business=business, kind=kind),
                 model=model,
                 instructions=SIGNUP_CONCIERGE_INSTRUCTIONS,
                 max_output_tokens=WHATSAPP_SIGNUP_MAX_OUTPUT_TOKENS,
