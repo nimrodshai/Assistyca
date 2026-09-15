@@ -1,9 +1,12 @@
 // The registration page: a name, a phone, what they do, one request, and a
-// message on WhatsApp. The phone is structured rather than typed free: a
-// country picked from a list, a national number typed as they would dial it,
-// and the full international number assembled here and shown back before it
-// is sent. The server records the registration and sends the first message;
-// the account itself opens in the chat, once they give an email there.
+// message on WhatsApp. The three are asked one at a time, the way the
+// assistant would ask them: an answered question slides off to the left and
+// the next arrives from the right. The phone is structured rather than typed
+// free: a country picked from a list, a national number typed as they would
+// dial it, and the full international number assembled here and shown back
+// before it is sent. The server records the registration and sends the first
+// message; the account itself opens in the chat, once they give an email
+// there.
 window.addEventListener("DOMContentLoaded", () => {
   const form = document.querySelector("[data-register-form]");
   const done = document.querySelector("[data-register-done]");
@@ -93,6 +96,54 @@ window.addEventListener("DOMContentLoaded", () => {
   const doneTitle = done.querySelector("[data-done-title]");
   const doneText = done.querySelector("[data-done-text]");
   const doneLink = done.querySelector("[data-done-link]");
+
+  // One question on screen at a time. The panels are stacked on top of each
+  // other and slid sideways, so the box has to be told how tall the question
+  // in view is; a ResizeObserver keeps that true when an error appears, a
+  // font lands, or the window changes width.
+  const flow = form.querySelector("[data-flow]");
+  const viewport = form.querySelector("[data-viewport]");
+  const steps = [...form.querySelectorAll("[data-step]")];
+  const dots = [...form.querySelectorAll("[data-progress] li")];
+  let current = 0;
+
+  const measure = () => {
+    viewport.style.height = `${steps[current].offsetHeight}px`;
+    // Older browsers treat the box as scrollable; never let it hold a scroll.
+    viewport.scrollTop = 0;
+    viewport.scrollLeft = 0;
+  };
+
+  const render = (focus) => {
+    steps.forEach((step, index) => {
+      step.setAttribute("data-state", index === current ? "current" : index < current ? "past" : "next");
+      step.setAttribute("aria-hidden", index === current ? "false" : "true");
+      // Belt and braces with the CSS visibility: neither the mouse nor Tab
+      // should reach a question that has slid off the side.
+      step.toggleAttribute("inert", index !== current);
+    });
+    dots.forEach((dot, index) => {
+      dot.setAttribute("data-state", index === current ? "current" : index < current ? "done" : "todo");
+    });
+    measure();
+    if (focus) {
+      // The text field, not the country list: the country is already guessed.
+      const control = steps[current].querySelector("input") || steps[current].querySelector("select");
+      if (control) {
+        control.focus({ preventScroll: true });
+      }
+    }
+  };
+
+  const goTo = (index) => {
+    current = Math.min(Math.max(index, 0), steps.length - 1);
+    render(true);
+  };
+
+  if (window.ResizeObserver) {
+    const observer = new ResizeObserver(() => measure());
+    steps.forEach((step) => observer.observe(step));
+  }
 
   // Alphabetical by name, so a country is found where the eye expects it.
   [...COUNTRIES].sort((a, b) => a[1].localeCompare(b[1], "en")).forEach(([iso, name, dial]) => {
@@ -220,10 +271,14 @@ window.addEventListener("DOMContentLoaded", () => {
         error.textContent = "";
       }
     });
+    measure();
   };
 
+  // An error is only useful where it can be seen: if it belongs to a question
+  // that has already slid away, come back to that question first.
   const showFieldErrors = (errors) => {
     let first = null;
+    let firstStep = -1;
     Object.entries(errors || {}).forEach(([name, message]) => {
       const field = form.querySelector(`[data-field="${name}"]`);
       if (!field) {
@@ -235,30 +290,99 @@ window.addEventListener("DOMContentLoaded", () => {
         error.textContent = String(message || "");
       }
       if (!first) {
-        first = field.querySelector("input, select");
+        first = field.querySelector("input") || field.querySelector("select");
+        firstStep = steps.findIndex((step) => step.contains(field));
       }
     });
+    if (firstStep >= 0 && firstStep !== current) {
+      goTo(firstStep);
+      return;
+    }
+    measure();
     if (first) {
-      first.focus();
+      first.focus({ preventScroll: true });
     }
   };
 
-  const validateLocally = (values) => {
-    const errors = {};
-    if (values.name.length < 2) {
-      errors.name = "Enter your full name.";
-    } else if (values.name.split(/\s+/).length < 2) {
-      errors.name = "Enter your first and last name.";
+  // What is wrong with one question's answer, if anything. Each question is
+  // checked on its own so nobody is told about a field they cannot see.
+  const stepErrors = (index) => {
+    if (index === 0) {
+      const name = capitalizeName(nameInput.value);
+      if (name.length < 2) {
+        return { name: "Enter your full name." };
+      }
+      if (name.split(/\s+/).length < 2) {
+        return { name: "Enter your first and last name." };
+      }
+      return {};
     }
-    const phoneError = phoneProblem();
-    if (phoneError) {
-      errors.phone = phoneError;
+    if (index === 1) {
+      const problem = phoneProblem();
+      return problem ? { phone: problem } : {};
     }
-    if (values.business.length < 2) {
-      errors.business = "Tell me what you do, in a few words.";
-    }
-    return errors;
+    const business = businessInput.value.trim();
+    return business.length < 2 ? { business: "Tell me what you do, in a few words." } : {};
   };
+
+  const validateLocally = () => Object.assign({}, stepErrors(0), stepErrors(1), stepErrors(2));
+
+  // Enter moves on without the field ever losing focus, so tidy it here too.
+  const tidyStep = (index) => {
+    if (index === 0) {
+      nameInput.value = capitalizeName(nameInput.value);
+    }
+    if (index === 2) {
+      businessInput.value = capitalizeSentence(businessInput.value);
+    }
+  };
+
+  const advance = () => {
+    tidyStep(current);
+    clearFieldErrors();
+    setStatus("");
+    const errors = stepErrors(current);
+    if (Object.keys(errors).length) {
+      showFieldErrors(errors);
+      return;
+    }
+    if (current < steps.length - 1) {
+      goTo(current + 1);
+    }
+  };
+
+  form.querySelectorAll("[data-next]").forEach((button) => {
+    button.addEventListener("click", advance);
+  });
+  form.querySelectorAll("[data-back]").forEach((button) => {
+    button.addEventListener("click", () => {
+      clearFieldErrors();
+      setStatus("");
+      goTo(current - 1);
+    });
+  });
+
+  // Enter is how a conversation moves on: to the next question, or on the
+  // last one to sending. Asked for outright rather than left to the browser,
+  // which only submits on its own when a form looks like an ordinary one.
+  steps.forEach((step, index) => {
+    step.querySelectorAll("input").forEach((input) => {
+      input.addEventListener("keydown", (event) => {
+        if (event.key !== "Enter") {
+          return;
+        }
+        event.preventDefault();
+        if (index < steps.length - 1) {
+          advance();
+        } else {
+          form.requestSubmit();
+        }
+      });
+    });
+  });
+
+  render(false);
+  flow.setAttribute("data-ready", "true");
 
   const showDone = (payload, shownNumber) => {
     form.hidden = true;
@@ -291,6 +415,11 @@ window.addEventListener("DOMContentLoaded", () => {
 
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
+    if (current < steps.length - 1) {
+      advance();
+      return;
+    }
+    tidyStep(current);
     clearFieldErrors();
     setStatus("");
 
@@ -303,10 +432,9 @@ window.addEventListener("DOMContentLoaded", () => {
       companyWebsite: String(data.get("companyWebsite") || "").trim(),
     };
 
-    const localErrors = validateLocally(values);
+    const localErrors = validateLocally();
     if (Object.keys(localErrors).length) {
       showFieldErrors(localErrors);
-      setStatus("Please fix the highlighted fields first.", "error");
       return;
     }
 

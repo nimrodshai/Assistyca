@@ -6,7 +6,7 @@
     <title>An assistant designed for businesses | Assistyca</title>
     <meta
       name="description"
-      content="An assistant designed for businesses. Tell Assistyca a little about yourself and your assistant will text you on WhatsApp."
+      content="An assistant designed for businesses. Three questions, and your assistant will text you on WhatsApp."
     />
     <meta name="robots" content="noindex" />
     <link rel="canonical" href="https://assistyca.com/register" />
@@ -48,6 +48,7 @@
         --danger: #b4443c;
         --danger-soft: rgba(180, 68, 60, 0.1);
         --shadow: 0 26px 70px rgba(19, 32, 56, 0.08);
+        --slide: 460ms cubic-bezier(0.22, 1, 0.36, 1);
       }
 
       * {
@@ -60,7 +61,7 @@
         min-height: 100%;
       }
 
-      /* The form is short: without this the canvas under it borrows the
+      /* The card is short: without this the canvas under it borrows the
          browser's own colour instead of the page's paper. */
       html {
         background: var(--bg);
@@ -103,6 +104,7 @@
         position: relative;
         isolation: isolate;
         margin: 3.25rem 0 2.25rem;
+        text-align: center;
         animation: rise-in 700ms cubic-bezier(0.22, 1, 0.36, 1) both;
       }
 
@@ -110,18 +112,19 @@
         content: "";
         position: absolute;
         z-index: -1;
-        top: -3.5rem;
-        right: -4rem;
-        width: 13rem;
+        top: -4rem;
+        left: 50%;
+        translate: -50% 0;
+        width: 22rem;
         aspect-ratio: 1;
         border-radius: 50%;
-        background: radial-gradient(circle, rgba(106, 167, 163, 0.18), rgba(106, 167, 163, 0) 70%);
+        background: radial-gradient(circle, rgba(106, 167, 163, 0.16), rgba(106, 167, 163, 0) 70%);
       }
 
       h1 {
         max-width: 100%;
-        font-size: clamp(2.05rem, 6.4vw, 2.8rem);
-        line-height: 1.1;
+        font-size: clamp(1.9rem, 5.8vw, 2.5rem);
+        line-height: 1.12;
         margin: 0;
         letter-spacing: -0.032em;
         text-wrap: balance;
@@ -147,11 +150,11 @@
       }
 
       .hero-copy {
-        max-width: 28rem;
-        margin: 1.25rem 0 0;
+        max-width: 26rem;
+        margin: 1rem auto 0;
         color: var(--muted);
-        font-size: 1.02rem;
-        line-height: 1.62;
+        font-size: 1rem;
+        line-height: 1.6;
       }
 
       .card {
@@ -176,23 +179,133 @@
         }
       }
 
+      /* Three questions, one at a time. The answered one slides off to the
+         left and the next arrives from the right, so the page reads like a
+         short conversation rather than a form to fill in. */
+      .progress {
+        display: flex;
+        justify-content: center;
+        gap: 0.4rem;
+        list-style: none;
+        margin: 0 0 1.6rem;
+        padding: 0;
+      }
+
+      .progress li {
+        width: 1.9rem;
+        height: 0.24rem;
+        border-radius: 999px;
+        background: var(--line);
+        transition: background 320ms ease, width 320ms ease;
+      }
+
+      .progress li[data-state="current"] {
+        width: 2.9rem;
+        background: var(--accent-deep);
+      }
+
+      .progress li[data-state="done"] {
+        background: var(--accent);
+      }
+
+      /* The gutter is the card's own padding, taken back with a negative
+         margin: a panel slides out of sight exactly at the card's edge, and
+         until then nothing of it - focus ring, button shadow - is cut off.
+         Sideways only; clipping the height would cut the shadow again.
+         clip rather than hidden, which would make this a scroll box and let
+         focus scroll the question out of view. */
+      .viewport {
+        --gutter: 1.75rem;
+        box-sizing: content-box;
+        position: relative;
+        overflow: hidden;
+        overflow: clip visible;
+        margin: 0 calc(-1 * var(--gutter));
+        padding: 0 var(--gutter);
+        transition: height var(--slide);
+      }
+
+      /* Before the script has measured the first question, hold a plausible
+         height and settle into the real one without animating it. */
+      .flow:not([data-ready]) .viewport {
+        min-height: 21rem;
+        transition: none;
+      }
+
+      .step {
+        position: absolute;
+        top: 0;
+        left: var(--gutter);
+        width: calc(100% - 2 * var(--gutter));
+        text-align: center;
+        opacity: 0;
+        visibility: hidden;
+        transform: translateX(115%);
+        transition: transform var(--slide), opacity 260ms ease, visibility 0s linear 460ms;
+      }
+
+      .step[data-state="past"] {
+        transform: translateX(-115%);
+      }
+
+      .step[data-state="current"] {
+        opacity: 1;
+        visibility: visible;
+        transform: translateX(0);
+        transition: transform var(--slide), opacity 320ms ease 120ms, visibility 0s;
+      }
+
+      .step-art {
+        width: 5.5rem;
+        height: 5.5rem;
+        margin: 0 auto 1.15rem;
+        filter: drop-shadow(0 12px 22px rgba(19, 32, 56, 0.08));
+      }
+
+      .step-art svg {
+        display: block;
+        width: 100%;
+        height: 100%;
+      }
+
+      .step-art .disc {
+        fill: rgba(106, 167, 163, 0.13);
+        stroke: rgba(106, 167, 163, 0.3);
+        stroke-width: 1;
+      }
+
+      .step-art .mark {
+        fill: none;
+        stroke: var(--accent-deep);
+        stroke-width: 2.2;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+      }
+
+      .step-art .mark-solid {
+        fill: var(--accent-deep);
+        stroke: none;
+      }
+
+      .step-question {
+        display: block;
+        font-size: clamp(1.3rem, 4.4vw, 1.55rem);
+        font-weight: 700;
+        letter-spacing: -0.02em;
+        line-height: 1.25;
+        margin: 0;
+      }
+
+      .step-hint {
+        margin: 0.45rem auto 1.4rem;
+        max-width: 24rem;
+        color: var(--muted);
+        font-size: 0.92rem;
+      }
+
       .field {
         display: block;
-        margin-bottom: 1.5rem;
-      }
-
-      .field-label {
-        display: block;
-        font-weight: 600;
-        font-size: 0.97rem;
-        margin-bottom: 0.3rem;
-      }
-
-      .field-hint {
-        display: block;
-        color: var(--muted);
-        font-size: 0.86rem;
-        margin-bottom: 0.45rem;
+        text-align: left;
       }
 
       .field input,
@@ -224,7 +337,8 @@
         display: none;
         color: var(--danger);
         font-size: 0.86rem;
-        margin-top: 0.35rem;
+        margin-top: 0.4rem;
+        text-align: center;
       }
 
       .field[data-invalid="true"] .field-error {
@@ -261,10 +375,11 @@
 
       .phone-preview {
         display: block;
-        margin-top: 0.45rem;
+        margin-top: 0.5rem;
         color: var(--muted);
         font-size: 0.86rem;
         font-variant-numeric: tabular-nums;
+        text-align: center;
         min-height: 1.2rem;
       }
 
@@ -274,6 +389,14 @@
         width: 1px;
         height: 1px;
         overflow: hidden;
+      }
+
+      .step-actions {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 0.35rem;
+        margin-top: 1.5rem;
       }
 
       .actions {
@@ -297,6 +420,10 @@
         cursor: pointer;
         text-decoration: none;
         transition: transform 120ms ease, background 120ms ease;
+      }
+
+      .step-actions .button-primary {
+        width: 100%;
       }
 
       .button-primary {
@@ -324,11 +451,28 @@
         background: var(--accent-soft);
       }
 
+      .button-quiet {
+        background: none;
+        border: 0;
+        color: var(--muted);
+        font: inherit;
+        font-size: 0.9rem;
+        min-height: 2.5rem;
+        padding: 0.35rem 0.9rem;
+        border-radius: 999px;
+        cursor: pointer;
+      }
+
+      .button-quiet:hover {
+        color: var(--ink);
+      }
+
       .status {
-        margin: 0.9rem 0 0;
+        margin: 1.1rem 0 0;
         min-height: 1.4rem;
         font-size: 0.95rem;
         color: var(--muted);
+        text-align: center;
       }
 
       .status[data-tone="error"] {
@@ -340,13 +484,18 @@
       }
 
       .fine-print {
-        margin: 1.4rem 0 0;
+        margin: 1rem 0 0;
         color: var(--muted);
         font-size: 0.86rem;
+        text-align: center;
       }
 
       .fine-print a {
         color: var(--accent-deep);
+      }
+
+      .done {
+        text-align: center;
       }
 
       .done h2 {
@@ -374,12 +523,16 @@
         }
 
         .card {
-          padding: 1.5rem 1.35rem;
+          padding: 1.5rem 1.25rem;
           border-radius: 1.3rem;
         }
 
         .hero {
           margin: 2.5rem 0 1.85rem;
+        }
+
+        .viewport {
+          --gutter: 1.25rem;
         }
 
         .phone-row {
@@ -392,6 +545,12 @@
         .card {
           animation: none;
         }
+
+        .viewport,
+        .step,
+        .progress li {
+          transition-duration: 1ms;
+        }
       }
     </style>
   </head>
@@ -403,53 +562,110 @@
 
       <header class="hero">
         <h1>An assistant designed for <span class="hero-highlight">businesses</span></h1>
-        <p class="hero-copy">Three answers and you're done. I'll text you on WhatsApp, and we'll take it from there.</p>
+        <p class="hero-copy">Three questions, then I'll text you on WhatsApp and we'll get started from there.</p>
       </header>
 
       <section class="card">
         <form data-register-form novalidate>
-          <label class="field" data-field="name">
-            <span class="field-label">Your full name</span>
-            <span class="field-hint">First and last name.</span>
-            <input name="name" type="text" autocomplete="name" required />
-            <span class="field-error" data-error-for="name"></span>
-          </label>
+          <div class="flow" data-flow>
+            <ol class="progress" data-progress aria-hidden="true">
+              <li data-state="current"></li>
+              <li></li>
+              <li></li>
+            </ol>
 
-          <div class="field" data-field="phone">
-            <label class="field-label" for="register-phone">Your WhatsApp number</label>
-            <span class="field-hint">Pick your country, then type the number as you would dial it at home.</span>
-            <div class="phone-row">
-              <select name="country" data-phone-country aria-label="Country"></select>
-              <div class="phone-national">
-                <span class="phone-dial" data-phone-dial aria-hidden="true"></span>
-                <input
-                  id="register-phone"
-                  name="national"
-                  type="tel"
-                  inputmode="numeric"
-                  autocomplete="tel-national"
-                  data-phone-national
-                  required
-                />
-              </div>
+            <div class="viewport" data-viewport>
+              <section class="step" data-step="name" data-state="current">
+                <div class="step-art" aria-hidden="true">
+                  <svg viewBox="0 0 64 64" role="img">
+                    <circle class="disc" cx="32" cy="32" r="30" />
+                    <circle class="mark" cx="32" cy="26" r="6.5" />
+                    <path class="mark" d="M20.5 44a11.5 11.5 0 0 1 23 0" />
+                  </svg>
+                </div>
+                <label class="step-question" for="register-name">What should I call you?</label>
+                <p class="step-hint">Your first and last name.</p>
+                <div class="field" data-field="name">
+                  <input id="register-name" name="name" type="text" autocomplete="name" required />
+                  <span class="field-error" data-error-for="name"></span>
+                </div>
+                <div class="step-actions">
+                  <button class="button button-primary" type="button" data-next>Continue</button>
+                </div>
+              </section>
+
+              <section class="step" data-step="phone">
+                <div class="step-art" aria-hidden="true">
+                  <svg viewBox="0 0 64 64" role="img">
+                    <circle class="disc" cx="32" cy="32" r="30" />
+                    <path
+                      class="mark"
+                      d="M18 22.5a4 4 0 0 1 4-4h20a4 4 0 0 1 4 4v13a4 4 0 0 1-4 4H30l-7.5 6v-6H22a4 4 0 0 1-4-4z"
+                    />
+                    <circle class="mark-solid" cx="26" cy="29" r="1.7" />
+                    <circle class="mark-solid" cx="32" cy="29" r="1.7" />
+                    <circle class="mark-solid" cx="38" cy="29" r="1.7" />
+                  </svg>
+                </div>
+                <label class="step-question" for="register-phone">Which number do you use on WhatsApp?</label>
+                <p class="step-hint">Pick your country, then type the number as you would dial it at home.</p>
+                <div class="field" data-field="phone">
+                  <div class="phone-row">
+                    <select name="country" data-phone-country aria-label="Country"></select>
+                    <div class="phone-national">
+                      <span class="phone-dial" data-phone-dial aria-hidden="true"></span>
+                      <input
+                        id="register-phone"
+                        name="national"
+                        type="tel"
+                        inputmode="numeric"
+                        autocomplete="tel-national"
+                        data-phone-national
+                        required
+                      />
+                    </div>
+                  </div>
+                  <span class="phone-preview" data-phone-preview aria-live="polite"></span>
+                  <span class="field-error" data-error-for="phone"></span>
+                </div>
+                <div class="step-actions">
+                  <button class="button button-primary" type="button" data-next>Continue</button>
+                  <button class="button-quiet" type="button" data-back>Back</button>
+                </div>
+              </section>
+
+              <section class="step" data-step="business">
+                <div class="step-art" aria-hidden="true">
+                  <svg viewBox="0 0 64 64" role="img">
+                    <circle class="disc" cx="32" cy="32" r="30" />
+                    <rect class="mark" x="16" y="23" width="32" height="20" rx="4" />
+                    <path class="mark" d="M26 23v-3a3 3 0 0 1 3-3h6a3 3 0 0 1 3 3v3" />
+                    <path class="mark" d="M16.6 31.5h30.8" />
+                  </svg>
+                </div>
+                <label class="step-question" for="register-business">And what do you do?</label>
+                <p class="step-hint">A line is enough, for example "I run a small architecture studio".</p>
+                <div class="field" data-field="business">
+                  <input
+                    id="register-business"
+                    name="business"
+                    type="text"
+                    autocomplete="organization-title"
+                    required
+                  />
+                  <span class="field-error" data-error-for="business"></span>
+                </div>
+                <div class="step-actions">
+                  <button class="button button-primary" type="submit" data-register-submit>Register and text me</button>
+                  <button class="button-quiet" type="button" data-back>Back</button>
+                </div>
+              </section>
             </div>
-            <span class="phone-preview" data-phone-preview aria-live="polite"></span>
-            <span class="field-error" data-error-for="phone"></span>
           </div>
-
-          <label class="field" data-field="business">
-            <span class="field-label">What do you do?</span>
-            <span class="field-hint">A line is enough, for example "I run a small architecture studio".</span>
-            <input name="business" type="text" autocomplete="organization-title" required />
-            <span class="field-error" data-error-for="business"></span>
-          </label>
 
           <label class="honeypot" for="register-company-website">Company website</label>
           <input class="honeypot" id="register-company-website" name="companyWebsite" type="text" tabindex="-1" autocomplete="off" />
 
-          <div class="actions">
-            <button class="button button-primary" type="submit" data-register-submit>Register and text me</button>
-          </div>
           <p class="status" data-register-status role="status" aria-live="polite"></p>
           <p class="fine-print">
             Already have an account? <a href="/portal/">Sign in</a>. By registering you agree to the
