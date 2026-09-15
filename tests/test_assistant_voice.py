@@ -26,6 +26,9 @@ from packages.infrastructure.agent_proposals import AGENT_TURN_INSTRUCTIONS
 from packages.infrastructure.answer_composer import ANSWER_COMPOSER_INSTRUCTIONS
 from packages.infrastructure.assistant_voice import ASSISTANT_VOICE
 from packages.infrastructure.recovery_reply import RECOVERY_INSTRUCTIONS
+from packages.infrastructure.reply_judge import JUDGE_INSTRUCTIONS
+from packages.infrastructure.reply_judge import RUBRIC
+from packages.infrastructure.reply_judge import low_points
 from packages.infrastructure.whatsapp_agent_chat import SIGNUP_CONCIERGE_INSTRUCTIONS
 
 
@@ -52,6 +55,31 @@ class AssistantVoiceTests(unittest.TestCase):
         # Warmth stays; the cheerfulness that talked over the answer does not.
         self.assertNotIn("playful", _CHANNEL_RULES["whatsapp"])
         self.assertIn("warm", _CHANNEL_RULES["whatsapp"].lower())
+
+
+class JudgedForCalmTests(unittest.TestCase):
+    """The voice asked for in the prompt is also the voice scored afterwards.
+
+    Without this the only guard on tone is a prompt that says the word calm,
+    which proves what was asked for and nothing about what came back.
+    """
+
+    def test_the_judge_scores_calm_alongside_the_other_points(self) -> None:
+        self.assertIn("calm", RUBRIC)
+        self.assertIn("on each of six points", JUDGE_INSTRUCTIONS)
+        self.assertIn('"calm":n', JUDGE_INSTRUCTIONS)
+
+    def test_calm_is_scored_for_what_is_absent_not_for_style(self) -> None:
+        # A rubric that rewarded calm as a quality would push replies towards
+        # the precious. The criterion has to hand a plain answer full marks.
+        self.assertIn("A plain reply that answers and stops is a 5", JUDGE_INSTRUCTIONS)
+        self.assertIn("is not pressure", JUDGE_INSTRUCTIONS)
+
+    def test_a_reply_that_fails_only_on_calm_is_caught(self) -> None:
+        scores = {key: 5 for key in RUBRIC}
+        scores["calm"] = 1
+        self.assertEqual(low_points(scores), ["calm"])
+        self.assertEqual(low_points({key: 5 for key in RUBRIC}), [])
 
 
 if __name__ == "__main__":

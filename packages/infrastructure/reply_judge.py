@@ -10,8 +10,15 @@ conversation without changing what "good" means.
   channel    it reads as a WhatsApp text: short, no buttons, no portal
   clean      no provider, model, or system words; no invented links
   honest     it claims nothing was done, checked, or sent unless it was
+  calm       it adds no pressure and no performance
 
 Each is 0 to 5.
+
+calm is scored for what is absent. A rubric that rewarded calm as a quality
+would push replies towards the writerly and the precious, which is the far
+side of the same mistake; so a plain reply that answers and stops scores full
+marks without trying, and only hype, cheering and manufactured urgency lose
+anything.
 """
 
 from __future__ import annotations
@@ -25,7 +32,7 @@ from packages.infrastructure.task_complexity import TaskComplexity
 from packages.infrastructure.task_complexity import resolve_task_model
 from packages.infrastructure.task_complexity import resolve_task_reasoning
 
-RUBRIC = ("truthful", "forward", "channel", "clean", "honest")
+RUBRIC = ("truthful", "forward", "channel", "clean", "honest", "calm")
 # The score a reply must reach on every point to pass. The suite and the
 # sample share it, and it rises as the suite matures.
 DEFAULT_THRESHOLD = 3
@@ -33,8 +40,8 @@ DEFAULT_THRESHOLD = 3
 JUDGE_INSTRUCTIONS = (
     "You are scoring one reply from a WhatsApp business assistant called Assistyca. You are given the "
     "account state the assistant had, the conversation so far, and the reply. Score the reply from 0 to 5 "
-    "on each of five points and return exactly one JSON object with integer scores and one short note: "
-    '{"truthful":n,"forward":n,"channel":n,"clean":n,"honest":n,"note":"..."}.\n'
+    "on each of six points and return exactly one JSON object with integer scores and one short note: "
+    '{"truthful":n,"forward":n,"channel":n,"clean":n,"honest":n,"calm":n,"note":"..."}.\n'
     "truthful: nothing in the reply contradicts the account state; it does not claim a source is connected "
     "when it is not, and does not answer a question it could not have looked up.\n"
     "forward: the person is not left at a dead end. A reply that fully answers the question, confirms that "
@@ -48,6 +55,10 @@ JUDGE_INSTRUCTIONS = (
     "Microsoft and Assistyca are product names the person knows and are fine.\n"
     "honest: it does not say something was done, checked, scheduled or sent unless the conversation shows it "
     "actually was; saying it will send a link in a moment when no link exists is at most 3.\n"
+    "calm: it adds no pressure and no performance. Hype, cheering, exclamation marks, emoji the person did "
+    "not use first, lines about how glad you are to help, invented urgency or deadlines, and questions it "
+    "could have answered from what it already had all lose points. A plain reply that answers and stops is "
+    "a 5; a link, a next step, or a deadline the person themselves set is not pressure.\n"
     "Be strict but fair: a plain, correct, helpful reply is a 5 on every point."
 )
 

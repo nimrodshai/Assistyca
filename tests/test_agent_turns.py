@@ -43,6 +43,7 @@ from packages.infrastructure.openai_api import observe_responses
 from packages.infrastructure.portal_auth.server import PortalConfig
 from packages.infrastructure.portal_auth.server import create_server
 from packages.infrastructure.portal_db import PortalDatabase
+from packages.infrastructure.reply_judge import RUBRIC
 from packages.infrastructure.reply_judge import parse_scores
 from packages.infrastructure.whatsapp_agent_chat import WhatsAppAgentChat
 
@@ -280,7 +281,12 @@ class SamplingTests(unittest.TestCase):
 
     def test_the_weekly_report_lands_in_the_admin_feed_once(self) -> None:
         def judge(state: str, conversation: list, reply: str) -> dict:
-            return {"truthful": 5, "forward": 1 if reply == "answer 1" else 5, "channel": 5, "clean": 5, "honest": 5, "note": "dead end" if reply == "answer 1" else ""}
+            # Built from the rubric itself: a judge that stopped returning a
+            # point would fail every reply, and a stale literal here would
+            # hide that behind a passing test.
+            scores = {key: 5 for key in RUBRIC}
+            scores["forward"] = 1 if reply == "answer 1" else 5
+            return {**scores, "note": "dead end" if reply == "answer 1" else ""}
 
         config = AgentTurnSamplingConfig(timezone_name="UTC", schedule_weekday=NOW.weekday(), schedule_hour=9, schedule_minute=0, sample_size=20)
         scheduler = AgentTurnSamplingScheduler(self.database, config=config, judge=judge)
