@@ -1011,6 +1011,11 @@ STATIC_PAGE_ALIASES: dict[str, Path] = {
 }
 # The public, read-only view of one shared list. The token is the rest of
 # the path; the page reads it from its own address and asks the API.
+# Someone who already has an account does not sign in to use Assistyca, they
+# text it. The page cannot know the number - it is configuration, and it
+# differs between staging and production - so it links here and the server
+# sends them on.
+WHATSAPP_CHAT_PATH = "/whatsapp"
 LIST_SHARE_PAGE_PREFIX = "/l/"
 LIST_SHARE_PAGE = Path("portal/list-share.html")
 # A link from WhatsApp opens the lists page on a phone that has no browser
@@ -4378,6 +4383,9 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             return
         if path.startswith(RECEIPTS_HANDOFF_PREFIX):
             self._handle_receipts_handoff(parsed)
+            return
+        if path == WHATSAPP_CHAT_PATH:
+            self._handle_whatsapp_chat_redirect()
             return
 
         super().do_GET()
@@ -14136,6 +14144,17 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         except (OpenAIError, ValueError, json.JSONDecodeError) as exc:
             print(f"Web registration welcome model failed: {getattr(exc, 'message', exc)}", flush=True)
             return fallback
+
+    def _handle_whatsapp_chat_redirect(self) -> None:
+        """The short way back into the conversation, for someone who has an account.
+
+        No token and nothing personal: this is the same public door the signup
+        link opens, so it is safe to hand to anyone. If no number is configured
+        the portal sign-in still answers, because a link that goes nowhere is
+        worse than a link that goes somewhere else.
+        """
+
+        self._redirect(build_whatsapp_signup_link() or "/portal/")
 
     def _handle_admin_whatsapp_signup_get(self) -> None:
         """Where the public door stands: the link, the switch, and today's count."""
