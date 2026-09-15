@@ -243,7 +243,6 @@ window.addEventListener("DOMContentLoaded", () => {
   const KINDS = {
     business: {
       heroWord: "your business",
-      heroCopy: "A few questions, then I'll text you on WhatsApp and we'll get started from there.",
       question: "And what do you do?",
       hint: 'A line is enough, for example "I run a small architecture studio".',
       autocomplete: "organization-title",
@@ -251,8 +250,6 @@ window.addEventListener("DOMContentLoaded", () => {
     },
     family: {
       heroWord: "your family",
-      heroCopy:
-        "A few questions, then I'll text you on WhatsApp - and we can bring the other parents in from there.",
       question: "Tell me about your family.",
       hint: 'A line is enough, for example "Three kids, 6 to 12, football and ballet most afternoons".',
       autocomplete: "off",
@@ -261,7 +258,6 @@ window.addEventListener("DOMContentLoaded", () => {
   };
 
   const heroWord = document.querySelector("[data-hero-word]");
-  const heroCopy = document.querySelector("[data-hero-copy]");
   const aboutStep = form.querySelector('[data-step="business"]');
   const aboutQuestion = form.querySelector("[data-about-question]");
   const aboutHint = form.querySelector("[data-about-hint]");
@@ -279,7 +275,6 @@ window.addEventListener("DOMContentLoaded", () => {
     const kind = chosenKind();
     const copy = KINDS[kind] || null;
     heroWord.textContent = copy ? copy.heroWord : "you";
-    heroCopy.textContent = copy ? copy.heroCopy : KINDS.business.heroCopy;
     aboutStep.setAttribute("data-kind", kind || "business");
     aboutQuestion.textContent = (copy || KINDS.business).question;
     aboutHint.textContent = (copy || KINDS.business).hint;
@@ -288,11 +283,12 @@ window.addEventListener("DOMContentLoaded", () => {
   };
 
   kindChoices.forEach((choice) => {
-    // change carries the keyboard, where arrowing through the options should
-    // rewrite the page but not jump off it; a real tap or click is the answer
-    // and the page moves on - even when they came back and picked the same
-    // card again, which fires no change at all. Arrowing a radio group fires
-    // a click too, with no pointer behind it: detail is 0 there and 1 for a
+    // This question costs one click: the card is the answer, so a tap picks
+    // and moves on in the same motion - even when they came back and picked
+    // the same card again, which fires no change at all. The keyboard keeps
+    // its own pace: arrowing through the options rewrites the page without
+    // jumping off it, and Enter moves on. Arrowing a radio group fires a
+    // click too, with no pointer behind it - detail is 0 there and 1 for a
     // hand, which is what tells the two apart.
     choice.addEventListener("change", applyKind);
     choice.addEventListener("click", (event) => {

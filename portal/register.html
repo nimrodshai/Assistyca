@@ -149,14 +149,6 @@
         transform: rotate(-1.5deg);
       }
 
-      .hero-copy {
-        max-width: 26rem;
-        margin: 1rem auto 0;
-        color: var(--muted);
-        font-size: 1rem;
-        line-height: 1.6;
-      }
-
       .card {
         background: var(--surface);
         border: 1px solid var(--hairline);
@@ -309,7 +301,9 @@
       .choices {
         display: grid;
         gap: 0.7rem;
-        margin: 0.2rem 0 0;
+        /* The cards stand where the hint used to leave the field: this
+           question has no line under it, so the room comes from here. */
+        margin: 1.3rem 0 0;
       }
 
       .choice {
@@ -662,7 +656,6 @@
 
       <header class="hero">
         <h1>An assistant designed for <span class="hero-highlight" data-hero-word>you</span></h1>
-        <p class="hero-copy" data-hero-copy>A few questions, then I'll text you on WhatsApp and we'll get started from there.</p>
       </header>
 
       <section class="card">
@@ -688,7 +681,6 @@
                   </svg>
                 </div>
                 <p class="step-question" id="register-kind-question">Who am I helping?</p>
-                <p class="step-hint">Pick one - it changes what I look after for you.</p>
                 <div class="field" data-field="kind">
                   <div class="choices" role="radiogroup" aria-labelledby="register-kind-question">
                     <label class="choice">
@@ -728,9 +720,6 @@
                     </label>
                   </div>
                   <span class="field-error" data-error-for="kind"></span>
-                </div>
-                <div class="step-actions">
-                  <button class="button button-primary" type="button" data-next>Continue</button>
                 </div>
               </section>
 
