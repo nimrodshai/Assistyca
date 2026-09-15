@@ -18,6 +18,13 @@ import re
 from typing import Any
 from typing import Iterable
 
+from packages.infrastructure.agent_approvals import AGENT_APPROVAL_TTL_SECONDS
+from packages.infrastructure.agent_approvals import APPROVAL_ARMED
+from packages.infrastructure.agent_approvals import APPROVAL_ASKED
+from packages.infrastructure.agent_approvals import APPROVAL_DECLINED
+from packages.infrastructure.agent_approvals import APPROVAL_SPENT
+from packages.infrastructure.agent_approvals import approval_fingerprint
+from packages.infrastructure.agent_approvals import approval_matches
 from packages.infrastructure.feature_catalog import load_default_feature_catalog
 from packages.infrastructure.insurance_manager import INSURANCE_POLICY_STATUSES
 from packages.infrastructure.insurance_manager import choose_applicable_version
@@ -782,6 +789,24 @@ CREATE TABLE IF NOT EXISTS whatsapp_agent_state (
     updated_at TEXT NOT NULL,
     FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
 );
+
+CREATE TABLE IF NOT EXISTS agent_action_approvals (
+    id TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    tool TEXT NOT NULL,
+    arguments_json TEXT NOT NULL DEFAULT '',
+    fingerprint TEXT NOT NULL DEFAULT '',
+    description TEXT NOT NULL DEFAULT '',
+    state TEXT NOT NULL DEFAULT 'asked',
+    asked_at TEXT NOT NULL,
+    expires_at REAL NOT NULL DEFAULT 0,
+    settled_at TEXT NOT NULL DEFAULT '',
+    spent_at TEXT NOT NULL DEFAULT '',
+    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_action_approvals_user
+    ON agent_action_approvals(user_id, state);
 
 CREATE TABLE IF NOT EXISTS billing_customers (
     user_id INTEGER PRIMARY KEY,
@@ -5943,6 +5968,223 @@ class PortalDatabase:
                 (resolved_user_id, serialized, now_iso()),
             )
             conn.commit()
+
+    # -- approvals --------------------------------------------------------
+
+    def open_agent_approval(
+        self,
+        *,
+        user_id: int,
+        tool: str,
+        arguments: dict[str, Any] | None,
+        request: dict[str, Any] | None,
+        description: str,
+        ttl_seconds: int = AGENT_APPROVAL_TTL_SECONDS,
+    ) -> dict[str, Any] | None:
+        """Write down an action that was proposed, and what it would do.
+
+        The row is the only copy of the action from here on: the answer that
+        arms it carries nothing but this id, so nobody can arm something
+        that was never proposed.
+        """
+
+        resolved_user_id = int(user_id or 0)
+        normalized_tool = normalize_text(tool)
+        if resolved_user_id <= 0 or not normalized_tool:
+            return None
+        approval_id = f"ap_{secrets.token_urlsafe(24)}"
+        stored_arguments = arguments if isinstance(arguments, dict) else {}
+        fingerprint = approval_fingerprint(request)
+        asked_at = now_iso()
+        with self._connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO agent_action_approvals
+                    (id, user_id, tool, arguments_json, fingerprint, description, state, asked_at, expires_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    approval_id,
+                    resolved_user_id,
+                    normalized_tool,
+                    json.dumps(stored_arguments, ensure_ascii=False, separators=(",", ":")),
+                    fingerprint,
+                    normalize_text(description),
+                    APPROVAL_ASKED,
+                    asked_at,
+                    time.time() + max(int(ttl_seconds or 0), 0),
+                ),
+            )
+            conn.commit()
+        return {
+            "id": approval_id,
+            "tool": normalized_tool,
+            "arguments": stored_arguments,
+            "fingerprint": fingerprint,
+            "description": normalize_text(description),
+            "askedAt": asked_at,
+        }
+
+    def _settle_agent_approval(self, *, approval_id: str, user_id: int, state: str) -> dict[str, Any] | None:
+        """Move a proposed action to armed or declined, once.
+
+        None when the id is unknown, belongs to someone else, has expired,
+        or has already been answered. The update is what makes it one-time:
+        two yeses racing for the same question see one row change.
+        """
+
+        normalized_id = normalize_text(approval_id)
+        resolved_user_id = int(user_id or 0)
+        if not normalized_id or resolved_user_id <= 0:
+            return None
+        with self._connection() as conn:
+            updated = conn.execute(
+                """
+                UPDATE agent_action_approvals SET state = ?, settled_at = ?
+                WHERE id = ? AND user_id = ? AND state = ? AND expires_at > ?
+                """,
+                (state, now_iso(), normalized_id, resolved_user_id, APPROVAL_ASKED, time.time()),
+            )
+            if int(updated.rowcount or 0) != 1:
+                conn.commit()
+                return None
+            row = conn.execute(
+                "SELECT id, tool, arguments_json, fingerprint, description FROM agent_action_approvals WHERE id = ?",
+                (normalized_id,),
+            ).fetchone()
+            conn.commit()
+        if row is None:
+            return None
+        try:
+            arguments = json.loads(str(row["arguments_json"] or "") or "{}")
+        except json.JSONDecodeError:
+            arguments = {}
+        return {
+            "id": str(row["id"]),
+            "tool": str(row["tool"] or ""),
+            "arguments": arguments if isinstance(arguments, dict) else {},
+            "fingerprint": str(row["fingerprint"] or ""),
+            "description": str(row["description"] or ""),
+        }
+
+    def arm_agent_approval(self, *, approval_id: str, user_id: int) -> dict[str, Any] | None:
+        """The person said yes: hand back the action they agreed to."""
+
+        return self._settle_agent_approval(approval_id=approval_id, user_id=user_id, state=APPROVAL_ARMED)
+
+    def decline_agent_approval(self, *, approval_id: str, user_id: int) -> dict[str, Any] | None:
+        """The person said no: the action is retired without ever running."""
+
+        return self._settle_agent_approval(approval_id=approval_id, user_id=user_id, state=APPROVAL_DECLINED)
+
+    def spend_agent_approval(
+        self,
+        *,
+        approval_id: str,
+        user_id: int,
+        tool: str,
+        request: dict[str, Any] | None,
+    ) -> dict[str, Any] | None:
+        """Take the yes at the door, for this tool and this exact request.
+
+        None when there is nothing armed under that id, when it belongs to
+        someone else, when it has expired, when it was already spent, or
+        when what is being asked for is not what was agreed to. The row
+        moves to spent before the action runs, never after: an action that
+        fails on the far side is asked about again rather than repeated on
+        a yes the person gave once.
+        """
+
+        normalized_id = normalize_text(approval_id)
+        resolved_user_id = int(user_id or 0)
+        if not normalized_id or resolved_user_id <= 0:
+            return None
+        with self._connection() as conn:
+            row = conn.execute(
+                """
+                SELECT id, tool, fingerprint, description FROM agent_action_approvals
+                WHERE id = ? AND user_id = ? AND state = ? AND expires_at > ?
+                """,
+                (normalized_id, resolved_user_id, APPROVAL_ARMED, time.time()),
+            ).fetchone()
+            if row is None:
+                return None
+            armed = {
+                "id": str(row["id"]),
+                "tool": str(row["tool"] or ""),
+                "fingerprint": str(row["fingerprint"] or ""),
+                "description": str(row["description"] or ""),
+            }
+            if not approval_matches(armed, tool=tool, request=request):
+                return None
+            spent = conn.execute(
+                """
+                UPDATE agent_action_approvals SET state = ?, spent_at = ?
+                WHERE id = ? AND user_id = ? AND state = ?
+                """,
+                (APPROVAL_SPENT, now_iso(), normalized_id, resolved_user_id, APPROVAL_ARMED),
+            )
+            conn.commit()
+            if int(spent.rowcount or 0) != 1:
+                return None
+        return armed
+
+    def get_agent_approval(self, *, approval_id: str, user_id: int) -> dict[str, Any] | None:
+        """One approval as it stands, for a caller that needs to explain it."""
+
+        normalized_id = normalize_text(approval_id)
+        resolved_user_id = int(user_id or 0)
+        if not normalized_id or resolved_user_id <= 0:
+            return None
+        with self._connection() as conn:
+            row = conn.execute(
+                "SELECT id, tool, arguments_json, fingerprint, description, state, asked_at, expires_at "
+                "FROM agent_action_approvals WHERE id = ? AND user_id = ?",
+                (normalized_id, resolved_user_id),
+            ).fetchone()
+        if row is None:
+            return None
+        try:
+            arguments = json.loads(str(row["arguments_json"] or "") or "{}")
+        except json.JSONDecodeError:
+            arguments = {}
+        return {
+            "id": str(row["id"]),
+            "tool": str(row["tool"] or ""),
+            "arguments": arguments if isinstance(arguments, dict) else {},
+            "fingerprint": str(row["fingerprint"] or ""),
+            "description": str(row["description"] or ""),
+            "state": str(row["state"] or ""),
+            "askedAt": str(row["asked_at"] or ""),
+            "expired": float(row["expires_at"] or 0) <= time.time(),
+        }
+
+    def retire_open_agent_approvals(self, *, user_id: int, tool: str = "") -> int:
+        """Drop questions that are no longer being asked.
+
+        A new proposal replaces an older one that was never answered, so a
+        yes can never reach back past the question in front of the person.
+        """
+
+        resolved_user_id = int(user_id or 0)
+        if resolved_user_id <= 0:
+            return 0
+        normalized_tool = normalize_text(tool)
+        with self._connection() as conn:
+            if normalized_tool:
+                cursor = conn.execute(
+                    "UPDATE agent_action_approvals SET state = ?, settled_at = ? "
+                    "WHERE user_id = ? AND state = ? AND tool = ?",
+                    (APPROVAL_DECLINED, now_iso(), resolved_user_id, APPROVAL_ASKED, normalized_tool),
+                )
+            else:
+                cursor = conn.execute(
+                    "UPDATE agent_action_approvals SET state = ?, settled_at = ? "
+                    "WHERE user_id = ? AND state = ?",
+                    (APPROVAL_DECLINED, now_iso(), resolved_user_id, APPROVAL_ASKED),
+                )
+            conn.commit()
+            return int(cursor.rowcount or 0)
 
     def save_whatsapp_agent_message(self, *, user_id: int, role: str, text: str) -> dict[str, Any]:
         """One turn of the owner's WhatsApp conversation with the agent.

@@ -40,6 +40,8 @@
         --ink: #132038;
         --muted: #667185;
         --line: rgba(19, 32, 56, 0.12);
+        --hairline: rgba(19, 32, 56, 0.07);
+        --sand: #d8d0c2;
         --accent: #6aa7a3;
         --accent-deep: #4f9290;
         --accent-soft: rgba(106, 167, 163, 0.14);
@@ -58,6 +60,12 @@
         min-height: 100%;
       }
 
+      /* The form is short: without this the canvas under it borrows the
+         browser's own colour instead of the page's paper. */
+      html {
+        background: var(--bg);
+      }
+
       body {
         font-family: "Manrope", "Segoe UI", system-ui, -apple-system, sans-serif;
         color: var(--ink);
@@ -70,9 +78,9 @@
       }
 
       .page {
-        max-width: 36rem;
+        max-width: 34rem;
         margin: 0 auto;
-        padding: 2.5rem 1.25rem 4rem;
+        padding: 3.5rem 1.35rem 5rem;
       }
 
       .brand {
@@ -85,43 +93,37 @@
         letter-spacing: 0.01em;
       }
 
-      .brand-mark {
-        width: 2.1rem;
-        height: 2.1rem;
-        border-radius: 0.7rem;
-        display: grid;
-        place-items: center;
-        background: var(--accent);
-        color: #fff;
-        font-weight: 700;
+      .brand img {
+        height: 1.6rem;
+        width: auto;
+        display: block;
       }
 
       .hero {
         position: relative;
         isolation: isolate;
-        margin: 2.5rem 0 1.5rem;
-        padding-right: 3.75rem;
-        animation: rise-in 560ms cubic-bezier(0.22, 1, 0.36, 1) both;
+        margin: 3.25rem 0 2.25rem;
+        animation: rise-in 700ms cubic-bezier(0.22, 1, 0.36, 1) both;
       }
 
       .hero::before {
         content: "";
         position: absolute;
         z-index: -1;
-        top: -2.4rem;
-        right: -2.8rem;
-        width: 10rem;
+        top: -3.5rem;
+        right: -4rem;
+        width: 13rem;
         aspect-ratio: 1;
         border-radius: 50%;
-        background: radial-gradient(circle, rgba(106, 167, 163, 0.24), rgba(106, 167, 163, 0) 68%);
+        background: radial-gradient(circle, rgba(106, 167, 163, 0.18), rgba(106, 167, 163, 0) 70%);
       }
 
       h1 {
         max-width: 100%;
-        font-size: clamp(2.2rem, 7vw, 3rem);
-        line-height: 1.02;
+        font-size: clamp(2.05rem, 6.4vw, 2.8rem);
+        line-height: 1.1;
         margin: 0;
-        letter-spacing: -0.045em;
+        letter-spacing: -0.032em;
         text-wrap: balance;
       }
 
@@ -144,53 +146,22 @@
         transform: rotate(-1.5deg);
       }
 
-      .hero-signal {
-        position: absolute;
-        top: 0.3rem;
-        right: 0.25rem;
-        width: 3rem;
-        aspect-ratio: 1;
-        border: 1px solid rgba(79, 146, 144, 0.34);
-        border-radius: 0.9rem;
-        transform: rotate(10deg);
-      }
-
-      .hero-signal::before,
-      .hero-signal::after {
-        content: "";
-        position: absolute;
-        border-radius: 50%;
-      }
-
-      .hero-signal::before {
-        inset: 0.72rem;
-        border: 1px solid rgba(79, 146, 144, 0.48);
-      }
-
-      .hero-signal::after {
-        width: 0.55rem;
-        aspect-ratio: 1;
-        top: calc(50% - 0.275rem);
-        left: calc(50% - 0.275rem);
-        background: var(--accent-deep);
-        box-shadow: 0 0 0 0.42rem var(--accent-soft);
-      }
-
       .hero-copy {
-        max-width: 31rem;
-        margin: 1rem 0 0;
+        max-width: 28rem;
+        margin: 1.25rem 0 0;
         color: var(--muted);
-        font-size: 0.98rem;
+        font-size: 1.02rem;
+        line-height: 1.62;
       }
 
       .card {
         background: var(--surface);
-        border: 1px solid var(--line);
-        border-radius: 1.4rem;
+        border: 1px solid var(--hairline);
+        border-radius: 1.6rem;
         box-shadow: var(--shadow);
-        padding: 1.6rem;
+        padding: 1.9rem 1.75rem;
         backdrop-filter: blur(12px);
-        animation: rise-in 560ms 90ms cubic-bezier(0.22, 1, 0.36, 1) both;
+        animation: rise-in 700ms 120ms cubic-bezier(0.22, 1, 0.36, 1) both;
       }
 
       @keyframes rise-in {
@@ -207,14 +178,14 @@
 
       .field {
         display: block;
-        margin-bottom: 1.15rem;
+        margin-bottom: 1.5rem;
       }
 
       .field-label {
         display: block;
-        font-weight: 700;
-        font-size: 0.95rem;
-        margin-bottom: 0.35rem;
+        font-weight: 600;
+        font-size: 0.97rem;
+        margin-bottom: 0.3rem;
       }
 
       .field-hint {
@@ -229,8 +200,8 @@
         width: 100%;
         font: inherit;
         color: inherit;
-        padding: 0.8rem 0.95rem;
-        border-radius: 0.85rem;
+        padding: 0.85rem 1rem;
+        border-radius: 0.9rem;
         border: 1px solid var(--line);
         background: #fff;
         transition: border-color 120ms ease, box-shadow 120ms ease;
@@ -309,7 +280,7 @@
         display: flex;
         flex-direction: column;
         gap: 0.75rem;
-        margin-top: 1.5rem;
+        margin-top: 1.9rem;
       }
 
       .button {
@@ -318,8 +289,9 @@
         justify-content: center;
         gap: 0.5rem;
         font: inherit;
-        font-weight: 700;
-        padding: 0.9rem 1.3rem;
+        font-weight: 600;
+        min-height: 3.35rem;
+        padding: 0.9rem 1.4rem;
         border-radius: 999px;
         border: 1px solid transparent;
         cursor: pointer;
@@ -328,12 +300,13 @@
       }
 
       .button-primary {
-        background: var(--accent-deep);
+        background: linear-gradient(135deg, #72b0ac, #5f9f9a);
         color: #fff;
+        box-shadow: 0 18px 36px rgba(106, 167, 163, 0.24);
       }
 
       .button-primary:hover {
-        background: var(--accent);
+        box-shadow: 0 22px 44px rgba(106, 167, 163, 0.28);
       }
 
       .button-primary:disabled {
@@ -397,23 +370,16 @@
 
       @media (max-width: 480px) {
         .page {
-          padding-top: 1.5rem;
+          padding-top: 2.5rem;
         }
 
         .card {
-          padding: 1.25rem;
-          border-radius: 1.1rem;
+          padding: 1.5rem 1.35rem;
+          border-radius: 1.3rem;
         }
 
         .hero {
-          margin: 2rem 0 1.25rem;
-          padding-right: 2.8rem;
-        }
-
-        .hero-signal {
-          right: 0;
-          width: 2.35rem;
-          border-radius: 0.7rem;
+          margin: 2.5rem 0 1.85rem;
         }
 
         .phone-row {
@@ -431,15 +397,13 @@
   </head>
   <body>
     <main class="page">
-      <a class="brand" href="/about">
-        <span class="brand-mark" aria-hidden="true">A</span>
-        <span>Assistyca</span>
+      <a class="brand" href="/about" aria-label="Assistyca">
+        <img src="/assets/AssistycaLogoTitle.png" alt="Assistyca" />
       </a>
 
       <header class="hero">
         <h1>An assistant designed for <span class="hero-highlight">businesses</span></h1>
-        <p class="hero-copy">When you're done I'll text you on WhatsApp and we'll get started from there.</p>
-        <span class="hero-signal" aria-hidden="true"></span>
+        <p class="hero-copy">Three answers and you're done. I'll text you on WhatsApp, and we'll take it from there.</p>
       </header>
 
       <section class="card">

@@ -259,6 +259,12 @@ from packages.infrastructure.agent_turns import turn_metrics
 from packages.infrastructure.whatsapp_agent_chat import WhatsAppAgentChat
 from packages.infrastructure.whatsapp_agent_chat import WhatsAppAgentChatError
 from packages.infrastructure.whatsapp_agent_chat import CLAIM_CODE_TTL_SECONDS
+from packages.infrastructure.whatsapp_agent_chat import RESUME_ASK_INSTRUCTIONS
+from packages.infrastructure.whatsapp_agent_chat import RESUME_ASK_MAX_OUTPUT_TOKENS
+from packages.infrastructure.whatsapp_agent_chat import build_resume_ask
+from packages.infrastructure.whatsapp_agent_chat import build_resume_ask_prompt
+from packages.infrastructure.whatsapp_agent_chat import guard_resume_ask
+from packages.infrastructure.whatsapp_agent_chat import held_for_seconds
 from packages.infrastructure.whatsapp_agent_chat import build_whatsapp_claim_link
 from packages.infrastructure.whatsapp_agent_chat import extract_whatsapp_claim_code
 from packages.infrastructure.whatsapp_agent_chat import find_email_in_text
@@ -4280,6 +4286,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             or path == "/api/agent/proposals/run"
             or path == "/api/agent/answer/compose"
             or path == "/api/agent/recover"
+            or path == "/api/agent/resume-ask"
             or path == "/api/agent/loop"
             or path == "/api/agent/folders/save"
             or path == "/api/agent/folders/delete"
@@ -4378,6 +4385,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             or path == "/api/agent/proposals/run"
             or path == "/api/agent/answer/compose"
             or path == "/api/agent/recover"
+            or path == "/api/agent/resume-ask"
             or path == "/api/agent/loop"
             or path == "/api/agent/folders/save"
             or path == "/api/agent/folders/delete"
@@ -5137,6 +5145,38 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             context["gmail"] = {**context["gmail"], "writeAccess": gmail_can_send}
         return context
 
+    def _refuse_without_approval(self, *, user_id: int, tool: str, payload: dict[str, Any]) -> bool:
+        """The last lock before an account is written to.
+
+        Everything above this - the loop that proposes, the channel that
+        asks, the ledger that holds the yes - can be got wrong or got
+        around. This cannot: without a yes armed for this tool and this
+        exact request, nothing leaves. The yes is spent here rather than
+        after the write, so a request that fails at Google is asked about
+        again instead of running twice on one agreement.
+
+        True when the request was refused and the answer is already sent.
+        """
+
+        token = normalize_text(payload.get("approvalToken"))
+        spent = (
+            self.database.spend_agent_approval(approval_id=token, user_id=user_id, tool=tool, request=payload)
+            if token
+            else None
+        )
+        if spent is not None:
+            return False
+        print(f"agent.approval.refused tool={tool} user={user_id} hadToken={bool(token)}", flush=True)
+        json_response(self, HTTPStatus.FORBIDDEN, {
+            "ok": False,
+            "error": "approval_required",
+            "message": (
+                "This needs the person's yes before it can run, and the yes on this request does not cover it. "
+                "Ask them plainly, naming exactly what will happen, and run it when they agree."
+            ),
+        })
+        return True
+
     def _handle_agent_email_send_post(self) -> None:
         """Send one email from a connected Gmail mailbox.
 
@@ -5227,6 +5267,13 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         mailbox_name = name_of(record)
         if check_only:
             json_response(self, HTTPStatus.OK, {"ok": True, "checked": True, "mailbox": mailbox_name})
+            return
+
+        if self._refuse_without_approval(
+            user_id=int((authenticated_user or {}).get("id") or 0),
+            tool="send_email",
+            payload=payload,
+        ):
             return
 
         try:
@@ -5379,6 +5426,13 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             return
         if check_only:
             json_response(self, HTTPStatus.OK, {"ok": True, "checked": True, "calendar": calendar_label, "calendarId": calendar_id})
+            return
+
+        if self._refuse_without_approval(
+            user_id=int((authenticated_user or {}).get("id") or 0),
+            tool="create_calendar_event" if action == "create" else "update_calendar_event",
+            payload=payload,
+        ):
             return
 
         ciphertext = normalize_text(self.database.get_platform_connection_ciphertext(
@@ -10003,6 +10057,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         "/api/agent/turn": "_handle_agent_turn",
         "/api/agent/loop": "_handle_agent_loop",
         "/api/agent/recover": "_handle_agent_recover",
+        "/api/agent/resume-ask": "_handle_agent_resume_ask",
         "/api/agent/proposals/run": "_handle_agent_proposal_run",
         "/api/agent/answer/compose": "_handle_agent_answer_compose",
         "/api/agent/proposals/revise": "_handle_agent_proposal_revision",
@@ -10425,6 +10480,113 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         reply = guard_recovery_reply(result.output_text, situation, fallback=fallback)
         return reply, reply != fallback
 
+    def _compose_resume_ask(
+        self,
+        *,
+        question: str,
+        connected: str,
+        email: str,
+        waited_seconds: float = 0.0,
+        phone_just_linked: bool = False,
+        also_happening: str = "",
+        conversation: list[dict[str, str]] | None = None,
+    ) -> tuple[str, bool]:
+        """The words that offer a held question back: the model's, or assembled ones.
+
+        Everything the message says is something code knows - what connected,
+        what they asked, how long it waited - and the model's part is saying
+        it the way the rest of the chat talks. When it cannot run, the
+        assembled sentence goes instead, so the question is always offered
+        back and never quietly dropped for want of a model.
+        """
+
+        fallback = build_resume_ask(
+            question,
+            asked_at="",
+            waited_seconds=waited_seconds,
+            opening=f"{connected} connected." if connected else "",
+        )
+        model = resolve_task_model(AGENT_RECOVERY_COMPLEXITY, "PORTAL_ASSISTANT_MODEL", "OPENAI_MODEL")
+        prompt = build_resume_ask_prompt(
+            question=question,
+            connected=connected,
+            waited_seconds=waited_seconds,
+            phone_just_linked=phone_just_linked,
+            also_happening=also_happening,
+            conversation=conversation or [],
+        )
+        try:
+            result = call_openai_response(
+                tool_name="portal_resume_ask_composer",
+                tool_id="portal_agent",
+                billing_email=email,
+                prompt=prompt,
+                model=model,
+                instructions=RESUME_ASK_INSTRUCTIONS,
+                reasoning=resolve_task_reasoning(AGENT_RECOVERY_COMPLEXITY, "PORTAL_RECOVERY_REASONING_EFFORT"),
+                max_output_tokens=RESUME_ASK_MAX_OUTPUT_TOKENS,
+                temperature=AGENT_ANSWER_TEMPERATURE,
+                usage_recorder=self.database,
+                price_resolver=self.database.get_model_price,
+                config=load_openai_config(
+                    default_model=model,
+                    strict_tracking=False,
+                    include_prompt_in_metadata=False,
+                ),
+                metadata={"source": "portal_agent", "resumeAsk": "1"},
+            )
+        except OpenAIError as exc:
+            print(f"Resume ask composer failed: {exc.message}", flush=True)
+            return fallback, False
+        except Exception as exc:  # noqa: BLE001 - a sign-in must not end in an error page
+            print(f"Resume ask composer failed: {exc!r}", flush=True)
+            return fallback, False
+        ask = guard_resume_ask(result.output_text, fallback=fallback)
+        return ask, ask != fallback
+
+    def _handle_agent_resume_ask(self) -> None:
+        """Write the message that offers a held question back after a sign-in.
+
+        The WhatsApp chat reaches this when the sign-in raised a question of
+        ours first - which calendars to read - and theirs comes back only once
+        that is settled. The callback that finishes a sign-in composes the
+        same way, in process; the words come from one place either way.
+        """
+
+        authenticated = self._require_authenticated_user()
+        if authenticated is None:
+            return
+        session, authenticated_user = authenticated
+        if not self._require_active_trial(authenticated_user):
+            return
+        try:
+            payload = parse_json_body(self, max_bytes=MAX_PUBLIC_REQUEST_BODY_BYTES)
+        except ValueError as exc:
+            json_response(self, HTTPStatus.BAD_REQUEST, {"ok": False, "error": "invalid_json", "message": str(exc)})
+            return
+
+        question = normalize_text(payload.get("question"))
+        if not question:
+            json_response(self, HTTPStatus.BAD_REQUEST, {
+                "ok": False,
+                "error": "invalid_resume_ask_request",
+                "message": "There is nothing to offer back without the question that was held.",
+            })
+            return
+        try:
+            waited_seconds = float(payload.get("waitedSeconds") or 0.0)
+        except (TypeError, ValueError):
+            waited_seconds = 0.0
+        ask, composed = self._compose_resume_ask(
+            question=question,
+            connected=normalize_contact_single_line(payload.get("connected"), 120),
+            email=session.email,
+            waited_seconds=waited_seconds,
+            also_happening=normalize_contact_single_line(payload.get("alsoHappening"), 300),
+            conversation=normalize_recovery_conversation(payload.get("conversation")),
+        )
+        json_response(self, HTTPStatus.OK, {"ok": True, "ask": ask, "composed": composed})
+
     def _respond_recovered(
         self,
         session: PortalSession,
@@ -10533,15 +10695,18 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         timezone_name = normalize_contact_single_line(payload.get("timezone"), 120) or "UTC"
         channel = normalize_contact_single_line(payload.get("channel"), 20).lower() or "portal"
         tool_context = self._with_google_write_access(session.email, normalize_agent_tool_context(payload.get("toolContext")))
-        confirmed_call = payload.get("confirmedCall") if isinstance(payload.get("confirmedCall"), dict) else None
-        declined_call = payload.get("declinedCall") if isinstance(payload.get("declinedCall"), dict) else None
+        # An answer to a held question names the question and nothing else.
+        # What the yes runs comes out of the approvals ledger, so a caller
+        # cannot describe an action here and have it carried out.
+        confirmed_approval_id = normalize_text((payload.get("confirmedCall") or {}).get("approvalId")) if isinstance(payload.get("confirmedCall"), dict) else ""
+        declined_approval_id = normalize_text((payload.get("declinedCall") or {}).get("approvalId")) if isinstance(payload.get("declinedCall"), dict) else ""
         open_question = payload.get("openQuestion") if isinstance(payload.get("openQuestion"), dict) else None
         # A photo sent with the message goes to the model as an image; the
         # context and the logs only name it.
         photo_context = normalize_agent_photo_context(payload.get("photoContext"))
         if not user_message and photo_context:
             user_message = AGENT_PHOTO_DEFAULT_TEXT
-        if not user_message and not confirmed_call:
+        if not user_message and not confirmed_approval_id:
             json_response(self, HTTPStatus.BAD_REQUEST, {"ok": False, "error": "invalid_agent_turn", "message": "Tell me what you want help with."})
             return
         if looks_like_agent_secret(user_message):
@@ -10561,6 +10726,34 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             return
 
         user_id = int((self.database.get_user(session.email) or {}).get("id") or 0)
+        confirmed_call: dict[str, Any] | None = None
+        declined_call: dict[str, Any] | None = None
+        if confirmed_approval_id:
+            armed = self.database.arm_agent_approval(approval_id=confirmed_approval_id, user_id=user_id)
+            if armed is None:
+                # The question is no longer open: answered already, timed
+                # out, or never this account's to answer. Nothing runs on a
+                # yes we cannot place, and the person is told plainly.
+                print(f"agent.approval.unarmed id={confirmed_approval_id} user={user_id}", flush=True)
+                self._respond_recovered(
+                    session,
+                    build_situation(
+                        "not_supported",
+                        request=user_message,
+                        what_happened="That was waiting on a yes for too long, so I didn't act on it.",
+                        can_retry=True,
+                        options=[make_option("retry")],
+                    ),
+                    conversation=conversation,
+                    channel=channel,
+                    timezone_name=timezone_name,
+                )
+                return
+            confirmed_call = {"tool": armed["tool"], "arguments": armed["arguments"], "approvalToken": armed["id"]}
+        if declined_approval_id:
+            declined = self.database.decline_agent_approval(approval_id=declined_approval_id, user_id=user_id)
+            if declined is not None:
+                declined_call = {"tool": declined["tool"], "arguments": declined["arguments"]}
         facts = self.database.list_account_facts(user_id=user_id) if user_id > 0 else []
         authorization = normalize_text(self.headers.get("Authorization"))
         port = int(self.server.server_address[1])  # type: ignore[attr-defined]
@@ -10697,14 +10890,48 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             "turnId": result.turn_id,
             "toolCalls": result.tool_calls,
             "completed": result.completed,
-            "pendingConfirmation": result.pending_confirmation,
+            "pendingConfirmation": self._open_agent_approval(user_id, result.pending_confirmation),
             "answersOpenQuestion": result.answers_open_question,
             "calendarChoice": result.calendar_choice,
             "calendarChoiceSelected": result.calendar_choice_selected,
             "calendarChoiceRequested": result.calendar_choice_requested,
             "links": result.links,
             "fallbackUsed": result.fallback_used,
+            "blockedOnConnection": result.blocked_on_connection,
         })
+
+    def _open_agent_approval(self, user_id: int, pending: dict[str, Any] | None) -> dict[str, Any] | None:
+        """Write a proposed action down, and hand back only its name and id.
+
+        The tool and its arguments stay here. What goes back to the channel
+        is what it needs to ask the question and, later, to say which
+        question is being answered - never enough to ask for the action
+        itself.
+        """
+
+        if not isinstance(pending, dict) or not pending:
+            return None
+        # Only one question is open at a time, so a yes can never reach back
+        # past whatever is in front of the person now.
+        self.database.retire_open_agent_approvals(user_id=user_id)
+        try:
+            approval = self.database.open_agent_approval(
+                user_id=user_id,
+                tool=normalize_text(pending.get("tool")),
+                arguments=pending.get("arguments") if isinstance(pending.get("arguments"), dict) else {},
+                request=pending.get("request") if isinstance(pending.get("request"), dict) else None,
+                description=normalize_text(pending.get("describe")),
+            )
+        except Exception as exc:  # noqa: BLE001 - a question that cannot be held is asked again, not crashed on
+            print(f"agent.approval.open_failed user={user_id} error={exc!r}", flush=True)
+            return None
+        if approval is None:
+            return None
+        return {
+            "id": approval["id"],
+            "tool": approval["tool"],
+            "describe": approval["description"],
+        }
 
     def _apply_agent_facts(self, user_id: int, turn: dict[str, Any]) -> None:
         """Write down, or drop, what this turn decided is worth remembering.
@@ -12592,23 +12819,37 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 pass
         return links
 
-    def _send_whatsapp_oauth_page(self, *, ok: bool, message: str) -> None:
+    def _send_whatsapp_oauth_page(self, *, ok: bool, message: str = "", label: str = "") -> None:
         """Where the browser lands after a sign-in that started in WhatsApp.
 
         Not the portal: the person was never there and has no reason to be.
-        One sentence and a way back to the chat.
+        On success it says the one thing the person came to find out and
+        hands them back to the chat, where everything else is said; a page
+        that explains at length only keeps them from the one place the
+        assistant can answer. A failure still has to say what went wrong,
+        because there is nothing to go back to until it is fixed.
         """
 
         number = resolve_assistyca_display_number()
-        back = f'<p><a href="https://wa.me/{number}">Back to WhatsApp</a></p>' if number else "<p>You can go back to WhatsApp.</p>"
-        title = "Connected" if ok else "Not connected"
+        back = (
+            f'<p style="margin-top:1.75rem"><a href="https://wa.me/{number}" '
+            'style="display:inline-block;background:#25d366;color:#fff;text-decoration:none;'
+            'padding:0.75rem 1.5rem;border-radius:999px;font-weight:600">Back to WhatsApp</a></p>'
+            if number
+            else "<p>You can go back to WhatsApp.</p>"
+        )
+        if ok:
+            heading = f"{normalize_text(label)} connected! \U0001f642".lstrip()
+        else:
+            heading = "Not connected"
         safe_message = html.escape(normalize_text(message))
+        body = f"<p>{safe_message}</p>" if safe_message else ""
         self._send_html(
             HTTPStatus.OK,
             "<!doctype html><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
-            f"<title>{title} - Assistyca</title>"
+            f"<title>{html.escape(heading)} - Assistyca</title>"
             "<body style=\"font-family:system-ui,sans-serif;max-width:32rem;margin:15vh auto;padding:0 1.25rem;line-height:1.5\">"
-            f"<h1 style=\"font-size:1.4rem\">{title}</h1><p>{safe_message}</p>{back}</body>",
+            f"<h1 style=\"font-size:1.4rem\">{html.escape(heading)}</h1>{body}{back}</body>",
         )
 
     def _finish_whatsapp_oauth(self, state: dict[str, Any], *, code: str, provider: str) -> None:
@@ -12626,13 +12867,15 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         label = "Google" if provider == "google" else "Microsoft"
         wa_id = normalize_whatsapp_number(state.get("waId"))
 
-        def finish(ok: bool, text: str) -> None:
+        def finish(ok: bool, text: str, *, page: str = "") -> None:
+            # The chat hears the whole thing; the page shows only what the
+            # browser needs, which after a success is nothing but the news.
             if wa_id:
                 try:
                     send_assistyca_text(recipient_wa_id=wa_id, text=text)
                 except Exception as exc:  # noqa: BLE001 - the page still says what happened
                     print(f"WhatsApp sign-in note could not be sent: {exc}", flush=True)
-            self._send_whatsapp_oauth_page(ok=ok, message=text)
+            self._send_whatsapp_oauth_page(ok=ok, message=text if not ok else page, label=label)
 
         if state.get("expired"):
             finish(False, f"That {label} sign-in link had expired. Ask me again and I'll send a fresh one.")
@@ -12691,6 +12934,12 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         print(json.dumps({"event": "whatsapp_oauth_connected", "provider": provider, "purpose": purpose,
                           "senderWaId": self._mask_whatsapp_log_identifier(wa_id)}, ensure_ascii=True, sort_keys=True), flush=True)
 
+        # A question of theirs may have been waiting on exactly this sign-in.
+        # It is read now, before the calendar picker writes over the slot it
+        # sits in, so it comes back to them either way.
+        user_id = int(user.get("id") or 0)
+        held_text, held_at = self._held_whatsapp_question(user_id)
+
         # The question about which calendars to read is asked now, at the
         # moment of connecting, not after the person's first real question.
         # One calendar is no question at all.
@@ -12705,11 +12954,17 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                     metadata_updates={CALENDAR_SELECTION_METADATA_KEY: available},
                 )
             elif not selected and len(available) > 1:
-                self.database.save_whatsapp_agent_pending(
-                    user_id=int(user.get("id") or 0),
-                    pending={"kind": "calendar_choice", "calendars": available[:8], "selected": [], "question": "",
-                             "askedAt": datetime.now(timezone.utc).isoformat()},
-                )
+                pending: dict[str, Any] = {
+                    "kind": "calendar_choice", "calendars": available[:8], "selected": [], "question": "",
+                    "askedAt": datetime.now(timezone.utc).isoformat(),
+                }
+                if held_text:
+                    # Answered after the picker is settled, and only if they
+                    # still want it - the picker is the question in front of
+                    # them now.
+                    pending["resumeQuestion"] = held_text
+                    pending["heldAt"] = held_at
+                self.database.save_whatsapp_agent_pending(user_id=user_id, pending=pending)
                 picker = build_calendar_choice_interactive(available)
 
         if picker is not None:
@@ -12723,17 +12978,71 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                         send_assistyca_text(recipient_wa_id=wa_id, text=build_calendar_choice_text(available))
                     except Exception as exc:  # noqa: BLE001
                         print(f"WhatsApp calendar list could not be sent: {exc}", flush=True)
-            self._send_whatsapp_oauth_page(ok=True, message="Connected. Back in WhatsApp, tell me which calendars to read.")
+            self._send_whatsapp_oauth_page(ok=True, label=label, message="One question waiting for you in the chat: which calendars to read.")
             return
 
         # The mailbox is read now, unasked, so the person hears that the
         # silence of the next few minutes is work rather than absence.
         looking = (
-            " I'm looking through the last year of your mail now; if I spot something worth knowing, I'll write in a few minutes."
+            " I'm going through the last year of your mail now; if something needs your attention I'll tell you in a few minutes."
             if mailbox_connected and load_finding_scan_config().enabled
             else ""
         )
-        finish(True, f"{linked or 'Your '}{connected} connected. Ask me anything about your inbox or your schedule.{looking}")
+        if held_text:
+            # They asked something, it needed this sign-in, and now the
+            # sign-in is done: their own question is the last word, offered
+            # back rather than left for them to retype. What the message says
+            # is all known here - what connected, what they asked, how long it
+            # waited - and the model writes it, so it sounds like the rest of
+            # the chat rather than like a form that was filled in.
+            history = self.database.list_recent_whatsapp_agent_messages(user_id=user_id, limit=6)
+            ask, _composed = self._compose_resume_ask(
+                question=held_text,
+                connected=f"{linked or 'Your '}{connected}".strip(),
+                email=email,
+                waited_seconds=held_for_seconds(held_at),
+                phone_just_linked=bool(linked),
+                also_happening=looking,
+                conversation=[{"role": str(item.get("role") or ""), "text": normalize_text(item.get("text"))}
+                              for item in history],
+            )
+            self.database.save_whatsapp_agent_pending(
+                user_id=user_id,
+                pending={"kind": "resume_question", "text": held_text, "question": ask, "heldAt": held_at,
+                         "askedAt": datetime.now(timezone.utc).isoformat()},
+            )
+            if wa_id:
+                try:
+                    send_assistyca_text(recipient_wa_id=wa_id, text=ask)
+                    self.database.save_whatsapp_agent_message(user_id=user_id, role="assistant", text=ask)
+                except Exception as exc:  # noqa: BLE001 - the page still says what happened
+                    print(f"WhatsApp sign-in note could not be sent: {exc}", flush=True)
+            self._send_whatsapp_oauth_page(
+                ok=True, label=label,
+                message="Your last question is waiting for you in the chat.",
+            )
+            return
+
+        finish(True, f"{linked or 'Your '}{connected} connected — ask me anything about your inbox or your schedule.{looking}")
+
+    def _held_whatsapp_question(self, user_id: int) -> tuple[str, str]:
+        """The question waiting on a sign-in for this account, and when it was asked.
+
+        Empty when nothing is waiting, or when what is waiting is a question
+        of ours the person still owes an answer to - that one is theirs to
+        settle, and not something a sign-in picks up.
+        """
+
+        if user_id <= 0:
+            return "", ""
+        try:
+            pending = self.database.get_whatsapp_agent_pending(user_id=user_id)
+        except Exception as exc:  # noqa: BLE001 - a slot that cannot be read holds nothing
+            print(f"WhatsApp held question could not be read: {exc}", flush=True)
+            return "", ""
+        if not isinstance(pending, dict) or normalize_text(pending.get("kind")) != "held_question":
+            return "", ""
+        return normalize_text(pending.get("text")), normalize_text(pending.get("askedAt"))
 
     def _build_google_calendar_oauth_state(
         self,

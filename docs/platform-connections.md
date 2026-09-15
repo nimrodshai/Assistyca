@@ -116,6 +116,41 @@ calendars the account holds; several chosen and none named is
 `calendar_choice_required`. Attendees are told by Google (`sendUpdates=all`),
 the way they would be if the person had done it by hand.
 
+## The yes that has to be there
+
+Neither runner will write anything without an approval the person gave for
+that exact request. `agent_approvals.py` holds the vocabulary and
+`agent_action_approvals` holds the rows.
+
+A confirm tool's first call never runs: the loop returns
+`confirmation_required`, and the server writes the proposal down with
+`open_agent_approval` - the tool, its arguments, a description, and a
+fingerprint of the request the tool would send. What goes back to the
+channel is the row's id and its description, never the action, so a caller
+cannot ask for an action that was never proposed. Opening a new proposal
+retires any older one the person never answered.
+
+The answer names the id and nothing else. `arm_agent_approval` moves the row
+from asked to armed, once - a second yes, a yes from another account, a yes
+after a no, and a yes to a question that has timed out all fail, and nothing
+runs. The loop is then handed the tool and arguments out of the row.
+
+At the door, `_refuse_without_approval` calls `spend_agent_approval`, which
+moves the row from armed to spent only if the tool matches and
+`approval_fingerprint` of the request matches the fingerprint written down
+when the question was asked. A changed recipient, a changed line of the
+body, a different hour: any of them and the request is refused with
+`approval_required`. A `check: true` call carries no approval and needs
+none, because it writes nothing. The row is spent before the write, not
+after, so a send that fails at Google is asked about again rather than
+repeated on a yes given once.
+
+The account actions - `disconnect`, `sign_out`, `delete_account` - are held
+in the same ledger and released the same way, but their runners are the
+portal's own endpoints, which a person also reaches by clicking a button on
+the page. Those have no door lock of their own: the ledger is what stands
+between the agent and them.
+
 Google's OAuth consent screen has to list the two new scopes
 (`.../auth/gmail.send`, `.../auth/calendar.events`) for the grant to be
 offered; `gmail.send` is a restricted scope like `gmail.readonly`, so an app

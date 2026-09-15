@@ -38,6 +38,7 @@ from packages.infrastructure.notification_delivery import resolve_whatsapp_sende
 from packages.infrastructure.agent_proposals import AGENT_PHOTO_DEFAULT_TEXT
 from packages.infrastructure.agent_proposals import AGENT_PHOTO_MAX_BYTES
 from packages.infrastructure.agent_proposals import ASSISTANT_CAPABILITIES_PITCH
+from packages.infrastructure.assistant_voice import ASSISTANT_VOICE
 from packages.infrastructure.agent_proposals import missing_sources_for_lookup
 from packages.infrastructure.agent_proposals import normalize_agent_photo_context
 from packages.infrastructure.agent_turns import TURN_FOLLOW_UP_PATHS
@@ -444,8 +445,10 @@ def build_whatsapp_signup_link() -> str:
 
 SIGNUP_CONCIERGE_INSTRUCTIONS = (
     "You are Assistyca, a personal assistant a person reaches by texting on WhatsApp. This person "
-    "does not have an account yet. Be warm and a little playful - a sharp assistant who is glad they "
-    "wrote - never procedural or stiff. Reply as yourself, in a short WhatsApp message, and return "
+    "does not have an account yet. Be warm and unhurried - an assistant who is glad they wrote - never "
+    "procedural or stiff. "
+    f"{ASSISTANT_VOICE} "
+    "Reply as yourself, in a short WhatsApp message, and return "
     "valid JSON only with a single key \"reply\"."
 )
 
@@ -605,9 +608,10 @@ SIGNUP_WELCOME_TEXT = (
 # drops the phone into the ordinary signup conversation, which asks for the
 # email and opens the account, and it opens Meta's service window.
 REGISTRATION_WELCOME_TEXT = (
-    "Hi {name}, this is Assistyca, your assistant - you just registered on assistyca.com. "
-    "Reply here and we'll get you set up: I can go through your inbox, check your calendar, chase "
-    "receipts, or remind you about things."
+    "Hi {name}, this is Assistyca, your assistant - you registered on assistyca.com a moment ago. "
+    "Reply here whenever suits you and I'll get you set up. After that I can keep an eye on your inbox "
+    "and your calendar, chase the receipts, and remind you about the things you would rather not hold "
+    "in your head."
 )
 REGISTRATION_NOT_YOU_TEXT = "If you didn't register at assistyca.com, just ignore this message."
 
@@ -965,13 +969,148 @@ def _describe_local_time(run_at: str, timezone_name: str) -> str:
     return f"{local.strftime('%a')} {local.day} {local.strftime('%b')} at {local.strftime('%H:%M')}"
 
 
+# A question of the person's that a missing sign-in got in the way of, and
+# the ask that offers it back once they have signed in. Neither is a question
+# waiting on them, so neither goes stale on the clock the way an open question
+# does - the wording of the ask carries the wait instead.
+HELD_QUESTION_KINDS = frozenset({"held_question", "resume_question"})
+# Past this, the ask stops being "shall I" and starts being "do you still
+# want this at all".
+RESUME_ASK_STALE_AFTER_SECONDS = 60 * 60
+
+
+def held_for_seconds(asked_at: Any) -> float:
+    """How long a question has been waiting, or 0 when that cannot be read."""
+
+    stamp = normalize_text(asked_at)
+    if not stamp:
+        return 0.0
+    try:
+        held = datetime.fromisoformat(stamp)
+    except ValueError:
+        return 0.0
+    if held.tzinfo is None:
+        held = held.replace(tzinfo=timezone.utc)
+    return max(0.0, (datetime.now(timezone.utc) - held).total_seconds())
+
+
+def build_resume_ask(question: Any, *, asked_at: Any = "", waited_seconds: float | None = None, opening: str = "") -> str:
+    """The assembled ask, for when no model can write one.
+
+    Their words, quoted, because a tidied-up summary is a worse reminder than
+    the thing they typed. How long it waited changes what is asked: a moment
+    ago it is whether to go ahead, an hour later it is whether they still care
+    about the answer at all. The wait comes either from when the question was
+    held or, for a caller that has already worked it out, in seconds.
+    """
+
+    held = normalize_text(question)
+    if not held:
+        return ""
+    lead = normalize_text(opening)
+    lead = f"{lead} " if lead else ""
+    waited = held_for_seconds(asked_at) if waited_seconds is None else max(0.0, float(waited_seconds or 0.0))
+    if waited >= RESUME_ASK_STALE_AFTER_SECONDS:
+        return f'{lead}A while back you asked: "{held}" - do you still want that answer?'
+    return f'{lead}You asked: "{held}" - want me to pull that up now?'
+
+
+# What the ask may not be: a link to open, a word about the machinery, or a
+# statement instead of a question. It has to ask, because a yes is what runs
+# the question and nothing has run yet.
+RESUME_ASK_MAX_REPLY_LENGTH = 600
+RESUME_ASK_MAX_OUTPUT_TOKENS = 600
+_RESUME_ASK_FORBIDDEN_WORDS = ("openai", "gpt", "llm", "api", "endpoint", "oauth", "json", "server log")
+
+RESUME_ASK_INSTRUCTIONS = (
+    "You are Assistyca, the assistant for this account, writing one short WhatsApp message. The person "
+    "asked you something, it needed an account they had not finished signing in to, and they have just "
+    "this second finished signing in. Say what is connected now, give them their own question back so they "
+    "know which one you mean, and ask whether to go ahead with it. Ask - never assume, and never say you "
+    "have looked, read, found, worked out or totalled anything, because nothing has run yet: their answer "
+    "is what starts it. Keep it warm and brief, do not apologise, do not explain how any of it works, and "
+    "never mention providers, models, servers or sign-ins beyond the fact that they are connected. "
+    "Plain text only: no links, no markdown, no headings, three sentences at most."
+)
+
+
+def build_resume_ask_prompt(
+    *,
+    question: Any,
+    connected: str,
+    waited_seconds: float = 0.0,
+    phone_just_linked: bool = False,
+    also_happening: str = "",
+    conversation: list[dict[str, str]] | None = None,
+) -> str:
+    """The report the ask is written from: everything here is something code knows."""
+
+    waited = max(0.0, float(waited_seconds or 0.0))
+    context = {
+        "connected": " ".join(str(connected or "").split())[:120],
+        "theirQuestion": normalize_text(question)[:400],
+        "waitedMinutes": int(waited // 60),
+        "theyMayHaveMovedOn": waited >= RESUME_ASK_STALE_AFTER_SECONDS,
+        "phoneJustLinked": bool(phone_just_linked),
+        "alsoHappening": " ".join(str(also_happening or "").split())[:300],
+        "recentConversation": [
+            {"role": str(item.get("role") or ""), "text": normalize_text(item.get("text"))[:400]}
+            for item in (conversation or [])[-4:]
+            if isinstance(item, dict)
+        ],
+    }
+    return (
+        "Write the message for CONTEXT.\n"
+        "connected is what has just been connected, in the words to use for it. theirQuestion is what they "
+        "asked before the sign-in got in the way, in their own words: quote it or name it closely enough "
+        "that they know which one you mean, and never answer it here. waitedMinutes is how long it has been "
+        "waiting. theyMayHaveMovedOn true means it has been sitting long enough that they might not want it "
+        "any more, so ask whether they still want that answer at all rather than whether to go ahead now; "
+        "false means it is still the thing they were in the middle of, so simply offer to get on with it. "
+        "phoneJustLinked true means this sign-in also tied this phone to their account, worth a clause and "
+        "no more. alsoHappening, when it is not empty, is already under way and they should hear it: say it "
+        "in passing, never as the point of the message.\n"
+        "A yes from them runs their question and a no drops it, so the message has to be answerable in one "
+        "word. Read recentConversation so this follows on from it rather than starting again.\n\n"
+        f"CONTEXT\n{json.dumps(context, ensure_ascii=False)}"
+    )
+
+
+def guard_resume_ask(text: Any, *, fallback: str) -> str:
+    """Keep the written ask only when it is still an ask, and says nothing it must not.
+
+    The checks are the ones code can make: nothing that looks like a link,
+    nothing about the machinery, and a question mark, because a message that
+    does not ask cannot be answered with yes. Anything else falls back to the
+    assembled sentence, which passes all three by construction.
+    """
+
+    assembled = str(fallback or "").strip()
+    ask = str(text or "").strip()
+    if ask.startswith("```"):
+        ask = "\n".join(line for line in ask.splitlines() if not line.strip().startswith("```")).strip()
+    if not ask or "?" not in ask:
+        return assembled
+    if _REPLY_URL_PATTERN.search(ask) or "www." in ask.lower():
+        return assembled
+    if any(word in ask.lower() for word in _RESUME_ASK_FORBIDDEN_WORDS):
+        return assembled
+    if len(ask) > RESUME_ASK_MAX_REPLY_LENGTH:
+        return assembled
+    return ask
+
+
 def _pending_is_fresh(pending: dict[str, Any]) -> bool:
     """Whether an open question was asked recently enough to still be open.
 
     A question with no timestamp is from before timestamps were kept, and is
-    read as stale rather than as eternal.
+    read as stale rather than as eternal. A held question is the exception: it
+    waits on a sign-in rather than on an answer, and nothing about waiting a
+    long time makes it worth throwing away.
     """
 
+    if normalize_text(pending.get("kind")) in HELD_QUESTION_KINDS:
+        return True
     asked_at = normalize_text(pending.get("askedAt"))
     if not asked_at:
         return False
@@ -1636,6 +1775,17 @@ class WhatsAppAgentChat:
         self.database.save_whatsapp_agent_pending(user_id=self.user_id, pending=None)
         names = ", ".join(_calendar_row_label(entry)[0] for entry in chosen)
         acknowledged = f"Got it - I'll read {names}."
+        resumed_question = normalize_text(pending.get("resumeQuestion"))
+        if resumed_question and not question:
+            # The picker came up as part of signing in, and a question of
+            # theirs was already waiting on that sign-in. Now that the picker
+            # is settled it is offered back, not answered unasked.
+            return self._ask_resume_held_question(
+                held=resumed_question,
+                held_at=normalize_text(pending.get("heldAt")),
+                opening=acknowledged,
+                outcome="calendar_choice_saved",
+            )
         if not question:
             reply = acknowledged + " Ask me anything about your schedule."
             message_id = self._send_owner_text(reply)
@@ -1723,6 +1873,82 @@ class WhatsAppAgentChat:
         if done:
             reply += " Whenever you want it back, just say so and I'll send the sign-in link."
         return self._reply_and_log(reply, outcome="disconnected" if done else "disconnect_failed")
+
+    def _hold_blocked_question(self, text: str, *, source: str) -> None:
+        """Keep the question a missing or rejected sign-in got in the way of.
+
+        Nothing is waiting on the person here, so this never swallows their
+        next message and never expires: it sits until they sign in, and the
+        sign-in offers it back. A question already waiting on an answer of
+        theirs comes first, and is not overwritten by this.
+        """
+
+        held = normalize_text(text)
+        if not held:
+            return
+        current = self.database.get_whatsapp_agent_pending(user_id=self.user_id) or {}
+        if normalize_text(current.get("kind")) not in HELD_QUESTION_KINDS | {""}:
+            return
+        self.database.save_whatsapp_agent_pending(
+            user_id=self.user_id,
+            pending={
+                "kind": "held_question",
+                "text": held[:500],
+                "source": normalize_text(source),
+                "askedAt": datetime.now(timezone.utc).isoformat(),
+            },
+        )
+
+    def _resume_held_question(self, pending: dict[str, Any]) -> dict[str, Any]:
+        """The yes arrived: answer the question that was waiting, as asked."""
+
+        self.database.save_whatsapp_agent_pending(user_id=self.user_id, pending=None)
+        held = normalize_text(pending.get("text"))
+        if not held:
+            return self._reply_and_log(
+                "I've lost track of which question that was - ask me again and I'll take it from there.",
+                outcome="resume_question_lost",
+            )
+        result = self.handle_message(held, resumed=True)
+        result["outcome"] = "resume_question_answered"
+        return result
+
+    def _ask_resume_held_question(self, *, held: str, held_at: str, opening: str, outcome: str) -> dict[str, Any]:
+        """Offer a held question back, and wait on the yes before running it.
+
+        The server writes the words from what is known here - what they asked,
+        what has just been settled, how long it waited - and the assembled
+        sentence stands in when it cannot, so the offer is always made.
+        """
+
+        waited = held_for_seconds(held_at)
+        ask = build_resume_ask(held, waited_seconds=waited, opening=opening)
+        try:
+            response, status = self._api("POST", "/api/agent/resume-ask", {
+                "question": held,
+                "connected": opening,
+                "waitedSeconds": waited,
+                "conversation": [
+                    {"role": item["role"], "text": item["text"]}
+                    for item in self.database.list_recent_whatsapp_agent_messages(
+                        user_id=self.user_id, limit=AGENT_CHAT_HISTORY_LIMIT)
+                ][-6:],
+            })
+            if status == 200:
+                ask = normalize_text(response.get("ask")) or ask
+        except WhatsAppAgentChatError as exc:
+            print(f"WhatsApp resume ask could not be written: {exc}", flush=True)
+        self.database.save_whatsapp_agent_pending(
+            user_id=self.user_id,
+            pending={
+                "kind": "resume_question",
+                "text": normalize_text(held)[:500],
+                "question": ask,
+                "heldAt": normalize_text(held_at),
+                "askedAt": datetime.now(timezone.utc).isoformat(),
+            },
+        )
+        return self._reply_and_log(ask, outcome=outcome)
 
     def _reply_and_log(self, reply: str, *, outcome: str) -> dict[str, Any]:
         message_id = self._send_owner_text(reply)
@@ -1885,10 +2111,12 @@ class WhatsAppAgentChat:
         }
         if photo:
             payload["photoContext"] = photo
+        # An answer names the question and nothing else: what a yes runs is
+        # held server-side, so this channel cannot ask for an action of its own.
         if confirmed_call:
-            payload["confirmedCall"] = {"tool": confirmed_call.get("tool"), "arguments": confirmed_call.get("arguments") or {}}
+            payload["confirmedCall"] = {"approvalId": normalize_text(confirmed_call.get("approvalId"))}
         if declined_call:
-            payload["declinedCall"] = {"tool": declined_call.get("tool"), "arguments": declined_call.get("arguments") or {}}
+            payload["declinedCall"] = {"approvalId": normalize_text(declined_call.get("approvalId"))}
         if open_question:
             payload["openQuestion"] = open_question
 
@@ -1912,6 +2140,10 @@ class WhatsAppAgentChat:
                     # decision - and the model's reply to the question is
                     # not shown: the turn that runs the call reports it.
                     held = self.database.get_whatsapp_agent_pending(user_id=self.user_id)
+                    if held and held.get("kind") == "resume_question":
+                        if answer == "yes":
+                            return self._resume_held_question(held)
+                        self.database.save_whatsapp_agent_pending(user_id=self.user_id, pending=None)
                     if held and held.get("kind") == "tool_confirmation":
                         self.database.save_whatsapp_agent_pending(user_id=self.user_id, pending=None)
                         return self._loop_turn(
@@ -1924,14 +2156,18 @@ class WhatsAppAgentChat:
                             record_user=False,
                         )
                 pending_confirmation = turn.get("pendingConfirmation") if isinstance(turn.get("pendingConfirmation"), dict) else None
-                if pending_confirmation:
+                approval_id = normalize_text((pending_confirmation or {}).get("id"))
+                if pending_confirmation and approval_id:
+                    # Only the id is kept. The action itself stays in the
+                    # ledger, so what the yes releases is what was proposed
+                    # and described, not anything this side put together.
                     outcome = "confirmation_asked"
                     self.database.save_whatsapp_agent_pending(
                         user_id=self.user_id,
                         pending={
                             "kind": "tool_confirmation",
+                            "approvalId": approval_id,
                             "tool": normalize_text(pending_confirmation.get("tool")),
-                            "arguments": pending_confirmation.get("arguments") if isinstance(pending_confirmation.get("arguments"), dict) else {},
                             "question": reply[:500],
                             "askedAt": datetime.now(timezone.utc).isoformat(),
                         },
@@ -1963,6 +2199,13 @@ class WhatsAppAgentChat:
                             self.database.save_whatsapp_agent_message(user_id=self.user_id, role="assistant", text=reply)
                         self._ask_calendar_choice(available, question=text)
                         return {"type": "owner", "action": "agent_chat_reply", "outcome": outcome, "reply_text": reply, "message_id": ""}
+
+        blocked = normalize_text(turn.get("blockedOnConnection"))
+        if blocked and outcome == "message" and not turn.get("pendingConfirmation"):
+            # The reply going out is the sign-in link. The question it could
+            # not answer is kept here, so signing in can offer it back instead
+            # of leaving the person to type it a second time.
+            self._hold_blocked_question(text, source=blocked)
 
         reply = format_agent_reply_for_whatsapp(reply) or self._recover(
             build_situation("internal", request=text, what_happened="I read that, but couldn't put an answer together.", can_retry=True),
@@ -2295,6 +2538,20 @@ class WhatsAppAgentChat:
                     declined_call=pending_call if answer == "no" else None,
                     voice=voice_note,
                 )
+        pending_resume = pending if pending and pending.get("kind") == "resume_question" else None
+        if pending_resume and not interactive_id:
+            # The offer to answer a question that waited on a sign-in. A plain
+            # yes runs it; a plain no lets it go. Anything else goes to the
+            # model with the offer in view, and the offer stays up.
+            answer = parse_yes_no(text)
+            if answer == "yes":
+                return self._resume_held_question(pending_resume)
+            if answer == "no":
+                self.database.save_whatsapp_agent_pending(user_id=self.user_id, pending=None)
+                return self._reply_and_log(
+                    "Okay - I've let that one go. Ask me whenever you want it.",
+                    outcome="resume_question_declined",
+                )
         if pending_disconnect and not interactive_id:
             # A plain yes or no settles a held disconnect here. Anything with
             # more in it goes to the model with the question in view.
@@ -2340,6 +2597,11 @@ class WhatsAppAgentChat:
                     "kind": "confirmation",
                     "tool": normalize_text(pending_call.get("tool")),
                     "question": normalize_text(pending_call.get("question")),
+                }
+            elif pending_resume:
+                open_question = {
+                    "kind": "confirmation",
+                    "question": normalize_text(pending_resume.get("question")),
                 }
             elif pending_choice:
                 open_question = {

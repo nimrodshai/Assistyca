@@ -458,6 +458,42 @@ same `DELETE /api/platform-connections/<id>` the portal's button calls, once
 per connection, so Google's grant is revoked the same way, and the reply says
 what happened - including when Google did not confirm the revocation.
 
+## A question that waits for a sign-in
+
+"How much did I pay to Apple on aug?" (2026-09-14) got the reconnect link and
+then "ask me the same thing again": the link and the question travelled apart,
+and the question fell on the floor between the WhatsApp turn and the OAuth
+callback, which is a different request that knows only what its signed state
+carries. Now the loop says so - `blocked_on_connection` is set wherever a
+lookup is turned away for want of a connected source (`_execute`'s guard) or
+because the provider rejected the saved sign-in (`_lookup_failure`) - and the
+chat keeps the question in `pending_json` as `kind: held_question`. Nothing is
+waiting on the person there, so it never swallows their next message and,
+unlike every other open question, it never goes stale on the clock: a question
+worth asking is still worth asking about later.
+
+The sign-in offers it back. `_finish_whatsapp_oauth` reads the slot before the
+calendar picker can write over it, and the last word after connecting is their
+own question. The message is written by the model, not assembled: everything in
+it is something code knows - what connected, what they asked in their own
+words, how many minutes it waited, whether the mailbox scan is already under
+way - and that report goes to `_compose_resume_ask`, which is the recovery
+composer's twin. `guard_resume_ask` keeps what comes back only if it is still
+an ask: a question mark, no links, nothing about the machinery, and inside the
+length. Anything else falls back to `build_resume_ask`, the assembled sentence,
+so the question is offered back even with no model to write the offer. Past an
+hour `theyMayHaveMovedOn` goes true and the message asks whether they still
+want that answer at all, rather than whether to go ahead now - because the
+point of the wait is that they may have moved on. The chat reaches the same
+composer over `POST /api/agent/resume-ask` when the calendar picker had to be
+settled first. It is never answered unasked: the
+slot becomes `kind: resume_question`, a plain *yes* runs the original words
+through a fresh turn, a plain *no* drops it, and anything else goes to the
+model with the offer in view as an ordinary `openQuestion` of kind
+`confirmation`, leaving the offer standing. When connecting also raises the
+calendar picker, that question is settled first and theirs rides along as
+`resumeQuestion`, asked once the picker is done.
+
 ## A fresh morning is a fresh conversation
 
 The signup concierge gets firmer each turn the email is not given. That count

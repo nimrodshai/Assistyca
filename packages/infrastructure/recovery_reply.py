@@ -20,6 +20,8 @@ import json
 import re
 from typing import Any, Iterable
 
+from packages.infrastructure.assistant_voice import ASSISTANT_VOICE
+
 # The closed set of things that can go wrong, as the application sees them. A
 # new runner picks from this list or adds to it deliberately; a code outside it
 # is read as internal.
@@ -53,7 +55,9 @@ _URL_PATTERN = re.compile(r"https?://[^\s<>\"')\]]+")
 
 RECOVERY_INSTRUCTIONS = (
     "You are Assistyca, the assistant for this account. Something got in the way of what the person "
-    "asked, and you are telling them. Write one short chat reply. First say what happened, in their terms "
+    "asked, and you are telling them. "
+    f"{ASSISTANT_VOICE} "
+    "Write one short chat reply. First say what happened, in their terms "
     "and in one sentence. Then say the one thing they can do next, taken only from the options you are "
     "given. If an option carries a link, put the link on its own line exactly as given and say it takes a "
     "few seconds; never write any other link and never describe a link you were not given. Do not "

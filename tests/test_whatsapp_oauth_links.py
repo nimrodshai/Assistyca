@@ -220,7 +220,8 @@ class WhatsAppOAuthLinkTests(unittest.TestCase):
 
         self.assertEqual(status, 200, "a WhatsApp sign-in lands on a page, it is not bounced to the portal")
         self.assertIn("text/html", content_type)
-        self.assertIn("Connected", body)
+        self.assertIn("Google connected!", body, "the page says the one thing it is for")
+        self.assertNotIn("Ask me anything", body, "the invitation belongs in the chat, not on a page that cannot answer")
         self.assertIn("wa.me/972559196101", body)
         save.assert_called_once()
         self.assertEqual(save.call_args.args[0].email, "dana@gmail.com")
@@ -252,7 +253,7 @@ class WhatsAppOAuthLinkTests(unittest.TestCase):
             validator.return_value.validate.return_value = {"emailAddress": "owner@gmail.com"}
             status, _, body = self._callback("google", self._state(email="owner@gmail.com", purpose="link_account"))
 
-        self.assertIn("Connected", body)
+        self.assertIn("Google connected!", body)
         save.assert_called_once()
         self.assertEqual(self.database.get_user_id_for_whatsapp_number(PHONE), int(owner["id"]))
         self.assertIn("This phone is now linked", self._last_reply())
@@ -281,7 +282,7 @@ class WhatsAppOAuthLinkTests(unittest.TestCase):
         ):
             status, _, body = self._callback("microsoft", self._state(provider="microsoft", email="dana@outlook.com", scopeIds=None))
         self.assertEqual(status, 200)
-        self.assertIn("Connected", body)
+        self.assertIn("Microsoft connected!", body)
         save.assert_called_once()
         self.assertIn("Outlook is connected", self._last_reply())
 

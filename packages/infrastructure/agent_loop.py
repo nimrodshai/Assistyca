@@ -32,6 +32,7 @@ from datetime import datetime
 from typing import Any, Callable
 
 from packages.infrastructure.agent_proposals import ASSISTANT_CAPABILITIES_PITCH
+from packages.infrastructure.assistant_voice import ASSISTANT_VOICE
 from packages.infrastructure.agent_proposals import LOOKUP_SOURCE_REQUIREMENTS
 from packages.infrastructure.agent_proposals import build_agent_turn_input
 from packages.infrastructure.agent_proposals import connected_sources
@@ -173,6 +174,12 @@ class LoopContext:
     # saved sign-in, the client needs the newly minted link even when the
     # language model forgets to repeat it.
     required_links: list[str] = field(default_factory=list)
+    # Set when a lookup could not run because an account is not connected, or
+    # because the provider rejected the saved sign-in. The question itself is
+    # fine; only the sign-in is in the way. A channel that can hold the
+    # question until the person signs in reads this to know it is worth
+    # holding, and which source they will be signing in to.
+    blocked_on_connection: str = ""
     # A calendar choice a tool asked for, surfaced to the channel that can
     # show a picker.
     calendar_choice: list[dict[str, Any]] | None = None
@@ -195,6 +202,10 @@ class LoopContext:
     # A photo supplied with this turn. Its bytes never enter the text prompt,
     # but a policy save can preserve the original beside its interpretation.
     attached_photo: dict[str, Any] = field(default_factory=dict)
+    # The yes this run is spending, when one was given. A tool that writes
+    # to the person's accounts sends it with the request, and the runner at
+    # the other end refuses the request without it.
+    approval_token: str = ""
 
 
 @dataclass
@@ -222,6 +233,9 @@ class LoopResult:
     fallback_reason: str = ""
     duration_ms: int = 0
     turn_id: str = ""
+    # Which source a lookup wanted and could not have: "mailbox", "calendar",
+    # and so on, or "" when nothing was blocked. Empty is the normal turn.
+    blocked_on_connection: str = ""
 
 
 # -- tools --------------------------------------------------------------------
@@ -456,8 +470,10 @@ def _lookup_failure(context: LoopContext, response: dict[str, Any], status: int,
     error = str(response.get("error") or "").strip().lower()
     mailbox_failures = _normalize_mailbox_failures(response)
     if error in {"email_setup_required", "mailbox_not_connected"} and not mailbox_failures:
+        context.blocked_on_connection = context.blocked_on_connection or "mailbox"
         return _error("source_not_connected", "No mailbox is connected, so the inbox cannot be read.", source="mailbox")
     if error == "calendar_setup_required":
+        context.blocked_on_connection = context.blocked_on_connection or "calendar"
         return _error("source_not_connected", "The calendar is not connected, so it cannot be read.", source="calendar")
     if status == 402:
         return _error("not_supported", str(response.get("message") or "The trial has ended."))
@@ -484,6 +500,8 @@ def _lookup_failure(context: LoopContext, response: dict[str, Any], status: int,
     if mailbox_failures:
         actions = {failure.get("action") for failure in mailbox_failures}
         code = "source_needs_attention" if actions == {"reconnect"} else "provider_unavailable"
+        if "reconnect" in actions:
+            context.blocked_on_connection = context.blocked_on_connection or "mailbox"
         can_retry = "retry" in actions
         upstream_code = next((failure.get("providerCode", "") for failure in mailbox_failures if failure.get("providerCode")), "")
         upstream_subtype = next((failure.get("providerSubtype", "") for failure in mailbox_failures if failure.get("providerSubtype")), "")
@@ -1728,6 +1746,16 @@ def _write_failure(response: dict[str, Any], status: int, *, source: str) -> dic
     return _error("provider_unavailable", message or "That could not be done just now.", can_retry=True)
 
 
+def _with_approval(context: LoopContext, payload: dict[str, Any]) -> dict[str, Any]:
+    """The request, plus the yes it is being made on.
+
+    The token travels beside the request rather than inside it: what was
+    approved is the request itself, and the runner compares the two.
+    """
+
+    return {**payload, "approvalToken": context.approval_token} if context.approval_token else payload
+
+
 def _send_email_payload(context: LoopContext, args: dict[str, Any]) -> dict[str, Any]:
     return {
         "to": [str(item) for item in (args.get("to") or []) if str(item or "").strip()],
@@ -1760,7 +1788,7 @@ def _preflight_send_email(context: LoopContext, args: dict[str, Any]) -> dict[st
 
 def _tool_send_email(context: LoopContext, args: dict[str, Any]) -> dict[str, Any]:
     payload = _send_email_payload(context, args)
-    response, status = context.api("POST", "/api/agent/email/send", payload)
+    response, status = context.api("POST", "/api/agent/email/send", _with_approval(context, payload))
     if status == 200 and response.get("ok"):
         sent = response.get("sent") if isinstance(response.get("sent"), dict) else {}
         return _ok({
@@ -1854,7 +1882,7 @@ def _preflight_create_calendar_event(context: LoopContext, args: dict[str, Any])
 
 def _tool_create_calendar_event(context: LoopContext, args: dict[str, Any]) -> dict[str, Any]:
     payload = _event_payload(context, args, action="create")
-    response, status = context.api("POST", "/api/agent/calendar/events", payload)
+    response, status = context.api("POST", "/api/agent/calendar/events", _with_approval(context, payload))
     if status == 200 and response.get("ok"):
         event = response.get("event") if isinstance(response.get("event"), dict) else {}
         return _ok({"event": _trim_records([event])[0] if event else {}, "calendar": str(response.get("calendar") or "")})
@@ -1898,7 +1926,7 @@ def _preflight_update_calendar_event(context: LoopContext, args: dict[str, Any])
 
 def _tool_update_calendar_event(context: LoopContext, args: dict[str, Any]) -> dict[str, Any]:
     payload = _event_payload(context, args, action="cancel" if args.get("cancel") else "update")
-    response, status = context.api("POST", "/api/agent/calendar/events", payload)
+    response, status = context.api("POST", "/api/agent/calendar/events", _with_approval(context, payload))
     if status == 200 and response.get("ok"):
         event = response.get("event") if isinstance(response.get("event"), dict) else {}
         return _ok({
@@ -2611,6 +2639,7 @@ AGENT_LOOP_INSTRUCTIONS = (
     "fits it. When the owner states something about their "
     "business that will still be true next month, call remember_fact; when they say something is no longer "
     "true, call forget_fact. Keep only what is durable and about the business.\n"
+    f"{ASSISTANT_VOICE}\n"
     "Write the reply like a capable assistant in a real chat: concise, specific, varied. Do not mirror the "
     "request back, do not reuse the wording of recent assistant replies, do not start every reply the same "
     "way. Call what you set up an action; never say install, deploy, provision, configure, or wire, and keep "
@@ -2624,8 +2653,8 @@ _CHANNEL_RULES = {
     "whatsapp": (
         "This conversation is over WhatsApp. Write like a text message: short paragraphs, no headings, no "
         "tables, and never refer to buttons, cards, panels or anything to click, because none exist here. "
-        "Confirmation happens in words. Be warm and a little playful, like a sharp assistant who likes their "
-        "job; use the person's first name if you know it. When someone asks what you can do, do not list "
+        "Confirmation happens in words. Be warm and steady, like an assistant who already has it in hand; "
+        "use the person's first name if you know it. When someone asks what you can do, do not list "
         "features: describe their week getting easier, then offer three or four concrete things they could say "
         "right now, in their own voice, fitted to their line of work from knownFacts and to what is connected, "
         "and invent fresh ones each time; spread "
@@ -2810,7 +2839,12 @@ def run_agent_loop(
                 elif pending is not None:
                     outcome = _error("not_supported", "One question at a time: a confirmation is already being asked for.")
                 else:
-                    pending = {"tool": name, "arguments": args, "describe": _describe_call(context, tool, args)}
+                    pending = {
+                        "tool": name,
+                        "arguments": args,
+                        "describe": _describe_call(context, tool, args),
+                        "request": _request_of(context, tool, args),
+                    }
                     outcome = _error(
                         "confirmation_required",
                         "This needs the person's yes first. Ask for it in words, naming exactly what will happen"
@@ -2864,6 +2898,7 @@ def run_agent_loop(
         fallback_reason=fallback_reason,
         duration_ms=int((time.monotonic() - started) * 1000),
         turn_id=turn_id,
+        blocked_on_connection=context.blocked_on_connection,
     )
 
 
@@ -2872,6 +2907,7 @@ def _execute(context: LoopContext, tool: ToolSpec, args: dict[str, Any], tool_ca
     have = connected_sources(context.tool_context)
     missing = [source for source in tool.requires if source not in have]
     if missing:
+        context.blocked_on_connection = context.blocked_on_connection or missing[0]
         outcome = _error(
             "source_not_connected",
             f"{_SOURCE_WORDS.get(missing[0], 'a needed account is not connected')}. Use connect_link and give the person the link.",
@@ -2937,7 +2973,32 @@ def _execute_confirmed(context: LoopContext, confirmed_call: dict[str, Any], too
     tool = TOOLS_BY_NAME.get(name)
     if tool is None:
         return {"tool": name, "arguments": args, "result": _error("not_supported", "That action no longer exists.")}
-    return {"tool": name, "arguments": args, "result": _execute(context, tool, args, tool_calls, completed)}
+    # The token is on the context only while the action the person agreed to
+    # is running, so nothing else in the turn can reach for it.
+    context.approval_token = str(confirmed_call.get("approvalToken") or "")
+    try:
+        result = _execute(context, tool, args, tool_calls, completed)
+    finally:
+        context.approval_token = ""
+    return {"tool": name, "arguments": args, "result": result}
+
+
+def _request_of(context: LoopContext, tool: ToolSpec, args: dict[str, Any]) -> dict[str, Any] | None:
+    """The exact request this proposal would send, for the yes to be tied to.
+
+    Only the tools that write to the person's Google accounts have one: the
+    account actions say everything in their name and send no request to
+    compare. What comes back here is what the runner will receive word for
+    word, which is what lets the two be checked against each other.
+    """
+
+    if tool.name == "send_email":
+        return _send_email_payload(context, args)
+    if tool.name == "create_calendar_event":
+        return _event_payload(context, args, action="create")
+    if tool.name == "update_calendar_event":
+        return _event_payload(context, args, action="cancel" if args.get("cancel") else "update")
+    return None
 
 
 def _describe_call(context: LoopContext, tool: ToolSpec, args: dict[str, Any]) -> str:

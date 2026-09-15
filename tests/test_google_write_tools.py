@@ -510,6 +510,19 @@ class GoogleWriteEndpointTests(unittest.TestCase):
         except urllib_error.HTTPError as exc:
             return int(exc.code), json.loads(exc.read().decode("utf-8"))
 
+    def _armed(self, tool: str, payload: dict) -> dict:
+        """The request with the person's yes on it, as the loop sends it."""
+
+        database = self.server.database
+        user_id = int((database.get_user("owner@example.com") or {}).get("id") or 0)
+        approval = database.open_agent_approval(
+            user_id=user_id, tool=tool, arguments={}, request=payload, description="what it would do",
+        )
+        assert approval is not None
+        armed = database.arm_agent_approval(approval_id=approval["id"], user_id=user_id)
+        assert armed is not None
+        return {**payload, "approvalToken": approval["id"]}
+
     def test_sending_needs_a_gmail_mailbox_with_the_send_grant(self) -> None:
         status, body = self._post("/api/agent/email/send", {"to": ["dana@example.com"], "subject": "x", "body": "y"})
         self.assertEqual((status, body["error"]), (409, "gmail_not_connected"))
@@ -537,7 +550,7 @@ class GoogleWriteEndpointTests(unittest.TestCase):
         sent = {"id": "m1", "threadId": "t1", "to": ["dana@example.com"], "cc": [], "subject": "x", "isReply": False}
         with mock.patch(f"{SERVER}.PortalAuthHandler._refresh_google_access_token", return_value="fresh-token") as refresh, \
                 mock.patch(f"{SERVER}.GmailSender.send", return_value=sent) as send:
-            status, body = self._post("/api/agent/email/send", {"to": ["dana@example.com"], "subject": "x", "body": "y", "mailboxAccount": "shop@gmail.com"})
+            status, body = self._post("/api/agent/email/send", self._armed("send_email", {"to": ["dana@example.com"], "subject": "x", "body": "y", "mailboxAccount": "shop@gmail.com"}))
         self.assertEqual(status, 200)
         self.assertEqual(body["mailbox"], "shop@gmail.com")
         self.assertEqual(refresh.call_args.args[0], "rt")
@@ -574,10 +587,10 @@ class GoogleWriteEndpointTests(unittest.TestCase):
         event = {"kind": "meeting", "eventId": "ev1", "calendarId": "work@group.calendar.google.com", "title": "Dentist"}
         with mock.patch(f"{SERVER}.PortalAuthHandler._refresh_google_access_token", return_value="fresh-token"), \
                 mock.patch(f"{SERVER}.CalendarWriter.create_event", return_value=event) as create:
-            status, body = self._post("/api/agent/calendar/events", {
+            status, body = self._post("/api/agent/calendar/events", self._armed("create_calendar_event", {
                 "title": "Dentist", "date": "2026-09-10", "startTime": "10:00", "calendar": "Work", "timezone": "Asia/Jerusalem",
                 "attendees": ["dana@example.com"],
-            })
+            }))
         self.assertEqual(status, 200)
         self.assertEqual(body["event"]["eventId"], "ev1")
         self.assertEqual(create.call_args.args[0], "fresh-token")
@@ -587,7 +600,7 @@ class GoogleWriteEndpointTests(unittest.TestCase):
 
         with mock.patch(f"{SERVER}.PortalAuthHandler._refresh_google_access_token", return_value="fresh-token"), \
                 mock.patch(f"{SERVER}.CalendarWriter.cancel_event", return_value={"eventId": "ev1", "calendarId": "primary", "cancelled": True}) as cancel:
-            status, body = self._post("/api/agent/calendar/events", {"action": "cancel", "eventId": "ev1", "calendar": "primary"})
+            status, body = self._post("/api/agent/calendar/events", self._armed("update_calendar_event", {"action": "cancel", "eventId": "ev1", "calendar": "primary"}))
         self.assertEqual(status, 200)
         self.assertEqual(cancel.call_args.kwargs["event_id"], "ev1")
 
