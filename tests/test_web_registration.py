@@ -124,6 +124,19 @@ class WebRegistrationTests(unittest.TestCase):
         except urllib_error.HTTPError as exc:
             return exc.code, json.loads(exc.read().decode("utf-8"))
 
+    def follow_nothing(self, path: str) -> tuple[int, str]:
+        """Ask for a page and report where it points instead of going there."""
+
+        class Stay(urllib_request.HTTPRedirectHandler):
+            def redirect_request(self, *args, **kwargs):  # noqa: ANN002, ANN003, D102
+                return None
+
+        try:
+            with urllib_request.build_opener(Stay).open(f"{self.base_url}{path}", timeout=10) as response:
+                return response.status, response.headers.get("Location", "")
+        except urllib_error.HTTPError as exc:
+            return exc.code, exc.headers.get("Location", "")
+
     def text(self, body: str, **kwargs) -> dict:
         raw = json.dumps(webhook_payload(body, **kwargs)).encode("utf-8")
         sig = hmac.new(APP_SECRET.encode("utf-8"), raw, hashlib.sha256).hexdigest()
@@ -340,10 +353,25 @@ class WebRegistrationTests(unittest.TestCase):
         self.assertIn("/portal/register.js", body)
         self.assertIn("data-phone-country", body)
         self.assertNotIn('type="email"', body)
+        # Someone who already has an account texts; they do not sign in.
+        self.assertIn('Already have an account? Click <a href="/whatsapp">here</a>', body)
+        self.assertNotIn('<a href="/portal/">Sign in</a>', body)
         # Both doors are on the page, and the choice is the first question.
         self.assertIn('name="kind" value="business"', body)
         self.assertIn('name="kind" value="family"', body)
         self.assertLess(body.index('data-step="kind"'), body.index('data-step="name"'))
+
+
+    def test_the_short_link_sends_an_existing_account_to_the_conversation(self) -> None:
+        status, location = self.follow_nothing("/whatsapp")
+        self.assertEqual(status, 303)
+        self.assertEqual(location, "https://wa.me/972559196101?text=Hi%20Assistyca")
+
+    def test_the_short_link_still_opens_a_door_with_no_number_configured(self) -> None:
+        # A link that goes nowhere is worse than one that goes somewhere else.
+        with mock.patch.dict("os.environ", {"ASSISTYCA_WHATSAPP_DISPLAY_NUMBER": ""}, clear=False):
+            status, location = self.follow_nothing("/whatsapp")
+        self.assertEqual((status, location), (303, "/portal/"))
 
 
 class RegistrationWelcomeTextTests(unittest.TestCase):
