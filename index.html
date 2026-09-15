@@ -131,7 +131,7 @@
       .site-header {
         display: flex;
         align-items: center;
-        justify-content: space-between;
+        justify-content: center;
         padding: 1.6rem 0;
       }
 
@@ -140,8 +140,12 @@
         width: auto;
       }
 
+      /* One column, down the middle of the page, at every width: the same
+         reading measure on a phone and on a laptop, so there is only ever one
+         layout to look after. */
       .hero-copy {
         padding: 2.75rem 0 0;
+        text-align: center;
       }
 
       .kicker {
@@ -167,11 +171,11 @@
       }
 
       .hero-copy p {
-        margin: 0 0 2.1rem;
+        margin: 0 auto;
         font-size: clamp(1.05rem, 4vw, 1.22rem);
         line-height: 1.6;
         color: var(--muted);
-        max-width: 30rem;
+        max-width: 28rem;
       }
 
       .cta {
@@ -191,16 +195,48 @@
         transition: transform 220ms ease, box-shadow 220ms ease;
       }
 
-      .cta::after {
-        content: "→";
-        font-weight: 600;
-        opacity: 0.8;
-      }
-
       .cta:hover,
       .cta:focus-visible {
         transform: translateY(-1px);
         box-shadow: 0 22px 44px rgba(106, 167, 163, 0.28);
+      }
+
+      /* Registering is one decision made of two: the free part is said once,
+         above, and the only thing left to choose is who this is for. The two
+         doors are the same size because neither is the recommended one - the
+         answer follows the person into the registration and into the account. */
+      .signup {
+        margin: 2.4rem 0 0;
+      }
+
+      .signup-title {
+        margin: 0 0 1rem;
+        font-size: 1.15rem;
+        font-weight: 700;
+        letter-spacing: -0.015em;
+        color: var(--ink);
+      }
+
+      .signup-doors {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 0.7rem;
+        max-width: 26rem;
+        margin: 0 auto;
+      }
+
+      .signup-doors .cta {
+        width: 100%;
+        padding-inline: 1rem;
+        box-shadow: 0 14px 30px rgba(106, 167, 163, 0.2);
+      }
+
+      /* Room for two words on the narrowest phones rather than a wrapped
+         button; below this the doors stack. */
+      @media (max-width: 22rem) {
+        .signup-doors {
+          grid-template-columns: 1fr;
+        }
       }
 
       /* ---------- Phone ---------- */
@@ -605,11 +641,10 @@
 
       /* ---------- Desktop ---------- */
 
+      /* On a wide screen the column does not widen - it only gets more air
+         around it and a little more type. The page reads the same way on a
+         phone and on a laptop. */
       @media (min-width: 60rem) {
-        :root {
-          --column: 66rem;
-        }
-
         .site-header {
           padding: 2.1rem 0;
         }
@@ -618,31 +653,20 @@
           height: 2rem;
         }
 
-        .hero-grid {
-          display: grid;
-          grid-template-columns: 1.1fr 0.9fr;
-          align-items: center;
-          gap: 4.5rem;
-          padding: 2.5rem 0 5rem;
-        }
-
         .hero-copy {
-          padding: 0;
+          padding: 3.25rem 0 0;
         }
 
         h1 {
-          font-size: 4.2rem;
+          font-size: 3.5rem;
         }
 
         .hero-copy p {
-          font-size: 1.22rem;
+          font-size: 1.18rem;
         }
 
         .phone-wrap {
-          margin: 0;
-          padding-bottom: 0;
-          justify-self: end;
-          width: 20.5rem;
+          margin-top: 3.75rem;
         }
 
         .phone {
@@ -663,7 +687,7 @@
         }
 
         .pitch h2 {
-          font-size: 3.6rem;
+          font-size: 3rem;
         }
 
         .say {
@@ -675,8 +699,7 @@
         }
 
         .tiles {
-          grid-template-columns: repeat(3, 1fr);
-          gap: 1.35rem;
+          gap: 1.2rem;
           margin-top: 2.75rem;
         }
 
@@ -686,10 +709,6 @@
 
         .final-card {
           padding: 1.5rem 2rem 4rem;
-        }
-
-        .final-card .stones {
-          width: 26rem;
         }
       }
 
@@ -730,12 +749,18 @@
           </a>
         </div>
 
-        <div class="hero-grid">
+        <div class="hero-body">
           <div class="hero-copy">
             <p class="kicker">Small business assistant</p>
             <h1>Your assistant,<br />on <em>WhatsApp</em>.</h1>
             <p>It keeps your inbox, your calendar and your lists in view, so you are not the one holding it all. You just text.</p>
-            <a class="cta" href="/register">Register free</a>
+            <div class="signup">
+              <p class="signup-title" id="register-title">Register for free</p>
+              <div class="signup-doors" aria-labelledby="register-title">
+                <a class="cta" href="/register?for=business">My business</a>
+                <a class="cta" href="/register?for=family">My family</a>
+              </div>
+            </div>
           </div>
 
         <div class="phone-wrap" aria-label="Example conversation with Assistyca">
@@ -829,7 +854,10 @@
             <img class="stones" src="/assets/hero-robot-hand-stones-alpha.png" alt="" />
             <h2 id="final-title">Free to start.</h2>
             <p>Register with your name and WhatsApp number. Your assistant will say hello.</p>
-            <a class="cta" href="/register">Register free</a>
+            <div class="signup-doors">
+              <a class="cta" href="/register?for=business">My business</a>
+              <a class="cta" href="/register?for=family">My family</a>
+            </div>
             <p class="small">Already registered? <a href="/portal/">Sign in</a></p>
           </div>
         </section>

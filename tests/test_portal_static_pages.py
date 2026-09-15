@@ -117,7 +117,10 @@ class PortalStaticPageTests(unittest.TestCase):
             markup = response.read().decode("utf-8")
 
         self.assertNotIn("http-equiv=\"refresh\"", markup)
-        self.assertIn('href="/register"', markup)
+        # Who the assistant is for is asked here, not on the registration page:
+        # both doors lead to /register carrying the answer.
+        self.assertIn('href="/register?for=business"', markup)
+        self.assertIn('href="/register?for=family"', markup)
         self.assertIn('href="/portal/"', markup)
         self.assertIn('href="/privacy.html"', markup)
         self.assertIn('href="/about"', markup)

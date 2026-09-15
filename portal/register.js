@@ -1,9 +1,10 @@
-// The registration page: who I am helping, a name, a phone, a line about
-// them, one request, and a message on WhatsApp. The four are asked one at a
-// time, the way the assistant would ask them: an answered question slides off
-// to the left and the next arrives from the right. The first answer - a
-// business or a family - is what the rest of the page is written around: the
-// headline, the last question, and the first WhatsApp message all follow it.
+// The registration page: a name, a phone, a line about them, one request, and
+// a message on WhatsApp. They are asked one at a time, the way the assistant
+// would ask them: an answered question slides off to the left and the next
+// arrives from the right. Who this is for - a business or a family - is asked
+// on the landing page and arrives in the address, and it is what the rest of
+// the page is written around: the headline, the last question, and the first
+// WhatsApp message all follow it. It is only asked here when nobody has.
 // The phone is structured rather than typed
 // free: a country picked from a list, a national number typed as they would
 // dial it, and the full international number assembled here and shown back
@@ -108,6 +109,7 @@ window.addEventListener("DOMContentLoaded", () => {
   const viewport = form.querySelector("[data-viewport]");
   const steps = [...form.querySelectorAll("[data-step]")];
   const dots = [...form.querySelectorAll("[data-progress] li")];
+  const backButtons = [...form.querySelectorAll("[data-back]")];
   let current = 0;
 
   const measure = () => {
@@ -131,7 +133,12 @@ window.addEventListener("DOMContentLoaded", () => {
     measure();
     if (focus) {
       // The text field, not the country list: the country is already guessed.
-      const control = steps[current].querySelector("input") || steps[current].querySelector("select");
+      // On a question answered by picking, the card they picked - landing on
+      // the first card instead would ring a choice they did not make.
+      const control =
+        steps[current].querySelector("input:checked") ||
+        steps[current].querySelector("input") ||
+        steps[current].querySelector("select");
       if (control) {
         control.focus({ preventScroll: true });
       }
@@ -306,6 +313,35 @@ window.addEventListener("DOMContentLoaded", () => {
     });
   });
 
+  // Who this is for is decided on the landing page, which links here with the
+  // answer in the address. When the address says so, the question is already
+  // answered: it is taken out of the flow and the page opens on the name.
+  // Someone who came straight to /register - a bookmark, a typed address - is
+  // still asked here rather than guessed at.
+  const requestedKind = (() => {
+    try {
+      return String(new URLSearchParams(window.location.search).get("for") || "").trim().toLowerCase();
+    } catch (error) {
+      return "";
+    }
+  })();
+  const presetChoice = kindChoices.find((choice) => choice.value === requestedKind);
+  const kindIndex = steps.findIndex((step) => step.getAttribute("data-step") === "kind");
+  if (presetChoice && kindIndex >= 0) {
+    presetChoice.checked = true;
+    steps.splice(kindIndex, 1)[0].remove();
+    const dot = dots.splice(kindIndex, 1)[0];
+    if (dot) {
+      dot.remove();
+    }
+  }
+
+  // Back belongs only where there is something behind it. Which question comes
+  // first is settled by now, so this is decided once rather than on every slide.
+  backButtons.forEach((button) => {
+    button.hidden = Boolean(steps[0] && steps[0].contains(button));
+  });
+
   countrySelect.addEventListener("change", syncPhone);
   nationalInput.addEventListener("input", () => {
     // Digits only, but keep it readable while they type.
@@ -380,11 +416,16 @@ window.addEventListener("DOMContentLoaded", () => {
 
   // What is wrong with one question's answer, if anything. Each question is
   // checked on its own so nobody is told about a field they cannot see.
+  // Each question is known by its name rather than by where it sits: the
+  // first one is dropped when the landing page has already asked it, and
+  // everything after it moves up.
   const stepErrors = (index) => {
-    if (index === 0) {
+    const step = steps[index];
+    const name = step ? step.getAttribute("data-step") : "";
+    if (name === "kind") {
       return chosenKind() ? {} : { kind: "Pick the one that fits you." };
     }
-    if (index === 1) {
+    if (name === "name") {
       if (capitalizeName(firstNameInput.value).length < 2) {
         return { name: "Enter your first name." };
       }
@@ -393,24 +434,29 @@ window.addEventListener("DOMContentLoaded", () => {
       }
       return {};
     }
-    if (index === 2) {
+    if (name === "phone") {
       const problem = phoneProblem();
       return problem ? { phone: problem } : {};
     }
-    const about = businessInput.value.trim();
-    return about.length < 2 ? { business: (KINDS[chosenKind()] || KINDS.business).missing } : {};
+    if (name === "business") {
+      const about = businessInput.value.trim();
+      return about.length < 2 ? { business: (KINDS[chosenKind()] || KINDS.business).missing } : {};
+    }
+    return {};
   };
 
   const validateLocally = () =>
-    Object.assign({}, stepErrors(0), stepErrors(1), stepErrors(2), stepErrors(3));
+    steps.reduce((all, _step, index) => Object.assign(all, stepErrors(index)), {});
 
   // Enter moves on without the field ever losing focus, so tidy it here too.
   const tidyStep = (index) => {
-    if (index === 1) {
+    const step = steps[index];
+    const name = step ? step.getAttribute("data-step") : "";
+    if (name === "name") {
       firstNameInput.value = capitalizeName(firstNameInput.value);
       lastNameInput.value = capitalizeName(lastNameInput.value);
     }
-    if (index === 3) {
+    if (name === "business") {
       businessInput.value = capitalizeSentence(businessInput.value);
     }
   };
@@ -432,7 +478,7 @@ window.addEventListener("DOMContentLoaded", () => {
   form.querySelectorAll("[data-next]").forEach((button) => {
     button.addEventListener("click", advance);
   });
-  form.querySelectorAll("[data-back]").forEach((button) => {
+  backButtons.forEach((button) => {
     button.addEventListener("click", () => {
       clearFieldErrors();
       setStatus("");
