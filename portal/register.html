@@ -61,18 +61,21 @@
         min-height: 100%;
       }
 
-      /* The card is short: without this the canvas under it borrows the
-         browser's own colour instead of the page's paper. */
+      /* The card is short, so the body box is shorter than the window. Paint
+         the paper on the root and pin it to the viewport: on the body it would
+         stop where the content stops and leave a seam across the page. */
       html {
-        background: var(--bg);
+        background:
+          radial-gradient(60rem 40rem at 110% -10%, var(--accent-soft), transparent 60%),
+          linear-gradient(180deg, var(--bg) 0%, var(--bg-deep) 100%);
+        background-attachment: fixed;
+        background-color: var(--bg-deep);
       }
 
       body {
         font-family: "Manrope", "Segoe UI", system-ui, -apple-system, sans-serif;
         color: var(--ink);
-        background:
-          radial-gradient(60rem 40rem at 110% -10%, var(--accent-soft), transparent 60%),
-          linear-gradient(180deg, var(--bg) 0%, var(--bg-deep) 100%);
+        background: transparent;
         line-height: 1.55;
         -webkit-font-smoothing: antialiased;
         overflow-x: hidden;
