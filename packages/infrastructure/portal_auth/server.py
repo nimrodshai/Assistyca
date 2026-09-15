@@ -295,9 +295,12 @@ from packages.infrastructure.whatsapp_agent_chat import calendars_missing_colour
 from packages.infrastructure.whatsapp_agent_chat import build_link_existing_account_text
 from packages.infrastructure.whatsapp_agent_chat import resolve_whatsapp_signup_daily_cap
 from packages.infrastructure.whatsapp_agent_chat import whatsapp_signup_enabled
-from packages.infrastructure.whatsapp_agent_chat import REGISTRATION_NOT_YOU_TEXT
-from packages.infrastructure.whatsapp_agent_chat import build_registration_welcome_fallback
-from packages.infrastructure.whatsapp_agent_chat import build_registration_welcome_prompt
+from packages.infrastructure.registration_welcome import build_registration_welcome_line_prompt
+from packages.infrastructure.registration_welcome import build_registration_welcome_message
+from packages.infrastructure.registration_welcome import compose_registration_welcome_line
+from packages.infrastructure.registration_welcome import registration_welcome_line_fallback
+from packages.infrastructure.registration_welcome import registration_welcome_template_parameters
+from packages.infrastructure.registration_welcome import resolve_registration_welcome_template
 from packages.infrastructure.whatsapp_agent_chat import flatten_for_template
 from packages.infrastructure.whatsapp_portal_service import PortalWhatsAppService
 from packages.infrastructure.whatsapp_portal_service import build_portal_service_from_connection
@@ -14034,23 +14037,29 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             })
             return
 
-        welcome = (
-            f"{self._write_registration_welcome(name=name, business=business, kind=kind)} "
-            f"{REGISTRATION_NOT_YOU_TEXT}"
+        # The approved welcome template writes the greeting and the closing
+        # invitation itself; ours is the line in the middle, the one that shows
+        # we read what they typed on the page.
+        welcome_line = compose_registration_welcome_line(
+            self._write_registration_welcome_line(name=name, business=business, kind=kind),
+            kind=kind,
         )
+        welcome = build_registration_welcome_message(name=name, line=welcome_line)
         # The signup conversation starts with the welcome, so the reply to it
         # is answered as a reply and not as a first hello.
         self.database.append_whatsapp_signup_message(wa_id=phone, role="assistant", text=welcome)
 
-        template = load_scheduled_action_config()
+        template = resolve_registration_welcome_template(base_url=self._public_base_url())
         sent_message_id = ""
         send_error = ""
         try:
             sent_message_id = send_whatsapp_notification(
                 recipient_wa_id=phone,
                 message_text=flatten_for_template(welcome),
-                template_name=template.whatsapp_template_name,
-                template_language=template.whatsapp_template_language,
+                template_name=template.name,
+                template_language=template.language,
+                template_parameters=registration_welcome_template_parameters(name=name, line=welcome_line),
+                template_header_image_url=template.header_image_url,
             )
         except Exception as exc:  # noqa: BLE001 - the registration stands; the page gets another way in
             send_error = str(exc)
@@ -14085,8 +14094,8 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             "phone": phone,
         })
 
-    def _write_registration_welcome(self, *, name: str, business: str, kind: str = "business") -> str:
-        """The first message to a web registrant, by the model or the fixed line.
+    def _write_registration_welcome_line(self, *, name: str, business: str, kind: str = "business") -> str:
+        """The middle line of the welcome template, by the model or the fixed line.
 
         Unbilled, like the signup concierge: there is no account yet and this
         is house cost, bounded by the registration rate limit and the daily
@@ -14098,12 +14107,12 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             "PORTAL_WHATSAPP_SIGNUP_MODEL",
             "OPENAI_MODEL",
         )
-        fallback = build_registration_welcome_fallback(name)
+        fallback = registration_welcome_line_fallback(kind=kind)
         try:
             result = call_openai_response(
                 tool_name="whatsapp_registration_welcome",
                 tool_id="whatsapp_signup",
-                prompt=build_registration_welcome_prompt(name=name, business=business, kind=kind),
+                prompt=build_registration_welcome_line_prompt(name=name, business=business, kind=kind),
                 model=model,
                 instructions=SIGNUP_CONCIERGE_INSTRUCTIONS,
                 max_output_tokens=WHATSAPP_SIGNUP_MAX_OUTPUT_TOKENS,

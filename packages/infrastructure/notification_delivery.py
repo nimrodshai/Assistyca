@@ -26,7 +26,9 @@ send paths resolve the Assistyca-owned sender number through them.
 from __future__ import annotations
 
 import os
+import re
 from typing import Any
+from typing import Sequence
 
 
 DEFAULT_PRODUCT_NAME = "Assistyca"
@@ -39,6 +41,12 @@ NOTIFICATION_TONES = frozenset({"info", "success", "warning", "error"})
 
 def normalize_text(value: Any) -> str:
     return str(value or "").strip()
+
+
+def flatten_template_parameter(value: Any) -> str:
+    """One line: a template variable may carry no newline and no tab."""
+
+    return re.sub(r"\s+", " ", normalize_text(value)).strip()
 
 
 def normalize_email(value: Any) -> str:
@@ -155,14 +163,21 @@ def send_whatsapp_notification(
     api_version: str | None = None,
     template_name: str | None = None,
     template_language: str | None = None,
+    template_parameters: Sequence[Any] | None = None,
+    template_header_image_url: str | None = None,
 ) -> str:
     """Send one owner notification over WhatsApp through the Assistyca sender.
 
-    With a template name this sends the approved template and puts the message
-    into its single body variable, which works outside Meta's 24-hour service
-    window -- the normal case for a message scheduled hours ahead. Without one
-    it sends plain text. Raises rather than pretending, so the caller can fall
-    back to the in-app feed and say which channel actually carried the message.
+    With a template name this sends the approved template, which works outside
+    Meta's 24-hour service window -- the normal case for a message scheduled
+    hours ahead, and the only way to speak first to someone who registered on
+    the website. The message fills the template's single body variable unless
+    the caller passes `template_parameters`, which fill {{1}}, {{2}} and so on
+    in order; a template that opens with a picture takes the picture per
+    message, so `template_header_image_url` has to be an address Meta can
+    fetch. Without a template name it sends plain text. Raises rather than
+    pretending, so the caller can fall back to the in-app feed and say which
+    channel actually carried the message.
     """
 
     # Imported here rather than at module top: this module is imported by
@@ -193,20 +208,27 @@ def send_whatsapp_notification(
     if resolved_template_name:
         if not resolved_template_language:
             raise RuntimeError("WhatsApp template delivery requires a language code.")
+        raw_parameters = list(template_parameters) if template_parameters is not None else [message_text]
+        # A variable carrying a newline, a tab or nothing at all is rejected by
+        # Meta, and the message never reaches the phone.
+        body_parameters = [flatten_template_parameter(value) for value in raw_parameters]
+        if not body_parameters or not all(body_parameters):
+            raise RuntimeError("WhatsApp template delivery requires every body variable to have text.")
+        components: list[dict[str, Any]] = []
+        header_image_url = normalize_text(template_header_image_url)
+        if header_image_url:
+            components.append({
+                "type": "header",
+                "parameters": [{"type": "image", "image": {"link": header_image_url}}],
+            })
+        components.append({
+            "type": "body",
+            "parameters": [{"type": "text", "text": value} for value in body_parameters],
+        })
         template = {
             "name": resolved_template_name,
             "language": {"code": resolved_template_language},
-            "components": [
-                {
-                    "type": "body",
-                    "parameters": [
-                        {
-                            "type": "text",
-                            "text": message_text,
-                        }
-                    ],
-                }
-            ],
+            "components": components,
         }
 
     return send_whatsapp_message(
