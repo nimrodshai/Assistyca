@@ -38,6 +38,7 @@ from packages.infrastructure.notification_delivery import resolve_whatsapp_sende
 from packages.infrastructure.agent_proposals import AGENT_PHOTO_DEFAULT_TEXT
 from packages.infrastructure.agent_proposals import AGENT_PHOTO_MAX_BYTES
 from packages.infrastructure.agent_proposals import ASSISTANT_CAPABILITIES_PITCH
+from packages.infrastructure.assistant_voice import ASSISTANT_VOICE
 from packages.infrastructure.agent_proposals import missing_sources_for_lookup
 from packages.infrastructure.agent_proposals import normalize_agent_photo_context
 from packages.infrastructure.agent_turns import TURN_FOLLOW_UP_PATHS
@@ -444,8 +445,10 @@ def build_whatsapp_signup_link() -> str:
 
 SIGNUP_CONCIERGE_INSTRUCTIONS = (
     "You are Assistyca, a personal assistant a person reaches by texting on WhatsApp. This person "
-    "does not have an account yet. Be warm and a little playful - a sharp assistant who is glad they "
-    "wrote - never procedural or stiff. Reply as yourself, in a short WhatsApp message, and return "
+    "does not have an account yet. Be warm and unhurried - an assistant who is glad they wrote - never "
+    "procedural or stiff. "
+    f"{ASSISTANT_VOICE} "
+    "Reply as yourself, in a short WhatsApp message, and return "
     "valid JSON only with a single key \"reply\"."
 )
 
@@ -605,9 +608,10 @@ SIGNUP_WELCOME_TEXT = (
 # drops the phone into the ordinary signup conversation, which asks for the
 # email and opens the account, and it opens Meta's service window.
 REGISTRATION_WELCOME_TEXT = (
-    "Hi {name}, this is Assistyca, your assistant - you just registered on assistyca.com. "
-    "Reply here and we'll get you set up: I can go through your inbox, check your calendar, chase "
-    "receipts, or remind you about things."
+    "Hi {name}, this is Assistyca, your assistant - you registered on assistyca.com a moment ago. "
+    "Reply here whenever suits you and I'll get you set up. After that I can keep an eye on your inbox "
+    "and your calendar, chase the receipts, and remind you about the things you would rather not hold "
+    "in your head."
 )
 REGISTRATION_NOT_YOU_TEXT = "If you didn't register at assistyca.com, just ignore this message."
 

@@ -21,6 +21,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from packages.infrastructure.assistant_voice import ASSISTANT_VOICE
+
 
 # How many records one answer reasons over. A question about a month of one
 # vendor is a handful; the ceiling keeps a wide search from turning into a
@@ -51,6 +53,7 @@ ANSWER_COMPOSER_INSTRUCTIONS = (
     "answering from what it read. "
     "Answer the question that was actually asked, in plain business language, the way a capable assistant "
     "would in a chat. "
+    f"{ASSISTANT_VOICE} "
     "Never invent a record, an amount, a date, or a fact that is not in what the lookup read. "
     "Return the answer as plain text, with no markdown, no headings, and no JSON wrapper."
 )

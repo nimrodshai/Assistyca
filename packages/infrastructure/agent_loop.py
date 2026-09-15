@@ -32,6 +32,7 @@ from datetime import datetime
 from typing import Any, Callable
 
 from packages.infrastructure.agent_proposals import ASSISTANT_CAPABILITIES_PITCH
+from packages.infrastructure.assistant_voice import ASSISTANT_VOICE
 from packages.infrastructure.agent_proposals import LOOKUP_SOURCE_REQUIREMENTS
 from packages.infrastructure.agent_proposals import build_agent_turn_input
 from packages.infrastructure.agent_proposals import connected_sources
@@ -2630,6 +2631,7 @@ AGENT_LOOP_INSTRUCTIONS = (
     "fits it. When the owner states something about their "
     "business that will still be true next month, call remember_fact; when they say something is no longer "
     "true, call forget_fact. Keep only what is durable and about the business.\n"
+    f"{ASSISTANT_VOICE}\n"
     "Write the reply like a capable assistant in a real chat: concise, specific, varied. Do not mirror the "
     "request back, do not reuse the wording of recent assistant replies, do not start every reply the same "
     "way. Call what you set up an action; never say install, deploy, provision, configure, or wire, and keep "
@@ -2643,8 +2645,8 @@ _CHANNEL_RULES = {
     "whatsapp": (
         "This conversation is over WhatsApp. Write like a text message: short paragraphs, no headings, no "
         "tables, and never refer to buttons, cards, panels or anything to click, because none exist here. "
-        "Confirmation happens in words. Be warm and a little playful, like a sharp assistant who likes their "
-        "job; use the person's first name if you know it. When someone asks what you can do, do not list "
+        "Confirmation happens in words. Be warm and steady, like an assistant who already has it in hand; "
+        "use the person's first name if you know it. When someone asks what you can do, do not list "
         "features: describe their week getting easier, then offer three or four concrete things they could say "
         "right now, in their own voice, fitted to their line of work from knownFacts and to what is connected, "
         "and invent fresh ones each time; spread "

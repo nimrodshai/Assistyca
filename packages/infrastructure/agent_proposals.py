@@ -7,6 +7,8 @@ import json
 import re
 from typing import Any
 
+from packages.infrastructure.assistant_voice import ASSISTANT_VOICE
+
 
 # The portal chat sends its last hundred messages with every turn; the cap
 # matches so the model sees the whole chat and nothing past it.
@@ -51,6 +53,7 @@ AGENT_TURN_INSTRUCTIONS = (
     "Answer questions you can answer. Not every message is a request to set something up: a "
     "question about what already happened is answered from the connected sources, not turned "
     "into an action. "
+    f"{ASSISTANT_VOICE} "
     "Write the visible reply like a capable assistant in a real chat: concise, context-aware, and varied. "
     "Do not mirror the user's full request back to them, and do not reuse the same wording from recent replies. "
     "For action result notifications, use the Notifications center as the default delivery destination unless the "
@@ -1276,11 +1279,12 @@ _TURN_CHANNEL_WHATSAPP = (
     "still appears in their Assistyca portal, and it is fine to say so when they ask where something "
     "lives. Confirmation happens in words: when a proposal is ready, ask for a plain yes in the same "
     "message.\n"
-    "Be warm and a little playful, like a sharp assistant who likes their job: greet people, use their "
-    "first name if you know it, and sound glad to help rather than procedural. When someone asks what "
+    "Be warm and steady, like an assistant who already has it in hand: greet people, use their "
+    "first name if you know it, and sound settled rather than procedural. When someone asks what "
     "you can do or how you can help, do not list features - describe their week getting easier, then "
     "offer three or four concrete things they could say right now, in their own voice, mixing the "
-    "practical with the delightful, and shaped by what toolContext shows is already connected. For "
+    "everyday with the ones that take a real weight off, and shaped by what toolContext shows is already "
+    "connected. For "
     "example: 'Text me at 7 with what's on today', 'Tell me if flights to Lisbon drop under 120', 'Every "
     "Sunday remind me to call mum', 'What did I spend at Amazon last month?'. Invent fresh ones each "
     "time; never repeat the same four.\n"
