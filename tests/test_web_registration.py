@@ -269,6 +269,31 @@ class WebRegistrationTests(unittest.TestCase):
         self.assertEqual(payload["signInUrl"], "/portal/")
         self.assertFalse(self.template_sent.called)
 
+    def test_a_picture_meta_cannot_fetch_does_not_cost_them_the_welcome(self) -> None:
+        # Meta fetches the header image itself and refuses the whole message
+        # when it cannot. The words matter more than the picture, so the
+        # second attempt goes without it.
+        def refuse_the_picture(**kwargs):
+            components = (kwargs.get("template") or {}).get("components") or []
+            if any(component.get("type") == "header" for component in components):
+                raise RuntimeError("(#131053) Media upload error")
+            return "wamid.welcome-no-picture"
+
+        self.template_sent.side_effect = refuse_the_picture
+        with mock.patch.dict(
+            "os.environ",
+            {"WHATSAPP_REGISTRATION_WELCOME_HEADER_IMAGE_URL": "https://assistyca.com/assets/gone.png"},
+            clear=False,
+        ):
+            status, payload = self.register(registration())
+
+        self.assertEqual(status, 200, payload)
+        self.assertTrue(payload["whatsappSent"])
+        self.assertEqual(self.template_sent.call_count, 2)
+        sent = self.template_sent.call_args.kwargs["template"]
+        self.assertEqual([component["type"] for component in sent["components"]], ["body"])
+        self.assertEqual(sent["name"], "assistyca_welcome1")
+
     def test_when_the_welcome_cannot_be_sent_the_page_still_gets_a_way_in(self) -> None:
         with mock.patch.dict("os.environ", {"ASSISTYCA_WHATSAPP_ACCESS_TOKEN": "", "WHATSAPP_ACCESS_TOKEN": ""}, clear=False):
             status, payload = self.register(registration())
