@@ -14052,18 +14052,27 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         template = resolve_registration_welcome_template(base_url=self._public_base_url())
         sent_message_id = ""
         send_error = ""
-        try:
-            sent_message_id = send_whatsapp_notification(
-                recipient_wa_id=phone,
-                message_text=flatten_for_template(welcome),
-                template_name=template.name,
-                template_language=template.language,
-                template_parameters=registration_welcome_template_parameters(name=name, line=welcome_line),
-                template_header_image_url=template.header_image_url,
-            )
-        except Exception as exc:  # noqa: BLE001 - the registration stands; the page gets another way in
-            send_error = str(exc)
-            print(f"Web registration welcome could not be sent: {exc}", flush=True)
+        for header_image_url in (template.header_image_url, ""):
+            try:
+                sent_message_id = send_whatsapp_notification(
+                    recipient_wa_id=phone,
+                    message_text=flatten_for_template(welcome),
+                    template_name=template.name,
+                    template_language=template.language,
+                    template_parameters=registration_welcome_template_parameters(name=name, line=welcome_line),
+                    template_header_image_url=header_image_url,
+                )
+                send_error = ""
+                break
+            except Exception as exc:  # noqa: BLE001 - the registration stands; the page gets another way in
+                send_error = str(exc)
+                print(f"Web registration welcome could not be sent: {exc}", flush=True)
+            if not header_image_url:
+                break
+            # Meta fetches the picture itself, and a picture it cannot fetch
+            # loses the whole message. The words are what the person needs, so
+            # the second attempt goes without it.
+            print("Web registration welcome retried without its header image.", flush=True)
 
         print(
             json.dumps(
