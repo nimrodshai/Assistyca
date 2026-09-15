@@ -127,6 +127,34 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn('<link rel="canonical" href="https://assistyca.com/" />', markup)
         self.assertNotIn("noindex", markup)
 
+    def test_the_landing_page_speaks_to_families_as_much_as_to_businesses(self) -> None:
+        """Two doors are not enough on their own.
+
+        The page used to say "small business assistant" above a family button, and
+        the one example conversation on it was an invoice and an accountant. A parent
+        reading it had no reason to think the second door was meant for them, so the
+        page now carries both days: a business conversation and a family one, and the
+        words around them name both.
+        """
+        markup = (self.root / "index.html").read_text(encoding="utf-8")
+
+        self.assertNotIn("Small business assistant", markup)
+        self.assertIn("For businesses and families", markup)
+
+        # Both example conversations are on the page, and the switch between them
+        # is CSS only - the landing page carries no script.
+        self.assertIn('class="wa-chat business"', markup)
+        self.assertIn('class="wa-chat family"', markup)
+        self.assertIn('for="chat-business"', markup)
+        self.assertIn('for="chat-family"', markup)
+
+        # The band of things people text is a mix, not one audience twice over.
+        rows = re.search(r'<div class="say-rows".*?</div>\s*</div>\s*</div>', markup, re.S)
+        self.assertIsNotNone(rows, "the drifting prompts should still be on the page")
+        prompts = re.findall(r"<span>([^<]+)</span>", rows.group(0))
+        home = [line for line in prompts if "school" in line or "shopping list" in line]
+        self.assertTrue(home, "some of the drifting prompts should be things a family would text")
+
     def test_landing_page_assets_are_served(self) -> None:
         markup = (self.root / "index.html").read_text(encoding="utf-8")
         referenced = set(re.findall(r'(?:src|href)="(/assets/[^"]+)"', markup))

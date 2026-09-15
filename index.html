@@ -6,7 +6,7 @@
     <title>Assistyca | Your assistant on WhatsApp</title>
     <meta
       name="description"
-      content="Assistyca is a personal assistant for small business owners that lives in WhatsApp. It reads your inbox and calendar, keeps your lists and reminds you on time. Register in a minute and it texts you first."
+      content="Assistyca is a personal assistant for small businesses and for families that lives in WhatsApp. It reads your inbox and calendar, keeps your lists and reminds you on time. Register in a minute and it texts you first."
     />
     <meta property="og:title" content="Assistyca | Your assistant on WhatsApp" />
     <meta
@@ -246,6 +246,61 @@
         margin: 3.25rem auto 0;
         width: min(100% - 3.5rem, 20rem);
         padding-bottom: 3.5rem;
+      }
+
+      /* The two doors are answered again here, in miniature: the same
+         assistant, one day in a business and one day in a family. Radios
+         rather than a script, because this page carries no JavaScript. */
+      .chat-switch {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        opacity: 0;
+        pointer-events: none;
+      }
+
+      .chat-pick {
+        display: flex;
+        justify-content: center;
+        gap: 0.25rem;
+        width: max-content;
+        margin: 0 auto 1.4rem;
+        padding: 0.28rem;
+        border-radius: 999px;
+        background: var(--surface);
+        border: 1px solid var(--hairline);
+        box-shadow: var(--shadow-soft);
+      }
+
+      .chat-pick label {
+        padding: 0.4rem 1.05rem;
+        border-radius: 999px;
+        font-size: 0.88rem;
+        font-weight: 600;
+        color: var(--muted);
+        cursor: pointer;
+        user-select: none;
+        -webkit-user-select: none;
+        transition: background 220ms ease, color 220ms ease;
+      }
+
+      #chat-business:checked ~ .chat-pick label[for="chat-business"],
+      #chat-family:checked ~ .chat-pick label[for="chat-family"] {
+        background: var(--accent-soft);
+        color: var(--accent-deep);
+      }
+
+      #chat-business:focus-visible ~ .chat-pick label[for="chat-business"],
+      #chat-family:focus-visible ~ .chat-pick label[for="chat-family"] {
+        outline: 2px solid var(--accent-deep);
+        outline-offset: 2px;
+      }
+
+      /* Only one conversation is on the screen at a time; the one arriving
+         plays its bubbles in again, the way a chat opens. */
+      #chat-business:checked ~ .phone .wa-chat.family,
+      #chat-family:checked ~ .phone .wa-chat.business {
+        display: none;
       }
 
       .phone {
@@ -734,7 +789,7 @@
           padding: 0 1.5rem;
         }
 
-        .say-row span:nth-child(n + 7) {
+        .say-row span:nth-child(n + 9) {
           display: none;
         }
       }
@@ -751,7 +806,7 @@
 
         <div class="hero-body">
           <div class="hero-copy">
-            <p class="kicker">Small business assistant</p>
+            <p class="kicker">For businesses and families</p>
             <h1>Your assistant,<br />on <em>WhatsApp</em>.</h1>
             <p>It keeps your inbox, your calendar and your lists in view, so you are not the one holding it all. You just text.</p>
             <div class="signup">
@@ -763,7 +818,13 @@
             </div>
           </div>
 
-        <div class="phone-wrap" aria-label="Example conversation with Assistyca">
+        <div class="phone-wrap" aria-label="Example conversations with Assistyca">
+            <input class="chat-switch" type="radio" name="chat-example" id="chat-business" checked />
+            <input class="chat-switch" type="radio" name="chat-example" id="chat-family" />
+            <div class="chat-pick">
+              <label for="chat-business">A business</label>
+              <label for="chat-family">A family</label>
+            </div>
             <div class="phone">
               <div class="screen">
                 <div class="wa-header">
@@ -773,11 +834,17 @@
                     <span>online</span>
                   </div>
                 </div>
-                <ol class="wa-chat">
+                <ol class="wa-chat business">
                   <li class="me">What's on today?<time>8:02</time></li>
                   <li class="them">Dana at 10, the accountant at 13:30. Two invoices came in overnight, want the total?<time>8:02</time></li>
                   <li class="me">Yes, and remind me Friday to pay them<time>8:03</time></li>
                   <li class="them">4,120 together. I'll text you Friday at 9.<time>8:03</time></li>
+                </ol>
+                <ol class="wa-chat family">
+                  <li class="me">Anything I'm forgetting today?<time>8:02</time></li>
+                  <li class="them">Noa has the dentist at 16:00, and the school trip form is due tonight.<time>8:02</time></li>
+                  <li class="me">Remind me at 19:00, and add milk and batteries to the shopping list<time>8:03</time></li>
+                  <li class="them">Both on the list. I'll text you at 19:00 about the form.<time>8:03</time></li>
                 </ol>
                 <div class="wa-input"><span>Message</span><i></i></div>
               </div>
@@ -790,7 +857,7 @@
     <main>
       <div class="col">
         <section class="pitch" aria-labelledby="what-title">
-          <h2 id="what-title"><span class="soft">An LLM agent,</span>designed for <em>businesses</em>.</h2>
+          <h2 id="what-title"><span class="soft">An LLM agent,</span>for a business or a <em>family</em>.</h2>
         </section>
 
         <div class="say">
@@ -800,29 +867,37 @@
             <span>Did the plumber ever send the invoice?</span>
             <span>What's on tomorrow?</span>
             <span>Put last month's receipts in a folder for the accountant</span>
-            <span>Every Friday, remind me to send the weekly report</span>
+            <span>Remind me Thursday to hand in the school form</span>
             <span>Find me a free hour with Yael next week</span>
             <span>What did I spend on software last month?</span>
+            <span>Did the appointment letter for Mum arrive?</span>
+            <span>Every Friday, remind me to send the weekly report</span>
             <span>Did the plumber ever send the invoice?</span>
             <span>What's on tomorrow?</span>
             <span>Put last month's receipts in a folder for the accountant</span>
-            <span>Every Friday, remind me to send the weekly report</span>
+            <span>Remind me Thursday to hand in the school form</span>
             <span>Find me a free hour with Yael next week</span>
             <span>What did I spend on software last month?</span>
+            <span>Did the appointment letter for Mum arrive?</span>
+            <span>Every Friday, remind me to send the weekly report</span>
           </div>
           <div class="say-row reverse">
             <span>Add renew the insurance to my to-dos, due Tuesday</span>
             <span>Summarise that long thread from the supplier</span>
             <span>Text me at 7 with what's on</span>
+            <span>Add sunscreen and batteries to the shopping list</span>
             <span>Who haven't I replied to this week?</span>
             <span>Tell me when the venue posts new dates</span>
             <span>Did the deposit come in?</span>
+            <span>When is the car due for its test?</span>
             <span>Add renew the insurance to my to-dos, due Tuesday</span>
             <span>Summarise that long thread from the supplier</span>
             <span>Text me at 7 with what's on</span>
+            <span>Add sunscreen and batteries to the shopping list</span>
             <span>Who haven't I replied to this week?</span>
             <span>Tell me when the venue posts new dates</span>
             <span>Did the deposit come in?</span>
+            <span>When is the car due for its test?</span>
           </div>
             </div>
           </div>
