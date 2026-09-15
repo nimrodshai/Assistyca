@@ -470,6 +470,24 @@ SIGNUP_PRODUCT_SUMMARY = (
     "- a tap on a link, no website needed."
 )
 
+# Someone who registered for their family asked about their afternoons, not
+# their invoices. The same assistant does this work - reminders, recurring
+# nudges, a list on a page they can share by link - so this says it in the
+# words a parent would use rather than promising a separate product.
+FAMILY_PRODUCT_SUMMARY = (
+    SIGNUP_PRODUCT_SUMMARY
+    + " For a family that means the afternoons above all: it keeps who is driving to which activity, "
+    "nudges the parent on duty in time to leave, says out loud when an activity still has nobody down "
+    "for the pickup, and holds the rota on a page the other parents can open from a link - so the whole "
+    "week sits in one place instead of a dozen threads."
+)
+
+
+def product_summary_for(kind: Any) -> str:
+    """What to tell someone Assistyca does, in the register they asked in."""
+
+    return FAMILY_PRODUCT_SUMMARY if normalize_text(kind).lower() == "family" else SIGNUP_PRODUCT_SUMMARY
+
 
 def build_signup_concierge_prompt(
     *,
@@ -538,19 +556,21 @@ def build_signup_concierge_prompt(
             "and that they can send it whenever they are ready."
         )
 
+    registered_kind = normalize_text(registered.get("kind")).lower() if registered else ""
     if registered:
         task = (
-            "They registered on the Assistyca website first and gave their name and what they do (see "
-            "registeredOnTheWebsite); the first message in the conversation was yours. Use what they "
-            "told you: address them by first name, and never repeat what your earlier messages in "
-            "recentConversation already said - if you give an example, make it a new one that fits their "
-            "line of work. "
+            "They registered on the Assistyca website first and gave their name and, in a line, what they "
+            "registered about (see registeredOnTheWebsite); the first message in the conversation was "
+            "yours. Use what they told you: address them by first name, and never repeat what your earlier "
+            "messages in recentConversation already said - if you give an example, make it a new one that "
+            + ("fits their week at home. " if registered_kind == "family" else "fits their line of work. ")
         ) + task
     context = {
-        "whatAssistycaDoes": SIGNUP_PRODUCT_SUMMARY,
+        "whatAssistycaDoes": product_summary_for(registered_kind),
         "registeredOnTheWebsite": {
+            "registeredFor": "their family" if registered_kind == "family" else "their business",
             "name": normalize_text(registered.get("name"))[:120],
-            "whatTheyDo": normalize_text(registered.get("business"))[:400],
+            "whatTheyToldUs": normalize_text(registered.get("business"))[:400],
         } if registered else None,
         "recentConversation": [
             {"role": str(item.get("role") or "user"), "text": str(item.get("text") or "")[:600]}
@@ -626,27 +646,41 @@ def build_registration_welcome_fallback(name: Any) -> str:
     return REGISTRATION_WELCOME_TEXT.format(name=first_name(name) or "there")
 
 
-def build_registration_welcome_prompt(*, name: str, business: str) -> str:
+def build_registration_welcome_prompt(*, name: str, business: str, kind: str = "business") -> str:
     """The first message to someone who registered on the web.
 
-    They have told us who they are and what they do, so the message has to
-    show it was read: not "welcome to Assistyca" but two or three things
-    someone in their line of work could say to us. It ends by asking them to
-    reply, because nothing happens until they do.
+    They have told us who they are and what they registered about, so the
+    message has to show it was read: not "welcome to Assistyca" but two or
+    three things someone in their situation could say to us. A family chose a
+    different page and answered a different question, so the examples come
+    from their week rather than their work. It ends by asking them to reply,
+    because nothing happens until they do.
     """
 
+    family = normalize_text(kind).lower() == "family"
     context = {
-        "whatAssistycaDoes": SIGNUP_PRODUCT_SUMMARY,
+        "whatAssistycaDoes": product_summary_for(kind),
         "registration": {
+            "registeredFor": "their family" if family else "their business",
             "name": normalize_text(name)[:120],
-            "whatTheyDo": normalize_text(business)[:400],
+            "whatTheyToldUs": normalize_text(business)[:400],
         },
         "task": (
-            "This person has just registered on the Assistyca website and this is the first message they "
-            "get from you, on WhatsApp. Greet them by first name. Show that you read what they do: offer two "
-            "or three concrete things they could say to you, in their own voice, that fit their work - from "
-            "whatAssistycaDoes, never beyond it. Then ask them to reply here so you can get them set up. Do "
-            "not ask for their email yet, and do not ask for anything they already gave."
+            (
+                "This person has just registered on the Assistyca website, for their family, and this is the "
+                "first message they get from you, on WhatsApp. Greet them by first name. Show that you read "
+                "what they told you about their household: offer two or three concrete things they could say "
+                "to you, in their own voice, that fit their week - the afternoon runs, who is driving, an "
+                "activity with nobody down for the pickup - from whatAssistycaDoes, never beyond it."
+                if family
+                else
+                "This person has just registered on the Assistyca website and this is the first message they "
+                "get from you, on WhatsApp. Greet them by first name. Show that you read what they do: offer "
+                "two or three concrete things they could say to you, in their own voice, that fit their work "
+                "- from whatAssistycaDoes, never beyond it."
+            )
+            + " Then ask them to reply here so you can get them set up. Do not ask for their email yet, and "
+            "do not ask for anything they already gave."
         ),
     }
     return (
@@ -2750,6 +2784,8 @@ __all__ = [
     "build_link_existing_account_text",
     "infer_mail_provider",
     "build_signup_concierge_prompt",
+    "product_summary_for",
+    "FAMILY_PRODUCT_SUMMARY",
     "normalize_signup_concierge_reply",
     "SIGNUP_CONCIERGE_INSTRUCTIONS",
     "extract_whatsapp_claim_code",

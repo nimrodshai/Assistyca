@@ -5594,15 +5594,18 @@ class PortalDatabase:
             conn.commit()
         return self.get_whatsapp_signup(number) or {}
 
-    def start_web_registration(self, *, wa_id: str, name: str, business: str) -> dict[str, Any]:
+    def start_web_registration(
+        self, *, wa_id: str, name: str, business: str, kind: str = "business",
+    ) -> dict[str, Any]:
         """Open the signup for a phone typed into the registration page.
 
         There is no account yet: accounts are keyed on an email and the page
         asks only for a phone, so the row is an ordinary `awaiting_email`
-        signup that already knows the name and the business. When the phone
-        replies, the conversation asks for the email as it would for any
-        stranger, and what was typed here is saved on the account it opens.
-        Reopening a signup (`start_whatsapp_signup`) leaves this in place.
+        signup that already knows who this is for, the name and the line they
+        wrote. When the phone replies, the conversation asks for the email as
+        it would for any stranger, and what was typed here is saved on the
+        account it opens. Reopening a signup (`start_whatsapp_signup`) leaves
+        this in place.
         """
 
         number = normalize_whatsapp_lookup_id(wa_id)
@@ -5611,6 +5614,9 @@ class PortalDatabase:
         registration = {
             "name": normalize_text(name)[:120],
             "business": normalize_text(business)[:400],
+            # A business or a family. Rows written before the page asked carry
+            # no kind at all, and every reader treats that as a business.
+            "kind": "family" if normalize_text(kind).lower() == "family" else "business",
             "source": "web",
         }
         stamp = now_iso()
