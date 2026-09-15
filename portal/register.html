@@ -405,6 +405,25 @@
         text-align: left;
       }
 
+      /* A question that needs no explanation has no hint under it, and the
+         hint is what used to hold the field off the question. */
+      .step-question + .field {
+        margin-top: 1.4rem;
+      }
+
+      /* First and last name are two halves of one answer, so they sit on one
+         line the way the country and the number do. */
+      .name-row {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 0.6rem;
+      }
+
+      .field input::placeholder {
+        color: var(--muted);
+        opacity: 0.75;
+      }
+
       .field input,
       .field select {
         width: 100%;
@@ -632,7 +651,8 @@
           --gutter: 1.25rem;
         }
 
-        .phone-row {
+        .phone-row,
+        .name-row {
           grid-template-columns: 1fr;
         }
       }
@@ -734,10 +754,28 @@
                     <path class="mark" d="M20.5 44a11.5 11.5 0 0 1 23 0" />
                   </svg>
                 </div>
-                <label class="step-question" for="register-name">What should I call you?</label>
-                <p class="step-hint">Your first and last name.</p>
+                <label class="step-question" for="register-first-name">What's your name?</label>
                 <div class="field" data-field="name">
-                  <input id="register-name" name="name" type="text" autocomplete="name" required />
+                  <div class="name-row">
+                    <input
+                      id="register-first-name"
+                      name="firstName"
+                      type="text"
+                      autocomplete="given-name"
+                      aria-label="First name"
+                      placeholder="First name"
+                      required
+                    />
+                    <input
+                      id="register-last-name"
+                      name="lastName"
+                      type="text"
+                      autocomplete="family-name"
+                      aria-label="Last name"
+                      placeholder="Last name"
+                      required
+                    />
+                  </div>
                   <span class="field-error" data-error-for="name"></span>
                 </div>
                 <div class="step-actions">
