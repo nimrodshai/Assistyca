@@ -279,6 +279,29 @@ class WhatsAppOAuthLinkTests(unittest.TestCase):
             self.assertIn("expired", body)
         save.assert_not_called()
 
+    def _save_google_row(self, *, status: str, address: str = "dana@gmail.com") -> None:
+        self.database.save_platform_connection(
+            "dana@gmail.com", platform="email", provider="google_gmail", auth_type="oauth",
+            secret_ciphertext="cipher", secret_hint="Google OAuth", account_address=address,
+            connection_status=status,
+        )
+
+    def test_an_old_link_while_google_is_still_connected_says_there_is_nothing_to_do(self) -> None:
+        self.database.register_user("dana@gmail.com")
+        self._save_google_row(status="connected")
+        status, _, body = self._callback("google", self._state(issuedAt=int(time.time()) - 3 * 3600))
+        self.assertEqual(status, 200)
+        self.assertIn("Google is still connected", self._last_reply())
+        self.assertNotIn("Ask me again", self._last_reply())
+        self.assertIn("still connected", body)
+
+    def test_an_old_link_while_a_google_mailbox_needs_attention_still_offers_a_fresh_one(self) -> None:
+        self.database.register_user("dana@gmail.com")
+        self._save_google_row(status="connected")
+        self._save_google_row(status="needs_attention", address="dana.work@gmail.com")
+        self._callback("google", self._state(issuedAt=int(time.time()) - 3 * 3600))
+        self.assertIn("had expired", self._last_reply())
+
     def test_the_microsoft_callback_takes_the_same_path(self) -> None:
         self.database.register_user("dana@outlook.com")
         handler = "packages.infrastructure.portal_auth.server.PortalAuthHandler"
