@@ -128,32 +128,31 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertNotIn("noindex", markup)
 
     def test_the_landing_page_speaks_to_families_as_much_as_to_businesses(self) -> None:
-        """Two doors are not enough on their own.
+        """The top of the page is for everyone; below it, a family and a business each get their own.
 
-        The page used to say "small business assistant" above a family button, and
-        the one example conversation on it was an invoice and an accountant. A parent
-        reading it had no reason to think the second door was meant for them, so the
-        page now carries both days: a business conversation and a family one, and the
-        words around them name both.
+        A switch under the phone picks who is reading. Only what sits beneath it
+        changes - the example conversation, what it helps with, and the way in,
+        which carries the choice into the registration. The switch is CSS only:
+        the landing page carries no script.
         """
         markup = (self.root / "index.html").read_text(encoding="utf-8")
 
         self.assertNotIn("Small business assistant", markup)
-        self.assertIn("For businesses and families", markup)
+        self.assertIn("Your life, organized.", markup)
 
-        # Both example conversations are on the page, and the switch between them
-        # is CSS only - the landing page carries no script.
-        self.assertIn('class="wa-chat business"', markup)
-        self.assertIn('class="wa-chat family"', markup)
-        self.assertIn('for="chat-business"', markup)
-        self.assertIn('for="chat-family"', markup)
+        self.assertIn('for="for-family"', markup)
+        self.assertIn('for="for-business"', markup)
+        family = re.search(r'<div class="panel family">.*?(?=<div class="panel business">)', markup, re.S)
+        business = re.search(r'<div class="panel business">.*?</section>', markup, re.S)
+        self.assertIsNotNone(family, "the family half should be on the page")
+        self.assertIsNotNone(business, "the business half should be on the page")
+        self.assertIn('href="/register?for=family"', family.group(0))
+        self.assertNotIn("for=business", family.group(0))
+        self.assertIn('href="/register?for=business"', business.group(0))
+        self.assertNotIn("for=family", business.group(0))
 
-        # The band of things people text is a mix, not one audience twice over.
-        rows = re.search(r'<div class="say-rows".*?</div>\s*</div>\s*</div>', markup, re.S)
-        self.assertIsNotNone(rows, "the drifting prompts should still be on the page")
-        prompts = re.findall(r"<span>([^<]+)</span>", rows.group(0))
-        home = [line for line in prompts if "school" in line or "shopping list" in line]
-        self.assertTrue(home, "some of the drifting prompts should be things a family would text")
+        # Nothing goes out without a yes, and the business example says so.
+        self.assertIn("for approval first", business.group(0))
 
     def test_landing_page_assets_are_served(self) -> None:
         markup = (self.root / "index.html").read_text(encoding="utf-8")
