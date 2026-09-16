@@ -45,6 +45,9 @@ p{margin:0 auto;max-width:18rem;font-size:1.1rem;color:var(--ink-soft)}
 .back svg{width:1.6rem;height:1.6rem}
 .back:active{transform:translateY(1px)}
 .hint{font-size:.95rem;max-width:none}
+.note{display:flex;align-items:center;justify-content:center;gap:.7rem;text-align:left;max-width:17rem}
+.note i{flex:none;display:grid;place-items:center;width:1.9rem;height:1.9rem;border-radius:50%;
+  background:rgba(19,32,56,.07);font:600 .95rem/1 var(--serif);font-style:normal;color:var(--ink-soft)}
 """
 
 
@@ -53,16 +56,20 @@ def render_oauth_return_page(*, ok: bool, provider_label: str, message: str, wha
 
     label = html.escape(provider_label or "Your account")
     title = "Connected" if ok else "Not connected"
-    heading = f"{label} connected!" if ok else f"{label} isn&#8217;t connected yet"
-    line = html.escape(message) if message else "You&#8217;re all set. Your conversation is waiting for you in WhatsApp."
-    robot = (
-        '<img class="robot" src="/assets/robot-thumbs-up.webp" width="368" height="368" alt="" />'
-        if ok else ""
-    )
+    heading = f"{label} connected!" if ok else "Not connected"
+    if message:
+        line = html.escape(message)
+    elif ok:
+        line = "You&#8217;re all set. Your conversation is waiting for you in WhatsApp."
+    else:
+        line = f"{label} couldn&#8217;t be connected just now. Tap the link again in a moment."
+    picture = "robot-thumbs-up" if ok else "robot-thinking"
+    robot = f'<img class="robot" src="/assets/{picture}.webp" width="368" height="368" alt="" />'
     if whatsapp_number:
-        back = (
-            f'<a class="back" href="https://wa.me/{html.escape(whatsapp_number)}">{_WHATSAPP_ICON}Back to WhatsApp</a>'
+        back = f'<a class="back" href="https://wa.me/{html.escape(whatsapp_number)}">{_WHATSAPP_ICON}Back to WhatsApp</a>'
+        back += (
             '<p class="hint">You can close this page after returning.</p>'
+            if ok else '<p class="hint note"><i>i</i><span>If it keeps happening, tell me in WhatsApp.</span></p>'
         )
     else:
         back = '<p class="hint" style="margin-top:1.6rem">You can close this page and go back to WhatsApp.</p>'
