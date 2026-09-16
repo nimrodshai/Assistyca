@@ -366,7 +366,14 @@ class WebRegistrationTests(unittest.TestCase):
         for side in ("business", "family"):
             with urllib_request.urlopen(f"{self.base_url}/register/{side}", timeout=10) as response:
                 self.assertEqual(response.status, 200)
-                self.assertIn("/portal/register.js", response.read().decode("utf-8"))
+                body = response.read().decode("utf-8")
+                self.assertIn("/portal/register.js", body)
+        # The side is read in the head, before anything is drawn, so the
+        # question it answers never shows - not even for a moment.
+        head = body[: body.index("</head>")]
+        self.assertIn('<script src="/portal/register-address.js"></script>', head)
+        with urllib_request.urlopen(f"{self.base_url}/portal/register-address.js", timeout=10) as response:
+            self.assertIn("data-kind-known", response.read().decode("utf-8"))
 
     def test_the_short_link_sends_an_existing_account_to_the_conversation(self) -> None:
         status, location = self.follow_nothing("/whatsapp")

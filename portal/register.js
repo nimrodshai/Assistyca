@@ -310,30 +310,21 @@ window.addEventListener("DOMContentLoaded", () => {
   });
 
   // Who this is for is decided on the landing page, which links here with the
-  // answer in the address: /register/family or /register/business. When the
-  // address says so, the question is already answered: it is taken out of the
-  // flow and the page opens on the name. Someone who came straight to
-  // /register - a link passed on by hand, a typed address - is still asked
-  // here rather than guessed at. The older ?for= links keep working.
-  const requestedKind = (() => {
-    try {
-      const fromPath = window.location.pathname.replace(/\/+$/, "").match(/^\/register\/([a-z]+)$/i);
-      const fromQuery = new URLSearchParams(window.location.search).get("for");
-      return String((fromPath && fromPath[1]) || fromQuery || "").trim().toLowerCase();
-    } catch (error) {
-      return "";
-    }
-  })();
+  // answer in the address: /register/family or /register/business. The head
+  // script has already read it and marked the page, so the stylesheet kept
+  // the question out of the first paint; here it leaves the flow for good,
+  // with its dash, and the page carries on from the name. Someone who came
+  // straight to /register - a link passed on by hand, a typed address - is
+  // still asked here rather than guessed at.
+  const requestedKind = document.documentElement.getAttribute("data-kind-known") || "";
   const presetChoice = kindChoices.find((choice) => choice.value === requestedKind);
   const kindIndex = steps.findIndex((step) => step.getAttribute("data-step") === "kind");
   if (presetChoice && kindIndex >= 0) {
     presetChoice.checked = true;
     steps.splice(kindIndex, 1)[0].remove();
-    // The bar keeps its mark for the answer the landing page already took:
-    // one of four is behind them, not one of three ahead.
     const dot = dots.splice(kindIndex, 1)[0];
     if (dot) {
-      dot.setAttribute("data-state", "done");
+      dot.remove();
     }
   }
 
@@ -475,12 +466,6 @@ window.addEventListener("DOMContentLoaded", () => {
   });
   backButtons.forEach((button) => {
     button.addEventListener("click", () => {
-      // On the first question, what is behind them is the landing page they
-      // chose their side on.
-      if (current === 0) {
-        window.location.href = "/";
-        return;
-      }
       clearFieldErrors();
       setStatus("");
       goTo(current - 1);
