@@ -361,6 +361,12 @@ class WebRegistrationTests(unittest.TestCase):
         self.assertIn('name="kind" value="family"', body)
         self.assertLess(body.index('data-step="kind"'), body.index('data-step="name"'))
 
+    def test_each_side_of_the_landing_page_has_its_own_address(self) -> None:
+        # The page reads the side from the address and skips the question.
+        for side in ("business", "family"):
+            with urllib_request.urlopen(f"{self.base_url}/register/{side}", timeout=10) as response:
+                self.assertEqual(response.status, 200)
+                self.assertIn("/portal/register.js", response.read().decode("utf-8"))
 
     def test_the_short_link_sends_an_existing_account_to_the_conversation(self) -> None:
         status, location = self.follow_nothing("/whatsapp")
