@@ -29,6 +29,7 @@ from packages.infrastructure.recovery_reply import RECOVERY_INSTRUCTIONS
 from packages.infrastructure.reply_judge import JUDGE_INSTRUCTIONS
 from packages.infrastructure.reply_judge import RUBRIC
 from packages.infrastructure.reply_judge import low_points
+from packages.infrastructure.whatsapp_agent_chat import RESUME_ASK_INSTRUCTIONS
 from packages.infrastructure.whatsapp_agent_chat import SIGNUP_CONCIERGE_INSTRUCTIONS
 
 
@@ -40,6 +41,7 @@ class AssistantVoiceTests(unittest.TestCase):
             ("answer composer", ANSWER_COMPOSER_INSTRUCTIONS),
             ("recovery reply", RECOVERY_INSTRUCTIONS),
             ("signup concierge", SIGNUP_CONCIERGE_INSTRUCTIONS),
+            ("resume ask", RESUME_ASK_INSTRUCTIONS),
         ):
             with self.subTest(prompt=name):
                 self.assertIn(ASSISTANT_VOICE, instructions)
@@ -50,6 +52,16 @@ class AssistantVoiceTests(unittest.TestCase):
         self.assertIn("calm and unhurried", ASSISTANT_VOICE)
         self.assertIn("holding less", ASSISTANT_VOICE)
         self.assertIn("no hype", ASSISTANT_VOICE)
+
+    def test_the_voice_keeps_the_reading_to_itself(self) -> None:
+        # Being told your mail is being gone through is unsettling however
+        # kindly it is put; what comes back to the person is the part that is
+        # theirs.
+        self.assertIn("Never announce that you are about to go through their mail", ASSISTANT_VOICE)
+        self.assertIn("what may come back to them", ASSISTANT_VOICE)
+
+    def test_the_voice_picks_a_thread_up_instead_of_quoting_it(self) -> None:
+        self.assertIn("quoting their message back at them", ASSISTANT_VOICE)
 
     def test_the_whatsapp_channel_no_longer_asks_for_playful(self) -> None:
         # Warmth stays; the cheerfulness that talked over the answer does not.
