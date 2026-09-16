@@ -699,16 +699,24 @@
 
       /* ---------- Narrow phones ---------- */
 
-      /* No room beside the handset: the phone keeps the full width and the
-         note steps aside. The wide photograph is anchored on its stones and
-         leaves, which sit at its left edge. */
+      /* No room beside the handset: the note steps aside, and a tall
+         photograph puts the robot on the left of a smaller phone. */
       @media (max-width: 34rem) {
         .hero {
-          background-position: 16% bottom;
+          background-image: url("/assets/landing-bg-mobile.webp");
+          /* Lowered and nudged left so the robot sits beside the handset,
+             not behind it; the stones may crop at the edge */
+          background-size: 110% auto;
+          background-position: -10vw calc(100% + 9rem);
         }
 
+        /* The same handset shrunk as a whole, so nothing inside it reflows,
+           and set to the right so the robot stays in view */
         .stage {
-          width: min(100% - 1rem, 20rem);
+          width: 20rem;
+          zoom: 0.74;
+          margin-right: -0.25rem;
+          margin-left: auto;
         }
 
         .note {
