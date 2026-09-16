@@ -680,12 +680,15 @@
         }
 
         /* The same handset shrunk as a whole, so nothing inside it reflows,
-           and set to the right so the robot stays in view */
+           tilted a little and set against the right edge so the robot
+           stays in view */
         .stage {
           width: 20rem;
-          zoom: 0.74;
-          margin-right: -0.25rem;
+          zoom: 0.68;
+          margin-right: -1.2rem;
           margin-left: auto;
+          transform: rotate(6deg);
+          transform-origin: 50% 0;
         }
 
         .note {
