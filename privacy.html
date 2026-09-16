@@ -8,551 +8,828 @@
       name="description"
       content="Privacy Policy for Assistyca, including its portal, Meta and WhatsApp integrations, and related automation features."
     />
+    <link rel="icon" type="image/png" href="/assets/Robot-200.png" />
+    <link rel="preload" as="font" type="font/woff2" href="/assets/manrope-regular.woff2" crossorigin />
+    <link rel="preload" as="font" type="font/woff2" href="/assets/manrope-semibold.woff2" crossorigin />
     <style>
+      @font-face {
+        font-family: "Manrope";
+        src: url("/assets/manrope-regular.woff2") format("woff2");
+        font-weight: 400;
+        font-display: swap;
+      }
+      @font-face {
+        font-family: "Manrope";
+        src: url("/assets/manrope-medium.woff2") format("woff2");
+        font-weight: 500;
+        font-display: swap;
+      }
+      @font-face {
+        font-family: "Manrope";
+        src: url("/assets/manrope-semibold.woff2") format("woff2");
+        font-weight: 600;
+        font-display: swap;
+      }
+
       :root {
         color-scheme: light;
-        --bg: #f4efe7;
-        --bg2: #eef7f5;
-        --card: rgba(255, 255, 255, 0.9);
-        --line: rgba(15, 23, 42, 0.12);
-        --ink: #1f2937;
-        --muted: #526072;
-        --accent: #0f766e;
-        --accent-soft: rgba(15, 118, 110, 0.12);
-        --shadow: 0 24px 60px rgba(15, 23, 42, 0.12);
+        --bg: #f8f6f1;
+        --ink: #14213a;
+        --body: #4a5568;
+        --muted: #667185;
+        --hairline: rgba(19, 32, 56, 0.1);
+        --accent: #2f7d72;
+        --accent-soft: rgba(47, 125, 114, 0.1);
+        --panel: rgba(255, 255, 255, 0.55);
+        --serif: "Iowan Old Style", "Charter", "Source Serif Pro", Georgia, serif;
       }
 
       * {
         box-sizing: border-box;
       }
 
+      html {
+        scroll-behavior: smooth;
+        scroll-padding-top: 2rem;
+      }
+
       html,
       body {
         margin: 0;
-        min-height: 100%;
+        overflow-x: hidden;
+        overflow-x: clip;
       }
 
       body {
-        font-family: "Segoe UI", system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+        position: relative;
+        font-family: "Manrope", "Segoe UI", system-ui, -apple-system, sans-serif;
+        font-size: 0.95rem;
+        line-height: 1.65;
+        color: var(--body);
+        background: var(--bg);
+        -webkit-font-smoothing: antialiased;
+      }
+
+      /* Soft shadows of leaves in the margins; decoration only */
+      body::before,
+      body::after {
+        content: "";
+        position: absolute;
+        z-index: 0;
+        width: 22rem;
+        height: 28rem;
+        background: url("/assets/leaf-shadow.svg") center / contain no-repeat;
+        opacity: 0.1;
+        pointer-events: none;
+      }
+
+      body::before {
+        top: -3rem;
+        right: -6rem;
+        transform: rotate(18deg);
+      }
+
+      body::after {
+        top: 62rem;
+        left: -8rem;
+        transform: rotate(-12deg) scaleX(-1);
+      }
+
+      a {
+        color: inherit;
+      }
+
+      strong {
+        font-weight: 600;
         color: var(--ink);
-        background:
-          radial-gradient(circle at top left, rgba(15, 118, 110, 0.18), transparent 30%),
-          radial-gradient(circle at bottom right, rgba(245, 158, 11, 0.14), transparent 24%),
-          linear-gradient(145deg, var(--bg), var(--bg2));
       }
 
-      .page {
-        width: min(100%, 76rem);
+      .wrap {
+        position: relative;
+        z-index: 1;
+        width: min(100% - 2.5rem, 72rem);
         margin: 0 auto;
-        padding: 2rem 1.25rem 4rem;
       }
 
-      .hero,
-      .section {
-        border: 1px solid var(--line);
-        border-radius: 28px;
-        background: var(--card);
-        box-shadow: var(--shadow);
-        backdrop-filter: blur(14px);
+      .ico {
+        width: 1rem;
+        height: 1rem;
+        flex: none;
+        fill: none;
+        stroke: currentColor;
+        stroke-width: 1.7;
+        stroke-linecap: round;
+        stroke-linejoin: round;
       }
 
-      .hero {
-        padding: clamp(1.75rem, 4vw, 3rem);
+      /* ---------- Header ---------- */
+
+      .site-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 1rem;
+        padding: 1.6rem 0;
       }
+
+      .wordmark {
+        font-size: 1.05rem;
+        font-weight: 600;
+        letter-spacing: 0.28em;
+        text-transform: uppercase;
+        text-decoration: none;
+        color: var(--ink);
+      }
+
+      .site-nav {
+        display: flex;
+        gap: 2rem;
+        font-size: 0.85rem;
+        font-weight: 500;
+      }
+
+      .site-nav a {
+        color: var(--ink);
+        text-decoration: none;
+      }
+
+      .site-nav a:hover {
+        color: var(--accent);
+      }
+
+      /* ---------- Layout ---------- */
+
+      .layout {
+        display: grid;
+        grid-template-columns: 13.5rem minmax(0, 46rem);
+        justify-content: start;
+        gap: clamp(2.5rem, 5vw, 4.5rem);
+        padding: 1.5rem 0 5rem;
+      }
+
+      .toc {
+        position: sticky;
+        top: 1.5rem;
+        align-self: start;
+        padding: 0.9rem 0.5rem 0.6rem;
+        border: 1px solid var(--hairline);
+        border-radius: 10px;
+        background: var(--panel);
+      }
+
+      .toc-title {
+        margin: 0 0 0.5rem;
+        padding: 0 0.75rem;
+        font-size: 0.8rem;
+        font-weight: 600;
+        color: var(--ink);
+      }
+
+      .toc ol {
+        margin: 0;
+        padding: 0;
+        list-style: none;
+        counter-reset: toc;
+      }
+
+      .toc a {
+        display: flex;
+        gap: 0.55rem;
+        padding: 0.38rem 0.75rem;
+        border-radius: 6px;
+        font-size: 0.78rem;
+        line-height: 1.4;
+        color: var(--muted);
+        text-decoration: none;
+        counter-increment: toc;
+      }
+
+      .toc a::before {
+        content: counter(toc) ".";
+        min-width: 1.1rem;
+        font-variant-numeric: tabular-nums;
+      }
+
+      .toc a:hover {
+        color: var(--ink);
+      }
+
+      .toc a[aria-current="true"] {
+        background: var(--accent-soft);
+        color: var(--accent);
+      }
+
+      /* ---------- Title ---------- */
 
       .eyebrow {
-        margin: 0 0 0.75rem;
-        font-size: 0.8rem;
-        font-weight: 800;
-        letter-spacing: 0.16em;
+        margin: 0 0 0.8rem;
+        font-size: 0.72rem;
+        font-weight: 600;
+        letter-spacing: 0.18em;
         text-transform: uppercase;
         color: var(--accent);
       }
 
       h1,
       h2 {
-        letter-spacing: -0.04em;
-      }
-
-      h1 {
-        margin: 0;
-        font-size: clamp(2.2rem, 5vw, 4.25rem);
-        line-height: 0.95;
-      }
-
-      h2 {
-        margin: 0 0 0.85rem;
-        font-size: 1.45rem;
-      }
-
-      h3 {
-        margin: 1rem 0 0.45rem;
-        font-size: 1.05rem;
+        font-family: var(--serif);
+        font-weight: 500;
         color: var(--ink);
       }
 
+      h1 {
+        margin: 0 0 1rem;
+        font-size: clamp(2.3rem, 6vw, 3rem);
+        line-height: 1.08;
+        letter-spacing: -0.015em;
+      }
+
       .intro {
-        max-width: 48rem;
-        margin: 1.1rem 0 0;
-        font-size: 1.06rem;
-        line-height: 1.7;
-        color: var(--muted);
+        margin: 0;
+        font-size: 1rem;
       }
 
       .meta {
         display: flex;
         flex-wrap: wrap;
         gap: 0.75rem;
-        margin-top: 1.4rem;
+        margin: 1.4rem 0 2.2rem;
+        padding: 0;
+        list-style: none;
       }
 
       .pill {
         display: inline-flex;
         align-items: center;
-        min-height: 2.5rem;
-        padding: 0.6rem 0.9rem;
+        gap: 0.55rem;
+        padding: 0.5rem 1rem;
         border-radius: 999px;
         background: var(--accent-soft);
+        font-size: 0.78rem;
+        font-weight: 500;
         color: var(--accent);
-        font-size: 0.95rem;
-        font-weight: 700;
+        text-decoration: none;
       }
 
-      .grid {
+      /* ---------- Sections ---------- */
+
+      .policy {
+        counter-reset: section;
+      }
+
+      .policy section {
         display: grid;
-        grid-template-columns: minmax(0, 1fr);
-        gap: 1rem;
-        margin-top: 1rem;
+        grid-template-columns: 2.25rem minmax(0, 1fr);
+        padding: 2.2rem 0 2.4rem;
+        border-top: 1px solid var(--hairline);
+        counter-increment: section;
       }
 
-      .section {
-        padding: 1.5rem;
+      .policy section::before {
+        content: counter(section) ".";
+        padding-top: 0.28rem;
+        font-family: var(--serif);
+        font-size: 1.05rem;
+        color: var(--accent);
       }
 
-      p,
-      li {
-        font-size: 1rem;
-        line-height: 1.72;
-        color: var(--muted);
+      h2 {
+        margin: 0 0 0.9rem;
+        font-size: 1.55rem;
+        line-height: 1.25;
       }
 
-      p:last-child,
-      ul:last-child {
+      h3 {
+        margin: 1.6rem 0 0.4rem;
+        font-size: 0.95rem;
+        font-weight: 600;
+        color: var(--ink);
+      }
+
+      p {
+        margin: 0 0 0.9rem;
+      }
+
+      .policy section > div > :last-child {
         margin-bottom: 0;
       }
 
       ul {
-        margin: 0.75rem 0 0;
-        padding-left: 1.25rem;
+        margin: 0 0 0.9rem;
+        padding-left: 1.1rem;
       }
 
-      a {
+      li {
+        margin: 0.3rem 0;
+        padding-left: 0.2rem;
+      }
+
+      li::marker {
         color: var(--accent);
       }
 
-      strong {
-        color: var(--ink);
-      }
-
-      .notice {
-        border-left: 4px solid var(--accent);
-        padding-left: 1rem;
+      .policy a {
+        color: var(--accent);
       }
 
       .small {
-        font-size: 0.93rem;
-      }
-
-      .table-wrap {
-        overflow-x: auto;
-        margin-top: 0.85rem;
-      }
-
-      table {
-        width: 100%;
-        min-width: 42rem;
-        border-collapse: collapse;
-      }
-
-      th,
-      td {
-        padding: 0.9rem 0.95rem;
-        border-top: 1px solid var(--line);
-        text-align: left;
-        vertical-align: top;
-        font-size: 0.96rem;
-        line-height: 1.6;
+        font-size: 0.87rem;
         color: var(--muted);
       }
 
-      th {
+      .rights {
+        margin: 1rem 0 1.2rem;
+        border-top: 1px solid var(--hairline);
+      }
+
+      .rights div {
+        display: grid;
+        grid-template-columns: 13rem minmax(0, 1fr);
+        gap: 1.25rem;
+        padding: 0.75rem 0;
+        border-bottom: 1px solid var(--hairline);
+      }
+
+      .rights dt {
+        font-weight: 600;
         color: var(--ink);
-        font-weight: 700;
-        background: rgba(255, 255, 255, 0.55);
       }
 
-      .footer {
-        margin-top: 1rem;
-        text-align: center;
+      .rights dd {
+        margin: 0;
+      }
+
+      /* ---------- Footer ---------- */
+
+      .site-footer {
+        position: relative;
+        z-index: 1;
+        border-top: 1px solid var(--hairline);
+        background: var(--bg);
+      }
+
+      .site-footer .wrap {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 0.75rem 2.5rem;
+        padding: 1.6rem 0;
+        font-size: 0.78rem;
         color: var(--muted);
-        font-size: 0.95rem;
       }
 
-      @media (min-width: 860px) {
-        .grid {
-          grid-template-columns: repeat(2, minmax(0, 1fr));
+      .site-footer .wordmark {
+        font-size: 0.85rem;
+      }
+
+      .footer-links {
+        display: flex;
+        gap: 1.75rem;
+        margin-left: auto;
+      }
+
+      .footer-links a {
+        color: var(--ink);
+        text-decoration: none;
+      }
+
+      .footer-links a:hover {
+        color: var(--accent);
+      }
+
+      /* ---------- Phone: the contents list goes, the policy stays ---------- */
+
+      @media (max-width: 860px) {
+        .layout {
+          grid-template-columns: minmax(0, 1fr);
+          gap: 0;
+          padding-top: 0.5rem;
         }
 
-        .grid .section.full {
-          grid-column: 1 / -1;
+        .toc {
+          display: none;
+        }
+
+        .site-nav {
+          gap: 1.1rem;
+        }
+
+        .site-nav .wide {
+          display: none;
+        }
+
+        .rights div {
+          grid-template-columns: minmax(0, 1fr);
+          gap: 0.15rem;
+        }
+
+        .footer-links {
+          margin-left: 0;
+        }
+      }
+
+      @media (max-width: 520px) {
+        .policy section {
+          grid-template-columns: 1.9rem minmax(0, 1fr);
+        }
+
+        h2 {
+          font-size: 1.35rem;
+        }
+
+        body::before {
+          right: -12rem;
         }
       }
     </style>
   </head>
   <body>
-    <main class="page">
-      <section class="hero" aria-labelledby="privacy-title">
-        <p class="eyebrow">Assistyca</p>
-        <h1 id="privacy-title">Privacy Policy</h1>
-        <p class="intro">
-          This Privacy Policy explains how Assistyca collects, uses, stores, discloses,
-          and protects personal information when people use the Assistyca website, portal,
-          Meta and WhatsApp integrations, approval workflows, and related automation and
-          AI-assisted features.
-        </p>
-        <div class="meta">
-          <span class="pill">Last updated: July 7, 2026</span>
-          <span class="pill">Contact: nimrod.shai@gmail.com</span>
-        </div>
-      </section>
+    <div class="wrap">
+      <header class="site-header">
+        <a class="wordmark" href="/" aria-label="Assistyca home">Assistyca</a>
+        <nav class="site-nav" aria-label="Site">
+          <a href="/">Product</a>
+          <a class="wide" href="/about">About</a>
+          <a href="/portal/">Sign in</a>
+          <a class="wide" href="mailto:nimrod.shai@gmail.com">Contact</a>
+        </nav>
+      </header>
 
-      <div class="grid">
-        <section class="section full">
-          <h2>Important Scope Notes</h2>
-          <p class="notice">
-            This policy is designed to cover Assistyca’s current business-facing portal and
-            messaging workflows as of July 7, 2026. It is reviewed at least annually and
-            whenever material product, legal, or processing changes require an update.
-          </p>
-          <p>
-            Assistyca is generally a <strong>service provider / processor</strong> for
-            customer conversation data that a business customer chooses to submit, and a
-            <strong>controller</strong> for its own account, billing, security, support,
-            and website administration data. If you are an end user whose information was
-            provided to Assistyca by a business using the service, you should usually
-            direct privacy requests to that business first.
-          </p>
-          <p>
-            Unless Assistyca expressly agrees otherwise in writing, the service is not
-            intended for child-directed products or for regulated workloads that require
-            sector-specific compliance frameworks such as HIPAA, GLBA, or similar regimes.
-          </p>
-        </section>
+      <div class="layout">
+        <aside class="toc" aria-label="On this page">
+          <p class="toc-title">On this page</p>
+          <ol>
+            <li><a href="#scope">Scope</a></li>
+            <li><a href="#information-we-collect">Information We Collect</a></li>
+            <li><a href="#how-we-use-information">How We Use Information</a></li>
+            <li><a href="#legal-bases">Legal Bases</a></li>
+            <li><a href="#sharing">Sharing of Information</a></li>
+            <li><a href="#retention">Data Retention</a></li>
+            <li><a href="#security">Security</a></li>
+            <li><a href="#cookies">Cookies and Similar Technologies</a></li>
+            <li><a href="#international-transfers">International Transfers</a></li>
+            <li><a href="#your-rights">Your Rights</a></li>
+            <li><a href="#ai-features">Automated Tools and AI</a></li>
+            <li><a href="#business-customers">Business Customers</a></li>
+            <li><a href="#children">Children's Privacy</a></li>
+            <li><a href="#changes">Changes to This Policy</a></li>
+            <li><a href="#contact">Contact</a></li>
+          </ol>
+        </aside>
 
-        <section class="section">
-          <h2>Categories of Personal Information</h2>
-          <p>Depending on how the service is used, we may collect the following categories:</p>
-          <ul>
-            <li>Identifiers and contact details, such as name, email address, phone number, and account identifiers.</li>
-            <li>Business and configuration data, such as workspace details, connection settings, and onboarding information.</li>
-            <li>Communications content and metadata, such as messages, approval drafts, timestamps, sender details, and delivery or status data.</li>
-            <li>Technical and device data, such as IP address, browser type, device signals, error logs, and security events.</li>
-            <li>Transaction and service records, such as support history, authentication events, and billing or usage records.</li>
-            <li>Integration data from third-party platforms, including Meta or WhatsApp related identifiers, webhook events, and account-linked information.</li>
-            <li>Sensitive information only if a user or customer chooses to submit it or an integration transmits it; the service is not designed to invite unnecessary sensitive data.</li>
+        <main>
+          <p class="eyebrow">Legal</p>
+          <h1>Privacy Policy</h1>
+          <p class="intro">
+            This Privacy Policy explains how Assistyca collects, uses, stores, discloses,
+            and protects personal information when people use the Assistyca website, portal,
+            Meta and WhatsApp integrations, approval workflows, and related automation and
+            AI-assisted features.
+          </p>
+          <ul class="meta">
+            <li>
+              <span class="pill">
+                <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="5" width="17" height="15" rx="2" /><path d="M3.5 10h17M8 3v4m8-4v4" /></svg>
+                Last updated: July 7, 2026
+              </span>
+            </li>
+            <li>
+              <a class="pill" href="mailto:nimrod.shai@gmail.com">
+                <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5.5" width="18" height="13" rx="2" /><path d="m3.5 7 8.5 6 8.5-6" /></svg>
+                Contact: nimrod.shai@gmail.com
+              </a>
+            </li>
           </ul>
-        </section>
 
-        <section class="section">
-          <h2>Sources of Information</h2>
-          <p>We may collect personal information from the following categories of sources:</p>
-          <ul>
-            <li>Directly from you when you sign in, contact us, configure integrations, or use the service.</li>
-            <li>From the business customer that administers the workspace or uploads customer communication data.</li>
-            <li>From connected third-party services such as Meta, WhatsApp, email delivery providers, and infrastructure providers.</li>
-            <li>Automatically from browsers, devices, and server interactions through logs and security monitoring.</li>
-            <li>From publicly available or lawfully obtained sources where needed for business verification, compliance, or fraud prevention.</li>
-          </ul>
-        </section>
+          <div class="policy">
+            <section id="scope" aria-labelledby="scope-title">
+              <div>
+                <h2 id="scope-title">Scope</h2>
+                <p>
+                  This policy is designed to cover Assistyca’s current business-facing portal and
+                  messaging workflows as of July 7, 2026. It is reviewed at least annually and
+                  whenever material product, legal, or processing changes require an update.
+                </p>
+                <p>
+                  Assistyca is generally a <strong>service provider / processor</strong> for
+                  customer conversation data that a business customer chooses to submit, and a
+                  <strong>controller</strong> for its own account, billing, security, support,
+                  and website administration data. If you are an end user whose information was
+                  provided to Assistyca by a business using the service, you should usually
+                  direct privacy requests to that business first.
+                </p>
+                <p>
+                  Unless Assistyca expressly agrees otherwise in writing, the service is not
+                  intended for child-directed products or for regulated workloads that require
+                  sector-specific compliance frameworks such as HIPAA, GLBA, or similar regimes.
+                </p>
+              </div>
+            </section>
 
-        <section class="section">
-          <h2>Purposes and Legal Bases</h2>
-          <p>We use personal information for specific business and operational purposes, including to:</p>
-          <ul>
-            <li>Provide, authenticate, maintain, secure, and improve the Assistyca service.</li>
-            <li>Process messaging, approvals, support workflows, and AI-assisted drafting features requested by users.</li>
-            <li>Operate connected integrations, including Meta or WhatsApp related setup, testing, and message routing.</li>
-            <li>Prevent abuse, investigate incidents, debug errors, enforce agreements, and protect rights and safety.</li>
-            <li>Comply with legal obligations, respond to lawful requests, and keep required records.</li>
-            <li>Create aggregated or de-identified insights that do not reasonably identify a person.</li>
-          </ul>
-          <p class="small">
-            Where applicable under laws such as the GDPR or UK GDPR, our legal bases may
-            include contract performance, legitimate interests, legal obligations, and
-            consent where consent is the appropriate basis.
-          </p>
-        </section>
+            <section id="information-we-collect" aria-labelledby="collect-title">
+              <div>
+                <h2 id="collect-title">Information We Collect</h2>
+                <p>Depending on how the service is used, we may collect the following categories of personal information:</p>
+                <ul>
+                  <li><strong>Identifiers and contact details</strong>, such as name, email address, phone number, and account identifiers.</li>
+                  <li><strong>Business and configuration data</strong>, such as workspace details, connection settings, and onboarding information.</li>
+                  <li><strong>Communications content and metadata</strong>, such as messages, approval drafts, timestamps, sender details, and delivery or status data.</li>
+                  <li><strong>Technical and device data</strong>, such as IP address, browser type, device signals, error logs, and security events.</li>
+                  <li><strong>Transaction and service records</strong>, such as support history, authentication events, and billing or usage records.</li>
+                  <li><strong>Integration data from third-party platforms</strong>, including Meta or WhatsApp related identifiers, webhook events, and account-linked information.</li>
+                  <li><strong>Sensitive information</strong> only if a user or customer chooses to submit it or an integration transmits it; the service is not designed to invite unnecessary sensitive data.</li>
+                </ul>
+                <h3>Where it comes from</h3>
+                <ul>
+                  <li>Directly from you when you sign in, contact us, configure integrations, or use the service.</li>
+                  <li>From the business customer that administers the workspace or uploads customer communication data.</li>
+                  <li>From connected third-party services such as Meta, WhatsApp, email delivery providers, and infrastructure providers.</li>
+                  <li>Automatically from browsers, devices, and server interactions through logs and security monitoring.</li>
+                  <li>From publicly available or lawfully obtained sources where needed for business verification, compliance, or fraud prevention.</li>
+                </ul>
+              </div>
+            </section>
 
-        <section class="section">
-          <h2>Disclosure to Third Parties</h2>
-          <p>
-            We disclose personal information only as reasonably necessary for the purposes
-            described above, including to the following categories of recipients:
-          </p>
-          <ul>
-            <li>Hosting, infrastructure, storage, and security providers.</li>
-            <li>Email, notification, and communications providers.</li>
-            <li>Messaging and platform partners, including Meta and WhatsApp related services.</li>
-            <li>AI and automation technology providers that process instructions on our behalf.</li>
-            <li>Professional advisers, auditors, insurers, and counterparties involved in corporate transactions.</li>
-            <li>Government authorities or other parties when required by law or necessary to protect rights, safety, or the service.</li>
-          </ul>
-          <p>
-            We may also disclose information in connection with a merger, acquisition,
-            financing, reorganization, sale of assets, or similar business transaction,
-            subject to applicable confidentiality and legal requirements.
-          </p>
-        </section>
+            <section id="how-we-use-information" aria-labelledby="use-title">
+              <div>
+                <h2 id="use-title">How We Use Information</h2>
+                <p>We use personal information for specific business and operational purposes, including to:</p>
+                <ul>
+                  <li>Provide, authenticate, maintain, secure, and improve the Assistyca service.</li>
+                  <li>Process messaging, approvals, support workflows, and AI-assisted drafting features requested by users.</li>
+                  <li>Operate connected integrations, including Meta or WhatsApp related setup, testing, and message routing.</li>
+                  <li>Prevent abuse, investigate incidents, debug errors, enforce agreements, and protect rights and safety.</li>
+                  <li>Comply with legal obligations, respond to lawful requests, and keep required records.</li>
+                  <li>Create aggregated or de-identified insights that do not reasonably identify a person.</li>
+                </ul>
+              </div>
+            </section>
 
-        <section class="section">
-          <h2>Sales, Sharing, and Sensitive Information</h2>
-          <p>
-            As of July 7, 2026, Assistyca does <strong>not</strong> sell personal
-            information for money and does <strong>not</strong> share personal information
-            for cross-context behavioral advertising as those concepts are used in
-            California privacy law.
-          </p>
-          <p>
-            If we process sensitive personal information, we do so only as reasonably
-            necessary to provide the requested service, maintain security, comply with law,
-            or for other permitted purposes. We do not intentionally use sensitive personal
-            information to infer characteristics about people unless clearly disclosed and
-            legally permitted.
-          </p>
-          <p class="small">
-            Because Assistyca does not currently sell or share personal information for
-            cross-context behavioral advertising, a “Do Not Sell or Share My Personal
-            Information” link is not currently provided. If that practice changes, this
-            notice and any required request mechanisms will be updated.
-          </p>
-        </section>
+            <section id="legal-bases" aria-labelledby="bases-title">
+              <div>
+                <h2 id="bases-title">Legal Bases for Processing</h2>
+                <p>
+                  Where applicable under laws such as the GDPR or UK GDPR, our legal bases may
+                  include:
+                </p>
+                <ul>
+                  <li>Performance of a contract with our customers.</li>
+                  <li>Our legitimate interests in operating, securing, and improving the service.</li>
+                  <li>Compliance with legal obligations.</li>
+                  <li>Consent, where consent is the appropriate basis.</li>
+                </ul>
+              </div>
+            </section>
 
-        <section class="section">
-          <h2>International Transfers</h2>
-          <p>
-            Personal information may be processed in the United States and other countries
-            where Assistyca or its service providers operate. Where applicable law requires
-            safeguards for cross-border transfers, we rely on appropriate measures such as
-            contractual protections, vendor commitments, and related legal transfer
-            mechanisms.
-          </p>
-        </section>
+            <section id="sharing" aria-labelledby="sharing-title">
+              <div>
+                <h2 id="sharing-title">Sharing of Information</h2>
+                <p>
+                  We disclose personal information only as reasonably necessary for the purposes
+                  described above, including to the following categories of recipients:
+                </p>
+                <ul>
+                  <li>Hosting, infrastructure, storage, and security providers.</li>
+                  <li>Email, notification, and communications providers.</li>
+                  <li>Messaging and platform partners, including Meta and WhatsApp related services.</li>
+                  <li>AI and automation technology providers that process instructions on our behalf.</li>
+                  <li>Professional advisers, auditors, insurers, and counterparties involved in corporate transactions.</li>
+                  <li>Government authorities or other parties when required by law or necessary to protect rights, safety, or the service.</li>
+                </ul>
+                <p>
+                  We may also disclose information in connection with a merger, acquisition,
+                  financing, reorganization, sale of assets, or similar business transaction,
+                  subject to applicable confidentiality and legal requirements.
+                </p>
+                <h3>Sales, sharing, and sensitive information</h3>
+                <p>
+                  As of July 7, 2026, Assistyca does <strong>not</strong> sell personal
+                  information for money and does <strong>not</strong> share personal information
+                  for cross-context behavioral advertising as those concepts are used in
+                  California privacy law.
+                </p>
+                <p>
+                  If we process sensitive personal information, we do so only as reasonably
+                  necessary to provide the requested service, maintain security, comply with law,
+                  or for other permitted purposes. We do not intentionally use sensitive personal
+                  information to infer characteristics about people unless clearly disclosed and
+                  legally permitted.
+                </p>
+                <p class="small">
+                  Because Assistyca does not currently sell or share personal information for
+                  cross-context behavioral advertising, a “Do Not Sell or Share My Personal
+                  Information” link is not currently provided. If that practice changes, this
+                  notice and any required request mechanisms will be updated.
+                </p>
+              </div>
+            </section>
 
-        <section class="section">
-          <h2>Retention</h2>
-          <p>
-            We retain personal information only for as long as reasonably necessary for the
-            purposes described in this policy, including service delivery, security,
-            dispute resolution, recordkeeping, and compliance.
-          </p>
-          <p>
-            Retention periods vary by category. For example, account data may be kept while
-            an account remains active, security and audit records may be retained longer for
-            abuse prevention and legal compliance, and some information may be kept in backups
-            or archived systems for a limited additional period.
-          </p>
-        </section>
+            <section id="retention" aria-labelledby="retention-title">
+              <div>
+                <h2 id="retention-title">Data Retention</h2>
+                <p>
+                  We retain personal information only for as long as reasonably necessary for the
+                  purposes described in this policy, including service delivery, security,
+                  dispute resolution, recordkeeping, and compliance.
+                </p>
+                <p>
+                  Retention periods vary by category. For example, account data may be kept while
+                  an account remains active, security and audit records may be retained longer for
+                  abuse prevention and legal compliance, and some information may be kept in backups
+                  or archived systems for a limited additional period.
+                </p>
+              </div>
+            </section>
 
-        <section class="section">
-          <h2>Security and Incident Response</h2>
-          <p>
-            We use reasonable administrative, technical, and organizational safeguards
-            designed to protect personal information. These measures may include access
-            controls, authentication safeguards, limited internal access, vendor controls,
-            transport security, logging, and monitoring.
-          </p>
-          <p>
-            No method of transmission or storage is completely secure. If we become aware of
-            a personal data breach, we will investigate, mitigate, and provide notifications
-            where required by applicable law.
-          </p>
-        </section>
+            <section id="security" aria-labelledby="security-title">
+              <div>
+                <h2 id="security-title">Security</h2>
+                <p>
+                  We use reasonable administrative, technical, and organizational safeguards
+                  designed to protect personal information. These measures may include access
+                  controls, authentication safeguards, limited internal access, vendor controls,
+                  transport security, logging, and monitoring.
+                </p>
+                <p>
+                  No method of transmission or storage is completely secure. If we become aware of
+                  a personal data breach, we will investigate, mitigate, and provide notifications
+                  where required by applicable law.
+                </p>
+              </div>
+            </section>
 
-        <section class="section">
-          <h2>Cookies and Similar Technologies</h2>
-          <p>
-            Assistyca and its providers may use server logs, session technologies, local
-            storage, or similar technical mechanisms to support sign-in, security,
-            preferences, fraud prevention, and service functionality.
-          </p>
-          <p>
-            If we introduce non-essential cookies or similar tracking technologies in a way
-            that requires additional notice or choice under applicable law, we will provide
-            that notice or choice at the relevant time.
-          </p>
-        </section>
+            <section id="cookies" aria-labelledby="cookies-title">
+              <div>
+                <h2 id="cookies-title">Cookies and Similar Technologies</h2>
+                <p>
+                  Assistyca and its providers may use server logs, session technologies, local
+                  storage, or similar technical mechanisms to support sign-in, security,
+                  preferences, fraud prevention, and service functionality.
+                </p>
+                <p>
+                  If we introduce non-essential cookies or similar tracking technologies in a way
+                  that requires additional notice or choice under applicable law, we will provide
+                  that notice or choice at the relevant time.
+                </p>
+              </div>
+            </section>
 
-        <section class="section full">
-          <h2>Your Privacy Rights</h2>
-          <p>
-            Depending on your location and the context in which Assistyca processes your
-            information, you may have rights that include:
-          </p>
-          <div class="table-wrap">
-            <table aria-label="Privacy rights summary">
-              <thead>
-                <tr>
-                  <th>Right</th>
-                  <th>What it may include</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr>
-                  <td>Access / right to know</td>
-                  <td>Request details about the personal information we hold and how we use or disclose it.</td>
-                </tr>
-                <tr>
-                  <td>Correction / rectification</td>
-                  <td>Request correction of inaccurate or incomplete personal information.</td>
-                </tr>
-                <tr>
-                  <td>Deletion / erasure</td>
-                  <td>Request deletion of personal information, subject to legal or operational exceptions.</td>
-                </tr>
-                <tr>
-                  <td>Restriction / objection</td>
-                  <td>Request limited processing or object to certain processing, including some marketing or legitimate-interest uses.</td>
-                </tr>
-                <tr>
-                  <td>Portability</td>
-                  <td>Request a copy of certain information in a portable format where required by law.</td>
-                </tr>
-                <tr>
-                  <td>Withdraw consent</td>
-                  <td>Withdraw consent for processing that relies on consent, without affecting prior lawful processing.</td>
-                </tr>
-                <tr>
-                  <td>California-specific requests</td>
-                  <td>Request to know, delete, correct, and if applicable opt out of sale or sharing and limit certain sensitive-information uses.</td>
-                </tr>
-                <tr>
-                  <td>Non-discrimination</td>
-                  <td>Not be unlawfully discriminated against for exercising privacy rights.</td>
-                </tr>
-                <tr>
-                  <td>Automated decision safeguards</td>
-                  <td>Request human review or more information if legally significant automated decision-making applies.</td>
-                </tr>
-                <tr>
-                  <td>Complaint rights</td>
-                  <td>Lodge a complaint with a regulator or data protection authority where applicable.</td>
-                </tr>
-              </tbody>
-            </table>
+            <section id="international-transfers" aria-labelledby="transfers-title">
+              <div>
+                <h2 id="transfers-title">International Transfers</h2>
+                <p>
+                  Personal information may be processed in the United States and other countries
+                  where Assistyca or its service providers operate. Where applicable law requires
+                  safeguards for cross-border transfers, we rely on appropriate measures such as
+                  contractual protections, vendor commitments, and related legal transfer
+                  mechanisms.
+                </p>
+              </div>
+            </section>
+
+            <section id="your-rights" aria-labelledby="rights-title">
+              <div>
+                <h2 id="rights-title">Your Rights</h2>
+                <p>
+                  Depending on your location and the context in which Assistyca processes your
+                  information, you may have rights that include:
+                </p>
+                <dl class="rights">
+                  <div><dt>Access / right to know</dt><dd>Request details about the personal information we hold and how we use or disclose it.</dd></div>
+                  <div><dt>Correction / rectification</dt><dd>Request correction of inaccurate or incomplete personal information.</dd></div>
+                  <div><dt>Deletion / erasure</dt><dd>Request deletion of personal information, subject to legal or operational exceptions.</dd></div>
+                  <div><dt>Restriction / objection</dt><dd>Request limited processing or object to certain processing, including some marketing or legitimate-interest uses.</dd></div>
+                  <div><dt>Portability</dt><dd>Request a copy of certain information in a portable format where required by law.</dd></div>
+                  <div><dt>Withdraw consent</dt><dd>Withdraw consent for processing that relies on consent, without affecting prior lawful processing.</dd></div>
+                  <div><dt>California-specific requests</dt><dd>Request to know, delete, correct, and if applicable opt out of sale or sharing and limit certain sensitive-information uses.</dd></div>
+                  <div><dt>Non-discrimination</dt><dd>Not be unlawfully discriminated against for exercising privacy rights.</dd></div>
+                  <div><dt>Automated decision safeguards</dt><dd>Request human review or more information if legally significant automated decision-making applies.</dd></div>
+                  <div><dt>Complaint rights</dt><dd>Lodge a complaint with a regulator or data protection authority where applicable.</dd></div>
+                </dl>
+                <p class="small">
+                  We may need to verify identity and authority before responding. Some rights are
+                  subject to legal exceptions. If Assistyca acts only as a service provider /
+                  processor for data controlled by a business customer, we may direct the request
+                  to that customer or ask you to contact them directly.
+                </p>
+                <h3>How to submit a request</h3>
+                <p>
+                  To submit an access, correction, deletion, objection, portability, or privacy
+                  complaint request, email
+                  <a href="mailto:nimrod.shai@gmail.com?subject=Privacy%20Request">nimrod.shai@gmail.com</a>
+                  with enough detail for us to understand and verify the request.
+                </p>
+                <p>
+                  Where permitted by law, authorized agents may submit requests on someone else’s
+                  behalf. We may ask for proof of authority and identity verification before
+                  responding.
+                </p>
+                <p>
+                  If you are contacting us about a Meta, WhatsApp, or portal data deletion issue,
+                  please include the app, account, and workspace details so we can route the
+                  request appropriately.
+                </p>
+                <p class="small">
+                  If we deny a request that is subject to an appeal right under applicable law,
+                  you may reply to our response and request that we review the decision again.
+                </p>
+              </div>
+            </section>
+
+            <section id="ai-features" aria-labelledby="ai-title">
+              <div>
+                <h2 id="ai-title">Automated Tools and AI Features</h2>
+                <p>
+                  Assistyca may use automation and AI-assisted tools to help draft responses,
+                  summarize communications, classify workflows, and improve service operations.
+                  These features are intended to assist users, not to replace their own judgment
+                  where human review is appropriate.
+                </p>
+                <p>
+                  Assistyca does not intentionally use solely automated decision-making that
+                  produces legal or similarly significant effects on an individual without the
+                  safeguards required by applicable law.
+                </p>
+              </div>
+            </section>
+
+            <section id="business-customers" aria-labelledby="business-title">
+              <div>
+                <h2 id="business-title">Business Customer Responsibilities</h2>
+                <p>
+                  If you use Assistyca on behalf of a business, you are responsible for making
+                  sure you have the necessary rights, notices, legal bases, and permissions to
+                  share customer, employee, prospect, or contact data with the service and with
+                  connected platforms such as Meta.
+                </p>
+                <p>
+                  Business customers are also responsible for determining whether they need their
+                  own privacy notice, data processing agreement, cookie notice, consumer request
+                  workflow, or industry-specific compliance controls.
+                </p>
+              </div>
+            </section>
+
+            <section id="children" aria-labelledby="children-title">
+              <div>
+                <h2 id="children-title">Children's Privacy and Regulated Data</h2>
+                <p>
+                  Assistyca is not directed to children under 13, and we do not knowingly collect
+                  personal information from children under 13. Where local law requires parental
+                  consent for certain minors, users should not submit that child data through the
+                  service unless they have the necessary authority and legal basis.
+                </p>
+                <p>
+                  Unless expressly agreed otherwise in writing, users should avoid submitting
+                  highly regulated information such as medical records, payment card data,
+                  government-issued identifiers, or similarly sensitive data that is not necessary
+                  for the service.
+                </p>
+              </div>
+            </section>
+
+            <section id="changes" aria-labelledby="changes-title">
+              <div>
+                <h2 id="changes-title">Changes to This Policy</h2>
+                <p>
+                  We may update this Privacy Policy from time to time. Material updates will be
+                  reflected by revising the date on this page. We intend to review this policy at
+                  least annually so it stays aligned with product and legal changes.
+                </p>
+              </div>
+            </section>
+
+            <section id="contact" aria-labelledby="contact-title">
+              <div>
+                <h2 id="contact-title">Contact</h2>
+                <p>
+                  If you have questions about this Privacy Policy or privacy-related requests,
+                  contact <a href="mailto:nimrod.shai@gmail.com">nimrod.shai@gmail.com</a>.
+                </p>
+                <p class="small">
+                  If you are located in a jurisdiction that provides complaint rights, you may
+                  also contact your local privacy or data protection regulator.
+                </p>
+              </div>
+            </section>
           </div>
-          <p class="small">
-            We may need to verify identity and authority before responding. Some rights are
-            subject to legal exceptions. If Assistyca acts only as a service provider /
-            processor for data controlled by a business customer, we may direct the request
-            to that customer or ask you to contact them directly.
-          </p>
-        </section>
-
-        <section class="section">
-          <h2>How to Submit Requests</h2>
-          <p>
-            To submit an access, correction, deletion, objection, portability, or privacy
-            complaint request, email
-            <a href="mailto:nimrod.shai@gmail.com?subject=Privacy%20Request">nimrod.shai@gmail.com</a>
-            with enough detail for us to understand and verify the request.
-          </p>
-          <p>
-            Where permitted by law, authorized agents may submit requests on someone else’s
-            behalf. We may ask for proof of authority and identity verification before
-            responding.
-          </p>
-          <p>
-            If you are contacting us about a Meta, WhatsApp, or portal data deletion issue,
-            please include the app, account, and workspace details so we can route the
-            request appropriately.
-          </p>
-          <p class="small">
-            If we deny a request that is subject to an appeal right under applicable law,
-            you may reply to our response and request that we review the decision again.
-          </p>
-        </section>
-
-        <section class="section">
-          <h2>Automated Tools and AI Features</h2>
-          <p>
-            Assistyca may use automation and AI-assisted tools to help draft responses,
-            summarize communications, classify workflows, and improve service operations.
-            These features are intended to assist users, not to replace their own judgment
-            where human review is appropriate.
-          </p>
-          <p>
-            Assistyca does not intentionally use solely automated decision-making that
-            produces legal or similarly significant effects on an individual without the
-            safeguards required by applicable law.
-          </p>
-        </section>
-
-        <section class="section full">
-          <h2>Business Customer Responsibilities</h2>
-          <p>
-            If you use Assistyca on behalf of a business, you are responsible for making
-            sure you have the necessary rights, notices, legal bases, and permissions to
-            share customer, employee, prospect, or contact data with the service and with
-            connected platforms such as Meta.
-          </p>
-          <p>
-            Business customers are also responsible for determining whether they need their
-            own privacy notice, data processing agreement, cookie notice, consumer request
-            workflow, or industry-specific compliance controls.
-          </p>
-        </section>
-
-        <section class="section full">
-          <h2>Children and Regulated Data</h2>
-          <p>
-            Assistyca is not directed to children under 13, and we do not knowingly collect
-            personal information from children under 13. Where local law requires parental
-            consent for certain minors, users should not submit that child data through the
-            service unless they have the necessary authority and legal basis.
-          </p>
-          <p>
-            Unless expressly agreed otherwise in writing, users should avoid submitting
-            highly regulated information such as medical records, payment card data,
-            government-issued identifiers, or similarly sensitive data that is not necessary
-            for the service.
-          </p>
-        </section>
-
-        <section class="section full">
-          <h2>Changes to This Policy</h2>
-          <p>
-            We may update this Privacy Policy from time to time. Material updates will be
-            reflected by revising the date on this page. We intend to review this policy at
-            least annually so it stays aligned with product and legal changes.
-          </p>
-        </section>
-
-        <section class="section full">
-          <h2>Contact Us</h2>
-          <p>
-            If you have questions about this Privacy Policy or privacy-related requests,
-            contact <a href="mailto:nimrod.shai@gmail.com">nimrod.shai@gmail.com</a>.
-          </p>
-          <p class="small">
-            If you are located in a jurisdiction that provides complaint rights, you may
-            also contact your local privacy or data protection regulator.
-          </p>
-        </section>
+        </main>
       </div>
+    </div>
 
-      <p class="footer">
-        Public privacy policy page for Assistyca and connected Meta app integrations.
-      </p>
-    </main>
+    <footer class="site-footer">
+      <div class="wrap">
+        <a class="wordmark" href="/">Assistyca</a>
+        <span>Your life, organized.</span>
+        <nav class="footer-links" aria-label="Footer">
+          <a href="/privacy.html" aria-current="page">Privacy</a>
+          <a href="/about">About</a>
+          <a href="mailto:nimrod.shai@gmail.com">Contact</a>
+        </nav>
+        <span>© 2026 Assistyca. All rights reserved.</span>
+      </div>
+    </footer>
+
+    <script src="/assets/privacy-toc.js" defer></script>
   </body>
 </html>
