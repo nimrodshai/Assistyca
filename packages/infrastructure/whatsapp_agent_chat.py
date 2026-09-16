@@ -254,10 +254,13 @@ def download_whatsapp_media(media_id: str, *, api_version: str = DEFAULT_WHATSAP
 
 # Meta keeps "typing..." on screen for 25 seconds, then drops it. A turn that
 # runs a model, and sometimes a tool behind it, can take longer than that, so
-# the indicator is renewed a little before it would lapse for as long as the
-# turn is still running.
+# the indicator is renewed for as long as the turn is still running. Renewing
+# just before the 25 seconds ran out left the phone blank for the last few
+# seconds of long turns (35-45 seconds is common with receipt searches), so it
+# is renewed well inside the window: a renewal that lands late, or a phone that
+# drops the indicator a little early, still finds it showing.
 TYPING_INDICATOR_TTL_SECONDS = 25
-TYPING_INDICATOR_REFRESH_SECONDS = 20
+TYPING_INDICATOR_REFRESH_SECONDS = 8
 
 
 def show_assistyca_typing(*, message_id: str) -> bool:
