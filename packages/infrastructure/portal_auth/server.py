@@ -4248,8 +4248,15 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
     def log_message(self, format: str, *args: Any) -> None:  # noqa: A003 - BaseHTTPRequestHandler API
         return
 
+    def send_response(self, code: int, message: str | None = None) -> None:
+        self._response_status = int(code)
+        super().send_response(code, message)
+
     def end_headers(self) -> None:
-        if not self.path.startswith("/api/auth/"):
+        asset_cache_control = static_asset_cache_control(self.path, getattr(self, "_response_status", 0))
+        if asset_cache_control:
+            self.send_header("Cache-Control", asset_cache_control)
+        elif not self.path.startswith("/api/auth/"):
             self.send_header("Cache-Control", "no-store, max-age=0")
             self.send_header("Pragma", "no-cache")
             self.send_header("Expires", "0")
@@ -17461,6 +17468,26 @@ def resolve_static_page_alias(path: str) -> Path | None:
         normalized_path = f"/{normalized_path}"
     normalized_path = normalized_path.rstrip("/") or "/"
     return STATIC_PAGE_ALIASES.get(normalized_path)
+
+
+# Pictures and fonts under /assets/ are the same for every visitor, so the
+# browser and Cloudflare may keep them instead of fetching them on every visit
+# from a server on the other side of the world. Fonts never change under their
+# name and are kept for a year; a picture replaced in place shows within the hour.
+LONG_CACHED_ASSET_EXTENSIONS: tuple[str, ...] = (".woff2", ".woff", ".ttf", ".otf")
+
+
+def static_asset_cache_control(path: str, status: int) -> str:
+    """Return the Cache-Control for a public asset response, or "" to keep no-store."""
+
+    if status not in (HTTPStatus.OK, HTTPStatus.NOT_MODIFIED):
+        return ""
+    asset_path = urllib_parse.urlparse(str(path or "")).path
+    if not asset_path.startswith("/assets/") or not is_public_static_path(asset_path):
+        return ""
+    if asset_path.lower().endswith(LONG_CACHED_ASSET_EXTENSIONS):
+        return "public, max-age=31536000, immutable"
+    return "public, max-age=3600"
 
 
 def is_public_static_path(path: str) -> bool:

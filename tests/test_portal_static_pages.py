@@ -64,6 +64,24 @@ class PortalStaticPageTests(unittest.TestCase):
                 self.assertNotIn("unsafe-eval", script_src)
                 self.assertIn("https://accounts.google.com", script_src)
 
+    def test_landing_assets_are_kept_but_pages_are_not(self) -> None:
+        with urllib_request.urlopen(f"{self.base_url}/assets/manrope-regular.woff2") as response:
+            self.assertEqual(response.headers.get("Cache-Control"), "public, max-age=31536000, immutable")
+            self.assertEqual(response.headers.get("Content-Type"), "font/woff2")
+        with urllib_request.urlopen(f"{self.base_url}/assets/landing-bg-desktop.webp") as response:
+            self.assertEqual(response.headers.get("Cache-Control"), "public, max-age=3600")
+        with urllib_request.urlopen(f"{self.base_url}/") as response:
+            self.assertEqual(response.headers.get("Cache-Control"), "no-store, max-age=0")
+        with self.assertRaises(urllib_error.HTTPError) as missing:
+            urllib_request.urlopen(f"{self.base_url}/assets/no-such-file.webp")
+        self.assertEqual(missing.exception.headers.get("Cache-Control"), "no-store, max-age=0")
+        missing.exception.close()
+
+    def test_landing_page_refers_only_to_assets_that_exist(self) -> None:
+        page = (self.root / "index.html").read_text(encoding="utf-8")
+        for asset in set(re.findall(r"/assets/[\w.-]+", page)):
+            self.assertTrue((self.root / asset.lstrip("/")).is_file(), asset)
+
     def test_csp_allows_everything_the_meta_signup_popup_needs(self) -> None:
         """The Embedded Signup SDK loads a script, calls facebook.com, and frames it.
 
