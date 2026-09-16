@@ -13172,7 +13172,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                         send_assistyca_text(recipient_wa_id=wa_id, text=build_calendar_choice_text(available))
                     except Exception as exc:  # noqa: BLE001
                         print(f"WhatsApp calendar list could not be sent: {exc}", flush=True)
-            self._send_whatsapp_oauth_page(ok=True, label=label, message="One question waiting for you in the chat: which calendars to read.")
+            self._send_whatsapp_oauth_page(ok=True, label=label, message="Everything\u2019s set on this side. The rest continues in the chat.")
             return
 
         # The mailbox is read now, unasked - but what the person hears is the
