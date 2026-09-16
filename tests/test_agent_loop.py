@@ -60,9 +60,11 @@ class ScriptedModel:
     def __init__(self, rounds: list[SimpleNamespace]) -> None:
         self.rounds = list(rounds)
         self.inputs: list[list[dict]] = []
+        self.tools: list[list[dict]] = []
 
     def __call__(self, input_items: list[dict], tools: list[dict]) -> SimpleNamespace:
         self.inputs.append(list(input_items))
+        self.tools.append(list(tools))
         return self.rounds.pop(0)
 
 
@@ -237,6 +239,27 @@ class LoopMechanicsTests(unittest.TestCase):
         context_text = model.inputs[0][0]["content"]
         self.assertIn('"confirmedAction"', context_text)
         self.assertIn('"deleted":true', context_text)
+
+    def test_an_ended_trial_offers_only_the_tools_over_the_account_itself(self) -> None:
+        # Leaving is the person's right whether or not they pay, so deleting
+        # the account still works; reading their mail does not.
+        api = FakeApi({"/api/account": ({"ok": True}, 200)})
+        model = ScriptedModel([
+            _model_round(_call("read_inbox", "c1"), _call("delete_account", "c2")),
+            _model_round(reply=_reply("This erases your whole account for good. Do you want to go ahead?")),
+        ])
+        result = run_agent_loop(
+            context=_context(api, connected={"gmail": True}), call_model=model,
+            user_message="delete my account", conversation=[], today="2026-09-04", trial_ended=True,
+        )
+
+        offered = sorted(tool["name"] for tool in model.tools[0])
+        self.assertEqual(offered, ["delete_account", "disconnect", "sign_out"])
+        self.assertIn('"trialEnded":true', model.inputs[0][0]["content"])
+        refused = json.loads(model.inputs[1][-2]["output"])
+        self.assertEqual(refused["error"]["code"], "not_supported")
+        self.assertEqual(api.calls, [])
+        self.assertEqual(result.pending_confirmation["tool"], "delete_account")
 
     def test_a_reminder_is_set_on_the_first_call_and_nobody_is_asked_for_a_yes(self) -> None:
         # Setting a reminder changes nothing but the person's own future

@@ -102,7 +102,9 @@ def describe_trial(
 def build_trial_expired_message(product_name: str = "Assistyca") -> str:
     return (
         f"Your {product_name} trial has ended, so I've stopped here. "
-        "Get in touch to keep your assistant running and I'll pick up where we left off."
+        "Get in touch to keep your assistant running and I'll pick up where we left off. "
+        "If you'd rather leave, you can still delete your account and everything in it from Settings, "
+        "or just ask me to."
     )
 
 

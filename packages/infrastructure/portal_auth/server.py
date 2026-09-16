@@ -245,6 +245,7 @@ from packages.infrastructure.whatsapp_api import list_whatsapp_business_phone_nu
 from packages.infrastructure.whatsapp_api import register_whatsapp_phone_number
 from packages.infrastructure.whatsapp_api import subscribe_whatsapp_business_account
 from packages.infrastructure.whatsapp_api import test_whatsapp_connection
+from packages.infrastructure.agent_loop import ACCOUNT_RIGHTS_TOOLS
 from packages.infrastructure.agent_loop import AGENT_LOOP_INSTRUCTIONS
 from packages.infrastructure.agent_loop import LOOP_MAX_OUTPUT_TOKENS
 from packages.infrastructure.agent_loop import LoopContext
@@ -10874,8 +10875,11 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         if authenticated is None:
             return
         session, authenticated_user = authenticated
-        if not self._require_active_trial(authenticated_user):
-            return
+        # A finished trial still reaches the loop, but only for what is the
+        # person's own to decide whatever they pay: deleting the account,
+        # signing a phone out, taking back a sign-in. Everything else is
+        # withheld from the model and refused if it is asked for anyway.
+        trial_ended = not self._describe_user_trial(authenticated_user).get("allowed")
         try:
             payload = parse_json_body(self, max_bytes=MAX_AGENT_TURN_BODY_BYTES)
         except ValueError as exc:
@@ -10940,6 +10944,11 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                     channel=channel,
                     timezone_name=timezone_name,
                 )
+                return
+            if trial_ended and armed["tool"] not in ACCOUNT_RIGHTS_TOOLS:
+                # A yes held from before the trial ran out. Nothing it would
+                # run is available now, and saying so costs no model call.
+                self._require_active_trial(authenticated_user)
                 return
             confirmed_call = {"tool": armed["tool"], "arguments": armed["arguments"], "approvalToken": armed["id"]}
         if declined_approval_id:
@@ -11022,6 +11031,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 declined_call=declined_call,
                 open_question=open_question,
                 photo=photo_context,
+                trial_ended=trial_ended,
             )
         except OpenAIError as exc:
             print(f"Agent loop failed: {exc.message}", flush=True)

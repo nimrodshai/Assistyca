@@ -145,6 +145,63 @@ class TrialEnforcementTests(unittest.TestCase):
         self.assertEqual(payload["error"], "trial_expired")
         self.assertTrue(payload["trial"]["expired"])
 
+    def _expire_trial(self) -> None:
+        self.database.set_user_trial("owner@example.com", trial_days=2)
+        user = self.database.get_user("owner@example.com") or {}
+        with self.database._connection() as conn:  # noqa: SLF001 - fixture setup
+            conn.execute(
+                "UPDATE users SET trial_started_at = ? WHERE id = ?",
+                ((datetime.now(timezone.utc) - timedelta(days=5)).isoformat(), int(user["id"])),
+            )
+            conn.commit()
+
+    def _loop(self, body: dict) -> tuple[int, dict]:
+        request = urllib_request.Request(
+            f"{self.base_url}/api/agent/loop",
+            data=json.dumps({"timezone": "UTC", "channel": "whatsapp", **body}).encode("utf-8"),
+            method="POST",
+            headers={"Authorization": f"Bearer {self.token}", "Content-Type": "application/json"},
+        )
+        try:
+            with urllib_request.urlopen(request, timeout=15) as response:
+                return int(response.status), json.loads(response.read().decode("utf-8"))
+        except urllib_error.HTTPError as exc:
+            return int(exc.code), json.loads(exc.read().decode("utf-8"))
+
+    def test_an_expired_trial_can_still_delete_the_account(self) -> None:
+        # Paying is optional; leaving is not. Asked in the chat, the deletion
+        # is offered with the usual yes, and the yes erases the account.
+        self._expire_trial()
+
+        def round_(*, call: str = "", reply: str = "") -> SimpleNamespace:
+            if call:
+                return SimpleNamespace(
+                    output_text="",
+                    raw_response={"output": [{"type": "function_call", "name": call, "call_id": "c1", "arguments": "{}"}]},
+                )
+            text = json.dumps({"reply": reply, "claimsCompleted": [], "rememberFact": None, "forgetFact": None, "answersOpenQuestion": None})
+            return SimpleNamespace(output_text=text, raw_response={"output": []})
+
+        seen_tools: list[list[str]] = []
+
+        def model(**kwargs):
+            seen_tools.append(sorted(tool["name"] for tool in kwargs.get("tools") or []))
+            return rounds.pop(0)
+
+        rounds = [round_(call="delete_account"), round_(reply="This erases everything for good. Go ahead?")]
+        with mock.patch("packages.infrastructure.portal_auth.server.call_openai_response", side_effect=model):
+            status, payload = self._loop({"userMessage": "delete my account"})
+        self.assertEqual(status, 200, payload)
+        self.assertEqual(seen_tools[0], ["delete_account", "disconnect", "sign_out"])
+        approval_id = payload["pendingConfirmation"]["id"]
+
+        rounds = [round_(reply="Done. Your account is gone.")]
+        with mock.patch("packages.infrastructure.portal_auth.server.call_openai_response", side_effect=model):
+            status, payload = self._loop({"userMessage": "yes", "confirmedCall": {"approvalId": approval_id}})
+        self.assertEqual(status, 200, payload)
+        self.assertIn("delete_account", payload["completed"])
+        self.assertIsNone(self.database.get_user("owner@example.com"))
+
     def test_a_running_trial_still_answers(self) -> None:
         self.database.set_user_trial("owner@example.com", trial_days=2)
         with mock.patch(

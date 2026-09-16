@@ -2525,6 +2525,11 @@ TOOLS: list[ToolSpec] = [
 ]
 TOOLS_BY_NAME = {tool.name: tool for tool in TOOLS}
 
+# What an account can still do once its trial has ended: act on the account
+# itself. Leaving - deleting everything, signing a phone out, taking back a
+# sign-in - is the person's right whether or not they pay.
+ACCOUNT_RIGHTS_TOOLS = frozenset({"delete_account", "sign_out", "disconnect"})
+
 _SOURCE_WORDS = {
     "mailbox": "no mailbox is connected",
     "calendar": "the calendar is not connected",
@@ -2747,6 +2752,16 @@ _PHOTO_RULES = (
 )
 
 
+_TRIAL_ENDED_RULES = (
+    "This account's free trial has ended (CONTEXT.trialEnded), so the only tools offered are the ones over "
+    "the account itself: delete_account, sign_out and disconnect. When the person asks for one of those, "
+    "handle it exactly as you would otherwise, with the same yes first. For anything else, say calmly in a "
+    "line or two that the trial has ended and that getting in touch keeps the assistant running, and that "
+    "they can still delete their account or disconnect what they connected whenever they want. Do not "
+    "offer, promise or describe other help as if it were available.\n"
+)
+
+
 def _weekday_name(today: str) -> str:
     try:
         return datetime.strptime(str(today or "")[:10], "%Y-%m-%d").strftime("%A")
@@ -2770,6 +2785,7 @@ def build_loop_context_text(
     photo: dict[str, Any] | None = None,
     lists_page: str = "",
     receipts_page: str = "",
+    trial_ended: bool = False,
 ) -> str:
     normalized_channel = "whatsapp" if str(channel or "").lower() == "whatsapp" else "portal"
     safe_context = {k: v for k, v in (tool_context or {}).items() if k != "connectLinks"}
@@ -2797,9 +2813,12 @@ def build_loop_context_text(
         context["declinedAction"] = declined_action
     if open_question:
         context["openQuestion"] = open_question
+    if trial_ended:
+        context["trialEnded"] = True
     return (
         f"{_CHANNEL_RULES[normalized_channel]}\n"
         + (_PHOTO_RULES if attached_photo else "")
+        + (_TRIAL_ENDED_RULES if trial_ended else "")
         + "Respond to CONTEXT.latestUserMessage using the conversation and the tools.\n"
         f"CONTEXT\n{json.dumps(context, ensure_ascii=False, separators=(',', ':'))}"
     )
@@ -2818,10 +2837,14 @@ def run_agent_loop(
     open_question: dict[str, Any] | None = None,
     now: str = "",
     photo: dict[str, Any] | None = None,
+    trial_ended: bool = False,
 ) -> LoopResult:
     """Run one turn. call_model takes the input items and the tool definitions
     and returns an OpenAIResult-like object with output_text and raw_response.
-    A photo, when there is one, goes in beside the context as an image."""
+    A photo, when there is one, goes in beside the context as an image.
+
+    With trial_ended the model sees only ACCOUNT_RIGHTS_TOOLS, and a call to
+    anything else is refused here as well."""
 
     started = time.monotonic()
     turn_id = uuid.uuid4().hex[:12]
@@ -2836,6 +2859,8 @@ def run_agent_loop(
         confirmed_action = _execute_confirmed(context, confirmed_call, tool_calls, completed)
 
     tools = tool_definitions(context.tool_context)
+    if trial_ended:
+        tools = [definition for definition in tools if definition["name"] in ACCOUNT_RIGHTS_TOOLS]
     # The lists page is in the context from the start, not only inside a
     # list result: "can you help with my todos" is answered without a tool,
     # and the answer still has somewhere to point.
@@ -2854,8 +2879,9 @@ def run_agent_loop(
         open_question=open_question,
         now=now,
         photo=photo,
-        lists_page=lists_page,
-        receipts_page=receipts_page,
+        lists_page="" if trial_ended else lists_page,
+        receipts_page="" if trial_ended else receipts_page,
+        trial_ended=trial_ended,
     )
     input_items: list[dict[str, Any]] = build_agent_turn_input(context_text, photo) or [
         {"role": "user", "content": context_text},
@@ -2886,7 +2912,7 @@ def run_agent_loop(
             call_id = str(call.get("call_id") or "")
             args = _parse_arguments(call.get("arguments"))
             tool = TOOLS_BY_NAME.get(name)
-            if tool is None:
+            if tool is None or (trial_ended and name not in ACCOUNT_RIGHTS_TOOLS):
                 outcome = _error("not_supported", f"There is no tool called {name}.")
             elif executed >= MAX_TOOL_CALLS_PER_TURN:
                 outcome = _error(
@@ -3152,6 +3178,7 @@ def _guard_reply(reply: str, links_offered: list[str]) -> str:
 
 
 __all__ = [
+    "ACCOUNT_RIGHTS_TOOLS",
     "AGENT_LOOP_INSTRUCTIONS",
     "LOOP_MAX_OUTPUT_TOKENS",
     "MAX_TOOL_CALLS_PER_TURN",
