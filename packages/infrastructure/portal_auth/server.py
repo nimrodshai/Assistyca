@@ -205,6 +205,8 @@ from packages.infrastructure.receipt_collector import normalize_receipt_output_f
 from packages.infrastructure.receipt_collector import resolve_receipt_bundle_folder
 from packages.infrastructure import receipt_manager
 from packages.infrastructure import receipt_ledger
+from packages.infrastructure.receipt_collector import split_vendor_names
+from packages.infrastructure.subscription_rhythm import read_subscription_rhythm
 from packages.infrastructure.receipt_judge import RECEIPT_JUDGE_INSTRUCTIONS
 from packages.infrastructure.receipt_judge import RECEIPT_JUDGE_MAX_OUTPUT_TOKENS
 from packages.infrastructure.receipt_judge import judge_receipt_items
@@ -2685,6 +2687,14 @@ def parse_agent_run_month_value(*values: Any) -> Optional[tuple[int, int]]:
 # but it still reads every receipt in them, so a span is bounded to keep one
 # request inside a wait a person will sit through.
 AGENT_ANSWER_MAX_SPAN_MONTHS = 6
+# A search narrowed to a vendor may cover a whole year in one go. The six-month
+# ceiling is there because a month of everyone's receipts is a lot of mail to
+# read; a year of one vendor's is a handful of messages, and a year is the
+# window the question "am I still paying for this" actually needs - a yearly
+# subscription charges once, and six months can miss it entirely.
+AGENT_ANSWER_MAX_SPAN_MONTHS_FOR_VENDOR = 12
+# How many names one vendor may be searched under at once.
+AGENT_VENDOR_NAME_LIMIT = 6
 
 
 def parse_agent_run_month_list(*values: Any) -> list[tuple[int, int]]:
@@ -2786,6 +2796,14 @@ def resolve_agent_batch_run_month(fields: dict[str, Any], payload: dict[str, Any
     return None
 
 
+def agent_batch_span_limit(fields: dict[str, Any], payload: dict[str, Any]) -> int:
+    """How many months one run may cover, given how narrow the search is."""
+
+    if split_vendor_names(fields.get("vendor") or payload.get("vendor")):
+        return AGENT_ANSWER_MAX_SPAN_MONTHS_FOR_VENDOR
+    return AGENT_ANSWER_MAX_SPAN_MONTHS
+
+
 def resolve_agent_batch_run_months(
     fields: dict[str, Any],
     payload: dict[str, Any],
@@ -2801,9 +2819,37 @@ def resolve_agent_batch_run_months(
         payload.get("manualRunMonth"),
     )
     if len(months) > 1:
-        return months[:AGENT_ANSWER_MAX_SPAN_MONTHS]
+        # More months than one request may cover keeps the recent end of the
+        # span. "Look further back" is asked about a subscription that is
+        # running now, so the months nearest today are the ones the answer
+        # turns on; keeping the oldest six would search a year ago and report
+        # nothing about the spring. What falls off is named separately, so it
+        # is offered back rather than quietly dropped.
+        return months[-agent_batch_span_limit(fields, payload):]
     single = resolve_agent_batch_run_month(fields, payload)
     return [single] if single else []
+
+
+def resolve_agent_batch_months_not_searched(
+    fields: dict[str, Any],
+    payload: dict[str, Any],
+) -> list[tuple[int, int]]:
+    """The months the question asked about that this run does not reach.
+
+    A run that covers less than it was asked for must say so. An answer of
+    "nothing found" over a span the person believes was searched is the one
+    wrong answer this cannot give: the charge may be sitting in the months
+    that were never read.
+    """
+
+    asked = parse_agent_run_month_list(
+        fields.get("manualRunMonth"),
+        payload.get("manualRunMonth"),
+    )
+    if len(asked) <= 1:
+        return []
+    searched = set(resolve_agent_batch_run_months(fields, payload))
+    return [month for month in asked if month not in searched]
 
 
 def month_of_mail_item(item: Any) -> Optional[tuple[int, int]]:
@@ -3321,7 +3367,15 @@ def build_custom_batch_mail_query(fields: dict[str, Any], payload: dict[str, Any
     # afterwards. A month holds more receipt-ish mail than one read returns,
     # so a vendor left out of the query can sit past the end of the results
     # and read back as "no receipts" when the receipt is right there.
-    required_terms = normalize_terms([normalize_text(fields.get("vendor") or payload.get("vendor"))])
+    # A vendor field may name the same payment several ways - the product, the
+    # company billing it, the service taking the money - and the email carries
+    # only one of them. Requiring every name finds nothing, so a group is asked
+    # for as alternatives and a message carrying any one of them comes back.
+    # A handful of names is a question; a list of thirty is a query long enough
+    # to crowd out the words that make it a receipt search at all.
+    vendor_names = split_vendor_names(fields.get("vendor") or payload.get("vendor"))[:AGENT_VENDOR_NAME_LIMIT]
+    required_terms = normalize_terms(list(vendor_names[:1]) if len(vendor_names) == 1 else [])
+    required_any = normalize_terms(list(vendor_names) if len(vendor_names) > 1 else [])
     # One search covers every month the run was asked about. A month-by-month
     # comparison used to search the mailbox once per month, which is the same
     # mail read over and over with a different window around it.
@@ -3331,14 +3385,28 @@ def build_custom_batch_mail_query(fields: dict[str, Any], payload: dict[str, Any
         return MailQuery(
             terms=terms,
             required_terms=required_terms,
+            required_any=required_any,
             after=window.after,
             before=window.before,
         )
 
-    return MailQuery(terms=terms, required_terms=required_terms, newer_than_days=31)
+    return MailQuery(
+        terms=terms,
+        required_terms=required_terms,
+        required_any=required_any,
+        newer_than_days=31,
+    )
 
 
 def get_custom_google_batch_result_header(fields: dict[str, Any]) -> str:
+    """What kind of search this is, which decides how the result is read.
+
+    A question does not have to use the word "receipt" to be one. "Am I paying
+    for PlayStation Plus?" names a vendor and a period, which is the shape of a
+    receipt search however it is worded - and reading it as anything else hands
+    back a list of emails where an answer about money was asked for.
+    """
+
     text = get_agent_proposal_field_text(fields)
     if re.search(r"\breceipts?\b", text, re.IGNORECASE):
         return "Receipt search"
@@ -3346,6 +3414,8 @@ def get_custom_google_batch_result_header(fields: dict[str, Any]) -> str:
         return "Invoice search"
     if re.search(r"\bstatements?\b", text, re.IGNORECASE):
         return "Statement search"
+    if normalize_text(fields.get("vendor")) and parse_agent_run_month_list(fields.get("manualRunMonth")):
+        return "Receipt search"
     return "Mailbox source search"
 
 
@@ -7552,8 +7622,13 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             # Every month this run covers. They share one search and are
             # counted apart afterwards.
             answer_months: list[tuple[int, int]] = []
+            # The months the question named that this run does not reach. A
+            # span longer than one request may cover is answered over its
+            # recent end, and the rest is reported rather than dropped.
+            months_not_searched: list[tuple[int, int]] = []
             if answer_mode and is_custom_google_batch:
                 answer_months = resolve_agent_batch_run_months(fields, payload)
+                months_not_searched = resolve_agent_batch_months_not_searched(fields, payload)
             search_max_results = GMAIL_MAX_DIGEST_MESSAGES
             if is_custom_google_batch:
                 if answer_mode:
@@ -8001,6 +8076,15 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 response_payload["cappedMailboxes"] = capped_mailboxes
             if receipt_manager_summary:
                 response_payload["receiptManager"] = receipt_manager_summary
+            if months_not_searched:
+                # Found nothing over six months reads as found nothing over the
+                # twelve that were asked about, unless the six are named.
+                response_payload["monthsSearched"] = [
+                    format_receipt_month_label(month) for month in answer_months
+                ]
+                response_payload["monthsNotSearched"] = [
+                    format_receipt_month_label(month) for month in months_not_searched
+                ]
             if receipt_month_answers:
                 # A run of months answers one month at a time. The chat adds
                 # them up into one reply and draws the comparison, so what it
@@ -8084,6 +8168,24 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 # A question about the mail itself is answered from the
                 # messages that were read, the same way.
                 response_payload["answerRecords"] = build_mail_answer_records(result.get("items"))
+            if answer_mode and result_header == "Receipt search" and normalize_text(fields.get("vendor") or payload.get("vendor")):
+                # "Am I paying for this?" is a question about now, and a total
+                # cannot answer it: one charge in May is a live subscription
+                # billed yearly and a cancelled one billed monthly. The rhythm
+                # the receipts make is worked out here, including the parts
+                # they cannot settle, and the deciding happens where the
+                # answer is written.
+                rhythm = read_subscription_rhythm(
+                    response_payload.get("answerRecords"),
+                    vendor=normalize_text(fields.get("vendor") or payload.get("vendor")),
+                    # The day where the person is, because "when did I last
+                    # pay this" is counted from their today, not from UTC's.
+                    today=date.fromisoformat(resolve_local_today(
+                        normalize_text(payload.get("timezone") or payload.get("timeZone") or "UTC")
+                    )),
+                )
+                if int(rhythm.get("chargeCount") or 0):
+                    response_payload["subscription"] = rhythm
             if receipt_bundle:
                 response_payload.update({
                     "outputFolder": str(receipt_bundle.get("outputFolder") or ""),

@@ -100,6 +100,37 @@ currency, by month and by vendor, and the link; the reply says what is
 there and carries the button. `CONTEXT.receiptsPage` is in every turn, so
 "can you help with receipts" has somewhere to point without a tool call.
 
+## "Am I still paying for this?"
+
+A question about a subscription is a question about now, and a total cannot
+answer it: 550 shekels to Sony in May is a live subscription if it is billed
+yearly and a cancelled one if it is billed monthly. So a search that names a
+vendor comes back with a `subscription` block as well as a total
+(`packages/infrastructure/subscription_rhythm.py`), read from the receipts
+themselves:
+
+- the charges, newest first, with the gaps between them. A gap of 24-38 days
+  is monthly, 330-400 is yearly, and anything else is a rhythm this does not
+  recognise rather than one rounded to the nearest guess. Two mails about one
+  payment sit days apart, so gaps under four days are not billing periods.
+- the period the receipt names in its own words - "12-month membership",
+  "monthly plan", "מנוי חודשי" - which is what settles a single charge.
+- when the next charge is due, counted the way a vendor counts it: the same
+  day next month or next year, not thirty days later.
+- `stillRunning`, and `unsettled`: everything the receipts could not decide.
+  A rhythm with anything in `unsettled` is never stated flatly. The model
+  checks the vendor's published price with `search_web`, holds it against
+  what was actually paid, and where that still does not settle it says what
+  it found, says it is not sure, and asks - the person knows what they
+  signed up for.
+
+Because a yearly subscription charges once, a question like this asks for the
+last twelve months, and a search narrowed to a vendor reads twelve months in
+one go (`AGENT_ANSWER_MAX_SPAN_MONTHS_FOR_VENDOR`) where a search of everyone
+still stops at six. What a run could not reach comes back as `monthsSearched`
+and `monthsNotSearched`, so "nothing found" is never said about months nobody
+read.
+
 ## The page
 
 `/receipts` serves `portal/receipts.html` (`receipts.js`, `receipts.css`),

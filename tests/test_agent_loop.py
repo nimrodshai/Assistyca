@@ -117,6 +117,68 @@ class LoopMechanicsTests(unittest.TestCase):
         self.assertEqual(api.calls[0][2]["fields"], {"baseCurrency": "USD", "quoteCurrency": "ILS"})
         self.assertFalse(result.fallback_used)
 
+    def test_a_search_that_covered_less_than_it_was_asked_says_so(self) -> None:
+        # Six months of a twelve-month question were read. The model has to be
+        # told which six, or "I found nothing" is said about a year nobody
+        # looked at - which is how a real charge gets reported as no charge.
+        api = FakeApi({"/api/agent/proposals/run": ({
+            "ok": True,
+            "answer": "I couldn't find any receipts to Sony.",
+            "answerRecords": [],
+            "monthsSearched": ["Apr 2026", "May 2026", "Jun 2026", "Jul 2026", "Aug 2026", "Sep 2026"],
+            "monthsNotSearched": ["Oct 2025", "Nov 2025", "Dec 2025", "Jan 2026", "Feb 2026", "Mar 2026"],
+            "cappedMailboxes": [{"mailbox": "owner@gmail.com", "limit": 100}],
+        }, 200)})
+        model = ScriptedModel([
+            _model_round(_call("search_receipts", "c1", what="Am I paying for PlayStation Plus?", vendor="Sony", months="2025-10,2026-09")),
+            _model_round(reply=_reply("Nothing since April.")),
+        ])
+        run_agent_loop(context=_context(api, connected={"gmail": True}), call_model=model, user_message="am I paying for PS Plus?", conversation=[], today="2026-09-16")
+
+        output = json.loads(model.inputs[1][-1]["output"])
+        limits = " ".join(output["searchLimits"])
+        self.assertIn("Apr 2026 to Sep 2026", limits)
+        self.assertIn("Oct 2025 to Mar 2026", limits)
+        self.assertIn("newest 100", limits)
+
+    def test_the_rhythm_of_the_charges_reaches_the_model(self) -> None:
+        # Whether something is still being paid for is read from how often it
+        # is charged, not from the existence of a charge. The model gets the
+        # rhythm, including what the receipts could not settle.
+        api = FakeApi({"/api/agent/proposals/run": ({
+            "ok": True,
+            "answer": "You paid 550.00 ILS to Sony in May 2026, across 1 receipt.",
+            "answerRecords": [],
+            "subscription": {
+                "cadence": "unclear",
+                "chargeCount": 1,
+                "lastCharge": "2026-05-05",
+                "lastAmount": "550.00 ILS",
+                "stillRunning": None,
+                "settled": False,
+                "unsettled": ["how often this is billed"],
+            },
+        }, 200)})
+        model = ScriptedModel([
+            _model_round(_call("search_receipts", "c1", what="Am I paying for PlayStation Plus?", vendor="Sony", months="2026-05")),
+            _model_round(reply=_reply("One charge in May; not sure if it is yearly.")),
+        ])
+        run_agent_loop(context=_context(api, connected={"gmail": True}), call_model=model, user_message="am I paying for PS Plus?", conversation=[], today="2026-09-16")
+
+        output = json.loads(model.inputs[1][-1]["output"])
+        self.assertEqual(output["subscription"]["cadence"], "unclear")
+        self.assertFalse(output["subscription"]["settled"])
+
+    def test_a_search_that_reached_everything_reports_no_limits(self) -> None:
+        api = FakeApi({"/api/agent/proposals/run": ({"ok": True, "answer": "You paid 19.00 USD.", "answerRecords": []}, 200)})
+        model = ScriptedModel([
+            _model_round(_call("search_receipts", "c1", what="Render in August", vendor="Render", months="2026-08")),
+            _model_round(reply=_reply("19 dollars.")),
+        ])
+        run_agent_loop(context=_context(api, connected={"gmail": True}), call_model=model, user_message="render in august?", conversation=[], today="2026-09-16")
+
+        self.assertNotIn("searchLimits", json.loads(model.inputs[1][-1]["output"]))
+
     def test_a_lookup_missing_its_source_never_reaches_the_runner(self) -> None:
         api = FakeApi()
         model = ScriptedModel([
