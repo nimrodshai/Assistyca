@@ -330,11 +330,48 @@ def _run_lookup(context: LoopContext, proposal_type: str, fields: dict[str, Any]
             _offer_link(context, link, RECEIPTS_LINK_LABEL)
         if link:
             data["receiptsPage"] = link
+    limits = _describe_search_limits(response)
+    if limits:
+        data["searchLimits"] = limits
     if proposal_type in {"custom", "saved-files"}:
         insurance_checks = _check_receipt_records_against_insurance(context, records)
         if insurance_checks:
             data["insuranceChecks"] = insurance_checks
     return _ok(data)
+
+
+def _describe_search_limits(response: dict[str, Any]) -> list[str]:
+    """What the search did not reach, in sentences the reply can carry.
+
+    A read that covered less than it was asked for still comes back with an
+    answer, and an answer of "nothing found" over months nobody looked at is
+    worse than no answer at all. The runner knows what it left out; this is
+    how the model finds out, so the person hears it too.
+    """
+
+    notes: list[str] = []
+    searched = [str(label) for label in (response.get("monthsSearched") or []) if str(label).strip()]
+    missed = [str(label) for label in (response.get("monthsNotSearched") or []) if str(label).strip()]
+    if missed:
+        covered = f"{searched[0]} to {searched[-1]}" if len(searched) > 1 else (searched[0] if searched else "")
+        left_out = f"{missed[0]} to {missed[-1]}" if len(missed) > 1 else missed[0]
+        notes.append(
+            (f"Only {covered} were searched. " if covered else "")
+            + f"{left_out} were not searched at all - say so, and offer to look there next."
+        )
+    for entry in response.get("cappedMailboxes") or []:
+        if not isinstance(entry, dict):
+            continue
+        limit = int(entry.get("limit") or 0)
+        mailbox = str(entry.get("mailbox") or "the mailbox")
+        if limit:
+            notes.append(
+                f"{mailbox} held more matching mail than one read returns; only the newest {limit} messages were read."
+            )
+    widened = str(response.get("widenedSearch") or "").strip()
+    if widened:
+        notes.append(f"The receipt words found nothing, so what was read is {widened}.")
+    return notes[:4]
 
 
 RECEIPTS_LINK_LABEL = "Open receipts"
@@ -2021,8 +2058,13 @@ TOOLS: list[ToolSpec] = [
             "Search the mailbox for receipts, invoices, bills and charges and get back the items with totals "
             "per month and per vendor, computed and correct. Use it for how much was paid, to whom, why a month "
             "was higher, what repeats, what changed. what is the search in words, e.g. 'Find receipts from "
-            "Render for August 2026'. vendor is the vendor name on its own, or null. months is every month "
-            "asked about as YYYY-MM, comma separated, oldest first; a comparison lists both months."
+            "Render for August 2026'. vendor is the name on its own, or null - and when a payment could "
+            "arrive under more than one name, list them all comma separated: the product, the company "
+            "behind it and the service that bills it ('PlayStation Plus, Sony, PlayStation Network'), "
+            "because a receipt carrying any one of them is found. months is every month "
+            "asked about as YYYY-MM, comma separated, oldest first; a comparison lists both months. At most "
+            "six months are searched per call, the most recent of the ones listed, so ask for the rest in a "
+            "second call rather than listing a year and assuming it was all read."
         ),
         parameters=_params({
             "what": {"type": "string"},
@@ -2537,6 +2579,9 @@ AGENT_LOOP_INSTRUCTIONS = (
     "about why an amount changed is answered by naming the individual items that account for it. Never "
     "invent a record, an amount, a date, or a fact that is not in a result. An empty records list means it "
     "ran and found nothing: say what you looked for, where, and that there was nothing, in a line or two.\n"
+    "searchLimits on a result names what that search did not reach - months nobody looked at, mail past the "
+    "end of one read. Never describe a search as wider than the result says it was, never turn 'nothing in "
+    "these months' into 'nothing at all', and say what was left out and offer to go there next.\n"
     "Insurance: policies are versioned records, not remembered facts. Use save_insurance_policy only for "
     "policy facts the person or an exact source supplied; a renewal or endorsement becomes a new version. "
     "Use show_insurance_policies before answering what they have or what it covers. A search_receipts or "

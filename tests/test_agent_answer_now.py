@@ -836,6 +836,21 @@ class AgentAnswerRunTests(unittest.TestCase):
         self.assertEqual(query.required_terms, ("Render",))
         self.assertIn("Render", to_gmail_query(query))
 
+    def test_every_name_a_payment_could_carry_is_searched_for(self) -> None:
+        # A PlayStation Plus charge arrives as a PayPal receipt naming Sony.
+        # Requiring all three names asks the mailbox for mail that does not
+        # exist, and the answer comes back "you are not paying for it".
+        self._run_answer({
+            "result": "Am I paying for PlayStation Plus?",
+            "vendor": "PlayStation Plus, Sony, PlayStation Network",
+            "manualRunMonth": "2026-08",
+        })
+
+        query = self.run_call.kwargs["query"]
+        self.assertEqual(query.required_terms, ())
+        self.assertEqual(query.required_any, ("PlayStation Plus", "Sony", "PlayStation Network"))
+        self.assertIn('("PlayStation Plus" OR Sony OR "PlayStation Network")', to_gmail_query(query))
+
     def _receipt_item(self, index: int, date_header: str, amount: str) -> dict[str, object]:
         return {
             "id": f"msg-{index}",
@@ -916,6 +931,40 @@ class AgentAnswerRunTests(unittest.TestCase):
             self.run_call.kwargs["max_results"],
             AGENT_RECEIPT_ANSWER_MAX_MESSAGES * 3 + 1,
         )
+
+    def test_a_span_too_long_to_read_is_answered_from_its_recent_end(self) -> None:
+        # Twelve months is more than one request covers. The six it reads are
+        # the ones nearest today: "look further back" is asked about something
+        # being paid for now, and reading last autumn instead answers nothing.
+        payload = self._run_span(
+            "2025-10,2025-11,2025-12,2026-01,2026-02,2026-03,2026-04,2026-05,2026-06,2026-07,2026-08,2026-09",
+            [self._receipt_item(1, "Tue, 05 May 2026 21:36:00 +0300", "$10.00")],
+        )
+
+        query = self.run_call.kwargs["query"]
+        self.assertEqual(query.after.isoformat(), "2026-04-01")
+        self.assertEqual(query.before.isoformat(), "2026-10-01")
+        self.assertEqual([month["monthLabel"] for month in payload["months"]][0], "Apr 2026")
+
+    def test_the_months_that_were_not_read_are_named_rather_than_dropped(self) -> None:
+        # Nothing found over six months reads as nothing found over the twelve
+        # that were asked about, unless the six are named.
+        payload = self._run_span(
+            "2025-10,2025-11,2025-12,2026-01,2026-02,2026-03,2026-04,2026-05,2026-06,2026-07,2026-08,2026-09",
+            [self._receipt_item(1, "Tue, 05 May 2026 21:36:00 +0300", "$10.00")],
+        )
+
+        self.assertEqual(payload["monthsSearched"][0], "Apr 2026")
+        self.assertEqual(payload["monthsSearched"][-1], "Sep 2026")
+        self.assertEqual(payload["monthsNotSearched"][0], "Oct 2025")
+        self.assertEqual(payload["monthsNotSearched"][-1], "Mar 2026")
+
+    def test_a_span_that_fits_says_nothing_about_months_it_missed(self) -> None:
+        payload = self._run_span("2026-07,2026-08,2026-09", [
+            self._receipt_item(1, "Tue, 14 Jul 2026 10:00:00 +0300", "$10.00"),
+        ])
+
+        self.assertNotIn("monthsNotSearched", payload)
 
     def test_one_month_answers_exactly_as_it_always_has(self) -> None:
         payload = self._run_answer({

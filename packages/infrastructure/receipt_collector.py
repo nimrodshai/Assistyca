@@ -411,6 +411,37 @@ def summarize_receipt_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+# One payment reaches a mailbox under whichever name the sender happens to
+# use: the product that was bought, the company behind it, the payment service
+# that took the money. A question can only name the one the person knows, so
+# the names it offers are split apart here and any one of them counts as a
+# match - requiring all of them would find nothing at all.
+_VENDOR_NAME_SEPARATOR_RE = re.compile(r"\s*(?:[,;/|]|\bor\b)\s*", re.IGNORECASE)
+
+
+def split_vendor_names(vendor: Any) -> tuple[str, ...]:
+    """Every name a question offered for the same payment, without repeats."""
+
+    text = _clean_text(vendor)
+    if not text:
+        return ()
+    names: list[str] = []
+    for piece in _VENDOR_NAME_SEPARATOR_RE.split(text):
+        name = _clean_text(piece)
+        if name and name.lower() not in {existing.lower() for existing in names}:
+            names.append(name)
+    return tuple(names)
+
+
+def describe_vendor_names(vendor: Any) -> str:
+    """The vendor as it belongs in a sentence, however many names it carries."""
+
+    names = split_vendor_names(vendor)
+    if len(names) <= 1:
+        return names[0] if names else ""
+    return " or ".join(names)
+
+
 def filter_receipt_rows_by_vendor(rows: list[dict[str, Any]], vendor: Any) -> list[dict[str, Any]]:
     """Keep the receipts that belong to one named vendor.
 
@@ -426,12 +457,20 @@ def filter_receipt_rows_by_vendor(rows: list[dict[str, Any]], vendor: Any) -> li
     often the payment service's and the one naming the shop is the one that
     was set aside. So the row answers to the names on both: dropping the shop's
     own mail must never be what loses the shop's receipt.
+
+    A question may offer several names for the same payment - the product, the
+    company, the service that billed it - and a receipt carrying any one of
+    them is the receipt that was asked for.
     """
 
-    needle = _clean_text(vendor).lower()
-    if not needle:
+    needles = [name.lower() for name in split_vendor_names(vendor)]
+    if not needles:
         return list(rows)
-    return [row for row in rows if needle in _vendor_haystack(row)]
+    return [
+        row
+        for row in rows
+        if any(needle in _vendor_haystack(row) for needle in needles)
+    ]
 
 
 def _vendor_haystack(row: dict[str, Any]) -> str:
@@ -514,7 +553,7 @@ def answer_receipt_rows(
     summary = summarize_receipt_rows(matched)
     totals = summary.get("totals") if isinstance(summary.get("totals"), dict) else {}
 
-    vendor_label = _clean_text(vendor)
+    vendor_label = describe_vendor_names(vendor)
     where = f" to {vendor_label}" if vendor_label else ""
     when = f" in {month_label}" if month_label else ""
     count = len(matched)

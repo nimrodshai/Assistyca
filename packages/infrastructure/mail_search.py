@@ -40,6 +40,11 @@ class MailQuery:
     # vendor searches for that vendor at the provider instead of reading the
     # newest messages of the month and dropping the ones that do not match.
     required_terms: tuple[str, ...] = ()
+    # Names the same thing can arrive under, of which one is enough. A
+    # subscription is billed by a shop, charged by a payment service and named
+    # by its product, and only one of those words is in the email: requiring
+    # all of them finds nothing, so the group is asked for as alternatives.
+    required_any: tuple[str, ...] = ()
     after: date | None = None
     before: date | None = None
     newer_than_days: int | None = None
@@ -50,6 +55,7 @@ class MailQuery:
         return not (
             self.terms
             or self.required_terms
+            or self.required_any
             or self.after
             or self.before
             or self.newer_than_days
@@ -67,6 +73,8 @@ class MailQuery:
             parts.append("messages")
         if self.required_terms:
             parts.append("mentioning " + " and ".join(self.required_terms))
+        if self.required_any:
+            parts.append("mentioning " + " or ".join(self.required_any))
         if self.after and self.before:
             parts.append(f"between {self.after.isoformat()} and {self.before.isoformat()}")
         elif self.after:
@@ -234,6 +242,11 @@ def to_gmail_query(query: MailQuery) -> str:
         # Gmail ANDs bare words, which is exactly what a required term means.
         for term in query.required_terms:
             parts.append(f'"{term}"' if " " in term else term)
+        if query.required_any:
+            alternatives = " OR ".join(
+                f'"{term}"' if " " in term else term for term in query.required_any
+            )
+            parts.append(f"({alternatives})")
         return " ".join(parts)
 
     return _fit_query(render, query.terms)
@@ -255,6 +268,9 @@ def to_graph_search(query: MailQuery, *, today: date | None = None) -> str:
             clauses.append(f"({quoted})" if len(terms) > 1 else quoted)
         for term in query.required_terms:
             clauses.append(f'"{term}"')
+        if query.required_any:
+            alternatives = " OR ".join(f'"{term}"' for term in query.required_any)
+            clauses.append(f"({alternatives})" if len(query.required_any) > 1 else alternatives)
 
         after, before = resolve_window(query, today=today)
         if after:
@@ -356,7 +372,7 @@ def widen_query(query: MailQuery) -> MailQuery | None:
     reading a whole month of mail to answer a question about receipts.
     """
 
-    if not query.required_terms or not query.terms:
+    if not (query.required_terms or query.required_any) or not query.terms:
         return None
     if not (query.after or query.before or query.newer_than_days):
         # A vendor with no window is every message they ever sent. That is not
@@ -365,6 +381,7 @@ def widen_query(query: MailQuery) -> MailQuery | None:
     return MailQuery(
         terms=(),
         required_terms=query.required_terms,
+        required_any=query.required_any,
         after=query.after,
         before=query.before,
         newer_than_days=query.newer_than_days,
@@ -377,6 +394,11 @@ def describe_widening(query: MailQuery) -> str:
     """What was given up, in words the person who asked would use."""
 
     vendors = " and ".join(query.required_terms)
+    alternatives = " or ".join(query.required_any)
+    if vendors and alternatives:
+        vendors = f"{vendors} and {alternatives}"
+    else:
+        vendors = vendors or alternatives
     if not vendors:
         return ""
     return f"everything from {vendors} in that period, not only the mail that calls itself a receipt"
@@ -386,6 +408,7 @@ def build_query(
     *,
     terms: Any = (),
     required_terms: Any = (),
+    required_any: Any = (),
     after: date | None = None,
     before: date | None = None,
     newer_than_days: int | None = None,
@@ -395,6 +418,7 @@ def build_query(
     return MailQuery(
         terms=normalize_terms(terms),
         required_terms=normalize_terms(required_terms),
+        required_any=normalize_terms(required_any),
         after=after,
         before=before,
         newer_than_days=newer_than_days,

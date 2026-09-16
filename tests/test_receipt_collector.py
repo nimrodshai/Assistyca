@@ -16,6 +16,7 @@ from packages.infrastructure.receipt_collector import looks_like_receipt_candida
 from packages.infrastructure.receipt_collector import normalize_receipt_output_folder
 from packages.infrastructure.receipt_collector import split_receipt_rows
 from packages.infrastructure.receipt_collector import answer_receipt_question
+from packages.infrastructure.receipt_collector import answer_receipt_rows
 from packages.infrastructure.receipt_collector import describe_receipt_sources
 from packages.infrastructure.receipt_collector import summarize_receipt_rows
 
@@ -413,6 +414,31 @@ class ReceiptClassificationTests(unittest.TestCase):
         self.assertEqual(rows[0]["paidTo"], "Shenzhen Trading Co")
         self.assertEqual(len(filter_receipt_rows_by_vendor(rows, "shenzhen trading")), 1)
         self.assertEqual(len(filter_receipt_rows_by_vendor(rows, "some other shop")), 0)
+
+    def test_a_subscription_is_found_under_any_of_the_names_it_is_billed_by(self) -> None:
+        # "Am I paying for PlayStation Plus?" is answered by a PayPal receipt
+        # that never says PlayStation - it names Sony. A question that offers
+        # both names must not lose the receipt for carrying the other one.
+        rows = self.rows_for({
+            "id": "msg-7",
+            "from": "PayPal <service@paypal.co.il>",
+            "subject": "Receipt for Your Payment to SONY INTERACTIVE ENTERTAINMENT",
+            "bodyText": "You paid ILS 550.00 to SONY INTERACTIVE ENTERTAINMENT",
+        })
+
+        asked = "PlayStation Plus, Sony, PlayStation Network"
+        self.assertEqual(len(filter_receipt_rows_by_vendor(rows, asked)), 1)
+        # The other names are still names: one nobody was paid under finds
+        # nothing, exactly as a single name does.
+        self.assertEqual(len(filter_receipt_rows_by_vendor(rows, "Nintendo, Xbox")), 0)
+
+    def test_the_sentence_says_every_name_the_question_asked_under(self) -> None:
+        answer = answer_receipt_rows([], vendor="PlayStation Plus, Sony", month_label="May 2026")
+
+        self.assertEqual(
+            answer["answer"],
+            "I couldn't find any receipts to PlayStation Plus or Sony in May 2026.",
+        )
 
     def test_split_renumbers_each_list_from_one(self) -> None:
         rows = self.rows_for(

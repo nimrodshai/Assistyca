@@ -74,6 +74,25 @@ class GmailRenderingTests(unittest.TestCase):
 
         self.assertEqual(to_gmail_query(query), '(receipt) "Green Invoice"')
 
+    def test_the_names_one_payment_arrives_under_are_asked_for_together(self) -> None:
+        # A PlayStation Plus charge reaches the mailbox as a PayPal receipt
+        # naming Sony. Requiring all three names finds nothing; requiring any
+        # of them finds the receipt whichever name it happens to carry.
+        query = MailQuery(
+            terms=("receipt",),
+            required_any=("PlayStation Plus", "Sony", "PlayStation Network"),
+        )
+
+        self.assertEqual(
+            to_gmail_query(query),
+            '(receipt) ("PlayStation Plus" OR Sony OR "PlayStation Network")',
+        )
+
+    def test_graph_is_asked_for_the_same_alternatives(self) -> None:
+        query = MailQuery(terms=("receipt",), required_any=("Sony", "PlayStation"))
+
+        self.assertIn('("Sony" OR "PlayStation")', to_graph_search(query))
+
 
 class QueryLengthTests(unittest.TestCase):
     """A query too long to send is shortened, never cut in half."""
@@ -329,6 +348,22 @@ class WideningTests(unittest.TestCase):
         self.assertEqual(wider.after, date(2026, 8, 1))
         self.assertEqual(wider.before, date(2026, 9, 1))
 
+    def test_a_group_of_vendor_names_holds_a_wider_search_down_too(self) -> None:
+        # The names are what keeps the wider search from being a whole month
+        # of mail, whether there is one of them or four.
+        query = MailQuery(
+            terms=("receipt", "invoice"),
+            required_any=("Sony", "PlayStation"),
+            after=date(2026, 5, 1),
+            before=date(2026, 6, 1),
+        )
+
+        wider = widen_query(query)
+
+        self.assertIsNotNone(wider)
+        self.assertEqual(wider.terms, ())
+        self.assertEqual(wider.required_any, ("Sony", "PlayStation"))
+
     def test_a_search_with_nothing_holding_it_down_has_no_wider_version(self) -> None:
         # Dropping the topic words here would read a whole month of mail to
         # answer a question about receipts.
@@ -366,6 +401,11 @@ class WideningTests(unittest.TestCase):
 
         self.assertIn("Render", note)
         self.assertIn("not only the mail that calls itself a receipt", note)
+
+    def test_a_widening_names_every_vendor_it_kept(self) -> None:
+        note = describe_widening(MailQuery(terms=("receipt",), required_any=("Sony", "PlayStation")))
+
+        self.assertIn("Sony or PlayStation", note)
 
     def test_a_widening_with_no_vendor_has_nothing_to_describe(self) -> None:
         self.assertEqual(describe_widening(MailQuery(terms=("receipt",))), "")
