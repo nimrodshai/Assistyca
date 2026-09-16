@@ -310,13 +310,16 @@ window.addEventListener("DOMContentLoaded", () => {
   });
 
   // Who this is for is decided on the landing page, which links here with the
-  // answer in the address. When the address says so, the question is already
-  // answered: it is taken out of the flow and the page opens on the name.
-  // Someone who came straight to /register - a bookmark, a typed address - is
-  // still asked here rather than guessed at.
+  // answer in the address: /register/family or /register/business. When the
+  // address says so, the question is already answered: it is taken out of the
+  // flow and the page opens on the name. Someone who came straight to
+  // /register - a link passed on by hand, a typed address - is still asked
+  // here rather than guessed at. The older ?for= links keep working.
   const requestedKind = (() => {
     try {
-      return String(new URLSearchParams(window.location.search).get("for") || "").trim().toLowerCase();
+      const fromPath = window.location.pathname.replace(/\/+$/, "").match(/^\/register\/([a-z]+)$/i);
+      const fromQuery = new URLSearchParams(window.location.search).get("for");
+      return String((fromPath && fromPath[1]) || fromQuery || "").trim().toLowerCase();
     } catch (error) {
       return "";
     }

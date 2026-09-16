@@ -137,8 +137,8 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertNotIn("http-equiv=\"refresh\"", markup)
         # Who the assistant is for is asked here, not on the registration page:
         # both doors lead to /register carrying the answer.
-        self.assertIn('href="/register?for=business"', markup)
-        self.assertIn('href="/register?for=family"', markup)
+        self.assertIn('href="/register/business"', markup)
+        self.assertIn('href="/register/family"', markup)
         self.assertIn('href="/portal/"', markup)
         self.assertIn('href="/privacy.html"', markup)
         self.assertIn('href="/about"', markup)
@@ -164,10 +164,10 @@ class PortalStaticPageTests(unittest.TestCase):
         business = re.search(r'<div class="panel business">.*?</section>', markup, re.S)
         self.assertIsNotNone(family, "the family half should be on the page")
         self.assertIsNotNone(business, "the business half should be on the page")
-        self.assertIn('href="/register?for=family"', family.group(0))
-        self.assertNotIn("for=business", family.group(0))
-        self.assertIn('href="/register?for=business"', business.group(0))
-        self.assertNotIn("for=family", business.group(0))
+        self.assertIn('href="/register/family"', family.group(0))
+        self.assertNotIn("/register/business", family.group(0))
+        self.assertIn('href="/register/business"', business.group(0))
+        self.assertNotIn("/register/family", business.group(0))
 
         # Nothing goes out without a yes, and the business example says so.
         self.assertIn("for approval first", business.group(0))

@@ -1006,6 +1006,10 @@ MINIMUM_SESSION_SECRET_LENGTH = 32
 STATIC_PAGE_ALIASES: dict[str, Path] = {
     "/about": Path("about/index.html"),
     "/register": Path("portal/register.html"),
+    # The landing page sends each side to its own address, and the page reads
+    # the answer from it. Plain /register still asks who it is for.
+    "/register/business": Path("portal/register.html"),
+    "/register/family": Path("portal/register.html"),
     "/lists": Path("portal/lists.html"),
     "/receipts": Path("portal/receipts.html"),
 }
