@@ -3,51 +3,58 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>An assistant for your business or your family | Assistyca</title>
+    <title>Let's get you started | Assistyca</title>
     <meta
       name="description"
       content="An assistant for your business or your family. A few questions, and your assistant will text you on WhatsApp."
     />
     <meta name="robots" content="noindex" />
     <link rel="canonical" href="https://assistyca.com/register" />
+    <link rel="preload" as="font" type="font/woff2" href="/assets/manrope-regular.woff2" crossorigin />
+    <link rel="preload" as="font" type="font/woff2" href="/assets/manrope-semibold.woff2" crossorigin />
     <style>
       @font-face {
         font-family: "Manrope";
-        src: url("/assets/manrope-regular.ttf") format("truetype");
+        src: url("/assets/manrope-regular.woff2") format("woff2");
         font-weight: 400;
         font-style: normal;
+        font-display: swap;
       }
 
       @font-face {
         font-family: "Manrope";
-        src: url("/assets/manrope-medium.ttf") format("truetype");
+        src: url("/assets/manrope-medium.woff2") format("woff2");
         font-weight: 500;
         font-style: normal;
+        font-display: swap;
       }
 
       @font-face {
         font-family: "Manrope";
-        src: url("/assets/manrope-semibold.ttf") format("truetype");
-        font-weight: 700;
+        src: url("/assets/manrope-semibold.woff2") format("woff2");
+        font-weight: 600 700;
         font-style: normal;
+        font-display: swap;
       }
 
+      /* The landing page's palette: warm paper, one muted teal, hairlines
+         instead of borders. */
       :root {
         color-scheme: light;
         --bg: #fbf8f1;
-        --bg-deep: #f3efe6;
-        --surface: rgba(255, 255, 255, 0.82);
+        --surface: rgba(255, 255, 255, 0.86);
         --ink: #132038;
+        --ink-soft: #2c3a52;
         --muted: #667185;
         --line: rgba(19, 32, 56, 0.12);
-        --hairline: rgba(19, 32, 56, 0.07);
-        --sand: #d8d0c2;
-        --accent: #6aa7a3;
+        --hairline: rgba(19, 32, 56, 0.08);
+        --track: rgba(19, 32, 56, 0.09);
+        --accent: #62a39b;
         --accent-deep: #4f9290;
         --accent-soft: rgba(106, 167, 163, 0.14);
         --danger: #b4443c;
         --danger-soft: rgba(180, 68, 60, 0.1);
-        --shadow: 0 26px 70px rgba(19, 32, 56, 0.08);
+        --shadow: 0 30px 80px rgba(19, 32, 56, 0.08);
         --slide: 460ms cubic-bezier(0.22, 1, 0.36, 1);
       }
 
@@ -61,104 +68,78 @@
         min-height: 100%;
       }
 
-      /* The card is short, so the body box is shorter than the window. Paint
-         the paper on the root and pin it to the viewport: on the body it would
-         stop where the content stops and leave a seam across the page. */
       html {
-        background:
-          radial-gradient(60rem 40rem at 110% -10%, var(--accent-soft), transparent 60%),
-          linear-gradient(180deg, var(--bg) 0%, var(--bg-deep) 100%);
-        background-attachment: fixed;
-        background-color: var(--bg-deep);
+        background: var(--bg);
       }
 
       body {
+        position: relative;
         font-family: "Manrope", "Segoe UI", system-ui, -apple-system, sans-serif;
         color: var(--ink);
-        background: transparent;
         line-height: 1.55;
         -webkit-font-smoothing: antialiased;
         overflow-x: hidden;
       }
 
+      /* The same stones and leaves as the landing page, held still behind the
+         card. A fixed layer rather than background-attachment, which iOS
+         ignores. */
+      body::before {
+        content: "";
+        position: fixed;
+        inset: 0;
+        z-index: -1;
+        background: var(--bg) url("/assets/landing-bg-mobile.webp") center bottom / cover no-repeat;
+      }
+
       .page {
-        max-width: 34rem;
+        max-width: 36rem;
         margin: 0 auto;
-        padding: 3.5rem 1.35rem 5rem;
+        padding: 2.4rem 1.25rem 4rem;
+        text-align: center;
       }
 
       .brand {
-        display: inline-flex;
-        align-items: center;
-        gap: 0.65rem;
+        display: inline-block;
         color: inherit;
         text-decoration: none;
-        font-weight: 700;
-        letter-spacing: 0.01em;
-      }
-
-      .brand img {
-        height: 1.6rem;
-        width: auto;
-        display: block;
+        font-size: 1.55rem;
+        font-weight: 600;
+        letter-spacing: -0.02em;
       }
 
       .hero {
-        position: relative;
-        isolation: isolate;
-        margin: 3.25rem 0 2.25rem;
-        text-align: center;
+        margin: 0.9rem 0 1.9rem;
         animation: rise-in 700ms cubic-bezier(0.22, 1, 0.36, 1) both;
       }
 
-      .hero::before {
-        content: "";
-        position: absolute;
-        z-index: -1;
-        top: -4rem;
-        left: 50%;
-        translate: -50% 0;
-        width: 22rem;
-        aspect-ratio: 1;
-        border-radius: 50%;
-        background: radial-gradient(circle, rgba(106, 167, 163, 0.16), rgba(106, 167, 163, 0) 70%);
+      .kicker {
+        margin: 0 0 1.9rem;
+        font-size: 0.74rem;
+        font-weight: 500;
+        letter-spacing: 0.3em;
+        text-transform: uppercase;
+        color: var(--ink-soft);
       }
 
       h1 {
-        max-width: 100%;
-        font-size: clamp(1.9rem, 5.8vw, 2.5rem);
-        line-height: 1.12;
         margin: 0;
-        letter-spacing: -0.032em;
+        font-size: clamp(2.1rem, 8.6vw, 3.2rem);
+        font-weight: 600;
+        line-height: 1.1;
+        letter-spacing: -0.035em;
         text-wrap: balance;
       }
 
-      .hero-highlight {
-        position: relative;
-        display: inline-block;
-        color: var(--accent-deep);
-      }
-
-      .hero-highlight::after {
-        content: "";
-        position: absolute;
-        z-index: -1;
-        right: -0.06em;
-        bottom: 0.02em;
-        left: -0.04em;
-        height: 0.18em;
-        border-radius: 999px;
-        background: rgba(106, 167, 163, 0.24);
-        transform: rotate(-1.5deg);
-      }
-
       .card {
+        text-align: left;
         background: var(--surface);
-        border: 1px solid var(--hairline);
-        border-radius: 1.6rem;
+        border: 1px solid rgba(255, 255, 255, 0.9);
+        border-radius: 1.75rem;
         box-shadow: var(--shadow);
-        padding: 1.9rem 1.75rem;
-        backdrop-filter: blur(12px);
+        padding: 1.9rem 1.75rem 1.6rem;
+        -webkit-backdrop-filter: blur(14px);
+        backdrop-filter: blur(14px);
         animation: rise-in 700ms 120ms cubic-bezier(0.22, 1, 0.36, 1) both;
       }
 
@@ -174,31 +155,27 @@
         }
       }
 
-      /* Three questions, one at a time. The answered one slides off to the
+      /* The questions come one at a time. The answered one slides off to the
          left and the next arrives from the right, so the page reads like a
          short conversation rather than a form to fill in. */
       .progress {
         display: flex;
         justify-content: center;
-        gap: 0.4rem;
+        gap: 0.45rem;
         list-style: none;
-        margin: 0 0 1.6rem;
+        margin: 0 0 1.5rem;
         padding: 0;
       }
 
       .progress li {
-        width: 1.9rem;
+        width: 2.6rem;
         height: 0.24rem;
         border-radius: 999px;
-        background: var(--line);
-        transition: background 320ms ease, width 320ms ease;
+        background: var(--track);
+        transition: background 320ms ease;
       }
 
-      .progress li[data-state="current"] {
-        width: 2.9rem;
-        background: var(--accent-deep);
-      }
-
+      .progress li[data-state="current"],
       .progress li[data-state="done"] {
         background: var(--accent);
       }
@@ -223,7 +200,7 @@
       /* Before the script has measured the first question, hold a plausible
          height and settle into the real one without animating it. */
       .flow:not([data-ready]) .viewport {
-        min-height: 21rem;
+        min-height: 19rem;
         transition: none;
       }
 
@@ -251,10 +228,9 @@
       }
 
       .step-art {
-        width: 5.5rem;
-        height: 5.5rem;
-        margin: 0 auto 1.15rem;
-        filter: drop-shadow(0 12px 22px rgba(19, 32, 56, 0.08));
+        width: 4.6rem;
+        height: 4.6rem;
+        margin: 0 auto 1rem;
       }
 
       .step-art svg {
@@ -264,48 +240,46 @@
       }
 
       .step-art .disc {
-        fill: rgba(106, 167, 163, 0.13);
-        stroke: rgba(106, 167, 163, 0.3);
-        stroke-width: 1;
+        fill: rgba(106, 167, 163, 0.1);
+        stroke: rgba(106, 167, 163, 0.22);
+        stroke-width: 0.8;
       }
 
       .step-art .mark {
         fill: none;
-        stroke: var(--accent-deep);
+        stroke: var(--accent);
         stroke-width: 2.2;
         stroke-linecap: round;
         stroke-linejoin: round;
       }
 
       .step-art .mark-solid {
-        fill: var(--accent-deep);
+        fill: var(--accent);
         stroke: none;
       }
 
       .step-question {
         display: block;
-        font-size: clamp(1.3rem, 4.4vw, 1.55rem);
-        font-weight: 700;
-        letter-spacing: -0.02em;
+        font-size: clamp(1.35rem, 5.4vw, 1.6rem);
+        font-weight: 600;
+        letter-spacing: -0.025em;
         line-height: 1.25;
         margin: 0;
       }
 
       .step-hint {
-        margin: 0.45rem auto 1.4rem;
+        margin: 0.45rem auto 1.3rem;
         max-width: 24rem;
         color: var(--muted);
         font-size: 0.92rem;
       }
 
-      /* The first question is answered by picking, not by typing. Two cards,
+      /* Who this is for is answered by picking, not by typing. Two cards,
          each a real radio so the arrow keys and the screen reader behave; the
          card itself is the label, so the whole thing is the target. */
       .choices {
         display: grid;
         gap: 0.7rem;
-        /* The cards stand where the hint used to leave the field: this
-           question has no line under it, so the room comes from here. */
         margin: 1.3rem 0 0;
       }
 
@@ -381,7 +355,7 @@
 
       .choice-title {
         display: block;
-        font-weight: 700;
+        font-weight: 600;
         letter-spacing: -0.01em;
       }
 
@@ -408,7 +382,7 @@
       /* A question that needs no explanation has no hint under it, and the
          hint is what used to hold the field off the question. */
       .step-question + .field {
-        margin-top: 1.4rem;
+        margin-top: 1.3rem;
       }
 
       /* First and last name are two halves of one answer, so they sit on one
@@ -416,21 +390,22 @@
       .name-row {
         display: grid;
         grid-template-columns: 1fr 1fr;
-        gap: 0.6rem;
+        gap: 0.75rem;
       }
 
       .field input::placeholder {
         color: var(--muted);
-        opacity: 0.75;
+        opacity: 0.8;
       }
 
       .field input,
       .field select {
         width: 100%;
+        min-height: 3.4rem;
         font: inherit;
         color: inherit;
         padding: 0.85rem 1rem;
-        border-radius: 0.9rem;
+        border-radius: 0.95rem;
         border: 1px solid var(--line);
         background: #fff;
         transition: border-color 120ms ease, box-shadow 120ms ease;
@@ -466,7 +441,7 @@
       .phone-row {
         display: grid;
         grid-template-columns: minmax(9rem, 2fr) 3fr;
-        gap: 0.6rem;
+        gap: 0.75rem;
       }
 
       .phone-national {
@@ -511,8 +486,8 @@
         display: flex;
         flex-direction: column;
         align-items: center;
-        gap: 0.35rem;
-        margin-top: 1.5rem;
+        gap: 0.5rem;
+        margin-top: 1.4rem;
       }
 
       .actions {
@@ -528,14 +503,15 @@
         justify-content: center;
         gap: 0.5rem;
         font: inherit;
-        font-weight: 600;
+        font-weight: 500;
+        font-size: 1.02rem;
         min-height: 3.35rem;
         padding: 0.9rem 1.4rem;
         border-radius: 999px;
         border: 1px solid transparent;
         cursor: pointer;
         text-decoration: none;
-        transition: transform 120ms ease, background 120ms ease;
+        transition: transform 160ms ease, background 160ms ease, box-shadow 160ms ease;
       }
 
       .step-actions .button-primary {
@@ -543,22 +519,24 @@
       }
 
       .button-primary {
-        background: linear-gradient(135deg, #72b0ac, #5f9f9a);
+        background: linear-gradient(135deg, #5f9f96, #6db3a9);
         color: #fff;
-        box-shadow: 0 18px 36px rgba(106, 167, 163, 0.24);
+        box-shadow: 0 16px 32px rgba(98, 163, 155, 0.25);
       }
 
       .button-primary:hover {
-        box-shadow: 0 22px 44px rgba(106, 167, 163, 0.28);
+        transform: translateY(-1px);
+        box-shadow: 0 20px 40px rgba(98, 163, 155, 0.3);
       }
 
       .button-primary:disabled {
         opacity: 0.6;
         cursor: progress;
+        transform: none;
       }
 
       .button-secondary {
-        background: transparent;
+        background: #fff;
         color: var(--ink);
         border-color: var(--line);
       }
@@ -570,25 +548,29 @@
       .button-quiet {
         background: none;
         border: 0;
-        color: var(--muted);
+        color: var(--ink-soft);
         font: inherit;
-        font-size: 0.9rem;
+        font-size: 0.95rem;
         min-height: 2.5rem;
-        padding: 0.35rem 0.9rem;
+        padding: 0.35rem 1rem;
         border-radius: 999px;
         cursor: pointer;
       }
 
       .button-quiet:hover {
-        color: var(--ink);
+        color: var(--accent-deep);
       }
 
       .status {
-        margin: 1.1rem 0 0;
-        min-height: 1.4rem;
+        margin: 0.4rem 0 0;
+        min-height: 1.2rem;
         font-size: 0.95rem;
         color: var(--muted);
         text-align: center;
+      }
+
+      .status:empty {
+        min-height: 0;
       }
 
       .status[data-tone="error"] {
@@ -599,15 +581,21 @@
         color: var(--accent-deep);
       }
 
+      /* A hairline, then the two things everyone may need and nobody should
+         have to look for */
       .fine-print {
-        margin: 1rem 0 0;
+        margin: 1.3rem 0 0;
+        padding-top: 1.3rem;
+        border-top: 1px solid var(--hairline);
         color: var(--muted);
         font-size: 0.86rem;
+        line-height: 1.7;
         text-align: center;
       }
 
       .fine-print a {
         color: var(--accent-deep);
+        text-underline-offset: 0.18em;
       }
 
       .done {
@@ -617,7 +605,8 @@
       .done h2 {
         margin: 0 0 0.6rem;
         font-size: 1.5rem;
-        letter-spacing: -0.01em;
+        font-weight: 600;
+        letter-spacing: -0.02em;
       }
 
       .done p {
@@ -628,23 +617,15 @@
 
       .done .number {
         color: var(--ink);
-        font-weight: 700;
+        font-weight: 600;
         white-space: nowrap;
         font-variant-numeric: tabular-nums;
       }
 
       @media (max-width: 480px) {
-        .page {
-          padding-top: 2.5rem;
-        }
-
         .card {
-          padding: 1.5rem 1.25rem;
-          border-radius: 1.3rem;
-        }
-
-        .hero {
-          margin: 2.5rem 0 1.85rem;
+          padding: 1.7rem 1.25rem 1.4rem;
+          border-radius: 1.5rem;
         }
 
         .viewport {
@@ -654,6 +635,37 @@
         .phone-row,
         .name-row {
           grid-template-columns: 1fr;
+        }
+      }
+
+      /* A wide screen gets the wide photograph, a quieter wordmark and more
+         air between the words and the card */
+      @media (min-width: 48rem) {
+        body::before {
+          background-image: url("/assets/landing-bg-desktop.webp");
+          background-position: center 70%;
+        }
+
+        .page {
+          padding-top: 2.6rem;
+        }
+
+        .brand {
+          font-size: 1.2rem;
+        }
+
+        .hero {
+          margin: 2.6rem 0 2.6rem;
+        }
+
+        .kicker {
+          font-size: 0.7rem;
+          margin-bottom: 3.2rem;
+        }
+
+        .card {
+          max-width: 33.5rem;
+          margin: 0 auto;
         }
       }
 
@@ -673,12 +685,11 @@
   </head>
   <body>
     <main class="page">
-      <a class="brand" href="/about" aria-label="Assistyca">
-        <img src="/assets/AssistycaLogoTitle.png" alt="Assistyca" />
-      </a>
+      <a class="brand" href="/">Assistyca</a>
 
       <header class="hero">
-        <h1>An assistant designed for <span class="hero-highlight" data-hero-word>you</span></h1>
+        <p class="kicker">Less to juggle. More life.</p>
+        <h1>Let's get you started.</h1>
       </header>
 
       <section class="card">

@@ -3,7 +3,7 @@
 // would ask them: an answered question slides off to the left and the next
 // arrives from the right. Who this is for - a business or a family - is asked
 // on the landing page and arrives in the address, and it is what the rest of
-// the page is written around: the headline, the last question, and the first
+// the page is written around: the last question and the first
 // WhatsApp message all follow it. It is only asked here when nobody has.
 // The phone is structured rather than typed
 // free: a country picked from a list, a national number typed as they would
@@ -256,14 +256,12 @@ window.addEventListener("DOMContentLoaded", () => {
   // business is and a business is never asked who drives on Tuesdays.
   const KINDS = {
     business: {
-      heroWord: "your business",
       question: "And what do you do?",
       hint: 'A line is enough, for example "I run a small architecture studio".',
       autocomplete: "organization-title",
       missing: "Tell me what you do, in a few words.",
     },
     family: {
-      heroWord: "your family",
       question: "Tell me about your family.",
       hint: 'A line is enough, for example "Three kids, 6 to 12, football and ballet most afternoons".',
       autocomplete: "off",
@@ -271,7 +269,6 @@ window.addEventListener("DOMContentLoaded", () => {
     },
   };
 
-  const heroWord = document.querySelector("[data-hero-word]");
   const aboutStep = form.querySelector('[data-step="business"]');
   const aboutQuestion = form.querySelector("[data-about-question]");
   const aboutHint = form.querySelector("[data-about-hint]");
@@ -288,7 +285,6 @@ window.addEventListener("DOMContentLoaded", () => {
   const applyKind = () => {
     const kind = chosenKind();
     const copy = KINDS[kind] || null;
-    heroWord.textContent = copy ? copy.heroWord : "you";
     aboutStep.setAttribute("data-kind", kind || "business");
     aboutQuestion.textContent = (copy || KINDS.business).question;
     aboutHint.textContent = (copy || KINDS.business).hint;
@@ -330,17 +326,13 @@ window.addEventListener("DOMContentLoaded", () => {
   if (presetChoice && kindIndex >= 0) {
     presetChoice.checked = true;
     steps.splice(kindIndex, 1)[0].remove();
+    // The bar keeps its mark for the answer the landing page already took:
+    // one of four is behind them, not one of three ahead.
     const dot = dots.splice(kindIndex, 1)[0];
     if (dot) {
-      dot.remove();
+      dot.setAttribute("data-state", "done");
     }
   }
-
-  // Back belongs only where there is something behind it. Which question comes
-  // first is settled by now, so this is decided once rather than on every slide.
-  backButtons.forEach((button) => {
-    button.hidden = Boolean(steps[0] && steps[0].contains(button));
-  });
 
   countrySelect.addEventListener("change", syncPhone);
   nationalInput.addEventListener("input", () => {
@@ -480,6 +472,12 @@ window.addEventListener("DOMContentLoaded", () => {
   });
   backButtons.forEach((button) => {
     button.addEventListener("click", () => {
+      // On the first question, what is behind them is the landing page they
+      // chose their side on.
+      if (current === 0) {
+        window.location.href = "/";
+        return;
+      }
       clearFieldErrors();
       setStatus("");
       goTo(current - 1);
