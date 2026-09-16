@@ -421,53 +421,22 @@
         box-shadow: var(--shadow-soft);
       }
 
-      /* One capsule that moves under whichever side is chosen, like a drop
-         of water. Each edge travels on its own spring: the edge in front
-         leads, the one behind follows and wobbles as it settles. The drop
-         keeps its volume, so the further it stretches the thinner it gets,
-         and it swells a little when it lands narrow. Which edge leads
-         depends on the direction, so each side names its own timing. */
-      @property --seg-left {
-        syntax: "<number>";
-        inherits: false;
-        initial-value: 0;
-      }
-
-      @property --seg-right {
-        syntax: "<number>";
-        inherits: false;
-        initial-value: 0;
-      }
-
+      /* One capsule that slides under whichever side is chosen, rather
+         than each side painting its own. */
       .seg::before {
-        --seg-left: 0;
-        --seg-right: 0;
-        --seg-stretch: calc(var(--seg-right) - var(--seg-left));
         content: "";
         position: absolute;
-        top: max(0.1rem, calc(0.25rem + var(--seg-stretch) * 0.95rem));
-        bottom: max(0.1rem, calc(0.25rem + var(--seg-stretch) * 0.95rem));
-        left: calc(0.25rem + var(--seg-left) * (50% - 0.25rem));
-        right: calc(50% - var(--seg-right) * (50% - 0.25rem));
+        top: 0.25rem;
+        bottom: 0.25rem;
+        left: 0.25rem;
+        width: calc(50% - 0.25rem);
         border-radius: 999px;
         background: var(--accent);
-        transition:
-          --seg-left 650ms ease-out,
-          --seg-right 850ms ease-in-out 80ms;
-        transition:
-          --seg-left 650ms linear(0, 0.022, 0.075, 0.147, 0.228, 0.31, 0.391, 0.467, 0.537, 0.601, 0.657, 0.708, 0.751, 0.789, 0.822, 0.85, 0.874, 0.895, 0.912, 0.927, 0.939, 0.949, 0.958, 0.965, 0.971, 0.976, 0.98, 0.984, 0.987, 0.989, 0.991, 0.993, 0.994, 0.995, 0.996, 0.997, 0.997, 0.998, 0.998, 0.998, 1),
-          --seg-right 850ms linear(0, 0.016, 0.059, 0.12, 0.194, 0.275, 0.359, 0.443, 0.524, 0.601, 0.672, 0.736, 0.793, 0.843, 0.886, 0.922, 0.952, 0.977, 0.996, 1.011, 1.022, 1.03, 1.035, 1.037, 1.038, 1.038, 1.036, 1.034, 1.031, 1.028, 1.025, 1.022, 1.019, 1.016, 1.013, 1.01, 1.008, 1.006, 1.005, 1.003, 1) 80ms;
+        transition: transform 420ms cubic-bezier(0.65, 0, 0.35, 1);
       }
 
       #for-business:checked ~ .seg::before {
-        --seg-left: 1;
-        --seg-right: 1;
-        transition:
-          --seg-right 650ms ease-out,
-          --seg-left 850ms ease-in-out 80ms;
-        transition:
-          --seg-right 650ms linear(0, 0.022, 0.075, 0.147, 0.228, 0.31, 0.391, 0.467, 0.537, 0.601, 0.657, 0.708, 0.751, 0.789, 0.822, 0.85, 0.874, 0.895, 0.912, 0.927, 0.939, 0.949, 0.958, 0.965, 0.971, 0.976, 0.98, 0.984, 0.987, 0.989, 0.991, 0.993, 0.994, 0.995, 0.996, 0.997, 0.997, 0.998, 0.998, 0.998, 1),
-          --seg-left 850ms linear(0, 0.016, 0.059, 0.12, 0.194, 0.275, 0.359, 0.443, 0.524, 0.601, 0.672, 0.736, 0.793, 0.843, 0.886, 0.922, 0.952, 0.977, 0.996, 1.011, 1.022, 1.03, 1.035, 1.037, 1.038, 1.038, 1.036, 1.034, 1.031, 1.028, 1.025, 1.022, 1.019, 1.016, 1.013, 1.01, 1.008, 1.006, 1.005, 1.003, 1) 80ms;
+        transform: translateX(100%);
       }
 
       .seg label {
@@ -484,14 +453,14 @@
         cursor: pointer;
         user-select: none;
         -webkit-user-select: none;
-        transition: color 260ms ease 120ms;
+        transition: color 260ms ease;
       }
 
       .seg .ico {
         width: 1.25rem;
         height: 1.25rem;
         color: var(--accent-deep);
-        transition: color 260ms ease 120ms;
+        transition: color 260ms ease;
       }
 
       #for-family:checked ~ .seg label[for="for-family"],
@@ -779,7 +748,6 @@
         }
 
         .seg::before,
-        #for-business:checked ~ .seg::before,
         .seg label,
         .seg .ico,
         .cta {
