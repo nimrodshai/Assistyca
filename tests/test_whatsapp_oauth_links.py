@@ -247,6 +247,7 @@ class WhatsAppOAuthLinkTests(unittest.TestCase):
 
         self.assertEqual(status, 200)
         self.assertIn("Not connected", body)
+        self.assertIn("robot-thinking.webp", body)
         save.assert_not_called()
         self.assertEqual(self.database.get_user_id_for_whatsapp_number(PHONE), 0)
         self.assertIn("isn't owner@gmail.com", self._last_reply())
