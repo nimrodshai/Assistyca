@@ -3,15 +3,15 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-    <title>Assistyca | Your assistant on WhatsApp</title>
+    <title>Assistyca | Your life, organized. Inside WhatsApp.</title>
     <meta
       name="description"
-      content="Assistyca is a personal assistant for small businesses and for families that lives in WhatsApp. It reads your inbox and calendar, keeps your lists and reminds you on time. Register in a minute and it texts you first."
+      content="Assistyca is an AI assistant for families and for businesses that lives in WhatsApp. It keeps track of the details, so you can focus on what matters."
     />
-    <meta property="og:title" content="Assistyca | Your assistant on WhatsApp" />
+    <meta property="og:title" content="Assistyca | Your life, organized. Inside WhatsApp." />
     <meta
       property="og:description"
-      content="It reads your inbox and calendar, keeps your lists and reminds you on time. You just text. Register free and it texts you first."
+      content="An AI assistant that keeps track of the details, so you can focus on what matters. Free to start."
     />
     <meta property="og:type" content="website" />
     <meta property="og:url" content="https://assistyca.com/" />
@@ -21,6 +21,8 @@
     <link rel="canonical" href="https://assistyca.com/" />
     <link rel="icon" type="image/png" href="/assets/Robot-200.png" />
     <link rel="apple-touch-icon" href="/assets/Robot-200.png" />
+    <link rel="preload" as="image" href="/assets/landing-bg-mobile.webp" media="(max-width: 47.99rem)" />
+    <link rel="preload" as="image" href="/assets/landing-bg-desktop.webp" media="(min-width: 48rem)" />
     <style>
       @font-face {
         font-family: "Manrope";
@@ -41,33 +43,29 @@
       @font-face {
         font-family: "Manrope";
         src: url("/assets/manrope-semibold.ttf") format("truetype");
-        font-weight: 700;
+        font-weight: 600 700;
         font-style: normal;
         font-display: swap;
       }
 
-      /* The same quiet palette as the agency site: warm paper, one muted
-         teal, hairlines instead of borders, and shadows you have to look
-         for. Nothing here should raise its voice. */
+      /* Warm paper, one muted teal, hairlines instead of borders and shadows
+         you have to look for. Nothing here should raise its voice. */
       :root {
         color-scheme: light;
         --bg: #fbf8f1;
-        --bg-deep: #f3efe6;
-        --rail: #f1ece2;
         --surface: #ffffff;
         --ink: #132038;
         --ink-soft: #2c3a52;
         --muted: #667185;
-        --line: rgba(19, 32, 56, 0.1);
-        --hairline: rgba(19, 32, 56, 0.07);
-        --accent: #6aa7a3;
+        --hairline: rgba(19, 32, 56, 0.08);
+        --accent: #62a39b;
         --accent-deep: #4f9290;
-        --accent-soft: rgba(106, 167, 163, 0.13);
-        --sand: #d8d0c2;
+        --accent-soft: rgba(106, 167, 163, 0.16);
+        --me: #e3f5e6;
+        --tick: #53bdeb;
+        --band: #edf1ec;
         --shadow: 0 26px 70px rgba(19, 32, 56, 0.08);
-        --shadow-soft: 0 18px 44px rgba(19, 32, 56, 0.06);
-        --radius: 1.75rem;
-        --column: 36rem;
+        --shadow-soft: 0 14px 40px rgba(19, 32, 56, 0.06);
       }
 
       * {
@@ -80,12 +78,8 @@
         min-height: 100%;
       }
 
-      html {
-        scroll-behavior: smooth;
-      }
-
-      /* iOS Safari ignores overflow-x on body alone; clip at the root so a
-         full-bleed band can never widen the page */
+      /* iOS Safari ignores overflow-x on body alone; clip at the root so the
+         background and the note beside the phone can never widen the page */
       html,
       body {
         overflow-x: hidden;
@@ -96,12 +90,12 @@
         font-family: "Manrope", "Segoe UI", system-ui, -apple-system, sans-serif;
         color: var(--ink);
         background: var(--bg);
-        line-height: 1.62;
+        line-height: 1.55;
         -webkit-font-smoothing: antialiased;
       }
 
-      img {
-        max-width: 100%;
+      img,
+      svg {
         display: block;
       }
 
@@ -110,148 +104,295 @@
       }
 
       .col {
-        width: min(100% - 2.75rem, var(--column));
+        width: min(100% - 2.5rem, 42rem);
         margin: 0 auto;
       }
 
-      /* ---------- Hero ---------- */
+      .ico {
+        fill: none;
+        stroke: currentColor;
+        stroke-width: 1.7;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+      }
+
+      /* ---------- Hero: the same for everyone ---------- */
 
       .hero {
         position: relative;
-        background:
-          radial-gradient(48rem 32rem at 88% -6%, var(--accent-soft), transparent 62%),
-          linear-gradient(180deg, var(--bg) 0%, var(--bg) 62%, var(--bg-deep) 100%);
-      }
-
-      .hero > .col {
-        position: relative;
-        z-index: 1;
-      }
-
-      .site-header {
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        padding: 1.6rem 0;
-      }
-
-      .site-header img {
-        height: 1.7rem;
-        width: auto;
-      }
-
-      /* One column, down the middle of the page, at every width: the same
-         reading measure on a phone and on a laptop, so there is only ever one
-         layout to look after. */
-      .hero-copy {
-        padding: 2.75rem 0 0;
         text-align: center;
+        background: url("/assets/landing-bg-mobile.webp") center bottom / cover no-repeat;
+      }
+
+      /* The photograph dissolves into the paper, so the phone sits on the
+         page rather than on a picture */
+      .hero::after {
+        content: "";
+        position: absolute;
+        inset: auto 0 0;
+        height: 9rem;
+        background: linear-gradient(180deg, rgba(251, 248, 241, 0), var(--bg));
+        pointer-events: none;
+      }
+
+      .brand {
+        display: inline-block;
+        padding: 1.4rem 0 0;
+        font-size: 1.3rem;
+        font-weight: 600;
+        letter-spacing: -0.02em;
+        text-decoration: none;
       }
 
       .kicker {
-        margin: 0 0 1.15rem;
-        font-size: 0.78rem;
-        font-weight: 600;
-        letter-spacing: 0.16em;
+        margin: 2.6rem 0 1rem;
+        font-size: 0.74rem;
+        font-weight: 500;
+        letter-spacing: 0.3em;
         text-transform: uppercase;
-        color: var(--accent-deep);
+        color: var(--ink-soft);
       }
 
       h1 {
-        margin: 0 0 1.25rem;
-        font-size: clamp(2.5rem, 10.5vw, 4rem);
-        line-height: 1.06;
-        letter-spacing: -0.035em;
-        font-weight: 700;
-      }
-
-      h1 em {
-        font-style: normal;
-        color: var(--accent-deep);
-      }
-
-      .hero-copy p {
-        margin: 0 auto;
-        font-size: clamp(1.05rem, 4vw, 1.22rem);
-        line-height: 1.6;
-        color: var(--muted);
-        max-width: 28rem;
-      }
-
-      .cta {
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        gap: 0.55rem;
-        min-height: 3.45rem;
-        padding: 0.95rem 1.85rem;
-        border-radius: 999px;
-        text-decoration: none;
-        font-weight: 600;
-        font-size: 1.02rem;
-        color: #fff;
-        background: linear-gradient(135deg, #72b0ac, #5f9f9a);
-        box-shadow: 0 18px 36px rgba(106, 167, 163, 0.24);
-        transition: transform 220ms ease, box-shadow 220ms ease;
-      }
-
-      .cta:hover,
-      .cta:focus-visible {
-        transform: translateY(-1px);
-        box-shadow: 0 22px 44px rgba(106, 167, 163, 0.28);
-      }
-
-      /* Registering is one decision made of two: the free part is said once,
-         above, and the only thing left to choose is who this is for. The two
-         doors are the same size because neither is the recommended one - the
-         answer follows the person into the registration and into the account. */
-      .signup {
-        margin: 2.4rem 0 0;
-      }
-
-      .signup-title {
         margin: 0 0 1rem;
-        font-size: 1.15rem;
-        font-weight: 700;
-        letter-spacing: -0.015em;
-        color: var(--ink);
+        font-size: clamp(2.2rem, 9.4vw, 3.5rem);
+        font-weight: 600;
+        line-height: 1.08;
+        letter-spacing: -0.035em;
       }
 
-      .signup-doors {
-        display: grid;
-        grid-template-columns: 1fr 1fr;
-        gap: 0.7rem;
-        max-width: 26rem;
+      h1 span {
+        display: block;
+        color: var(--accent);
+      }
+
+      .lede {
         margin: 0 auto;
+        max-width: 22rem;
+        font-size: clamp(1rem, 3.9vw, 1.12rem);
+        color: var(--ink-soft);
       }
 
-      .signup-doors .cta {
-        width: 100%;
-        padding-inline: 1rem;
-        box-shadow: 0 14px 30px rgba(106, 167, 163, 0.2);
-      }
+      /* ---------- The phone ---------- */
 
-      /* Room for two words on the narrowest phones rather than a wrapped
-         button; below this the doors stack. */
-      @media (max-width: 22rem) {
-        .signup-doors {
-          grid-template-columns: 1fr;
-        }
-      }
-
-      /* ---------- Phone ---------- */
-
-      .phone-wrap {
+      .stage {
         position: relative;
-        margin: 3.25rem auto 0;
-        width: min(100% - 3.5rem, 20rem);
-        padding-bottom: 3.5rem;
+        z-index: 1;
+        width: min(100%, 21rem);
+        margin: 2rem auto 0;
       }
 
-      /* The two doors are answered again here, in miniature: the same
-         assistant, one day in a business and one day in a family. Radios
-         rather than a script, because this page carries no JavaScript. */
-      .chat-switch {
+      .note {
+        position: absolute;
+        top: 22%;
+        left: calc(100% + 0.5rem);
+        width: 6.4rem;
+        height: auto;
+        transform: rotate(-4deg);
+      }
+
+      /* The bottom of the handset fades out, the way the mockup crops it */
+      .phone {
+        position: relative;
+        padding: 0.6rem 0.6rem 0;
+        border-radius: 3rem 3rem 0 0;
+        background: linear-gradient(180deg, #2b2d31, #121315);
+        box-shadow: 0 30px 60px rgba(19, 32, 56, 0.18);
+        -webkit-mask-image: linear-gradient(180deg, #000 80%, transparent);
+        mask-image: linear-gradient(180deg, #000 80%, transparent);
+        animation: settle-in 1000ms cubic-bezier(0.22, 1, 0.36, 1) both;
+      }
+
+      .screen {
+        position: relative;
+        overflow: hidden;
+        text-align: left;
+        border-radius: 2.45rem 2.45rem 0 0;
+        background: #f2efe8;
+      }
+
+      .status {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 0.85rem 1.2rem 0.2rem 1.7rem;
+        font-size: 0.86rem;
+        font-weight: 600;
+        background: #fff;
+      }
+
+      .status svg {
+        height: 0.62rem;
+        width: auto;
+        fill: var(--ink);
+      }
+
+      .island {
+        position: absolute;
+        top: 0.6rem;
+        left: 50%;
+        width: 5.8rem;
+        height: 1.65rem;
+        border-radius: 999px;
+        background: #0b0b0c;
+        transform: translateX(-50%);
+      }
+
+      .wa-head {
+        display: flex;
+        align-items: center;
+        gap: 0.55rem;
+        padding: 0.55rem 0.9rem 0.6rem 0.6rem;
+        background: #fff;
+        border-bottom: 1px solid var(--hairline);
+      }
+
+      .wa-head .ico {
+        width: 1.25rem;
+        height: 1.25rem;
+        stroke-width: 2;
+      }
+
+      .wa-head .who {
+        flex: 1;
+        line-height: 1.2;
+      }
+
+      .wa-head strong {
+        display: block;
+        font-size: 0.95rem;
+        font-weight: 600;
+      }
+
+      .wa-head small {
+        font-size: 0.72rem;
+        color: var(--muted);
+      }
+
+      .avatar {
+        flex: none;
+        width: 2.2rem;
+        height: 2.2rem;
+        padding: 0.18rem;
+        border-radius: 50%;
+        background: #e3ece9;
+      }
+
+      .avatar img {
+        width: 100%;
+        height: 100%;
+      }
+
+      .wa-head .end {
+        display: flex;
+        gap: 0.9rem;
+      }
+
+      /* One bubble style for the phone and the scenario cards below it */
+      .chat {
+        list-style: none;
+        margin: 0;
+        display: grid;
+        gap: 0.65rem;
+      }
+
+      .chat li {
+        position: relative;
+        max-width: 82%;
+        padding: 0.55rem 0.8rem 1.15rem;
+        border-radius: 1rem;
+        font-size: 0.86rem;
+        line-height: 1.45;
+        color: var(--ink);
+        box-shadow: 0 1px 2px rgba(19, 32, 56, 0.06);
+        opacity: 0;
+        animation: bubble-in 600ms ease forwards;
+      }
+
+      .chat li:nth-child(1) { animation-delay: 300ms; }
+      .chat li:nth-child(2) { animation-delay: 750ms; }
+      .chat li:nth-child(3) { animation-delay: 1200ms; }
+      .chat li:nth-child(4) { animation-delay: 1650ms; }
+
+      .chat .me {
+        justify-self: end;
+        background: var(--me);
+        border-top-right-radius: 0.3rem;
+      }
+
+      .chat .them {
+        justify-self: start;
+        background: #fff;
+        border-top-left-radius: 0.3rem;
+      }
+
+      .chat time {
+        position: absolute;
+        right: 0.65rem;
+        bottom: 0.3rem;
+        font-size: 0.62rem;
+        color: rgba(19, 32, 56, 0.4);
+      }
+
+      .chat .me time::after {
+        content: " ✓✓";
+        color: var(--tick);
+        letter-spacing: -0.14em;
+      }
+
+      .phone .chat {
+        padding: 1rem 0.7rem 1.1rem;
+      }
+
+      .wa-input {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        padding: 0.5rem 0.6rem 2.6rem;
+      }
+
+      .wa-input .field {
+        flex: 1;
+        display: flex;
+        align-items: center;
+        gap: 0.55rem;
+        padding: 0.55rem 0.75rem;
+        border-radius: 999px;
+        background: #fff;
+        color: var(--muted);
+        font-size: 0.82rem;
+      }
+
+      .wa-input .field span {
+        flex: 1;
+      }
+
+      .wa-input .ico {
+        width: 1.1rem;
+        height: 1.1rem;
+      }
+
+      .wa-input .mic {
+        display: grid;
+        place-items: center;
+        width: 2.45rem;
+        height: 2.45rem;
+        border-radius: 50%;
+        color: #fff;
+        background: var(--accent);
+      }
+
+      /* ---------- Who it is for: the only part that changes ---------- */
+
+      .choose {
+        position: relative;
+        text-align: center;
+        padding-top: 0.25rem;
+      }
+
+      /* Radios rather than a script, because this page carries none. They
+         stay focusable, so the arrow keys move between the two. */
+      .choose > input {
         position: absolute;
         width: 1px;
         height: 1px;
@@ -259,188 +400,297 @@
         pointer-events: none;
       }
 
-      .chat-pick {
-        display: flex;
-        justify-content: center;
-        gap: 0.25rem;
-        width: max-content;
-        margin: 0 auto 1.4rem;
-        padding: 0.28rem;
+      .choose-title {
+        margin: 0 0 0.8rem;
+        font-size: 0.95rem;
+        color: var(--ink-soft);
+      }
+
+      .seg {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        width: min(100%, 22rem);
+        margin: 0 auto;
+        padding: 0.25rem;
         border-radius: 999px;
         background: var(--surface);
-        border: 1px solid var(--hairline);
         box-shadow: var(--shadow-soft);
       }
 
-      .chat-pick label {
-        padding: 0.4rem 1.05rem;
+      .seg label {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 0.55rem;
+        padding: 0.7rem 1rem;
         border-radius: 999px;
-        font-size: 0.88rem;
-        font-weight: 600;
-        color: var(--muted);
+        font-size: 0.98rem;
+        font-weight: 500;
+        color: var(--ink-soft);
         cursor: pointer;
         user-select: none;
         -webkit-user-select: none;
-        transition: background 220ms ease, color 220ms ease;
+        transition: background 260ms ease, color 260ms ease;
       }
 
-      #chat-business:checked ~ .chat-pick label[for="chat-business"],
-      #chat-family:checked ~ .chat-pick label[for="chat-family"] {
-        background: var(--accent-soft);
+      .seg .ico {
+        width: 1.25rem;
+        height: 1.25rem;
         color: var(--accent-deep);
+        transition: color 260ms ease;
       }
 
-      #chat-business:focus-visible ~ .chat-pick label[for="chat-business"],
-      #chat-family:focus-visible ~ .chat-pick label[for="chat-family"] {
+      #for-family:checked ~ .seg label[for="for-family"],
+      #for-business:checked ~ .seg label[for="for-business"] {
+        color: #fff;
+        background: var(--accent);
+      }
+
+      #for-family:checked ~ .seg label[for="for-family"] .ico,
+      #for-business:checked ~ .seg label[for="for-business"] .ico {
+        color: #fff;
+      }
+
+      #for-family:focus-visible ~ .seg label[for="for-family"],
+      #for-business:focus-visible ~ .seg label[for="for-business"] {
         outline: 2px solid var(--accent-deep);
-        outline-offset: 2px;
+        outline-offset: 3px;
       }
 
-      /* Only one conversation is on the screen at a time; the one arriving
-         plays its bubbles in again, the way a chat opens. */
-      #chat-business:checked ~ .phone .wa-chat.family,
-      #chat-family:checked ~ .phone .wa-chat.business {
+      #for-family:checked ~ .panel.business,
+      #for-business:checked ~ .panel.family {
         display: none;
       }
 
-      .phone {
-        background: #efeae0;
-        border: 1px solid var(--line);
-        border-radius: 2.6rem;
-        padding: 0.5rem;
-        box-shadow: var(--shadow);
-        transform: rotate(-1.5deg);
-        animation: settle-in 1100ms cubic-bezier(0.22, 1, 0.36, 1) both;
+      .panel {
+        animation: panel-in 500ms ease both;
       }
 
-      .screen {
-        color: var(--ink);
-        background: #ece5d8;
-        border-radius: 2.2rem;
-        overflow: hidden;
-        position: relative;
-      }
-
-      .wa-header {
-        display: flex;
-        align-items: center;
-        gap: 0.7rem;
-        padding: 1.5rem 1rem 0.85rem;
-        background: #f6f4ef;
-        border-bottom: 1px solid var(--hairline);
-      }
-
-      .wa-header img {
-        width: 2.25rem;
-        height: 2.25rem;
-        border-radius: 50%;
-      }
-
-      .wa-header strong {
-        display: block;
-        font-size: 0.96rem;
-        font-weight: 600;
-        letter-spacing: -0.005em;
-      }
-
-      .wa-header span {
-        display: block;
+      .eyebrow {
+        margin: 2.6rem 0 0.7rem;
         font-size: 0.74rem;
+        font-weight: 500;
+        letter-spacing: 0.3em;
+        text-transform: uppercase;
         color: var(--accent-deep);
       }
 
-      .wa-chat {
-        list-style: none;
-        margin: 0;
-        padding: 1rem 0.75rem 1.15rem;
-        display: grid;
-        gap: 0.5rem;
-        background-color: #ece5d8;
-        background-image: radial-gradient(rgba(19, 32, 56, 0.05) 1px, transparent 1px);
-        background-size: 16px 16px;
+      h2 {
+        margin: 0 auto 0.9rem;
+        max-width: 21ch;
+        font-size: clamp(1.6rem, 6.9vw, 2.35rem);
+        font-weight: 600;
+        line-height: 1.15;
+        letter-spacing: -0.03em;
       }
 
-      .wa-chat li {
-        position: relative;
-        max-width: 84%;
-        padding: 0.5rem 0.7rem 0.95rem;
-        border-radius: 0.9rem;
-        font-size: 0.85rem;
-        line-height: 1.45;
-        box-shadow: 0 1px 2px rgba(19, 32, 56, 0.06);
-        opacity: 0;
-        animation: bubble-in 680ms ease forwards;
+      .panel > p.intro {
+        margin: 0 auto;
+        max-width: 27rem;
+        color: var(--muted);
+        font-size: 1rem;
       }
 
-      .wa-chat li:nth-child(1) { animation-delay: 350ms; }
-      .wa-chat li:nth-child(2) { animation-delay: 850ms; }
-      .wa-chat li:nth-child(3) { animation-delay: 1350ms; }
-      .wa-chat li:nth-child(4) { animation-delay: 1850ms; }
-
-      .wa-chat .them {
-        justify-self: start;
-        background: #fff;
-        border-top-left-radius: 0.25rem;
+      .scene {
+        margin: 1.9rem auto 0;
+        max-width: 26rem;
+        padding: 1.3rem 1.1rem;
+        border-radius: 1.6rem;
+        background: rgba(255, 255, 255, 0.55);
+        box-shadow: var(--shadow-soft);
+        text-align: left;
       }
 
-      .wa-chat .me {
-        justify-self: end;
-        background: #e8f1ef;
-        border-top-right-radius: 0.25rem;
+      .scene .chat li {
+        font-size: 0.9rem;
       }
 
-      .wa-chat time {
+      .scene .chat .them {
+        margin-left: 2.6rem;
+        max-width: 78%;
+      }
+
+      .scene .chat .them .avatar {
         position: absolute;
-        right: 0.6rem;
-        bottom: 0.28rem;
-        font-size: 0.62rem;
-        color: rgba(19, 32, 56, 0.4);
+        top: 0.1rem;
+        left: -2.6rem;
+        width: 2rem;
+        height: 2rem;
       }
 
-      .wa-chat .me time::after {
-        content: " ✓✓";
+      .scene .chat .me {
+        max-width: 75%;
+      }
+
+      .features {
+        list-style: none;
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        margin: 2rem auto 0;
+        padding: 0;
+        max-width: 30rem;
+      }
+
+      .features li {
+        padding: 0 0.4rem;
+        font-size: 0.9rem;
+        line-height: 1.35;
+        color: var(--ink-soft);
+      }
+
+      .features li + li {
+        border-left: 1px solid var(--hairline);
+      }
+
+      .features .ico {
+        width: 1.9rem;
+        height: 1.9rem;
+        margin: 0 auto 0.6rem;
         color: var(--accent-deep);
-        letter-spacing: -0.12em;
+        stroke-width: 1.5;
       }
 
-      .wa-input {
-        display: flex;
-        align-items: center;
-        gap: 0.5rem;
-        padding: 0.6rem 0.7rem 0.95rem;
-        background: #f6f4ef;
+      .how {
+        margin: 3rem 0 0;
       }
 
-      .wa-input span {
-        flex: 1;
-        background: #fff;
-        border-radius: 999px;
-        padding: 0.5rem 0.9rem;
-        font-size: 0.82rem;
-        color: rgba(19, 32, 56, 0.38);
+      .how ol {
+        list-style: none;
+        display: grid;
+        grid-template-columns: 1fr auto 1fr auto 1fr;
+        align-items: start;
+        margin: 1.2rem 0 0;
+        padding: 0;
       }
 
-      .wa-input i {
-        width: 2.05rem;
-        height: 2.05rem;
-        border-radius: 50%;
-        background: var(--accent);
+      .how .arrow {
+        margin-top: 0.95rem;
+        width: 0.9rem;
+        height: 0.9rem;
+        color: var(--muted);
+      }
+
+      .how .num {
         display: grid;
         place-items: center;
+        width: 2.4rem;
+        height: 2.4rem;
+        margin: 0 auto 0.7rem;
+        border-radius: 50%;
+        background: var(--accent-soft);
+        color: var(--ink);
+        font-weight: 500;
       }
 
-      .wa-input i::before {
-        content: "";
-        width: 0.55rem;
-        height: 0.55rem;
-        border-top: 2px solid #fff;
-        border-right: 2px solid #fff;
-        transform: rotate(45deg) translate(-1px, 1px);
+      .how strong {
+        display: block;
+        font-size: 0.95rem;
+        font-weight: 600;
+        line-height: 1.3;
+      }
+
+      .how ol p {
+        margin: 0.4rem 0 0;
+        font-size: 0.8rem;
+        line-height: 1.45;
+        color: var(--muted);
+      }
+
+      .go {
+        margin: 2.6rem 0 0;
+      }
+
+      .cta {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 0.6rem;
+        width: min(100%, 18.5rem);
+        min-height: 3.2rem;
+        padding: 0.8rem 1.6rem;
+        border-radius: 999px;
+        text-decoration: none;
+        font-weight: 500;
+        font-size: 1.02rem;
+        color: #fff;
+        background: var(--accent);
+        box-shadow: 0 16px 34px rgba(98, 163, 155, 0.26);
+        transition: transform 220ms ease, box-shadow 220ms ease, background 220ms ease;
+      }
+
+      .cta .ico {
+        width: 1.05rem;
+        height: 1.05rem;
+        stroke-width: 2;
+      }
+
+      .cta:hover,
+      .cta:focus-visible {
+        background: var(--accent-deep);
+        transform: translateY(-1px);
+      }
+
+      .go small {
+        display: block;
+        margin-top: 0.7rem;
+        font-size: 0.78rem;
+        color: var(--muted);
+      }
+
+      /* A soft wave to close on, with one line that answers why */
+      .closing {
+        position: relative;
+        margin: 3.5rem calc(50% - 50vw) 0;
+        padding: 1.4rem 1.25rem 0.5rem;
+        background: var(--band);
+      }
+
+      .closing .wave {
+        position: absolute;
+        left: 0;
+        bottom: 100%;
+        width: 100%;
+        height: 2.5rem;
+        fill: var(--band);
+      }
+
+      .closing .heart {
+        width: 1.35rem;
+        height: 1.35rem;
+        margin: 0 auto 0.7rem;
+        color: var(--accent-deep);
+      }
+
+      .closing p {
+        margin: 0;
+        font-size: 1.1rem;
+        font-weight: 500;
+        color: var(--ink);
+      }
+
+      .site-footer {
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: center;
+        gap: 0.5rem 1.4rem;
+        padding: 2.5rem 1.25rem 2.25rem;
+        background: var(--band);
+        font-size: 0.85rem;
+        color: var(--muted);
+      }
+
+      .site-footer a {
+        color: var(--muted);
+        text-decoration: none;
+      }
+
+      .site-footer a:hover {
+        color: var(--ink);
       }
 
       @keyframes settle-in {
-        from { opacity: 0; transform: rotate(-1.5deg) translateY(1.5rem); }
-        to { opacity: 1; transform: rotate(-1.5deg) translateY(0); }
+        from { opacity: 0; transform: translateY(1.5rem); }
+        to { opacity: 1; transform: none; }
       }
 
       @keyframes bubble-in {
@@ -448,349 +698,99 @@
         to { opacity: 1; transform: none; }
       }
 
-      /* ---------- Sections ---------- */
-
-      section {
-        padding: 5.5rem 0 0;
+      @keyframes panel-in {
+        from { opacity: 0; transform: translateY(0.5rem); }
+        to { opacity: 1; transform: none; }
       }
 
-      h2 {
-        margin: 0 0 1.2rem;
-        font-size: clamp(1.95rem, 7.5vw, 2.7rem);
-        line-height: 1.12;
-        letter-spacing: -0.03em;
-        max-width: 18ch;
-      }
+      /* ---------- Narrow phones ---------- */
 
-      h2 em {
-        font-style: normal;
-        color: var(--accent-deep);
-      }
-
-      /* The pitch: one line, centred, with a hairline for a breath above it */
-
-      .pitch {
-        text-align: center;
-        padding: 6rem 0 3.5rem;
-      }
-
-      .pitch h2 {
-        margin: 0 auto;
-        max-width: 14ch;
-        font-size: clamp(2.2rem, 8.5vw, 3.4rem);
-        line-height: 1.08;
-        letter-spacing: -0.035em;
-      }
-
-      .pitch h2::before {
-        content: "";
-        display: block;
-        width: 2.5rem;
-        height: 1px;
-        margin: 0 auto 2rem;
-        background: var(--sand);
-      }
-
-      .pitch .soft {
-        display: block;
-        margin-bottom: 0.5rem;
-        font-size: 0.48em;
-        font-weight: 500;
-        letter-spacing: -0.01em;
-        color: var(--muted);
-      }
-
-      /* The things people say, drifting past slowly on a warm band */
-
-      .say {
-        position: relative;
-        margin: 0 calc(50% - 50vw);
-        padding: 3.25rem 0;
-        overflow: hidden;
-        background: var(--rail);
-        border-top: 1px solid var(--hairline);
-        border-bottom: 1px solid var(--hairline);
-      }
-
-      .say-rows {
-        display: grid;
-        gap: 0.85rem;
-        -webkit-mask-image: linear-gradient(90deg, transparent, #000 12%, #000 88%, transparent);
-        mask-image: linear-gradient(90deg, transparent, #000 12%, #000 88%, transparent);
-      }
-
-      .say-row {
-        display: flex;
-        gap: 0.85rem;
-        width: max-content;
-        animation: drift 84s linear infinite;
-      }
-
-      .say-row.reverse {
-        animation-direction: reverse;
-        animation-duration: 96s;
-      }
-
-      /* Each prompt is something you would text, kept pale so the page stays
-         quiet even while it moves */
-      .say-row span {
-        flex: none;
-        display: inline-flex;
-        align-items: flex-end;
-        gap: 0.5rem;
-        padding: 0.6rem 0.9rem 0.55rem;
-        border-radius: 0.9rem;
-        border-top-right-radius: 0.25rem;
-        background: var(--surface);
-        border: 1px solid var(--hairline);
-        color: var(--ink-soft);
-        font-weight: 400;
-        font-size: 0.94rem;
-        line-height: 1.45;
-        white-space: nowrap;
-      }
-
-      .say-row span::after {
-        content: "10:12";
-        font-size: 0.66rem;
-        line-height: 1;
-        padding-bottom: 0.18rem;
-        color: rgba(19, 32, 56, 0.35);
-      }
-
-      .say-row span:nth-child(6n + 2)::after { content: "10:14"; }
-      .say-row span:nth-child(6n + 3)::after { content: "11:03"; }
-      .say-row span:nth-child(6n + 4)::after { content: "13:27"; }
-      .say-row span:nth-child(6n + 5)::after { content: "15:48"; }
-      .say-row span:nth-child(6n)::after { content: "17:05"; }
-
-      @keyframes drift {
-        from { transform: translateX(0); }
-        to { transform: translateX(-50%); }
-      }
-
-      /* Trust: three plain cards on paper */
-
-      .tiles {
-        list-style: none;
-        margin: 1.9rem 0 0;
-        padding: 0;
-        display: grid;
-        gap: 1rem;
-      }
-
-      .tiles li {
-        padding: 1.7rem 1.5rem;
-        border-radius: 1.4rem;
-        background: var(--surface);
-        border: 1px solid var(--hairline);
-        box-shadow: var(--shadow-soft);
-      }
-
-      .tiles .ico {
-        width: 2.6rem;
-        height: 2.6rem;
-        border-radius: 50%;
-        display: grid;
-        place-items: center;
-        color: var(--accent-deep);
-        background: var(--accent-soft);
-        margin-bottom: 1.15rem;
-      }
-
-      .tiles svg {
-        width: 1.2rem;
-        height: 1.2rem;
-        stroke: currentColor;
-        fill: none;
-        stroke-width: 1.8;
-        stroke-linecap: round;
-        stroke-linejoin: round;
-      }
-
-      .tiles strong {
-        display: block;
-        font-size: 1.1rem;
-        font-weight: 600;
-        letter-spacing: -0.015em;
-        margin-bottom: 0.35rem;
-      }
-
-      .tiles p {
-        margin: 0;
-        color: var(--muted);
-        font-size: 0.97rem;
-      }
-
-      /* Final: a quiet card, and the hand that holds it all */
-
-      .final {
-        padding-bottom: 1rem;
-      }
-
-      .final-card {
-        position: relative;
-        overflow: hidden;
-        text-align: center;
-        border-radius: var(--radius);
-        padding: 1rem 1.5rem 2.75rem;
-        background: linear-gradient(180deg, #fff 0%, var(--bg-deep) 100%);
-        border: 1px solid var(--hairline);
-        box-shadow: var(--shadow);
-      }
-
-      .final-card .stones {
-        width: min(20rem, 100%);
-        margin: 0 auto 0.25rem;
-      }
-
-      .final-card h2 {
-        margin: 0 auto 0.65rem;
-        max-width: 100%;
-      }
-
-      .final-card p {
-        margin: 0 auto 1.8rem;
-        max-width: 24rem;
-        color: var(--muted);
-        font-size: 1.02rem;
-      }
-
-      .final-card .small {
-        margin: 1.2rem auto 0;
-        font-size: 0.9rem;
-        color: var(--muted);
-      }
-
-      .final-card .small a {
-        color: var(--accent-deep);
-        text-decoration-color: rgba(79, 146, 144, 0.35);
-      }
-
-      /* Footer */
-
-      .site-footer {
-        padding: 2.5rem 0 3rem;
-        margin-top: 4rem;
-        border-top: 1px solid var(--hairline);
-        display: flex;
-        justify-content: space-between;
-        gap: 1rem;
-        font-size: 0.88rem;
-        color: var(--muted);
-      }
-
-      .site-footer nav {
-        display: flex;
-        gap: 1.25rem;
-      }
-
-      .site-footer a {
-        text-decoration: none;
-        color: var(--muted);
-      }
-
-      .site-footer a:hover {
-        color: var(--ink);
-      }
-
-      /* ---------- Desktop ---------- */
-
-      /* On a wide screen the column does not widen - it only gets more air
-         around it and a little more type. The page reads the same way on a
-         phone and on a laptop. */
-      @media (min-width: 60rem) {
-        .site-header {
-          padding: 2.1rem 0;
+      /* No room beside the handset: the note tucks into the top corner and
+         the phone gives it a little space */
+      @media (max-width: 34rem) {
+        .stage {
+          width: min(100% - 5.5rem, 18rem);
+          margin-right: auto;
+          margin-left: 0.75rem;
         }
 
-        .site-header img {
-          height: 2rem;
+        .note {
+          top: 18%;
+          left: calc(100% + 0.1rem);
+          width: 4.4rem;
         }
 
-        .hero-copy {
-          padding: 3.25rem 0 0;
+        .island {
+          width: 4.6rem;
+          height: 1.4rem;
         }
 
-        h1 {
-          font-size: 3.5rem;
+        .how ol p {
+          font-size: 0.74rem;
         }
 
-        .hero-copy p {
-          font-size: 1.18rem;
+        .how strong {
+          font-size: 0.85rem;
         }
 
-        .phone-wrap {
-          margin-top: 3.75rem;
+        .scene {
+          padding: 1.1rem 0.8rem;
+        }
+      }
+
+      /* ---------- Wider screens ---------- */
+
+      @media (min-width: 48rem) {
+        .hero {
+          background-image: url("/assets/landing-bg-desktop.webp");
+          background-position: center 70%;
         }
 
-        .phone {
-          transform: rotate(-2deg);
+        .brand {
+          padding-top: 2rem;
         }
 
-        @keyframes settle-in {
-          from { opacity: 0; transform: rotate(-2deg) translateY(1.5rem); }
-          to { opacity: 1; transform: rotate(-2deg) translateY(0); }
+        .kicker {
+          margin-top: 3.4rem;
         }
 
-        section {
-          padding-top: 7rem;
+        .stage {
+          margin-top: 2.6rem;
         }
 
-        .pitch {
-          padding: 7.5rem 0 4.5rem;
+        .note {
+          width: 7.5rem;
+          left: calc(100% + 1.5rem);
         }
 
-        .pitch h2 {
-          font-size: 3rem;
+        .chat li {
+          font-size: 0.9rem;
         }
 
-        .say {
-          padding: 4rem 0;
+        .eyebrow {
+          margin-top: 3.4rem;
         }
 
-        .say-row span {
-          font-size: 1rem;
+        .panel > p.intro {
+          font-size: 1.05rem;
         }
 
-        .tiles {
-          gap: 1.2rem;
-          margin-top: 2.75rem;
-        }
-
-        .tiles li {
-          padding: 2.1rem 1.8rem;
-        }
-
-        .final-card {
-          padding: 1.5rem 2rem 4rem;
+        .features li {
+          font-size: 0.95rem;
         }
       }
 
       @media (prefers-reduced-motion: reduce) {
-        html {
-          scroll-behavior: auto;
-        }
-
         .phone,
-        .wa-chat li {
+        .panel,
+        .chat li {
           animation: none;
           opacity: 1;
         }
 
+        .seg label,
         .cta {
           transition: none;
-        }
-
-        .say-row {
-          animation: none;
-          flex-wrap: wrap;
-          width: auto;
-          padding: 0 1.5rem;
-        }
-
-        .say-row span:nth-child(n + 9) {
-          display: none;
         }
       }
     </style>
@@ -798,153 +798,186 @@
   <body>
     <header class="hero">
       <div class="col">
-        <div class="site-header">
-          <a href="/" aria-label="Assistyca home">
-            <img src="/assets/AssistycaLogoTitle.png" alt="Assistyca" />
-          </a>
-        </div>
+        <a class="brand" href="/" aria-label="Assistyca home">Assistyca</a>
+        <p class="kicker">Less to juggle. More life.</p>
+        <h1>Your life, organized. <span>Inside WhatsApp.</span></h1>
+        <p class="lede">An AI assistant that keeps track of the details, so you can focus on what matters.</p>
 
-        <div class="hero-body">
-          <div class="hero-copy">
-            <p class="kicker">For businesses and families</p>
-            <h1>Your assistant,<br />on <em>WhatsApp</em>.</h1>
-            <p>It keeps your inbox, your calendar and your lists in view, so you are not the one holding it all. You just text.</p>
-            <div class="signup">
-              <p class="signup-title" id="register-title">Register for free</p>
-              <div class="signup-doors" aria-labelledby="register-title">
-                <a class="cta" href="/register?for=business">My business</a>
-                <a class="cta" href="/register?for=family">My family</a>
+        <div class="stage" aria-label="An example conversation with Assistyca">
+          <div class="phone">
+            <div class="screen">
+              <div class="island"></div>
+              <div class="status" aria-hidden="true">
+                <span>9:41</span>
+                <svg viewBox="0 0 64 12">
+                  <rect x="0" y="8" width="3" height="4" rx="1" />
+                  <rect x="5" y="5.5" width="3" height="6.5" rx="1" />
+                  <rect x="10" y="3" width="3" height="9" rx="1" />
+                  <rect x="15" y="0.5" width="3" height="11.5" rx="1" />
+                  <path d="M31 11.6 28.6 9.2a3.4 3.4 0 0 1 4.8 0zM25.9 6.5l1.4 1.4a5.3 5.3 0 0 1 7.4 0l1.4-1.4a7.3 7.3 0 0 0-10.2 0zM23.2 3.8l1.4 1.4a9.1 9.1 0 0 1 12.8 0l1.4-1.4a11.1 11.1 0 0 0-15.6 0z" />
+                  <rect x="44.5" y="1" width="16" height="10" rx="2.6" fill="none" stroke="#132038" stroke-opacity="0.45" />
+                  <rect x="46.2" y="2.7" width="12.6" height="6.6" rx="1.4" />
+                  <rect x="61.4" y="4.2" width="1.6" height="3.6" rx="0.8" fill-opacity="0.45" />
+                </svg>
+              </div>
+              <div class="wa-head" aria-hidden="true">
+                <svg class="ico" viewBox="0 0 24 24"><path d="m15 5-7 7 7 7" /></svg>
+                <span class="avatar"><img src="/assets/robot-leaf-192.png" alt="" /></span>
+                <span class="who"><strong>Assistyca</strong><small>online</small></span>
+                <span class="end">
+                  <svg class="ico" viewBox="0 0 24 24"><rect x="2.5" y="6" width="13" height="12" rx="2.5" /><path d="m15.5 10.5 6-3.5v10l-6-3.5" /></svg>
+                  <svg class="ico" viewBox="0 0 24 24"><circle cx="12" cy="5" r="0.9" /><circle cx="12" cy="12" r="0.9" /><circle cx="12" cy="19" r="0.9" /></svg>
+                </span>
+              </div>
+              <ol class="chat">
+                <li class="me">Can you add this to my calendar?<time>9:17</time></li>
+                <li class="them">Done — I added it for Thursday at 4:00 PM.<time>9:17</time></li>
+                <li class="me">Great.<time>9:18</time></li>
+              </ol>
+              <div class="wa-input" aria-hidden="true">
+                <span class="field">
+                  <svg class="ico" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" /><path d="M8.5 14.5a4.5 4.5 0 0 0 7 0M9 9.5h.01M15 9.5h.01" /></svg>
+                  <span>Message…</span>
+                  <svg class="ico" viewBox="0 0 24 24"><path d="m20 11.5-7.8 7.8a5 5 0 0 1-7.1-7.1l7.9-7.9a3.3 3.3 0 0 1 4.7 4.7l-7.9 7.9a1.7 1.7 0 0 1-2.4-2.4l7.2-7.2" /></svg>
+                  <svg class="ico" viewBox="0 0 24 24"><path d="M3.5 8.5A2 2 0 0 1 5.5 6.5h2l1.5-2h6l1.5 2h2a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z" /><circle cx="12" cy="12.5" r="3.5" /></svg>
+                </span>
+                <span class="mic">
+                  <svg class="ico" viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3" /><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21" /></svg>
+                </span>
               </div>
             </div>
           </div>
-
-        <div class="phone-wrap" aria-label="Example conversations with Assistyca">
-            <input class="chat-switch" type="radio" name="chat-example" id="chat-business" checked />
-            <input class="chat-switch" type="radio" name="chat-example" id="chat-family" />
-            <div class="chat-pick">
-              <label for="chat-business">A business</label>
-              <label for="chat-family">A family</label>
-            </div>
-            <div class="phone">
-              <div class="screen">
-                <div class="wa-header">
-                  <img src="/assets/Robot-200.png" alt="" />
-                  <div>
-                    <strong>Assistyca</strong>
-                    <span>online</span>
-                  </div>
-                </div>
-                <ol class="wa-chat business">
-                  <li class="me">What's on today?<time>8:02</time></li>
-                  <li class="them">Dana at 10, the accountant at 13:30. Two invoices came in overnight, want the total?<time>8:02</time></li>
-                  <li class="me">Yes, and remind me Friday to pay them<time>8:03</time></li>
-                  <li class="them">4,120 together. I'll text you Friday at 9.<time>8:03</time></li>
-                </ol>
-                <ol class="wa-chat family">
-                  <li class="me">Anything I'm forgetting today?<time>8:02</time></li>
-                  <li class="them">Noa has the dentist at 16:00, and the school trip form is due tonight.<time>8:02</time></li>
-                  <li class="me">Remind me at 19:00, and add milk and batteries to the shopping list<time>8:03</time></li>
-                  <li class="them">Both on the list. I'll text you at 19:00 about the form.<time>8:03</time></li>
-                </ol>
-                <div class="wa-input"><span>Message</span><i></i></div>
-              </div>
-            </div>
-          </div>
+          <img class="note" src="/assets/calm-note.svg" alt="More calm days" />
         </div>
       </div>
     </header>
 
-    <main>
-      <div class="col">
-        <section class="pitch" aria-labelledby="what-title">
-          <h2 id="what-title"><span class="soft">An LLM agent,</span>for a business or a <em>family</em>.</h2>
-        </section>
+    <main class="col">
+      <section class="choose" aria-labelledby="choose-title">
+        <input type="radio" name="for" id="for-family" checked />
+        <input type="radio" name="for" id="for-business" />
+        <p class="choose-title" id="choose-title">Choose what's right for you</p>
+        <div class="seg">
+          <label for="for-family">
+            <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="8" r="3" /><path d="M3.5 19a5.5 5.5 0 0 1 11 0" /><circle cx="17" cy="9" r="2.4" /><path d="M16 14.2a4.5 4.5 0 0 1 5 4.8" /></svg>
+            Family
+          </label>
+          <label for="for-business">
+            <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="7" width="18" height="13" rx="2.5" /><path d="M9 7V5.5A1.5 1.5 0 0 1 10.5 4h3A1.5 1.5 0 0 1 15 5.5V7M3 12.5h18M12 11.5v2" /></svg>
+            Business
+          </label>
+        </div>
 
-        <div class="say">
-          <div class="say-inner">
-            <div class="say-rows" aria-hidden="true">
-          <div class="say-row">
-            <span>Did the plumber ever send the invoice?</span>
-            <span>What's on tomorrow?</span>
-            <span>Put last month's receipts in a folder for the accountant</span>
-            <span>Remind me Thursday to hand in the school form</span>
-            <span>Find me a free hour with Yael next week</span>
-            <span>What did I spend on software last month?</span>
-            <span>Did the appointment letter for Mum arrive?</span>
-            <span>Every Friday, remind me to send the weekly report</span>
-            <span>Did the plumber ever send the invoice?</span>
-            <span>What's on tomorrow?</span>
-            <span>Put last month's receipts in a folder for the accountant</span>
-            <span>Remind me Thursday to hand in the school form</span>
-            <span>Find me a free hour with Yael next week</span>
-            <span>What did I spend on software last month?</span>
-            <span>Did the appointment letter for Mum arrive?</span>
-            <span>Every Friday, remind me to send the weekly report</span>
+        <div class="panel family">
+          <p class="eyebrow">For families</p>
+          <h2>A more coordinated, <br />calm family life.</h2>
+          <p class="intro">Assistyca helps you manage the kids' activities, rides and changing plans — and keeps everyone in the loop.</p>
+
+          <div class="scene">
+            <ol class="chat">
+              <li class="me">Maya is sick today, she won't make it to gymnastics.<time>9:12</time></li>
+              <li class="them"><span class="avatar"><img src="/assets/robot-leaf-192.png" alt="" /></span>Got it. Maya was scheduled to drive back with Ella's dad. I'll update the group. You're also on the driver list for today — should I ask if someone can take your turn?<time>9:12</time></li>
+              <li class="me">Yes please.<time>9:13</time></li>
+              <li class="them"><span class="avatar"><img src="/assets/robot-leaf-192.png" alt="" /></span>Done! I'll let you know when someone takes it.<time>9:13</time></li>
+            </ol>
           </div>
-          <div class="say-row reverse">
-            <span>Add renew the insurance to my to-dos, due Tuesday</span>
-            <span>Summarise that long thread from the supplier</span>
-            <span>Text me at 7 with what's on</span>
-            <span>Add sunscreen and batteries to the shopping list</span>
-            <span>Who haven't I replied to this week?</span>
-            <span>Tell me when the venue posts new dates</span>
-            <span>Did the deposit come in?</span>
-            <span>When is the car due for its test?</span>
-            <span>Add renew the insurance to my to-dos, due Tuesday</span>
-            <span>Summarise that long thread from the supplier</span>
-            <span>Text me at 7 with what's on</span>
-            <span>Add sunscreen and batteries to the shopping list</span>
-            <span>Who haven't I replied to this week?</span>
-            <span>Tell me when the venue posts new dates</span>
-            <span>Did the deposit come in?</span>
-            <span>When is the car due for its test?</span>
+
+          <ul class="features">
+            <li>
+              <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="5" width="17" height="15.5" rx="2.5" /><path d="M3.5 10h17M8 3v4M16 3v4" /></svg>
+              Activities and schedules
+            </li>
+            <li>
+              <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 16.5V11l2-5.2A1.5 1.5 0 0 1 8.4 5h7.2a1.5 1.5 0 0 1 1.4.8L19 11v5.5" /><rect x="3.5" y="11" width="17" height="6" rx="1.8" /><path d="M6 17v2M18 17v2M7.5 14h.01M16.5 14h.01" /></svg>
+              Rides and carpools
+            </li>
+            <li>
+              <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="7.5" r="2.6" /><circle cx="5" cy="9.5" r="2" /><circle cx="19" cy="9.5" r="2" /><path d="M7.5 18.5a4.5 4.5 0 0 1 9 0M1.5 17.5a3.5 3.5 0 0 1 5-3.1M22.5 17.5a3.5 3.5 0 0 0-5-3.1" /></svg>
+              Parent updates
+            </li>
+          </ul>
+
+          <div class="how">
+            <p class="eyebrow">How it works</p>
+            <ol>
+              <li><span class="num">1</span><strong>Chat naturally</strong><p>Just message Assistyca in WhatsApp like you would a friend.</p></li>
+              <li aria-hidden="true"><svg class="ico arrow" viewBox="0 0 24 24"><path d="M4 12h16m-6-6 6 6-6 6" /></svg></li>
+              <li><span class="num">2</span><strong>We handle the details</strong><p>Assistyca keeps track, updates, and manages it for you.</p></li>
+              <li aria-hidden="true"><svg class="ico arrow" viewBox="0 0 24 24"><path d="M4 12h16m-6-6 6 6-6 6" /></svg></li>
+              <li><span class="num">3</span><strong>More time for what matters</strong><p>Less juggling. More of what you love.</p></li>
+            </ol>
           </div>
-            </div>
+
+          <div class="go">
+            <a class="cta" href="/register?for=family">Get started for free <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12h16m-6-6 6 6-6 6" /></svg></a>
+            <small>No credit card needed.</small>
+          </div>
+
+          <div class="closing">
+            <svg class="wave" viewBox="0 0 1440 40" preserveAspectRatio="none" aria-hidden="true"><path d="M0 40V22C240 2 480 0 720 12s480 26 720 6v22z" /></svg>
+            <svg class="ico heart" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20s-7.5-4.6-7.5-10.2A4.3 4.3 0 0 1 12 7.3a4.3 4.3 0 0 1 7.5 2.5C19.5 15.4 12 20 12 20z" /></svg>
+            <p>More time for what matters.</p>
           </div>
         </div>
 
-        <section class="trust" aria-labelledby="trust-title">
-          <h2 id="trust-title">You are safe.</h2>
-          <ul class="tiles">
+        <div class="panel business">
+          <p class="eyebrow">For businesses</p>
+          <h2>Bring calm and clarity <br />to your business admin.</h2>
+          <p class="intro">Assistyca helps you handle the everyday details — like inbox follow-ups, calendar scheduling, and reminders — so you can focus on the bigger picture.</p>
+
+          <div class="scene">
+            <ol class="chat">
+              <li class="me">Can you follow up with the client about the proposal I sent last week?<time>10:24</time></li>
+              <li class="them"><span class="avatar"><img src="/assets/robot-leaf-192.png" alt="" /></span>Of course! I'll draft a polite follow-up email and send it to you here for approval first. Once you approve it, I'll send it and update you when they reply.<time>10:24</time></li>
+              <li class="me">Perfect, thank you!<time>10:25</time></li>
+            </ol>
+          </div>
+
+          <ul class="features">
             <li>
-              <span class="ico" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m5 12.5 4.5 4.5L19 7" /></svg></span>
-              <strong>Nothing without a yes</strong>
-              <p>Nothing is sent or spent without a plain yes from you, in the same chat.</p>
+              <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5.5" width="18" height="13" rx="2.5" /><path d="m3.5 7 8.5 6 8.5-6" /></svg>
+              Inbox management
             </li>
             <li>
-              <span class="ico" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="4" y="10.5" width="16" height="10" rx="2.5" /><path d="M8 10.5V7.5a4 4 0 0 1 8 0v3" /></svg></span>
-              <strong>Your accounts stay yours</strong>
-              <p>Gmail, Outlook and calendar connect through Google or Microsoft sign-in. Assistyca never sees your password.</p>
+              <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="5" width="17" height="15.5" rx="2.5" /><path d="M3.5 10h17M8 3v4M16 3v4" /></svg>
+              Calendar scheduling
             </li>
             <li>
-              <span class="ico" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M14 4h4a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-4" /><path d="M10 8 6 12l4 4M6 12h9" /></svg></span>
-              <strong>Leave any time</strong>
-              <p>A text disconnects an account. Stop by simply not texting back.</p>
+              <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5" /><path d="m8.2 12.3 2.6 2.6 5-5.3" /></svg>
+              Follow-ups and reminders
             </li>
           </ul>
-        </section>
 
-        <section class="final" aria-labelledby="final-title">
-          <div class="final-card">
-            <img class="stones" src="/assets/hero-robot-hand-stones-alpha.png" alt="" />
-            <h2 id="final-title">Free to start.</h2>
-            <p>Register with your name and WhatsApp number. Your assistant will say hello.</p>
-            <div class="signup-doors">
-              <a class="cta" href="/register?for=business">My business</a>
-              <a class="cta" href="/register?for=family">My family</a>
-            </div>
-            <p class="small">Already registered? <a href="/portal/">Sign in</a></p>
+          <div class="how">
+            <p class="eyebrow">How it works</p>
+            <ol>
+              <li><span class="num">1</span><strong>Chat with Assistyca</strong><p>Just message Assistyca in WhatsApp like you would a colleague.</p></li>
+              <li aria-hidden="true"><svg class="ico arrow" viewBox="0 0 24 24"><path d="M4 12h16m-6-6 6 6-6 6" /></svg></li>
+              <li><span class="num">2</span><strong>We handle the details</strong><p>Assistyca keeps track, follows up, and asks before anything goes out.</p></li>
+              <li aria-hidden="true"><svg class="ico arrow" viewBox="0 0 24 24"><path d="M4 12h16m-6-6 6 6-6 6" /></svg></li>
+              <li><span class="num">3</span><strong>You get more time for what matters</strong><p>Less admin. More of the work you love.</p></li>
+            </ol>
           </div>
-        </section>
 
-        <footer class="site-footer">
-          <span>© Assistyca</span>
-          <nav aria-label="Footer">
-            <a href="/about">About Nimrod</a>
-            <a href="/privacy.html">Privacy</a>
-          </nav>
-        </footer>
-      </div>
+          <div class="go">
+            <a class="cta" href="/register?for=business">Get started for free <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12h16m-6-6 6 6-6 6" /></svg></a>
+            <small>No credit card needed.</small>
+          </div>
+
+          <div class="closing">
+            <svg class="wave" viewBox="0 0 1440 40" preserveAspectRatio="none" aria-hidden="true"><path d="M0 40V22C240 2 480 0 720 12s480 26 720 6v22z" /></svg>
+            <svg class="ico heart" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20s-7.5-4.6-7.5-10.2A4.3 4.3 0 0 1 12 7.3a4.3 4.3 0 0 1 7.5 2.5C19.5 15.4 12 20 12 20z" /></svg>
+            <p>Less admin. More progress.</p>
+          </div>
+        </div>
+      </section>
     </main>
+
+    <footer class="site-footer">
+      <span>© Assistyca</span>
+      <a href="/portal/">Sign in</a>
+      <a href="/about">About Nimrod</a>
+      <a href="/privacy.html">Privacy</a>
+    </footer>
   </body>
 </html>
