@@ -10,6 +10,7 @@
     />
     <meta name="robots" content="noindex" />
     <link rel="canonical" href="https://assistyca.com/register" />
+    <script src="/portal/register-address.js"></script>
     <link rel="preload" as="font" type="font/woff2" href="/assets/manrope-regular.woff2" crossorigin />
     <link rel="preload" as="font" type="font/woff2" href="/assets/manrope-semibold.woff2" crossorigin />
     <style>
@@ -214,6 +215,33 @@
         visibility: hidden;
         transform: translateX(115%);
         transition: transform var(--slide), opacity 260ms ease, visibility 0s linear 460ms;
+      }
+
+      /* Nothing moves before the script has placed the first question: the
+         page opens on it rather than sliding over to it. */
+      .flow:not([data-ready]) .step,
+      .flow:not([data-ready]) .progress li {
+        transition: none;
+      }
+
+      /* When the landing page already asked who this is for, the question is
+         not part of this page at all - no card, no dash for it, and no Back
+         on the name, which would promise a step behind it. The name is in
+         place from the first paint, before the script arrives. */
+      html[data-kind-known] .step[data-step="kind"],
+      html[data-kind-known] .progress li[data-dot="kind"],
+      html[data-kind-known] .step[data-step="name"] [data-back] {
+        display: none;
+      }
+
+      html[data-kind-known] .flow:not([data-ready]) .step[data-step="name"] {
+        opacity: 1;
+        visibility: visible;
+        transform: translateX(0);
+      }
+
+      html[data-kind-known] .flow:not([data-ready]) .progress li[data-dot="name"] {
+        background: var(--accent);
       }
 
       .step[data-state="past"] {
@@ -696,8 +724,8 @@
         <form data-register-form novalidate>
           <div class="flow" data-flow>
             <ol class="progress" data-progress aria-hidden="true">
-              <li data-state="current"></li>
-              <li></li>
+              <li data-dot="kind" data-state="current"></li>
+              <li data-dot="name"></li>
               <li></li>
               <li></li>
             </ol>
