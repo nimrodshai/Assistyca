@@ -274,6 +274,7 @@ from packages.infrastructure.whatsapp_agent_chat import find_email_in_text
 from packages.infrastructure.whatsapp_agent_chat import generate_whatsapp_claim_code
 from packages.infrastructure.whatsapp_agent_chat import normalize_whatsapp_number
 from packages.infrastructure.whatsapp_agent_chat import resolve_assistyca_display_number
+from packages.infrastructure.portal_auth.oauth_return_page import render_oauth_return_page
 from packages.infrastructure.whatsapp_agent_chat import resolve_operator_whatsapp_numbers
 from packages.infrastructure.whatsapp_agent_chat import send_assistyca_text
 from packages.infrastructure.whatsapp_agent_chat import send_assistyca_interactive
@@ -13033,26 +13034,12 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         because there is nothing to go back to until it is fixed.
         """
 
-        number = resolve_assistyca_display_number()
-        back = (
-            f'<p style="margin-top:1.75rem"><a href="https://wa.me/{number}" '
-            'style="display:inline-block;background:#25d366;color:#fff;text-decoration:none;'
-            'padding:0.75rem 1.5rem;border-radius:999px;font-weight:600">Back to WhatsApp</a></p>'
-            if number
-            else "<p>You can go back to WhatsApp.</p>"
-        )
-        if ok:
-            heading = f"{normalize_text(label)} connected! \U0001f642".lstrip()
-        else:
-            heading = "Not connected"
-        safe_message = html.escape(normalize_text(message))
-        body = f"<p>{safe_message}</p>" if safe_message else ""
         self._send_html(
             HTTPStatus.OK,
-            "<!doctype html><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
-            f"<title>{html.escape(heading)} - Assistyca</title>"
-            "<body style=\"font-family:system-ui,sans-serif;max-width:32rem;margin:15vh auto;padding:0 1.25rem;line-height:1.5\">"
-            f"<h1 style=\"font-size:1.4rem\">{html.escape(heading)}</h1>{body}{back}</body>",
+            render_oauth_return_page(
+                ok=ok, provider_label=normalize_text(label), message=normalize_text(message),
+                whatsapp_number=resolve_assistyca_display_number(),
+            ),
         )
 
     def _finish_whatsapp_oauth(self, state: dict[str, Any], *, code: str, provider: str) -> None:
