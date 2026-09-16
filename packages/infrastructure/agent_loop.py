@@ -333,6 +333,12 @@ def _run_lookup(context: LoopContext, proposal_type: str, fields: dict[str, Any]
     limits = _describe_search_limits(response)
     if limits:
         data["searchLimits"] = limits
+    rhythm = response.get("subscription") if isinstance(response.get("subscription"), dict) else {}
+    if rhythm:
+        # How often this vendor charges and when they last did, worked out
+        # from the receipts themselves. It is what turns a charge into an
+        # answer about now, and it says what it could not settle.
+        data["subscription"] = rhythm
     if proposal_type in {"custom", "saved-files"}:
         insurance_checks = _check_receipt_records_against_insurance(context, records)
         if insurance_checks:
@@ -2062,9 +2068,11 @@ TOOLS: list[ToolSpec] = [
             "arrive under more than one name, list them all comma separated: the product, the company "
             "behind it and the service that bills it ('PlayStation Plus, Sony, PlayStation Network'), "
             "because a receipt carrying any one of them is found. months is every month "
-            "asked about as YYYY-MM, comma separated, oldest first; a comparison lists both months. At most "
-            "six months are searched per call, the most recent of the ones listed, so ask for the rest in a "
-            "second call rather than listing a year and assuming it was all read."
+            "asked about as YYYY-MM, comma separated, oldest first; a comparison lists both months. A "
+            "question about whether something is still being paid lists the last 12 months, because a "
+            "yearly subscription charges once and a shorter window misses it. One call searches 12 months "
+            "with a vendor named and 6 without, keeping the most recent of the months listed, so ask for "
+            "anything older in a second call rather than assuming a longer list was all read."
         ),
         parameters=_params({
             "what": {"type": "string"},
@@ -2579,6 +2587,15 @@ AGENT_LOOP_INSTRUCTIONS = (
     "about why an amount changed is answered by naming the individual items that account for it. Never "
     "invent a record, an amount, a date, or a fact that is not in a result. An empty records list means it "
     "ran and found nothing: say what you looked for, where, and that there was nothing, in a line or two.\n"
+    "Whether something is still being paid is a question about now, not a total. Search the last 12 months "
+    "under every name the charge could arrive under, and read the answer from the result's subscription "
+    "block: the charges, the gaps between them, the period the receipt names, when the last one was and "
+    "when the next is due. An old charge is not proof of anything on its own - a monthly plan last charged "
+    "in May has stopped, a yearly one charged in May is running until next May. When subscription.settled "
+    "is false, do not pick the likelier answer: call search_web for what the vendor charges for that plan, "
+    "monthly against yearly, and hold it against what was actually paid. If that still does not settle it, "
+    "say what you found, say plainly that you are not sure, and let them tell you - they know what they "
+    "signed up for.\n"
     "searchLimits on a result names what that search did not reach - months nobody looked at, mail past the "
     "end of one read. Never describe a search as wider than the result says it was, never turn 'nothing in "
     "these months' into 'nothing at all', and say what was left out and offer to go there next.\n"

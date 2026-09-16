@@ -206,6 +206,7 @@ from packages.infrastructure.receipt_collector import resolve_receipt_bundle_fol
 from packages.infrastructure import receipt_manager
 from packages.infrastructure import receipt_ledger
 from packages.infrastructure.receipt_collector import split_vendor_names
+from packages.infrastructure.subscription_rhythm import read_subscription_rhythm
 from packages.infrastructure.receipt_judge import RECEIPT_JUDGE_INSTRUCTIONS
 from packages.infrastructure.receipt_judge import RECEIPT_JUDGE_MAX_OUTPUT_TOKENS
 from packages.infrastructure.receipt_judge import judge_receipt_items
@@ -2682,6 +2683,12 @@ def parse_agent_run_month_value(*values: Any) -> Optional[tuple[int, int]]:
 # but it still reads every receipt in them, so a span is bounded to keep one
 # request inside a wait a person will sit through.
 AGENT_ANSWER_MAX_SPAN_MONTHS = 6
+# A search narrowed to a vendor may cover a whole year in one go. The six-month
+# ceiling is there because a month of everyone's receipts is a lot of mail to
+# read; a year of one vendor's is a handful of messages, and a year is the
+# window the question "am I still paying for this" actually needs - a yearly
+# subscription charges once, and six months can miss it entirely.
+AGENT_ANSWER_MAX_SPAN_MONTHS_FOR_VENDOR = 12
 # How many names one vendor may be searched under at once.
 AGENT_VENDOR_NAME_LIMIT = 6
 
@@ -2785,6 +2792,14 @@ def resolve_agent_batch_run_month(fields: dict[str, Any], payload: dict[str, Any
     return None
 
 
+def agent_batch_span_limit(fields: dict[str, Any], payload: dict[str, Any]) -> int:
+    """How many months one run may cover, given how narrow the search is."""
+
+    if split_vendor_names(fields.get("vendor") or payload.get("vendor")):
+        return AGENT_ANSWER_MAX_SPAN_MONTHS_FOR_VENDOR
+    return AGENT_ANSWER_MAX_SPAN_MONTHS
+
+
 def resolve_agent_batch_run_months(
     fields: dict[str, Any],
     payload: dict[str, Any],
@@ -2806,7 +2821,7 @@ def resolve_agent_batch_run_months(
         # turns on; keeping the oldest six would search a year ago and report
         # nothing about the spring. What falls off is named separately, so it
         # is offered back rather than quietly dropped.
-        return months[-AGENT_ANSWER_MAX_SPAN_MONTHS:]
+        return months[-agent_batch_span_limit(fields, payload):]
     single = resolve_agent_batch_run_month(fields, payload)
     return [single] if single else []
 
@@ -3380,6 +3395,14 @@ def build_custom_batch_mail_query(fields: dict[str, Any], payload: dict[str, Any
 
 
 def get_custom_google_batch_result_header(fields: dict[str, Any]) -> str:
+    """What kind of search this is, which decides how the result is read.
+
+    A question does not have to use the word "receipt" to be one. "Am I paying
+    for PlayStation Plus?" names a vendor and a period, which is the shape of a
+    receipt search however it is worded - and reading it as anything else hands
+    back a list of emails where an answer about money was asked for.
+    """
+
     text = get_agent_proposal_field_text(fields)
     if re.search(r"\breceipts?\b", text, re.IGNORECASE):
         return "Receipt search"
@@ -3387,6 +3410,8 @@ def get_custom_google_batch_result_header(fields: dict[str, Any]) -> str:
         return "Invoice search"
     if re.search(r"\bstatements?\b", text, re.IGNORECASE):
         return "Statement search"
+    if normalize_text(fields.get("vendor")) and parse_agent_run_month_list(fields.get("manualRunMonth")):
+        return "Receipt search"
     return "Mailbox source search"
 
 
@@ -8097,6 +8122,24 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 # A question about the mail itself is answered from the
                 # messages that were read, the same way.
                 response_payload["answerRecords"] = build_mail_answer_records(result.get("items"))
+            if answer_mode and result_header == "Receipt search" and normalize_text(fields.get("vendor") or payload.get("vendor")):
+                # "Am I paying for this?" is a question about now, and a total
+                # cannot answer it: one charge in May is a live subscription
+                # billed yearly and a cancelled one billed monthly. The rhythm
+                # the receipts make is worked out here, including the parts
+                # they cannot settle, and the deciding happens where the
+                # answer is written.
+                rhythm = read_subscription_rhythm(
+                    response_payload.get("answerRecords"),
+                    vendor=normalize_text(fields.get("vendor") or payload.get("vendor")),
+                    # The day where the person is, because "when did I last
+                    # pay this" is counted from their today, not from UTC's.
+                    today=date.fromisoformat(resolve_local_today(
+                        normalize_text(payload.get("timezone") or payload.get("timeZone") or "UTC")
+                    )),
+                )
+                if int(rhythm.get("chargeCount") or 0):
+                    response_payload["subscription"] = rhythm
             if receipt_bundle:
                 response_payload.update({
                     "outputFolder": str(receipt_bundle.get("outputFolder") or ""),

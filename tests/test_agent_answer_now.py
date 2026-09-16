@@ -872,6 +872,14 @@ class AgentAnswerRunTests(unittest.TestCase):
             digest={"summary": "Gmail digest", "messageCount": len(items), "items": items},
         )
 
+    def _run_span_of_everything(self, months: str, items: list[dict[str, object]]) -> dict[str, object]:
+        """A span with no vendor to narrow it, which is the shorter ceiling."""
+
+        return self._run_answer(
+            {"result": "Find all my receipts", "manualRunMonth": months},
+            digest={"summary": "Gmail digest", "messageCount": len(items), "items": items},
+        )
+
     def test_a_run_of_months_searches_the_mailbox_once(self) -> None:
         # Twelve months used to mean twelve searches of the same mailbox, each
         # one asking for the same mail with a different window around it.
@@ -932,12 +940,41 @@ class AgentAnswerRunTests(unittest.TestCase):
             AGENT_RECEIPT_ANSWER_MAX_MESSAGES * 3 + 1,
         )
 
+    TWELVE_MONTHS = (
+        "2025-10,2025-11,2025-12,2026-01,2026-02,2026-03,"
+        "2026-04,2026-05,2026-06,2026-07,2026-08,2026-09"
+    )
+
+    def test_a_year_of_one_vendor_is_read_in_one_go(self) -> None:
+        # "Am I still paying for this" needs a year: a yearly subscription
+        # charges once, and half a year can miss it completely. One vendor's
+        # year is a handful of messages, so it costs one search.
+        payload = self._run_span(self.TWELVE_MONTHS, [
+            self._receipt_item(1, "Tue, 05 May 2026 21:36:00 +0300", "$10.00"),
+        ])
+
+        query = self.run_call.kwargs["query"]
+        self.assertEqual(query.after.isoformat(), "2025-10-01")
+        self.assertEqual(query.before.isoformat(), "2026-10-01")
+        self.assertNotIn("monthsNotSearched", payload)
+
+    def test_a_year_of_everyone_still_stops_at_six_months(self) -> None:
+        # Without a vendor the same year is every receipt-ish email the
+        # mailbox holds, which is not one search.
+        payload = self._run_answer(
+            {"result": "Find all my receipts for the last year", "manualRunMonth": self.TWELVE_MONTHS},
+            digest={"summary": "Gmail digest", "messageCount": 0, "items": []},
+        )
+
+        self.assertEqual(self.run_call.kwargs["query"].after.isoformat(), "2026-04-01")
+        self.assertEqual(payload["monthsNotSearched"][-1], "Mar 2026")
+
     def test_a_span_too_long_to_read_is_answered_from_its_recent_end(self) -> None:
         # Twelve months is more than one request covers. The six it reads are
         # the ones nearest today: "look further back" is asked about something
         # being paid for now, and reading last autumn instead answers nothing.
-        payload = self._run_span(
-            "2025-10,2025-11,2025-12,2026-01,2026-02,2026-03,2026-04,2026-05,2026-06,2026-07,2026-08,2026-09",
+        payload = self._run_span_of_everything(
+            self.TWELVE_MONTHS,
             [self._receipt_item(1, "Tue, 05 May 2026 21:36:00 +0300", "$10.00")],
         )
 
@@ -949,8 +986,8 @@ class AgentAnswerRunTests(unittest.TestCase):
     def test_the_months_that_were_not_read_are_named_rather_than_dropped(self) -> None:
         # Nothing found over six months reads as nothing found over the twelve
         # that were asked about, unless the six are named.
-        payload = self._run_span(
-            "2025-10,2025-11,2025-12,2026-01,2026-02,2026-03,2026-04,2026-05,2026-06,2026-07,2026-08,2026-09",
+        payload = self._run_span_of_everything(
+            self.TWELVE_MONTHS,
             [self._receipt_item(1, "Tue, 05 May 2026 21:36:00 +0300", "$10.00")],
         )
 
@@ -965,6 +1002,58 @@ class AgentAnswerRunTests(unittest.TestCase):
         ])
 
         self.assertNotIn("monthsNotSearched", payload)
+
+    def test_the_charges_come_back_with_the_rhythm_they_make(self) -> None:
+        # A total cannot answer "am I still paying for this". How far apart
+        # the charges sit can, so the gaps are read and handed over.
+        payload = self._run_span("2026-07,2026-08,2026-09", [
+            self._receipt_item(1, "Mon, 06 Jul 2026 08:00:00 +0300", "$19.00"),
+            self._receipt_item(2, "Thu, 06 Aug 2026 08:00:00 +0300", "$19.00"),
+            self._receipt_item(3, "Sun, 06 Sep 2026 08:00:00 +0300", "$19.00"),
+        ])
+
+        rhythm = payload["subscription"]
+        self.assertEqual(rhythm["cadence"], "monthly")
+        self.assertEqual(rhythm["chargeCount"], 3)
+        self.assertEqual(rhythm["lastCharge"], "2026-09-06")
+        self.assertEqual(rhythm["nextExpected"], "2026-10-06")
+        self.assertTrue(rhythm["settled"])
+
+    def test_one_charge_comes_back_as_a_question_it_could_not_settle(self) -> None:
+        # One payment to Sony in May, and nothing saying whether it bought a
+        # month or a year. The answer must not pick one.
+        payload = self._run_answer(
+            {
+                "result": "Am I paying for PlayStation Plus?",
+                "vendor": "PlayStation Plus, Sony",
+                "manualRunMonth": "2026-05",
+            },
+            digest={"summary": "Gmail digest", "messageCount": 1, "items": [{
+                "id": "msg-9",
+                "mailbox": "owner@gmail.com",
+                "subject": "Receipt for Your Payment to SONY INTERACTIVE ENT",
+                "from": "PayPal <service@paypal.co.il>",
+                "date": "Tue, 05 May 2026 21:36:00 +0300",
+                "snippet": "You paid ILS 550.00 to SONY INTERACTIVE ENT",
+                "bodyText": "You paid ILS 550.00 to SONY INTERACTIVE ENT",
+            }]},
+        )
+
+        rhythm = payload["subscription"]
+        self.assertEqual(rhythm["cadence"], "unclear")
+        self.assertEqual(rhythm["lastAmount"], "550.00 ILS")
+        self.assertIsNone(rhythm["stillRunning"])
+        self.assertFalse(rhythm["settled"])
+
+    def test_a_question_with_no_vendor_asks_for_no_rhythm(self) -> None:
+        # "What did I spend in August" is a question about a month, not about
+        # whether one thing is still being paid for.
+        payload = self._run_answer({
+            "result": "Find all my receipts for August 2026",
+            "manualRunMonth": "2026-08",
+        })
+
+        self.assertNotIn("subscription", payload)
 
     def test_one_month_answers_exactly_as_it_always_has(self) -> None:
         payload = self._run_answer({

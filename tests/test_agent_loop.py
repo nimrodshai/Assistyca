@@ -141,6 +141,34 @@ class LoopMechanicsTests(unittest.TestCase):
         self.assertIn("Oct 2025 to Mar 2026", limits)
         self.assertIn("newest 100", limits)
 
+    def test_the_rhythm_of_the_charges_reaches_the_model(self) -> None:
+        # Whether something is still being paid for is read from how often it
+        # is charged, not from the existence of a charge. The model gets the
+        # rhythm, including what the receipts could not settle.
+        api = FakeApi({"/api/agent/proposals/run": ({
+            "ok": True,
+            "answer": "You paid 550.00 ILS to Sony in May 2026, across 1 receipt.",
+            "answerRecords": [],
+            "subscription": {
+                "cadence": "unclear",
+                "chargeCount": 1,
+                "lastCharge": "2026-05-05",
+                "lastAmount": "550.00 ILS",
+                "stillRunning": None,
+                "settled": False,
+                "unsettled": ["how often this is billed"],
+            },
+        }, 200)})
+        model = ScriptedModel([
+            _model_round(_call("search_receipts", "c1", what="Am I paying for PlayStation Plus?", vendor="Sony", months="2026-05")),
+            _model_round(reply=_reply("One charge in May; not sure if it is yearly.")),
+        ])
+        run_agent_loop(context=_context(api, connected={"gmail": True}), call_model=model, user_message="am I paying for PS Plus?", conversation=[], today="2026-09-16")
+
+        output = json.loads(model.inputs[1][-1]["output"])
+        self.assertEqual(output["subscription"]["cadence"], "unclear")
+        self.assertFalse(output["subscription"]["settled"])
+
     def test_a_search_that_reached_everything_reports_no_limits(self) -> None:
         api = FakeApi({"/api/agent/proposals/run": ({"ok": True, "answer": "You paid 19.00 USD.", "answerRecords": []}, 200)})
         model = ScriptedModel([
