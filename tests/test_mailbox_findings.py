@@ -247,6 +247,7 @@ class TellingTests(unittest.TestCase):
         self.assertIn("1. Invoice INV-17 for 1,200 ILS to Acme Ltd", text)
         self.assertIn("There are 2 more", text)
         self.assertIn("do not use any tool", text)
+        self.assertIn("Open with what you found, never with the reading", text)
         self.assertNotIn("2.", text.split("FINDINGS:")[1])
 
     def test_the_digest_mentions_recurring_charges(self) -> None:
@@ -260,9 +261,18 @@ class TellingTests(unittest.TestCase):
     def test_the_fallback_is_plain_lines_with_the_same_figures(self) -> None:
         findings = mf.derive_findings(self.facts, today=TODAY)
         text = mf.build_findings_fallback_text(findings[:1], kind="first", more_count=2)
-        self.assertTrue(text.startswith("I've had a look through the last year of your mail."))
+        # It opens on the finding: nobody wants to hear their mail was read
+        # through, only what came back from it.
+        self.assertTrue(text.startswith("One thing in your mail worth knowing:"))
+        self.assertNotIn("looked through", text)
         self.assertIn("• Invoice INV-17 for 1,200 ILS to Acme Ltd", text)
         self.assertIn("2 more", text)
+
+    def test_a_quiet_mailbox_is_told_as_reassurance_not_as_a_report(self) -> None:
+        self.assertTrue(mf.NOTHING_FOUND_TEXT.startswith("Nothing in your mail needs your attention"))
+        self.assertNotIn("looked through", mf.NOTHING_FOUND_TEXT)
+        self.assertIn("no \"I've looked through the last year of your mail\" opener",
+                      mf.build_nothing_found_instruction())
 
     def test_the_date_of_an_email_header_is_read_as_a_day(self) -> None:
         self.assertEqual(mf.message_day("Wed, 1 Jul 2026 10:00:00 +0300"), "2026-07-01")
