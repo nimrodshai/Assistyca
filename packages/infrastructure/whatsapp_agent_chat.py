@@ -1045,8 +1045,8 @@ def build_resume_ask(question: Any, *, asked_at: Any = "", waited_seconds: float
     lead = f"{lead} " if lead else ""
     waited = held_for_seconds(asked_at) if waited_seconds is None else max(0.0, float(waited_seconds or 0.0))
     if waited >= RESUME_ASK_STALE_AFTER_SECONDS:
-        return f'{lead}A while back you asked: "{held}" - do you still want that answer?'
-    return f'{lead}You asked: "{held}" - want me to pull that up now?'
+        return f'{lead}Do you still want me to look into "{held}"?'
+    return f'{lead}Want me to go ahead with "{held}" now?'
 
 
 # What the ask may not be: a link to open, a word about the machinery, or a
@@ -1057,13 +1057,17 @@ RESUME_ASK_MAX_OUTPUT_TOKENS = 600
 _RESUME_ASK_FORBIDDEN_WORDS = ("openai", "gpt", "llm", "api", "endpoint", "oauth", "json", "server log")
 
 RESUME_ASK_INSTRUCTIONS = (
+    f"{ASSISTANT_VOICE} "
     "You are Assistyca, the assistant for this account, writing one short WhatsApp message. The person "
     "asked you something, it needed an account they had not finished signing in to, and they have just "
-    "this second finished signing in. Say what is connected now, give them their own question back so they "
-    "know which one you mean, and ask whether to go ahead with it. Ask - never assume, and never say you "
-    "have looked, read, found, worked out or totalled anything, because nothing has run yet: their answer "
-    "is what starts it. Keep it warm and brief, do not apologise, do not explain how any of it works, and "
-    "never mention providers, models, servers or sign-ins beyond the fact that they are connected. "
+    "this second finished signing in. Say what is connected now, then ask whether they still want the "
+    "thing they were after - named plainly enough that there is no doubt which thing you mean, as in "
+    "\"do you still want me to look further back for payments to Sony?\" A sentence like \"You asked ...\" "
+    "with their message quoted after it is a form, not a conversation. "
+    "Ask - never assume, and never say you have looked, read, "
+    "found, worked out or totalled anything, because nothing has run yet: their answer is what starts it. "
+    "Keep it warm and brief, do not apologise, do not explain how any of it works, and never mention "
+    "providers, models, servers or sign-ins beyond the fact that they are connected. "
     "Plain text only: no links, no markdown, no headings, three sentences at most."
 )
 
@@ -1096,14 +1100,15 @@ def build_resume_ask_prompt(
     return (
         "Write the message for CONTEXT.\n"
         "connected is what has just been connected, in the words to use for it. theirQuestion is what they "
-        "asked before the sign-in got in the way, in their own words: quote it or name it closely enough "
-        "that they know which one you mean, and never answer it here. waitedMinutes is how long it has been "
+        "asked before the sign-in got in the way, in their own words: it is there so you know what they "
+        "were after, not to be repeated back. Put it in your own words, close enough to theirs that they "
+        "know which thing you mean, and never answer it here. waitedMinutes is how long it has been "
         "waiting. theyMayHaveMovedOn true means it has been sitting long enough that they might not want it "
         "any more, so ask whether they still want that answer at all rather than whether to go ahead now; "
         "false means it is still the thing they were in the middle of, so simply offer to get on with it. "
         "phoneJustLinked true means this sign-in also tied this phone to their account, worth a clause and "
-        "no more. alsoHappening, when it is not empty, is already under way and they should hear it: say it "
-        "in passing, never as the point of the message.\n"
+        "no more. alsoHappening, when it is not empty, is a line of your own to fold in: say it in passing, "
+        "never as the point of the message.\n"
         "A yes from them runs their question and a no drops it, so the message has to be answerable in one "
         "word. Read recentConversation so this follows on from it rather than starting again.\n\n"
         f"CONTEXT\n{json.dumps(context, ensure_ascii=False)}"

@@ -225,7 +225,13 @@ class WhatsAppOAuthLinkTests(unittest.TestCase):
         self.assertIn("wa.me/972559196101", body)
         save.assert_called_once()
         self.assertEqual(save.call_args.args[0].email, "dana@gmail.com")
-        self.assertIn("Gmail and calendar are connected", self._last_reply())
+        reply = self._last_reply()
+        self.assertIn("Gmail and calendar are connected", reply)
+        # What they hear about the first read is what may come back to them,
+        # not that somebody is going through everything they have.
+        self.assertIn("If I see anything worth your attention, I'll let you know.", reply)
+        self.assertNotIn("going through", reply)
+        self.assertNotIn("your mail now", reply)
 
     def test_linking_an_existing_account_requires_the_matching_google_account(self) -> None:
         self.database.register_user("owner@gmail.com")
