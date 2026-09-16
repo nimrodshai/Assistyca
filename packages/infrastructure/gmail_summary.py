@@ -118,8 +118,11 @@ class GmailAccessValidator:
                 payload = json.loads(raw.decode("utf-8")) if raw else {}
         except urllib_error.HTTPError as exc:
             if exc.code in {401, 403}:
+                reason, status = google_refusal_reason(exc)
                 raise GmailAuthorizationError(
-                    "Gmail access needs attention: Google rejected the saved credential or its permissions. Reconnect Gmail with read-only access, then try again."
+                    "Gmail access needs attention: Google rejected the saved credential or its permissions. Reconnect Gmail with read-only access, then try again.",
+                    provider_code=reason,
+                    provider_subtype=status,
                 ) from exc
             raise GmailSummaryError(
                 # A client reads this sentence; the HTTP code stays in ``code``.
@@ -197,6 +200,30 @@ def _header_value(message: dict[str, Any], name: str) -> str:
     return ""
 
 
+def google_refusal_reason(exc: urllib_error.HTTPError) -> tuple[str, str]:
+    """Google's own reason for a 401 or 403, and the status, for the log.
+
+    "Rejected the saved credential or its permissions" covers an expired
+    token, a permission the grant never included, and an admin policy; only
+    the first is fixed by signing in again, so the log keeps which it was.
+    """
+
+    reason = ""
+    try:
+        body = exc.read().decode("utf-8", "replace")
+        problem = json.loads(body).get("error") if body else {}
+        if isinstance(problem, dict):
+            for key in ("details", "errors"):
+                entries = problem.get(key) if isinstance(problem.get(key), list) else []
+                reason = next((str(entry["reason"]) for entry in entries if isinstance(entry, dict) and entry.get("reason")), "")
+                if reason:
+                    break
+            reason = reason or str(problem.get("status") or "")
+    except Exception:  # noqa: BLE001 - a reason is a courtesy to the log, never a new failure
+        reason = ""
+    return reason[:80], f"http_{exc.code}"
+
+
 def _format_digest_item(index: int, item: dict[str, str]) -> str:
     subject = item.get("subject") or "(no subject)"
     sender = item.get("from") or "Unknown sender"
@@ -238,8 +265,11 @@ class GmailDigestRunner:
             if exc.code in missing:
                 return {}
             if exc.code in {401, 403}:
+                reason, status = google_refusal_reason(exc)
                 raise GmailAuthorizationError(
-                    "Gmail access needs attention: Google rejected the saved credential or its permissions. Reconnect Gmail with read-only access, then try again."
+                    "Gmail access needs attention: Google rejected the saved credential or its permissions. Reconnect Gmail with read-only access, then try again.",
+                    provider_code=reason,
+                    provider_subtype=status,
                 ) from exc
             raise GmailSummaryError(
                 # A client reads this sentence; the HTTP code stays in ``code``.

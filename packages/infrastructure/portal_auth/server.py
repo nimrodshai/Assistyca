@@ -3528,6 +3528,37 @@ def mailbox_failure_record(
     return record
 
 
+def connection_log_fields(record: dict[str, Any]) -> dict[str, Any]:
+    """What the log may say about one saved connection.
+
+    Enough to tell two rows for the same address apart (a short hash, never
+    the address), whether the grant includes reading Gmail, and how long ago
+    the person signed in - which is what shows whether a refusal came from a
+    sign-in Google retires after a fixed number of days.
+    """
+
+    metadata = record.get("metadata") if isinstance(record.get("metadata"), dict) else {}
+    address = normalize_email(record.get("accountAddress"))
+    signed_in_hours: float | None = None
+    try:
+        signed_in = datetime.fromisoformat(normalize_text(metadata.get("signedInAt")))
+        signed_in_hours = round((datetime.now(timezone.utc) - signed_in).total_seconds() / 3600, 1)
+    except (TypeError, ValueError):
+        signed_in_hours = None
+    return {
+        "connectionId": normalize_text(record.get("id")),
+        "provider": normalize_text(record.get("provider")).lower(),
+        "status": normalize_text(record.get("connectionStatus")).lower(),
+        "addressHash": hashlib.sha256(address.encode("utf-8")).hexdigest()[:8] if address else "",
+        "gmailReadGranted": (
+            GOOGLE_GMAIL_OAUTH_SCOPE in normalize_text(metadata.get("grantedScope"))
+            if "grantedScope" in metadata
+            else None
+        ),
+        "signedInHoursAgo": signed_in_hours,
+    }
+
+
 def describe_mailbox_failures(failures: list[dict[str, Any]]) -> str:
     """Say in one sentence which mailboxes could not be read.
 
@@ -5946,11 +5977,13 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                     # grantedScope above is what it is derived from.
                     "writeAccess": google_scope_grants_write(granted_scope, scope_id),
                     "validatedAt": now,
+                    "signedInAt": now,
                     **validation_results.get(scope_id, {}),
                 },
                 connection_status="connected",
             )
             connections.append(connection)
+        self._log_connection_inventory(session.email, reason="google_signed_in")
         if "gmail" in granted_scope_ids:
             self._schedule_first_findings_scan(session.email)
         return connections
@@ -6195,10 +6228,12 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 "scope": MICROSOFT_OUTLOOK_OAUTH_SCOPE,
                 "grantedScope": granted_scope,
                 "validatedAt": now,
+                "signedInAt": now,
                 **validation,
             },
             connection_status="connected",
         )
+        self._log_connection_inventory(session.email, reason="microsoft_signed_in")
         self._schedule_first_findings_scan(session.email)
         return connection
 
@@ -9186,7 +9221,13 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                         provider=record_provider,
                     )
                 except (CredentialVaultError, GmailAuthorizationError, OutlookAuthorizationError) as exc:
-                    print(f"Opening {mailbox_name_for(record)} failed: {exc}", flush=True)
+                    print(json.dumps({
+                        "event": "mailbox.open_failed",
+                        **connection_log_fields(record),
+                        "code": normalize_text(getattr(exc, "code", "")) or type(exc).__name__,
+                        "providerCode": normalize_text(getattr(exc, "provider_code", "")),
+                        "providerSubtype": normalize_text(getattr(exc, "provider_subtype", "")),
+                    }, ensure_ascii=True), flush=True)
                     readers[record_id] = None
                     return None
                 if token_cache is not None:
@@ -9738,7 +9779,18 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                     GmailSummaryError,
                     OutlookSummaryError,
                 ) as exc:
-                    print(f"Fetching a receipt file from {mailbox_name_for(entry)} failed: {exc}", flush=True)
+                    print(json.dumps({
+                        "event": "receipt_file.fetch_failed",
+                        **connection_log_fields(entry),
+                        "code": normalize_text(getattr(exc, "code", "")),
+                        "providerCode": normalize_text(getattr(exc, "provider_code", "")),
+                        "providerSubtype": normalize_text(getattr(exc, "provider_subtype", "")),
+                        "rowsForThisMailbox": len(matched),
+                        "rowsInAccount": len(records),
+                    }, ensure_ascii=True), flush=True)
+                    if not opened.get("inventoryLogged"):
+                        opened["inventoryLogged"] = True
+                        self._log_connection_inventory(session.email, reason="receipt_file_refused")
                     continue
             return []
 
@@ -12793,7 +12845,8 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             return None
         issued_at = int(payload.get("issuedAt") or 0)
         if issued_at <= 0 or time.time() - issued_at > WHATSAPP_OAUTH_STATE_TTL_SECONDS:
-            return {"expired": True, "waId": normalize_whatsapp_number(payload.get("waId")), "provider": provider}
+            return {"expired": True, "waId": normalize_whatsapp_number(payload.get("waId")), "provider": provider,
+                    "email": normalize_email(payload.get("email"))}
         if not is_valid_email(normalize_email(payload.get("email"))) or not normalize_whatsapp_number(payload.get("waId")):
             return None
         return payload
@@ -12905,6 +12958,10 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             self._send_whatsapp_oauth_page(ok=ok, message=text if not ok else page, label=label)
 
         if state.get("expired"):
+            if self._whatsapp_provider_still_connected(normalize_email(state.get("email")), provider):
+                text = f"That was an old sign-in link, and there's nothing to do: {label} is still connected."
+                finish(True, text, page=text)
+                return
             finish(False, f"That {label} sign-in link had expired. Ask me again and I'll send a fresh one.")
             return
         if not code:
@@ -13447,6 +13504,13 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
     ) -> None:
         """Mark one mailbox and retain why a fresh sign-in is required."""
 
+        print(json.dumps({
+            "event": "mailbox.needs_attention",
+            **connection_log_fields(record),
+            "code": normalize_text(error_code).lower(),
+            "providerCode": normalize_text(provider_code).lower(),
+            "providerSubtype": normalize_text(provider_subtype).lower(),
+        }, ensure_ascii=True), flush=True)
         self.database.update_platform_connection_status(
             owner_email,
             connection_id=normalize_text(record.get("id")),
@@ -13461,6 +13525,46 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 "validatedAt": datetime.now(timezone.utc).isoformat(),
             },
         )
+
+    def _log_connection_inventory(self, email: str, *, reason: str) -> None:
+        """Every saved connection of this account, in one log line.
+
+        Written when a sign-in is saved and when a mailbox refuses, so a
+        refusal right after a fresh sign-in can be read against what else is
+        saved - an older row for the same address, a grant without Gmail.
+        """
+
+        try:
+            records = self.database.list_platform_connection_secret_records(
+                email, "", include_statuses=("connected", "needs_attention", "disconnected"),
+            )
+            print(json.dumps({
+                "event": "connection.inventory",
+                "reason": reason,
+                "connections": [connection_log_fields(record) for record in records],
+            }, ensure_ascii=True), flush=True)
+        except Exception as exc:  # noqa: BLE001 - a log line never breaks a sign-in
+            print(f"Connection inventory could not be logged: {exc}", flush=True)
+
+    def _whatsapp_provider_still_connected(self, email: str, provider: str) -> bool:
+        """Whether this provider is connected and nothing of it needs a sign-in.
+
+        An old sign-in link can be tapped long after the sign-in it was for
+        went through. What the person needs then is whether anything needs
+        doing, not a prompt to ask for another link.
+        """
+
+        if not is_valid_email(email):
+            return False
+        prefix = "google_" if provider == "google" else "microsoft_"
+        rows = [
+            row
+            for row in self.database.list_platform_connection_secret_records(
+                email, "", include_statuses=("connected", "needs_attention"),
+            )
+            if normalize_text(row.get("provider")).lower().startswith(prefix)
+        ]
+        return bool(rows) and all(row.get("connectionStatus") == "connected" for row in rows)
 
     def _resolve_email_access_token(self, decrypted_secret: str, *, provider: str) -> tuple[str, str]:
         """Return ``(access_token, credential_source)`` for a mailbox."""
