@@ -74,13 +74,13 @@ class TheAskItselfTests(unittest.TestCase):
                                opening="Your Gmail and calendar are connected.")
         self.assertIn("Your Gmail and calendar are connected.", ask)
         self.assertIn(f'"{QUESTION}"', ask)
-        self.assertIn("want me to pull that up now?", ask)
+        self.assertIn("Want me to go ahead with", ask)
+        self.assertNotIn("You asked", ask, "nobody talks like a form")
 
     def test_an_hour_later_it_asks_whether_they_still_care(self) -> None:
         an_hour_ago = (datetime.now(timezone.utc) - timedelta(hours=1, minutes=5)).isoformat()
         ask = build_resume_ask(QUESTION, asked_at=an_hour_ago, opening="Your Gmail and calendar are connected.")
-        self.assertIn("A while back you asked", ask)
-        self.assertIn("do you still want that answer?", ask)
+        self.assertIn("Do you still want me to look into", ask)
         self.assertIn(f'"{QUESTION}"', ask)
 
     def test_a_question_that_waited_a_week_is_still_worth_asking_about(self) -> None:
@@ -111,14 +111,14 @@ class TheAskItselfTests(unittest.TestCase):
             question=QUESTION,
             connected="Your Gmail and calendar are",
             waited_seconds=90 * 60,
-            also_happening="I'm going through the last year of your mail now.",
+            also_happening="If I see anything worth your attention, I'll let you know.",
             conversation=[{"role": "user", "text": QUESTION}],
         )
         report = json.loads(prompt.split("CONTEXT\n", 1)[1])
         self.assertEqual(report["theirQuestion"], QUESTION)
         self.assertEqual(report["waitedMinutes"], 90)
         self.assertTrue(report["theyMayHaveMovedOn"])
-        self.assertIn("going through the last year", report["alsoHappening"])
+        self.assertIn("worth your attention", report["alsoHappening"])
         self.assertEqual(report["recentConversation"][0]["text"], QUESTION)
 
 
@@ -331,7 +331,7 @@ class HeldQuestionOverWhatsAppTests(unittest.TestCase):
 
         offer = self._texts()[-1]
         self.assertIn(f'"{QUESTION}"', offer)
-        self.assertIn("want me to pull that up now?", offer)
+        self.assertIn("Want me to go ahead with", offer)
         self.assertEqual(self._pending().get("kind"), "resume_question")
 
     def test_anything_else_is_answered_and_the_offer_stays_up(self) -> None:

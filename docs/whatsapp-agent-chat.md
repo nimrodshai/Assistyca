@@ -478,9 +478,13 @@ own question. The message is written by the model, not assembled: everything in
 it is something code knows - what connected, what they asked in their own
 words, how many minutes it waited, whether the mailbox scan is already under
 way - and that report goes to `_compose_resume_ask`, which is the recovery
-composer's twin. `guard_resume_ask` keeps what comes back only if it is still
-an ask: a question mark, no links, nothing about the machinery, and inside the
-length. Anything else falls back to `build_resume_ask`, the assembled sentence,
+composer's twin. `theirQuestion` is there so the model knows what they were
+after, not to be read back to them: the ask names the thing in its own words
+(*do you still want me to look further back for payments to Sony?*) rather
+than quoting the message and asking whether to go ahead, which reads like a
+form with their sentence pasted into it. `guard_resume_ask` keeps what comes
+back only if it is still an ask: a question mark, no links, nothing about the
+machinery, and inside the length. Anything else falls back to `build_resume_ask`, the assembled sentence,
 so the question is offered back even with no model to write the offer. Past an
 hour `theyMayHaveMovedOn` goes true and the message asks whether they still
 want that answer at all, rather than whether to go ahead now - because the

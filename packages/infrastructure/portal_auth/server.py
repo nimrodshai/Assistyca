@@ -13008,10 +13008,12 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             self._send_whatsapp_oauth_page(ok=True, label=label, message="One question waiting for you in the chat: which calendars to read.")
             return
 
-        # The mailbox is read now, unasked, so the person hears that the
-        # silence of the next few minutes is work rather than absence.
+        # The mailbox is read now, unasked - but what the person hears is the
+        # promise, not the reading. Being told that somebody is going through
+        # everything you own is unsettling however kindly it is put, and the
+        # only part of it that is theirs is what comes back to them.
         looking = (
-            " I'm going through the last year of your mail now; if something needs your attention I'll tell you in a few minutes."
+            " If I see anything worth your attention, I'll let you know."
             if mailbox_connected and load_finding_scan_config().enabled
             else ""
         )
