@@ -21,8 +21,7 @@
     <link rel="canonical" href="https://assistyca.com/" />
     <link rel="icon" type="image/png" href="/assets/Robot-200.png" />
     <link rel="apple-touch-icon" href="/assets/Robot-200.png" />
-    <link rel="preload" as="image" href="/assets/landing-bg-mobile.webp" media="(max-width: 47.99rem)" />
-    <link rel="preload" as="image" href="/assets/landing-bg-desktop.webp" media="(min-width: 48rem)" />
+    <link rel="preload" as="image" href="/assets/landing-bg-desktop.webp" />
     <style>
       @font-face {
         font-family: "Manrope";
@@ -121,7 +120,7 @@
       .hero {
         position: relative;
         text-align: center;
-        background: url("/assets/landing-bg-mobile.webp") center bottom / cover no-repeat;
+        background: url("/assets/landing-bg-desktop.webp") center 70% / cover no-repeat;
       }
 
       /* The photograph dissolves into the paper, so the phone sits on the
@@ -387,7 +386,7 @@
       .choose {
         position: relative;
         text-align: center;
-        padding-top: 0.25rem;
+        padding-top: 2.5rem;
       }
 
       /* Radios rather than a script, because this page carries none. They
@@ -705,24 +704,25 @@
 
       /* ---------- Narrow phones ---------- */
 
-      /* No room beside the handset: the note tucks into the top corner and
-         the phone gives it a little space */
+      /* No room beside the handset: the phone keeps the full width and the
+         note steps aside. The wide photograph is anchored on its stones and
+         leaves, which sit at its left edge. */
       @media (max-width: 34rem) {
+        .hero {
+          background-position: 16% bottom;
+        }
+
         .stage {
-          width: min(100% - 5.5rem, 18rem);
-          margin-right: auto;
-          margin-left: 0.75rem;
+          width: min(100% - 1rem, 20rem);
         }
 
         .note {
-          top: 18%;
-          left: calc(100% + 0.1rem);
-          width: 4.4rem;
+          display: none;
         }
 
         .island {
-          width: 4.6rem;
-          height: 1.4rem;
+          width: 5rem;
+          height: 1.5rem;
         }
 
         .how ol p {
@@ -741,11 +741,6 @@
       /* ---------- Wider screens ---------- */
 
       @media (min-width: 48rem) {
-        .hero {
-          background-image: url("/assets/landing-bg-desktop.webp");
-          background-position: center 70%;
-        }
-
         .brand {
           padding-top: 2rem;
         }
