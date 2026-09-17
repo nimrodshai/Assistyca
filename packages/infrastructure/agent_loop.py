@@ -59,6 +59,9 @@ from packages.infrastructure.whatsapp_agent_chat import connection_display_name
 from packages.infrastructure.whatsapp_agent_chat import connections_for_disconnect
 from packages.infrastructure.whatsapp_agent_chat import describe_local_time
 from packages.infrastructure.whatsapp_agent_chat import resolve_scheduled_message_run_at
+from packages.infrastructure.standing_news import describe_window
+from packages.infrastructure.standing_news import item_fingerprints
+from packages.infrastructure.standing_news import select_new_items
 from packages.tools.news_search import search_news
 from packages.tools.public_records import PublicRecordsError
 from packages.tools.public_records import look_up_property
@@ -223,6 +226,14 @@ class LoopContext:
     # name, with the feature they belong to. The model sees them marked
     # unavailable, and a call to one is refused.
     blocked_tools: dict[str, str] = field(default_factory=dict)
+    # Set when a recurring task is running: its scheduled row id and where
+    # its news window starts (the last delivered run). search_news then asks
+    # only for that window and holds back anything the task already sent.
+    standing_task_id: int = 0
+    news_since: datetime | None = None
+    # The news items this run found new, with the keys they are remembered
+    # by. The scheduler writes them down only once the message is delivered.
+    news_found: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
@@ -253,6 +264,10 @@ class LoopResult:
     # Which source a lookup wanted and could not have: "mailbox", "calendar",
     # and so on, or "" when nothing was blocked. Empty is the normal turn.
     blocked_on_connection: str = ""
+    # A recurring news task that searched the news, did nothing else, and
+    # found nothing it has not already sent: there is no message to send.
+    nothing_new: bool = False
+    news_found: list[dict[str, Any]] = field(default_factory=list)
 
 
 # -- tools --------------------------------------------------------------------
@@ -763,11 +778,17 @@ def _tool_search_news(context: LoopContext, args: dict[str, Any]) -> dict[str, A
     if not query:
         return _error("choice_required", "What news to look for is needed.")
     mode = "details" if str(args.get("mode") or "").strip().lower() == "details" else "list"
+    standing = bool(context.standing_task_id and context.news_since and mode == "list")
+    date_range = str(args.get("date_range") or "").strip()
+    if standing:
+        # A recurring run's window is the time since it last delivered, not
+        # whatever range the model picked.
+        date_range = describe_window(context.news_since, context.timezone_name)
     try:
         result = search_news(
             query=query,
             location=str(args.get("location") or "").strip(),
-            date_range=str(args.get("date_range") or "").strip(),
+            date_range=date_range,
             mode=mode,
             billing_email=context.email,
             usage_recorder=context.database,
@@ -800,6 +821,26 @@ def _tool_search_news(context: LoopContext, args: dict[str, Any]) -> dict[str, A
             "replyRule": "Answer only the follow-up about this result, using its source-backed details. Keep it concise.",
         })
 
+    held: dict[str, int] = {}
+    if standing:
+        candidates = [item for item in raw_items if isinstance(item, dict) and item.get("title") and item.get("date")]
+        try:
+            seen = context.database.get_standing_news_sent(
+                user_id=context.user_id,
+                action_id=context.standing_task_id,
+                fingerprints=[key for item in candidates for key in item_fingerprints(item)],
+            )
+        except Exception as exc:  # noqa: BLE001 - without the ledger the window still holds
+            print(f"agent.loop.news_ledger_unreadable error={exc!r}", flush=True)
+            seen = set()
+        raw_items, held = select_new_items(candidates, since=context.news_since, seen=seen)
+        for item in raw_items[:5]:
+            context.news_found.append({
+                "title": str(item.get("title") or ""),
+                "date": str(item.get("date") or ""),
+                "fingerprints": item_fingerprints(item),
+            })
+
     # A list lookup deliberately gives the reply composer no snippets or URLs.
     # That makes the five-result WhatsApp answer a scan, not five mini articles.
     items = [
@@ -807,6 +848,20 @@ def _tool_search_news(context: LoopContext, args: dict[str, Any]) -> dict[str, A
         for item in raw_items[:5]
         if isinstance(item, dict) and item.get("title") and item.get("date")
     ]
+    if standing:
+        return _ok({
+            "mode": "list",
+            "items": items,
+            "resultCount": len(items),
+            "newSince": describe_window(context.news_since, context.timezone_name),
+            "heldBack": held,
+            "replyRule": (
+                "These are only the items new since this task last sent news; anything older or already sent was "
+                "left out. Reply with one numbered line per result containing only its title and date, no "
+                "descriptions or links, then one short sentence saying the person can ask about any result for "
+                "more information. When there are none, say in one line that there is no new news on it."
+            ),
+        })
     return _ok({
         "mode": "list",
         "items": items,
@@ -3626,6 +3681,14 @@ def run_agent_loop(
         print(f"agent.loop.claim_mismatch turn={turn_id} claimed={overclaimed} completed={completed}", flush=True)
 
     remember = reply_payload.get("rememberFact") if isinstance(reply_payload.get("rememberFact"), dict) else None
+    news_calls = [call for call in tool_calls if call.get("name") == "search_news"]
+    nothing_new = bool(
+        context.standing_task_id
+        and news_calls
+        and len(news_calls) == len(tool_calls)
+        and all(call.get("ok") for call in news_calls)
+        and not context.news_found
+    )
     return LoopResult(
         reply=reply,
         tool_calls=tool_calls,
@@ -3646,6 +3709,8 @@ def run_agent_loop(
         duration_ms=int((time.monotonic() - started) * 1000),
         turn_id=turn_id,
         blocked_on_connection=context.blocked_on_connection,
+        nothing_new=nothing_new,
+        news_found=list(context.news_found),
     )
 
 

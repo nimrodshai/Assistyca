@@ -209,6 +209,25 @@ CREATE INDEX IF NOT EXISTS idx_receipt_mail_reads_dismissed
 ON receipt_mail_reads(user_id, dismissed_at);
 """
 
+STANDING_NEWS_SENT_TABLE_SQL = """
+-- What a recurring news task has already sent: one row per key (the page,
+-- the title) of every item a delivered run carried. A later run holds back
+-- any item with a key here, so the same news never arrives twice.
+CREATE TABLE IF NOT EXISTS standing_news_sent (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    action_id INTEGER NOT NULL,
+    fingerprint TEXT NOT NULL,
+    title TEXT NOT NULL DEFAULT '',
+    item_date TEXT NOT NULL DEFAULT '',
+    sent_at TEXT NOT NULL,
+    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_standing_news_sent_key
+ON standing_news_sent(user_id, action_id, fingerprint);
+"""
+
 MAILBOX_FINDINGS_TABLE_SQL = """
 -- What mailbox scans have read: one row per message the model gave a fact
 -- for (an invoice sent, a payment received, a bill, a charge, a renewal),
@@ -388,6 +407,8 @@ ACCOUNT_FINDING_SCAN_STATUSES = ("pending", "running", "done", "failed")
 # Rows per account before the oldest reads are let go. A busy mailbox is a
 # few hundred matching messages a month, so this is years of searches.
 RECEIPT_MAIL_READS_MAX_ROWS = 20000
+# Keys kept per news task; a year of a daily five-item message is well inside it.
+STANDING_NEWS_SENT_MAX_ROWS = 5000
 RECEIPT_MAIL_READS_QUERY_CHUNK = 400
 
 ACCOUNT_RECEIPT_STATUSES = ("confirmed", "unsure", "rejected")
@@ -580,6 +601,7 @@ USER_OWNED_TABLES = (
     "followed_threads",
     "account_receipts",
     "receipt_mail_reads",
+    "standing_news_sent",
     "agent_turns",
     "insurance_policies",
     "notifications",
@@ -1578,6 +1600,7 @@ class PortalDatabase:
                 conn.executescript(ACCOUNT_RECEIPTS_TABLE_SQL)
                 self._migrate_account_receipts_table(conn)
                 conn.executescript(RECEIPT_MAIL_READS_TABLE_SQL)
+                conn.executescript(STANDING_NEWS_SENT_TABLE_SQL)
                 conn.executescript(MAILBOX_FINDINGS_TABLE_SQL)
                 conn.executescript(INBOX_WATCH_TABLE_SQL)
                 conn.executescript(FOLLOWED_THREADS_TABLE_SQL)
@@ -8240,6 +8263,60 @@ class PortalDatabase:
                         "dismissedAt": str(row["dismissed_at"] or ""),
                     }
         return found
+
+    def get_standing_news_sent(self, *, user_id: int, action_id: int, fingerprints: list[str]) -> set[str]:
+        """Which of these keys the news task has already sent."""
+
+        keys = sorted({normalize_text(value) for value in fingerprints if normalize_text(value)})
+        if int(user_id or 0) <= 0 or int(action_id or 0) <= 0 or not keys:
+            return set()
+        placeholders = ",".join("?" for _ in keys)
+        with self._connection() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT fingerprint FROM standing_news_sent
+                WHERE user_id = ? AND action_id = ? AND fingerprint IN ({placeholders})
+                """,
+                (int(user_id), int(action_id), *keys),
+            ).fetchall()
+        return {str(row["fingerprint"]) for row in rows}
+
+    def save_standing_news_sent(self, *, user_id: int, action_id: int, items: list[dict[str, Any]]) -> int:
+        """Write down the items a delivered run sent, by every key they carry."""
+
+        if int(user_id or 0) <= 0 or int(action_id or 0) <= 0:
+            return 0
+        now = now_iso()
+        written = 0
+        with self._connection() as conn:
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                for key in item.get("fingerprints") or []:
+                    key = normalize_text(key)
+                    if not key:
+                        continue
+                    conn.execute(
+                        """
+                        INSERT INTO standing_news_sent (user_id, action_id, fingerprint, title, item_date, sent_at)
+                        VALUES (?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(user_id, action_id, fingerprint) DO NOTHING
+                        """,
+                        (int(user_id), int(action_id), key[:1500], normalize_text(item.get("title"))[:300], normalize_text(item.get("date"))[:80], now),
+                    )
+                    written += 1
+            if written:
+                conn.execute(
+                    """
+                    DELETE FROM standing_news_sent
+                    WHERE user_id = ? AND action_id = ? AND id NOT IN (
+                        SELECT id FROM standing_news_sent WHERE user_id = ? AND action_id = ?
+                        ORDER BY id DESC LIMIT ?
+                    )
+                    """,
+                    (int(user_id), int(action_id), int(user_id), int(action_id), STANDING_NEWS_SENT_MAX_ROWS),
+                )
+        return written
 
     def save_receipt_mail_reads(self, *, user_id: int, entries: list[dict[str, Any]]) -> int:
         """Write down messages a search read and judged. Returns how many were written.

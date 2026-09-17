@@ -34,6 +34,7 @@ python3 -m unittest \
   tests.test_agent_answer_now \
   tests.test_news_search \
   tests.test_agent_news_search \
+  tests.test_standing_news \
   tests.test_web_search \
   tests.test_agent_web_search \
   tests.test_scheduled_monitor \

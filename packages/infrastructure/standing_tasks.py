@@ -32,6 +32,7 @@ from zoneinfo import ZoneInfo
 from zoneinfo import ZoneInfoNotFoundError
 
 from packages.infrastructure.portal_db import normalize_text
+from packages.infrastructure.standing_news import news_window_start
 
 STANDING_TASK_ACTION_TYPE = "run_task"
 TASK_FREQUENCIES = ("daily", "weekly", "monthly")
@@ -227,6 +228,11 @@ def build_task_run_message(
     )
 
 
+class NothingNewToSend(Exception):
+    """A recurring news run found nothing it has not already sent. The
+    scheduler moves the task on without sending anything."""
+
+
 class StandingTaskRunner:
     """Runs one standing action through the agent loop and returns what it wrote."""
 
@@ -313,11 +319,22 @@ class StandingTaskRunner:
             "toolContext": chat._build_tool_context(),
             "senderWaId": chat.owner_wa_id if channel == "whatsapp" else "",
         }
+        if is_standing_task(action):
+            request["standingTask"] = {
+                "actionId": int(action.get("id") or 0),
+                "newsSince": news_window_start(action, now=datetime.now(timezone.utc)).isoformat(),
+            }
         turn, status = chat._api("POST", "/api/agent/loop", request, timeout=AGENT_RUN_TIMEOUT_SECONDS)
         if status != 200 or not turn.get("ok"):
             code = normalize_text(turn.get("error")) or f"HTTP {status}"
             detail = normalize_text(turn.get("message"))
             raise RuntimeError(f"The assistant could not run the action ({code}{': ' + detail if detail else ''}).")
+        if is_standing_task(action) and turn.get("nothingNew"):
+            raise NothingNewToSend("No news since the last message.")
+        news_found = [item for item in turn.get("newsFound") or [] if isinstance(item, dict)]
+        if news_found and isinstance(action.get("payload"), dict):
+            # Carried to the scheduler, which writes them down once delivered.
+            action["payload"]["newsFound"] = news_found
         reply = normalize_text(turn.get("reply"))
         if channel == "whatsapp":
             reply = format_agent_reply_for_whatsapp(reply)
@@ -348,6 +365,7 @@ class StandingTaskRunner:
 __all__ = [
     "MAX_TASK_INSTRUCTION_LENGTH",
     "MAX_TASK_TITLE_LENGTH",
+    "NothingNewToSend",
     "STANDING_TASK_ACTION_TYPE",
     "SUPPORTED_TASK_CHANNELS",
     "StandingTaskRunner",
