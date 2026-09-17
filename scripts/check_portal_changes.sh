@@ -22,6 +22,7 @@ python3 -m unittest \
   tests.test_agent_proposals \
   tests.test_account_facts \
   tests.test_household \
+  tests.test_family_week_nudges \
   tests.test_agent_folder_contents \
   tests.test_saved_answer_receipts \
   tests.test_saved_files \

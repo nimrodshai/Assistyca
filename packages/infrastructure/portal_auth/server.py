@@ -227,6 +227,8 @@ from packages.infrastructure.inbox_watch_polls import InboxWatchScheduler
 from packages.infrastructure.inbox_watch_polls import load_inbox_watch_config
 from packages.infrastructure.mailbox_finding_scans import FindingScanScheduler
 from packages.infrastructure.mailbox_finding_scans import load_finding_scan_config
+from packages.infrastructure.family_week_nudges import FamilyWeekNudger
+from packages.infrastructure.family_week_nudges import load_family_week_nudge_config
 from packages.infrastructure.list_due_nudges import ListDueNudger
 from packages.infrastructure.list_due_nudges import load_list_due_nudge_config
 from packages.infrastructure.scheduled_actions import ScheduledActionScheduler
@@ -18351,6 +18353,27 @@ def main() -> int:
     else:
         print("To-do due-date nudges are disabled.", flush=True)
 
+    family_nudge_config = load_family_week_nudge_config()
+    family_nudge_stop_event = threading.Event()
+    family_nudge_thread: threading.Thread | None = None
+    if family_nudge_config.enabled and scheduled_action_config.enabled:
+        family_nudger = FamilyWeekNudger(server.database, config=family_nudge_config)  # type: ignore[attr-defined]
+        family_nudge_thread = threading.Thread(
+            target=family_nudger.serve_forever,
+            args=(family_nudge_stop_event,),
+            kwargs={"log": lambda message: print(message, flush=True)},
+            daemon=True,
+            name="family-week-nudger",
+        )
+        family_nudge_thread.start()
+        print(
+            f"Family week nudges enabled: mornings at {family_nudge_config.morning_hour:02d}:00, evenings at "
+            f"{family_nudge_config.evening_hour:02d}:00, drives {family_nudge_config.ride_lead_minutes} minutes ahead.",
+            flush=True,
+        )
+    else:
+        print("Family week nudges are disabled.", flush=True)
+
     finding_scan_config = load_finding_scan_config()
     finding_scan_stop_event = threading.Event()
     finding_scan_thread: threading.Thread | None = None
@@ -18485,6 +18508,9 @@ def main() -> int:
         list_nudge_stop_event.set()
         if list_nudge_thread is not None:
             list_nudge_thread.join(timeout=1.0)
+        family_nudge_stop_event.set()
+        if family_nudge_thread is not None:
+            family_nudge_thread.join(timeout=1.0)
         source_action_stop_event.set()
         if source_action_thread is not None:
             source_action_thread.join(timeout=1.0)
