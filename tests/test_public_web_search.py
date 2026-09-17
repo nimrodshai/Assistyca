@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 from packages.tools.public_web_search.search import PUBLIC_WEB_SEARCH_MAX_RESULTS
+from packages.tools.public_web_search.search import PUBLIC_WEB_SEARCH_TIMEOUT_SECONDS
 from packages.tools.public_web_search.search import build_public_web_search_prompt
 from packages.tools.public_web_search.search import search_public_web
 
@@ -38,7 +39,8 @@ class PublicWebSearchTests(unittest.TestCase):
         self.assertEqual(len(result["items"]), PUBLIC_WEB_SEARCH_MAX_RESULTS)
         self.assertEqual(result["items"][0]["title"], "Activity 0")
         kwargs = call_openai.call_args.kwargs
-        self.assertEqual(kwargs["tools"], [{"type": "web_search", "search_context_size": "high"}])
+        self.assertEqual(kwargs["tools"], [{"type": "web_search", "search_context_size": "medium"}])
+        self.assertEqual(kwargs["config"].timeout_seconds, PUBLIC_WEB_SEARCH_TIMEOUT_SECONDS)
         self.assertEqual(kwargs["extra_payload"]["tool_choice"], "required")
         self.assertEqual(kwargs["reasoning"], {"effort": "medium"})
         self.assertEqual(kwargs["metadata"], {"mode": "list", "maxResults": 5})
