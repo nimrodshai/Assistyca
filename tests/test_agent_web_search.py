@@ -2,43 +2,16 @@ from __future__ import annotations
 
 import json
 import unittest
-from types import SimpleNamespace
 from unittest import mock
 
+from packages.infrastructure.account_types import blocked_tools
 from packages.infrastructure.agent_loop import AGENT_LOOP_INSTRUCTIONS
 from packages.infrastructure.agent_loop import LoopContext
 from packages.infrastructure.agent_loop import run_agent_loop
 from packages.infrastructure.agent_loop import tool_definitions
-
-
-def _round(*items: dict, reply: str = "") -> SimpleNamespace:
-    output = [{"type": "reasoning", "summary": []}, *items]
-    output_text = ""
-    if reply:
-        output_text = json.dumps({
-            "reply": reply,
-            "claimsCompleted": [],
-            "rememberFact": None,
-            "forgetFact": None,
-            "answersOpenQuestion": None,
-        })
-        output.append({"type": "message", "content": [{"type": "output_text", "text": output_text}]})
-    return SimpleNamespace(output_text=output_text, raw_response={"output": output}, input_tokens=10, output_tokens=5)
-
-
-class _Model:
-    def __init__(self, rounds: list[SimpleNamespace]) -> None:
-        self.rounds = rounds
-        self.inputs: list[list[dict]] = []
-
-    def __call__(self, items: list[dict], tools: list[dict]) -> SimpleNamespace:
-        self.inputs.append(list(items))
-        return self.rounds.pop(0)
-
-
-class _Database:
-    def list_platform_connections(self, email: str) -> list[dict]:
-        return []
+from tests.test_agent_news_search import _Database
+from tests.test_agent_news_search import _Model
+from tests.test_agent_news_search import _round
 
 
 class AgentWebSearchTests(unittest.TestCase):
@@ -52,127 +25,71 @@ class AgentWebSearchTests(unittest.TestCase):
             channel="whatsapp",
         )
 
-    def test_search_web_is_available_without_a_connected_account(self) -> None:
+    def _call(self, **arguments: object) -> dict:
+        return {"type": "function_call", "name": "search_web", "call_id": "web-1", "arguments": json.dumps(arguments)}
+
+    def test_web_search_and_news_search_are_separate_tools(self) -> None:
         tools = {tool["name"]: tool for tool in tool_definitions({})}
 
-        self.assertIn("search_web", tools)
-        self.assertNotIn("UNAVAILABLE RIGHT NOW", tools["search_web"]["description"])
-        self.assertIn("public-web search", tools["schedule_task"]["description"])
+        self.assertIn("hotels, concerts", tools["search_web"]["description"])
+        self.assertNotIn("mode", tools["search_web"]["parameters"]["properties"])
+        self.assertIn("news", tools["search_news"]["description"])
+        self.assertIn("mode", tools["search_news"]["parameters"]["properties"])
 
-    def test_list_mode_exposes_only_five_titles_and_dates_to_the_reply(self) -> None:
-        call = {
-            "type": "function_call",
-            "name": "search_web",
-            "call_id": "web-1",
-            "arguments": json.dumps({
-                "query": "activities for children",
-                "location": "central Israel",
-                "date_range": "2026-09-13 to 2026-09-19",
-                "mode": "list",
-            }),
-        }
+    def test_the_model_gets_each_result_with_its_facts_and_link(self) -> None:
         model = _Model([
-            _round(call),
-            _round(reply="Family science day — 2026-09-18\nAsk me about any result for more information."),
+            _round(self._call(query="concerts", location="Tel Aviv", date_range="2026-10-01 to 2026-10-31")),
+            _round(reply="Two good ones in October."),
         ])
-        search_result = {
-            "mode": "list",
-            "items": [
-                {
-                    "title": f"Activity {index}",
-                    "date": f"2026-09-{index + 14:02d}",
-                    "details": "A long description that must not reach the list reply.",
-                    "sourceName": "Events source",
-                    "sourceUrl": f"https://events.example/{index}",
-                }
-                for index in range(6)
-            ],
+        found = {
+            "results": [{
+                "name": "Jazz night",
+                "kind": "concert",
+                "summary": "Quartet at the port.",
+                "where": "Hangar 11, Tel Aviv Port",
+                "when": "2026-10-08 21:00",
+                "price": "180 ILS",
+                "rating": "",
+                "sourceName": "Tickets",
+                "url": "https://tickets.example/jazz",
+            }],
+            "note": "",
         }
 
-        with mock.patch("packages.infrastructure.agent_loop.search_public_web", return_value=search_result):
+        with mock.patch("packages.infrastructure.agent_loop.search_web", return_value=found) as search:
             result = run_agent_loop(
                 context=self._context(),
                 call_model=model,
-                user_message="What children's activities are on this week?",
-                conversation=[],
-                today="2026-09-13",
-            )
-
-        tool_output = json.loads(model.inputs[1][-1]["output"])
-        self.assertEqual(len(tool_output["items"]), 5)
-        self.assertEqual(set(tool_output["items"][0]), {"title", "date"})
-        self.assertNotIn("details", json.dumps(tool_output["items"]).lower())
-        self.assertNotIn("source", json.dumps(tool_output["items"]).lower())
-        self.assertEqual(result.tool_calls[0]["name"], "search_web")
-        self.assertIn("Ask me about any result", result.reply)
-
-    def test_follow_up_mode_keeps_details_for_one_result(self) -> None:
-        call = {
-            "type": "function_call",
-            "name": "search_web",
-            "call_id": "web-2",
-            "arguments": json.dumps({
-                "query": "Family science day",
-                "location": None,
-                "date_range": None,
-                "mode": "details",
-            }),
-        }
-        model = _Model([_round(call), _round(reply="It runs from 10:00 to 15:00.")])
-        search_result = {
-            "mode": "details",
-            "items": [{
-                "title": "Family science day",
-                "date": "2026-09-18",
-                "details": "Hands-on exhibits from 10:00 to 15:00.",
-                "sourceName": "Museum",
-                "sourceUrl": "https://museum.example/science-day",
-            }],
-        }
-
-        with mock.patch("packages.infrastructure.agent_loop.search_public_web", return_value=search_result):
-            run_agent_loop(
-                context=self._context(),
-                call_model=model,
-                user_message="Tell me more about the first one",
-                conversation=[{"role": "assistant", "text": "Family science day — 2026-09-18"}],
-                today="2026-09-13",
-            )
-
-        tool_output = json.loads(model.inputs[1][-1]["output"])
-        self.assertEqual(tool_output["items"][0]["details"], "Hands-on exhibits from 10:00 to 15:00.")
-        self.assertNotIn("sourceUrl", tool_output["items"][0])
-
-    def test_a_search_that_runs_out_of_time_says_it_took_too_long(self) -> None:
-        call = {
-            "type": "function_call",
-            "name": "search_web",
-            "call_id": "web-3",
-            "arguments": json.dumps({"query": "WhatsApp agent news", "location": None, "date_range": None, "mode": "list"}),
-        }
-        model = _Model([_round(call), _round(reply="The search took too long this time.")])
-
-        with mock.patch(
-            "packages.infrastructure.agent_loop.search_public_web",
-            side_effect=TimeoutError("The read operation timed out"),
-        ):
-            run_agent_loop(
-                context=self._context(),
-                call_model=model,
-                user_message="Any WhatsApp agent news?",
+                user_message="Any concerts in Tel Aviv next month?",
                 conversation=[],
                 today="2026-09-17",
             )
 
+        self.assertEqual(search.call_args.kwargs["location"], "Tel Aviv")
         tool_output = json.loads(model.inputs[1][-1]["output"])
-        self.assertFalse(tool_output["ok"])
-        self.assertEqual(tool_output["error"]["code"], "timed_out")
-        self.assertIn("took too long", tool_output["error"]["whatHappened"])
+        self.assertTrue(tool_output["ok"])
+        self.assertEqual(tool_output["results"][0]["url"], "https://tickets.example/jazz")
+        self.assertEqual(tool_output["results"][0]["price"], "180 ILS")
+        self.assertEqual(result.tool_calls[0]["name"], "search_web")
 
-    def test_agent_rules_make_web_lists_compact_and_schedulable(self) -> None:
-        self.assertIn("exactly one numbered line per result containing only its title and date", AGENT_LOOP_INSTRUCTIONS)
-        self.assertIn("A recurring request to search or watch the web is a standing action", AGENT_LOOP_INSTRUCTIONS)
-        self.assertIn("can ask about any result for more information", AGENT_LOOP_INSTRUCTIONS)
+    def test_a_search_that_runs_out_of_time_says_it_took_too_long(self) -> None:
+        model = _Model([_round(self._call(query="hotels", location=None, date_range=None)), _round(reply="It took too long.")])
+
+        with mock.patch("packages.infrastructure.agent_loop.search_web", side_effect=TimeoutError("timed out")):
+            run_agent_loop(context=self._context(), call_model=model, user_message="Find me a hotel", conversation=[], today="2026-09-17")
+
+        tool_output = json.loads(model.inputs[1][-1]["output"])
+        self.assertEqual(tool_output["error"]["code"], "timed_out")
+
+    def test_rules_link_each_result_and_keep_news_apart(self) -> None:
+        self.assertIn("with its url on its own line", AGENT_LOOP_INSTRUCTIONS)
+        self.assertIn("call search_news for the latest news", AGENT_LOOP_INSTRUCTIONS)
+
+    def test_news_and_web_search_switch_off_separately(self) -> None:
+        blocked = blocked_tools({"family": {"news_search": False}}, "family")
+
+        self.assertIn("search_news", blocked)
+        self.assertNotIn("search_web", blocked)
 
 
 if __name__ == "__main__":
