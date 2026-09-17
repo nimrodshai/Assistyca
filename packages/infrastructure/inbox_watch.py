@@ -383,17 +383,44 @@ def describe_alert(entry: dict[str, Any]) -> str:
     return line + "."
 
 
-def build_alert_instruction(entries: list[dict[str, Any]], *, hold_minutes: int) -> str:
+# An alert about something with a day to it can end by offering to put it
+# in the diary. The offer is a real held action, not a sentence: the event
+# is proposed with create_calendar_event while the alert is written, so a
+# plain "yes" to the alert adds it, and inviting someone close to them is
+# in the same proposal when their address is known.
+ALERT_CALENDAR_OFFER = (
+    "When one of these emails is about something that belongs in a diary - an event, an appointment, a "
+    "meeting, a duty or activity they have to be at - and create_calendar_event is not UNAVAILABLE, call "
+    "create_calendar_event once, for the most pressing such thing, from the facts below: its title in the "
+    "person's language, its date, and its time when one is given (none makes it all day). It is only held "
+    "for their yes. Then end the message with the one question that asks for it, naming the title, day "
+    "and time. Whether someone else should be invited is your judgement from the email and knownFacts: a "
+    "child's kindergarten or school, a family event, something a partner or co-parent also has a part in. "
+    "When knownFacts gives that person's email address, put it in attendees and name them in the question. "
+    "When the email plainly concerns them but knownFacts has no address for them, propose the event "
+    "without guests and add, in the same question, that they can send you the email address of their "
+    "partner (by name when knownFacts has one) to invite them too. Invite nobody else, and never guess an "
+    "address. When none of the emails is something for the diary, or the tool is UNAVAILABLE, call no "
+    "tool and ask nothing. Do not offer to reply for them unless they have that set up."
+)
+
+
+def build_alert_instruction(entries: list[dict[str, Any]], *, hold_minutes: int, offer_calendar: bool = False) -> str:
     lines = [f"{index}. {describe_alert(entry)}" for index, entry in enumerate(entries, start=1)]
     plural = len(entries) > 1
+    rules = (
+        ALERT_CALENDAR_OFFER
+        if offer_calendar
+        else "Do not ask questions, do not offer to reply for them unless they have that set up, and do "
+        "not use any tool: everything you need is here."
+    )
     return (
         f"{'Some emails' if plural else 'An email'} just arrived in the person's inbox that {'ask' if plural else 'asks'} "
         f"something of them with a time attached, and they have not opened {'them' if plural else 'it'} "
         f"in the {hold_minutes} minutes since. Write them one short WhatsApp message, in the language they "
         "write to you in, saying who is asking, what for, and when it matters, then the one thing to do "
         "in a few words. The facts below are exact: keep every name, date and time as written and add "
-        "none. Do not ask questions, do not offer to reply for them unless they have that set up, and do "
-        "not use any tool: everything you need is here.\n"
+        f"none. {rules}\n"
         "EMAILS:\n" + "\n".join(lines)
     )
 

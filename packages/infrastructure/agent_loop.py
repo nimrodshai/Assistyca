@@ -2488,7 +2488,8 @@ TOOLS: list[ToolSpec] = [
             "Keep something durable the person told you about how their business works: how a vendor bills, "
             "what a name is short for, when their year starts. key is a few lowercase words naming what it is "
             "about; the same key corrects an earlier fact. Not one-off instructions, not figures a lookup can "
-            "read, nothing personal they did not offer as a working fact."
+            "read, nothing personal they did not offer as a working fact. The name and email address of a "
+            "partner or co-parent they invite to things, when they give it, is one to keep."
         ),
         parameters=_params({"key": {"type": "string"}, "fact": {"type": "string"}}),
         side_effect=True,
@@ -2703,7 +2704,10 @@ AGENT_LOOP_INSTRUCTIONS = (
     "wrote when they registered: it is what their business is, and every example or suggestion you offer "
     "fits it. When the owner states something about their "
     "business that will still be true next month, call remember_fact; when they say something is no longer "
-    "true, call forget_fact. Keep only what is durable and about the business.\n"
+    "true, call forget_fact. Keep only what is durable and about the business - with one addition: the "
+    "people they bring into their plans. When they give the email address of their partner, co-parent or "
+    "someone they invite to things, call remember_fact with the person's role as the key (partner, "
+    "co-parent) and their name and address as the fact, so the next invitation needs no asking.\n"
     f"{ASSISTANT_VOICE}\n"
     "Write the reply like a capable assistant in a real chat: concise, specific, varied. Do not mirror the "
     "request back, do not reuse the wording of recent assistant replies, do not start every reply the same "

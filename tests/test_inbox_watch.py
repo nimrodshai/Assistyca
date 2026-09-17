@@ -150,6 +150,15 @@ class TellingTests(unittest.TestCase):
         self.assertIn("• From Dana Levi", fallback)
         self.assertIn("A few things", iw.build_alert_fallback_text([self.entry, self.entry]))
 
+    def test_the_offer_instruction_proposes_the_event_and_asks_for_a_missing_address(self) -> None:
+        text = iw.build_alert_instruction([self.entry], hold_minutes=10, offer_calendar=True)
+        self.assertIn("1. From Dana Levi", text)
+        self.assertIn("call create_calendar_event once", text)
+        self.assertIn("When knownFacts gives that person's email address, put it in attendees", text)
+        self.assertIn("send you the email address of their partner", text)
+        self.assertIn("never guess an address", text)
+        self.assertNotIn("do not use any tool", text)
+
 
 class TokenCacheTests(unittest.TestCase):
     def test_a_token_is_kept_for_its_hour_and_dropped_on_reconnect(self) -> None:

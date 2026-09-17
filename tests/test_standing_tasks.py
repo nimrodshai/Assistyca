@@ -103,6 +103,12 @@ class ScheduleMathTests(unittest.TestCase):
         self.assertIn("The person is not writing", text)
         self.assertTrue(text.endswith("Do this now: read today's calendar"))
 
+    def test_a_run_that_may_offer_allows_only_the_offer_its_instruction_names(self) -> None:
+        text = build_task_run_message(title="Inbox", instruction="offer the event", schedule_text="", standing=False, may_offer=True)
+        self.assertIn("may answer it", text)
+        self.assertIn("no offer except the one the instruction allows", text)
+        self.assertNotIn("no questions, no offers", text)
+
 
 class StandingTaskSchedulerTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -373,6 +379,65 @@ class StandingTaskApiTests(unittest.TestCase):
         self.assertEqual(saved["status"], "pending")
         self.assertEqual(saved["payload"]["runCount"], 1)
         self.assertEqual(saved["payload"]["lastRunStatus"], "success")
+
+    def _alert_action(self) -> dict:
+        user_id = int(self.user["id"])
+        action = self.database.create_scheduled_action(
+            user_id=user_id,
+            action_type="run_task",
+            channel="whatsapp",
+            recipient_ref="owner",
+            run_at=datetime.now(timezone.utc),
+            timezone_name=JERUSALEM,
+            payload={
+                "title": "Something in your inbox needs you",
+                "instruction": "PLAIN alert",
+                "offerInstruction": "OFFER alert",
+                "oneOff": True,
+                "source": "inbox_watch",
+            },
+        )
+        return self.database.get_scheduled_action(int(action["id"])) or action
+
+    def _run_alert(self, turn: dict) -> tuple[str, dict]:
+        runner = StandingTaskRunner(
+            database=self.database,
+            base_url=self.base_url,
+            session_token_factory=lambda email: mint_agent_session_token(self.server.store, email),
+        )
+        with mock.patch(
+            "packages.infrastructure.whatsapp_agent_chat.WhatsAppAgentChat._api", return_value=(turn, 200),
+        ) as api:
+            reply = runner.run(self._alert_action())
+        return reply, api.call_args.args[2]
+
+    def test_an_alert_that_proposes_an_event_holds_it_for_the_yes(self) -> None:
+        turn = {
+            "ok": True,
+            "reply": "The kindergarten asks you to be dad of the week on Saturday. Add it to your calendar and invite Shirly?",
+            "pendingConfirmation": {"id": "appr-1", "tool": "create_calendar_event"},
+        }
+        reply, request = self._run_alert(turn)
+
+        self.assertIn("OFFER alert", request["userMessage"])
+        self.assertIn("may answer it", request["userMessage"])
+        self.assertEqual(reply, turn["reply"])
+        held = self.database.get_whatsapp_agent_pending(user_id=int(self.user["id"])) or {}
+        self.assertEqual(held.get("kind"), "tool_confirmation")
+        self.assertEqual(held.get("approvalId"), "appr-1")
+        self.assertEqual(held.get("tool"), "create_calendar_event")
+        self.assertEqual(held.get("question"), turn["reply"])
+
+    def test_an_alert_does_not_offer_over_a_question_already_waiting(self) -> None:
+        user_id = int(self.user["id"])
+        waiting = {"kind": "tool_confirmation", "approvalId": "appr-old", "tool": "send_email", "question": "Send it?"}
+        self.database.save_whatsapp_agent_pending(user_id=user_id, pending=waiting)
+
+        _, request = self._run_alert({"ok": True, "reply": "Dana needs the quote by Friday.", "pendingConfirmation": {"id": "appr-2", "tool": "create_calendar_event"}})
+
+        self.assertIn("PLAIN alert", request["userMessage"])
+        self.assertIn("no questions, no offers", request["userMessage"])
+        self.assertEqual((self.database.get_whatsapp_agent_pending(user_id=user_id) or {}).get("approvalId"), "appr-old")
 
 
 # -- the chat tools, driven by a scripted model ------------------------------

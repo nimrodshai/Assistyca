@@ -9731,6 +9731,9 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 payload={
                     "title": inbox_watch.ALERT_TITLE,
                     "instruction": inbox_watch.build_alert_instruction(to_tell, hold_minutes=config.hold_minutes),
+                    # Used instead when the alert goes to WhatsApp and no other
+                    # question is waiting there: the runner decides at send time.
+                    "offerInstruction": inbox_watch.build_alert_instruction(to_tell, hold_minutes=config.hold_minutes, offer_calendar=True),
                     "fallbackText": inbox_watch.build_alert_fallback_text(to_tell),
                     "oneOff": True,
                     "source": "inbox_watch",

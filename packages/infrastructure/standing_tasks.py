@@ -191,14 +191,18 @@ def is_standing_task(action: dict[str, Any] | None) -> bool:
     )
 
 
-def build_task_run_message(*, title: str, instruction: str, schedule_text: str, standing: bool = True) -> str:
+def build_task_run_message(
+    *, title: str, instruction: str, schedule_text: str, standing: bool = True, may_offer: bool = False,
+) -> str:
     """What the loop is asked when a standing action fires.
 
     The model is told plainly that nobody is typing: the reply is the
     message the person will find, so there is nothing to ask and nothing
     to set up, only the work itself. A one-off run - something the server
     queued once, such as what a mailbox scan found - says so instead of
-    claiming a schedule it does not have.
+    claiming a schedule it does not have. may_offer is for a one-off whose
+    instruction proposes one action for a yes (an alert offering to put an
+    event in the diary): the person may answer, so that question is allowed.
     """
 
     name = normalize_text(title) or ("standing action" if standing else "action")
@@ -208,6 +212,13 @@ def build_task_run_message(*, title: str, instruction: str, schedule_text: str, 
         if standing
         else f"The one-off action \"{name}\" is running now."
     )
+    if may_offer:
+        return (
+            f"{opening} The person is not writing; they will read your reply as a message on its own and may "
+            "answer it. Write it as the finished result, with no question and no offer except the one the "
+            "instruction allows, and nothing set up or scheduled. Do this now: "
+            f"{normalize_text(instruction)}"
+        )
     return (
         f"{opening} The person is not writing; "
         "they will read your reply as a message on its own, so write it as the finished result and "
@@ -264,6 +275,20 @@ class StandingTaskRunner:
         if not instruction:
             raise RuntimeError("Standing action has nothing to do: the instruction is missing.")
         connection = self._connection_for(action)
+        channel = "whatsapp" if normalize_text(action.get("channel")).lower() == "whatsapp" else "portal"
+        user_id = int(connection["userId"])
+        # An offer needs somewhere for the yes to land: the WhatsApp chat,
+        # with no other question already waiting there. Otherwise the plain
+        # instruction runs and the alert only tells.
+        offer_instruction = normalize_text(payload.get("offerInstruction"))
+        may_offer = bool(
+            offer_instruction
+            and channel == "whatsapp"
+            and not is_standing_task(action)
+            and not self.database.get_whatsapp_agent_pending(user_id=user_id)
+        )
+        if may_offer:
+            instruction = offer_instruction
         chat = WhatsAppAgentChat(
             database=self.database,
             connection=connection,
@@ -271,8 +296,6 @@ class StandingTaskRunner:
             session_token_factory=self.session_token_factory,
         )
         timezone_name = normalize_text(action.get("timezone")) or chat.timezone_name
-        channel = "whatsapp" if normalize_text(action.get("channel")).lower() == "whatsapp" else "portal"
-        user_id = int(connection["userId"])
 
         history = self.database.list_recent_whatsapp_agent_messages(user_id=user_id, limit=AGENT_CHAT_HISTORY_LIMIT)
         conversation = [{"role": item["role"], "text": item["text"]} for item in history]
@@ -282,6 +305,7 @@ class StandingTaskRunner:
                 instruction=instruction,
                 schedule_text=describe_task_schedule(payload.get("schedule")),
                 standing=is_standing_task(action),
+                may_offer=may_offer,
             ),
             "conversation": conversation,
             "timezone": timezone_name,
@@ -303,6 +327,21 @@ class StandingTaskRunner:
             # The result joins the WhatsApp transcript so "which meeting was
             # that?" the next morning has something to refer to.
             self.database.save_whatsapp_agent_message(user_id=user_id, role="assistant", text=reply)
+        pending = turn.get("pendingConfirmation") if isinstance(turn.get("pendingConfirmation"), dict) else None
+        approval_id = normalize_text((pending or {}).get("id"))
+        if may_offer and approval_id:
+            # The same held question the chat keeps when it asks for a yes,
+            # so the answer to the alert runs the proposed action as proposed.
+            self.database.save_whatsapp_agent_pending(
+                user_id=user_id,
+                pending={
+                    "kind": "tool_confirmation",
+                    "approvalId": approval_id,
+                    "tool": normalize_text(pending.get("tool")),
+                    "question": reply[:500],
+                    "askedAt": datetime.now(timezone.utc).isoformat(),
+                },
+            )
         return reply
 
 
