@@ -203,6 +203,9 @@ class LoopContext:
     # turn and reused, so a turn that mentions the page twice mints one code.
     receipts_link: Callable[[], str] | None = None
     receipts_page: str = ""
+    # The family's week page, built the same way as the receipts link.
+    week_link: Callable[[], str] | None = None
+    week_page: str = ""
     # The phone this turn came from, on WhatsApp. Signing out unlinks that
     # phone and no other; on the portal there is no phone and no sign_out.
     sender_wa_id: str = ""
@@ -408,6 +411,26 @@ def _receipts_page_link(context: LoopContext) -> str:
         return ""
     context.receipts_page = link
     _offer_link(context, link, RECEIPTS_LINK_LABEL)
+    return link
+
+
+WEEK_LINK_LABEL = "Open your week"
+
+
+def _week_page_link(context: LoopContext) -> str:
+    """The link to the family's week page, remembered as one the reply may carry."""
+
+    if context.week_page:
+        return context.week_page
+    if context.week_link is None:
+        return ""
+    try:
+        link = str(context.week_link() or "").strip()
+    except Exception as exc:  # noqa: BLE001 - a missing link is not a failed answer
+        print(f"agent.loop.week_link_failed error={exc!r}", flush=True)
+        return ""
+    context.week_page = link
+    _offer_link(context, link, WEEK_LINK_LABEL)
     return link
 
 
@@ -1565,7 +1588,11 @@ def _tool_show_family_week(context: LoopContext, args: dict[str, Any]) -> dict[s
         code: [activity for activity in payload["week"] if code in (activity.get("days") or [])]
         for code in household.WEEKDAY_CODES
     }
-    return _ok({"members": payload["members"], "byDay": {code: items for code, items in by_day.items() if items}})
+    data = {"members": payload["members"], "byDay": {code: items for code, items in by_day.items() if items}}
+    link = _week_page_link(context)
+    if link:
+        data["weekPage"] = link
+    return _ok(data)
 
 
 def _tool_set_getting_to_know(context: LoopContext, args: dict[str, Any]) -> dict[str, Any]:
@@ -1585,7 +1612,12 @@ def _tool_set_getting_to_know(context: LoopContext, args: dict[str, Any]) -> dic
         )
     except Exception as exc:  # noqa: BLE001
         return _error("internal", f"That could not be saved: {exc}", can_retry=True)
-    return _ok({"status": profile.get("gettingToKnow"), "askAgainOn": profile.get("askAgainOn") or None})
+    data = {"status": profile.get("gettingToKnow"), "askAgainOn": profile.get("askAgainOn") or None}
+    if status == "done":
+        link = _week_page_link(context)
+        if link:
+            data["weekPage"] = link
+    return _ok(data)
 
 
 def _tool_show_findings(context: LoopContext, args: dict[str, Any]) -> dict[str, Any]:
@@ -2979,6 +3011,9 @@ AGENT_LOOP_INSTRUCTIONS = (
     "good time to carry on. When the people and their week are in, or they say that is everything, call it "
     "with done and show them their week in a few short lines, with anything that has nobody down for the "
     "pickup named plainly. After done, do not ask again.\n"
+    "Their week is also a page of their own, where they can change who drives and share a read-only link "
+    "with the other parent: when a result carries weekPage - showing the week, finishing getting to know "
+    "them - say so in a sentence and put that link on its own line exactly as given, once.\n"
     f"{ASSISTANT_VOICE}\n"
     "Write the reply like a capable assistant in a real chat: concise, specific, varied. Do not mirror the "
     "request back, do not reuse the wording of recent assistant replies, do not start every reply the same "

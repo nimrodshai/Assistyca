@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>Assistyca | Our week</title>
+    <meta name="description" content="Your family's week, kept by Assistyca: who is where, and who drives." />
+    <meta name="color-scheme" content="light dark" />
+    <meta name="robots" content="noindex" />
+    <script src="/portal/theme-init.js?v=1"></script>
+    <link rel="stylesheet" href="/portal/week.css?v=1" />
+  </head>
+  <body data-view="loading">
+    <header class="topbar">
+      <h1 class="topbar-title">Our week</h1>
+      <a class="topbar-link" href="/whatsapp">Back to the chat</a>
+    </header>
+
+    <main class="shell">
+      <section id="loadingView" class="view" aria-live="polite" aria-busy="true">
+        <div class="spinner" aria-hidden="true"></div>
+        <span class="sr-only">Loading your week</span>
+      </section>
+
+      <section id="signedOutView" class="view is-hidden">
+        <div class="card">
+          <h2>Open your week from the chat</h2>
+          <p>Ask Assistyca on WhatsApp for your week, and tap the button under the reply. Each link opens once.</p>
+        </div>
+      </section>
+
+      <section id="weekView" class="view is-hidden">
+        <div id="peopleCard" class="card is-hidden">
+          <p class="section-label">At home</p>
+          <ul id="people" class="people"></ul>
+        </div>
+
+        <div id="gapsCard" class="card gaps is-hidden" role="note">
+          <p id="gapsText"></p>
+        </div>
+
+        <p id="emptyWeek" class="card is-hidden">
+          Nothing in your week yet. Tell Assistyca on WhatsApp, as you would a friend: "Tom has football on
+          Tuesdays at five, and I take him."
+        </p>
+
+        <div id="days" class="view"></div>
+
+        <div class="add-row">
+          <button id="addButton" class="button" type="button">Add something to the week</button>
+        </div>
+
+        <section class="card" aria-labelledby="shareTitle">
+          <h3 id="shareTitle">Share with the other parent</h3>
+          <p id="shareHelp">A link that shows the week as it is, read-only. Turn it off and it stops working.</p>
+          <div id="shareRow" class="share-row is-hidden">
+            <input id="shareUrl" type="text" readonly aria-label="Share link" />
+            <button id="copyShareButton" class="button primary" type="button">Copy</button>
+          </div>
+          <div class="share-row">
+            <button id="shareToggleButton" class="button" type="button">Make a link</button>
+          </div>
+        </section>
+      </section>
+    </main>
+
+    <dialog id="editor" class="editor" aria-labelledby="editorTitle">
+      <form id="editorForm" method="dialog" autocomplete="off">
+        <h2 id="editorTitle">Add to the week</h2>
+        <label class="field">
+          <span class="field-label">What</span>
+          <input id="fieldTitle" type="text" maxlength="120" required />
+        </label>
+        <label class="field">
+          <span class="field-label">Who it is for</span>
+          <input id="fieldWho" type="text" maxlength="200" placeholder="Tom, Noa" />
+        </label>
+        <fieldset class="field">
+          <legend class="field-label">Days</legend>
+          <div id="fieldDays" class="days"></div>
+        </fieldset>
+        <div class="field-row">
+          <label class="field">
+            <span class="field-label">From</span>
+            <input id="fieldStart" type="time" />
+          </label>
+          <label class="field">
+            <span class="field-label">Until</span>
+            <input id="fieldEnd" type="time" />
+          </label>
+        </div>
+        <label class="field">
+          <span class="field-label">Where</span>
+          <input id="fieldPlace" type="text" maxlength="200" />
+        </label>
+        <div class="field-row">
+          <label class="field">
+            <span class="field-label">Takes them</span>
+            <input id="fieldDropOff" type="text" maxlength="80" placeholder="me" />
+          </label>
+          <label class="field">
+            <span class="field-label">Collects them</span>
+            <input id="fieldPickUp" type="text" maxlength="80" placeholder="me" />
+          </label>
+        </div>
+        <p id="editorError" class="form-error is-hidden" role="alert"></p>
+        <div class="editor-actions">
+          <button id="deleteButton" class="button danger is-hidden" type="button">Remove</button>
+          <span class="spacer"></span>
+          <button id="cancelButton" class="button" type="button">Cancel</button>
+          <button class="button primary" type="submit">Save</button>
+        </div>
+      </form>
+    </dialog>
+
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+    <script src="/portal/week-common.js?v=1"></script>
+    <script src="/portal/week.js?v=1"></script>
+  </body>
+</html>

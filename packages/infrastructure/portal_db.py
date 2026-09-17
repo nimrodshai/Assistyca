@@ -9257,6 +9257,27 @@ class PortalDatabase:
             row = conn.execute("SELECT * FROM household_profiles WHERE user_id = ?", (int(user_id),)).fetchone()
         return self._household_profile_row(row) or {}
 
+    def set_household_share(self, *, user_id: int, enabled: bool) -> dict[str, Any]:
+        """Turn the week's read-only link on or off. On always mints a new
+        token, so off and on again retires a link that travelled too far."""
+
+        self.save_household_profile(user_id=user_id)
+        token = secrets.token_urlsafe(24) if enabled else ""
+        with self._connection() as conn:
+            conn.execute(
+                "UPDATE household_profiles SET share_token = ?, updated_at = ? WHERE user_id = ?",
+                (token, now_iso(), int(user_id)),
+            )
+        return self.get_household_profile(user_id=user_id) or {}
+
+    def get_household_profile_by_share_token(self, token: str) -> dict[str, Any] | None:
+        share_token = normalize_text(token)
+        if not share_token:
+            return None
+        with self._connection() as conn:
+            row = conn.execute("SELECT * FROM household_profiles WHERE share_token = ?", (share_token,)).fetchone()
+        return self._household_profile_row(row)
+
     def _household_member_row(self, row: sqlite3.Row | None) -> dict[str, Any] | None:
         if row is None:
             return None
