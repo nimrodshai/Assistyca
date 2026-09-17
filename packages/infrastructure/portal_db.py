@@ -18,6 +18,9 @@ import re
 from typing import Any
 from typing import Iterable
 
+from packages.infrastructure.account_types import ACCOUNT_FEATURES_BY_ID
+from packages.infrastructure.account_types import ACCOUNT_TYPE_VALUES
+from packages.infrastructure.account_types import normalize_account_type
 from packages.infrastructure.agent_approvals import AGENT_APPROVAL_TTL_SECONDS
 from packages.infrastructure.agent_approvals import APPROVAL_ARMED
 from packages.infrastructure.agent_approvals import APPROVAL_ASKED
@@ -605,6 +608,9 @@ CREATE TABLE IF NOT EXISTS users (
     is_active INTEGER NOT NULL DEFAULT 1,
     is_admin INTEGER NOT NULL DEFAULT 0,
     client_type TEXT NOT NULL DEFAULT '',
+    -- Business or family: who the account was opened for. Empty reads as a
+    -- business, which is what every account opened before families carries.
+    account_type TEXT NOT NULL DEFAULT '',
     last_login_at TEXT,
     last_otp_requested_at TEXT,
     last_otp_verified_at TEXT,
@@ -1084,6 +1090,17 @@ CREATE TABLE IF NOT EXISTS receipt_duplicate_decisions (
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+-- A feature switched on or off for one kind of account. Only switches that
+-- were moved have a row: a feature with none is on.
+CREATE TABLE IF NOT EXISTS account_type_features (
+    account_type TEXT NOT NULL,
+    feature_id TEXT NOT NULL,
+    allowed INTEGER NOT NULL DEFAULT 1,
+    updated_by TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY(account_type, feature_id)
 );
 
 CREATE TABLE IF NOT EXISTS account_facts (
@@ -1630,6 +1647,9 @@ class PortalDatabase:
             conn.execute("ALTER TABLE users ADD COLUMN is_admin INTEGER NOT NULL DEFAULT 0")
         if "client_type" not in columns:
             conn.execute("ALTER TABLE users ADD COLUMN client_type TEXT NOT NULL DEFAULT ''")
+        if "account_type" not in columns:
+            conn.execute("ALTER TABLE users ADD COLUMN account_type TEXT NOT NULL DEFAULT ''")
+            self._backfill_account_types(conn)
         if "profile_json" not in columns:
             conn.execute("ALTER TABLE users ADD COLUMN profile_json TEXT NOT NULL DEFAULT '{}'")
         if "trial_days" not in columns:
@@ -1638,6 +1658,21 @@ class PortalDatabase:
             conn.execute("ALTER TABLE users ADD COLUMN trial_started_at TEXT")
         if "sessions_valid_after" not in columns:
             conn.execute("ALTER TABLE users ADD COLUMN sessions_valid_after REAL NOT NULL DEFAULT 0")
+
+    @staticmethod
+    def _backfill_account_types(conn: sqlite3.Connection) -> None:
+        """Accounts opened from the web page before the type was kept on the
+        account: the signup that opened them still says who it was for."""
+
+        signup_columns = {str(row["name"]) for row in conn.execute("PRAGMA table_info(whatsapp_signups)").fetchall()}
+        if not {"user_id", "registration_json"} <= signup_columns:
+            return
+        rows = conn.execute(
+            "SELECT user_id, registration_json FROM whatsapp_signups WHERE user_id IS NOT NULL"
+        ).fetchall()
+        for row in rows:
+            if _load_json_dict(row["registration_json"]).get("kind") == "family":
+                conn.execute("UPDATE users SET account_type = 'family' WHERE id = ?", (int(row["user_id"]),))
 
     def _migrate_whatsapp_signups_table(self, conn: sqlite3.Connection) -> None:
         columns = {
@@ -2239,6 +2274,7 @@ class PortalDatabase:
                 u.is_active,
                 u.is_admin,
                 u.client_type,
+                u.account_type,
                 u.last_login_at,
                 u.last_otp_requested_at,
                 u.last_otp_verified_at,
@@ -2285,6 +2321,7 @@ class PortalDatabase:
                 "isActive": bool(payload.get("is_active")),
                 "isAdmin": bool(payload.get("is_admin")),
                 "clientType": normalize_client_type(payload.get("client_type")),
+                "accountType": normalize_account_type(payload.get("account_type")),
                 "registeredAt": payload.get("registered_at"),
                 "lastLoginAt": payload.get("last_login_at"),
                 "lastOtpRequestedAt": payload.get("last_otp_requested_at"),
@@ -2313,6 +2350,7 @@ class PortalDatabase:
             "is_active",
             "is_admin",
             "client_type",
+            "account_type",
             "registered_at",
             "last_login_at",
             "last_otp_requested_at",
@@ -3128,6 +3166,7 @@ class PortalDatabase:
                 u.is_active,
                 u.is_admin,
                 u.client_type,
+                u.account_type,
                 u.last_login_at,
                 u.last_otp_requested_at,
                 u.last_otp_verified_at,
@@ -3180,6 +3219,7 @@ class PortalDatabase:
                     "isActive": bool(payload.get("is_active")),
                     "isAdmin": bool(payload.get("is_admin")),
                     "clientType": normalize_client_type(payload.get("client_type")),
+                    "accountType": normalize_account_type(payload.get("account_type")),
                     "registeredAt": payload.get("registered_at"),
                     "lastLoginAt": payload.get("last_login_at"),
                     "lastOtpRequestedAt": payload.get("last_otp_requested_at"),
@@ -3210,6 +3250,7 @@ class PortalDatabase:
                 "is_active",
                 "is_admin",
                 "client_type",
+                "account_type",
                 "registered_at",
                 "last_login_at",
                 "last_otp_requested_at",
@@ -3461,6 +3502,74 @@ class PortalDatabase:
                 ),
             )
             return self._load_user_row(conn, normalized_email) or {}
+
+    def update_user_account_type(self, email: str, *, account_type: str) -> dict[str, Any]:
+        normalized_email = normalize_email(email)
+        raw = normalize_text(account_type).lower()
+        if not normalized_email:
+            raise ValueError("Email is required.")
+        if raw not in ACCOUNT_TYPE_VALUES:
+            raise ValueError("Account type must be business or family.")
+
+        with self._connection() as conn:
+            user = self._load_user_row(conn, normalized_email)
+            if user is None:
+                raise KeyError(f"Unknown user: {normalized_email}")
+            conn.execute(
+                "UPDATE users SET account_type = ?, updated_at = ? WHERE id = ?",
+                (raw, now_iso(), int(user.get("id") or 0)),
+            )
+            return self._load_user_row(conn, normalized_email) or {}
+
+    def get_account_type(self, *, user_id: int = 0, email: str = "") -> str:
+        with self._connection() as conn:
+            if int(user_id or 0) > 0:
+                row = conn.execute("SELECT account_type FROM users WHERE id = ?", (int(user_id),)).fetchone()
+            else:
+                row = conn.execute(
+                    "SELECT account_type FROM users WHERE email = ?", (normalize_email(email),)
+                ).fetchone()
+        return normalize_account_type(row["account_type"] if row is not None else "")
+
+    def count_accounts_by_type(self) -> dict[str, int]:
+        counts = {value: 0 for value in ACCOUNT_TYPE_VALUES}
+        with self._connection() as conn:
+            for row in conn.execute("SELECT account_type, COUNT(*) AS n FROM users GROUP BY account_type").fetchall():
+                counts[normalize_account_type(row["account_type"])] += int(row["n"] or 0)
+        return counts
+
+    def get_account_type_permissions(self) -> dict[str, dict[str, bool]]:
+        """{account_type: {feature_id: allowed}} for the switches that were moved."""
+
+        permissions: dict[str, dict[str, bool]] = {value: {} for value in ACCOUNT_TYPE_VALUES}
+        with self._connection() as conn:
+            rows = conn.execute("SELECT account_type, feature_id, allowed FROM account_type_features").fetchall()
+        for row in rows:
+            account_type = normalize_text(row["account_type"])
+            if account_type in permissions:
+                permissions[account_type][normalize_text(row["feature_id"])] = bool(row["allowed"])
+        return permissions
+
+    def set_account_type_feature(self, *, account_type: str, feature_id: str, allowed: bool, updated_by: str = "") -> dict[str, dict[str, bool]]:
+        normalized_type = normalize_text(account_type).lower()
+        normalized_feature = normalize_text(feature_id)
+        if normalized_type not in ACCOUNT_TYPE_VALUES:
+            raise ValueError("Account type must be business or family.")
+        if normalized_feature not in ACCOUNT_FEATURES_BY_ID:
+            raise ValueError(f"Unknown feature: {normalized_feature}")
+        with self._connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO account_type_features (account_type, feature_id, allowed, updated_by, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(account_type, feature_id) DO UPDATE SET
+                    allowed = excluded.allowed,
+                    updated_by = excluded.updated_by,
+                    updated_at = excluded.updated_at
+                """,
+                (normalized_type, normalized_feature, 1 if allowed else 0, normalize_email(updated_by), now_iso()),
+            )
+        return self.get_account_type_permissions()
 
     def delete_user(self, email: str) -> dict[str, Any]:
         normalized_email = normalize_email(email)

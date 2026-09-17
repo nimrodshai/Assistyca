@@ -28,6 +28,7 @@ from urllib import request as urllib_request
 from zoneinfo import ZoneInfo
 from zoneinfo import ZoneInfoNotFoundError
 
+from packages.infrastructure.account_types import account_feature_allowed
 from packages.infrastructure.inbox_watch import poll_interval_seconds
 from packages.infrastructure.mailbox_finding_scans import account_timezone
 from packages.infrastructure.portal_db import PortalDatabase
@@ -161,6 +162,12 @@ class InboxWatchScheduler:
                 quiet_start=self.config.quiet_start_hour,
                 quiet_end=self.config.quiet_end_hour,
             )
+            if not account_feature_allowed(self.database, user_id=user_id, feature_id="inbox_watch"):
+                # Switched off for this kind of account: checked again later,
+                # so switching it back on picks the account up without a reconnect.
+                paused += 1
+                self.database.set_inbox_watch_next_poll(user_id=user_id, next_poll_at=reference + TRIAL_OVER_PAUSE)
+                continue
             try:
                 result = self._poll(account, timezone_name)
             except TrialOver:

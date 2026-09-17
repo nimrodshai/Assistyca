@@ -149,6 +149,12 @@ from packages.infrastructure.portal_db import DEFAULT_INPUT_TOKEN_PRICE_MULTIPLI
 from packages.infrastructure.portal_db import DEFAULT_OUTPUT_TOKEN_PRICE_MULTIPLIER
 from packages.infrastructure.portal_db import PortalDatabase
 from packages.infrastructure.portal_db import normalize_client_type
+from packages.infrastructure.account_types import ACCOUNT_FEATURES_BY_ID
+from packages.infrastructure.account_types import ACCOUNT_TYPE_VALUES
+from packages.infrastructure.account_types import account_feature_allowed
+from packages.infrastructure.account_types import blocked_tools
+from packages.infrastructure.account_types import describe_account_types
+from packages.infrastructure.account_types import normalize_account_type
 from packages.infrastructure.portal_db import normalize_user_profile
 from packages.infrastructure.portal_db import normalize_whatsapp_lookup_id
 from packages.infrastructure.portal_runtime_paths import resolve_portal_agent_output_root
@@ -4806,6 +4812,10 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             self._handle_admin_agent_turns_get(parsed)
             return
 
+        if path == "/api/admin/account-types":
+            self._handle_admin_account_types_get()
+            return
+
         if path == "/webhooks/whatsapp":
             self._handle_whatsapp_webhook_verification(parsed)
             return
@@ -4971,6 +4981,10 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
 
         if path == "/api/admin/users" or path.startswith("/api/admin/users/"):
             self._handle_admin_users_post(parsed)
+            return
+
+        if path == "/api/admin/account-types":
+            self._handle_admin_account_types_post()
             return
 
         if path == "/api/features" or path.startswith("/api/features/"):
@@ -7570,6 +7584,19 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             # any of the mailbox and calendar machinery below it and needs no
             # connection, no credential, and no folder to write into.
             self._answer_exchange_rate(fields)
+            return
+        gated_feature = (
+            "receipts" if is_custom_google_batch
+            else {"calendar-summary": "calendar", "email-digest": "mail"}.get(proposal_type, "")
+        )
+        if gated_feature and not account_feature_allowed(
+            self.database, email=session.email, feature_id=gated_feature,
+        ):
+            json_response(self, HTTPStatus.FORBIDDEN, {
+                "ok": False,
+                "error": "not_included",
+                "message": f"{ACCOUNT_FEATURES_BY_ID[gated_feature].label} is not included in this account.",
+            })
             return
         if proposal_type not in {"calendar-summary", "email-digest"} and not is_custom_google_batch:
             json_response(self, HTTPStatus.NOT_FOUND, {
@@ -10381,6 +10408,13 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         session, authenticated_user = authenticated
         if not self._require_active_trial(authenticated_user):
             return
+        if not account_feature_allowed(self.database, email=session.email, feature_id="voice_notes"):
+            json_response(self, HTTPStatus.FORBIDDEN, {
+                "ok": False,
+                "error": "not_included",
+                "message": "Voice notes are not included in this account. Typing it works.",
+            })
+            return
         if not self._enforce_rate_limit(
             f"voice-transcribe:{session.email}",
             VOICE_TRANSCRIBE_PER_USER,
@@ -11025,6 +11059,10 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             receipts_link=self._receipts_link_builder(session.email, channel),
             sender_wa_id=sender_wa_id,
             attached_photo=photo_context,
+            blocked_tools=blocked_tools(
+                self.database.get_account_type_permissions(),
+                self.database.get_account_type(user_id=user_id, email=session.email),
+            ),
         )
         model = resolve_task_model(AGENT_TURN_COMPLEXITY, "PORTAL_ASSISTANT_MODEL", "OPENAI_MODEL")
 
@@ -12292,6 +12330,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             "isActive": bool(user.get("isActive")),
             "isAdmin": bool(user.get("isAdmin")),
             "clientType": client_type,
+            "accountType": normalize_account_type(user.get("accountType")),
             "registeredAt": user.get("registeredAt"),
             "lastLoginAt": user.get("lastLoginAt"),
             "usageCount": int(user.get("usageCount") or 0),
@@ -12341,6 +12380,52 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             "ownerEmail": self._contact_opportunities_owner_email(),
             "sort": "urgency",
             "opportunities": opportunities,
+        })
+
+    def _handle_admin_account_types_get(self) -> None:
+        """Business and family, and which features each may use. The same people
+        who manage the clients see it: it decides what a client gets."""
+
+        if self._require_client_manager_user() is None:
+            return
+        json_response(self, HTTPStatus.OK, {
+            "ok": True,
+            **describe_account_types(
+                self.database.get_account_type_permissions(),
+                self.database.count_accounts_by_type(),
+            ),
+        })
+
+    def _handle_admin_account_types_post(self) -> None:
+        authenticated = self._require_client_manager_user()
+        if authenticated is None:
+            return
+        session, _ = authenticated
+        try:
+            payload = parse_json_body(self)
+        except ValueError as exc:
+            json_response(self, HTTPStatus.BAD_REQUEST, {"ok": False, "error": "invalid_json", "message": str(exc)})
+            return
+        account_type = normalize_text(payload.get("accountType")).lower()
+        feature_id = normalize_text(payload.get("featureId"))
+        allowed = payload.get("allowed")
+        if account_type not in ACCOUNT_TYPE_VALUES or feature_id not in ACCOUNT_FEATURES_BY_ID or not isinstance(allowed, bool):
+            json_response(self, HTTPStatus.BAD_REQUEST, {
+                "ok": False,
+                "error": "invalid_request",
+                "message": "Name an account type, a feature, and whether it is allowed.",
+            })
+            return
+        permissions = self.database.set_account_type_feature(
+            account_type=account_type, feature_id=feature_id, allowed=allowed, updated_by=session.email,
+        )
+        print(
+            f"admin.account_type_feature by={session.email} type={account_type} feature={feature_id} allowed={allowed}",
+            flush=True,
+        )
+        json_response(self, HTTPStatus.OK, {
+            "ok": True,
+            **describe_account_types(permissions, self.database.count_accounts_by_type()),
         })
 
     def _handle_admin_users_get(self) -> None:
@@ -12535,6 +12620,28 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             json_response(self, HTTPStatus.OK, {
                 "ok": True,
                 "message": "Trial updated." if trial_days else "Trial limit removed.",
+                "user": self._serialize_admin_user(user),
+            })
+            return
+
+        if len(parts) == 5 and parts[:3] == ["api", "admin", "users"] and parts[4] == "account-type":
+            email = normalize_email(urllib_parse.unquote(parts[3]))
+            try:
+                payload = parse_json_body(self)
+            except ValueError as exc:
+                json_response(self, HTTPStatus.BAD_REQUEST, {"ok": False, "error": "invalid_json", "message": str(exc)})
+                return
+            try:
+                user = self.database.update_user_account_type(email, account_type=normalize_text(payload.get("accountType")))
+            except ValueError as exc:
+                json_response(self, HTTPStatus.BAD_REQUEST, {"ok": False, "error": "invalid_account_type", "message": str(exc)})
+                return
+            except KeyError as exc:
+                json_response(self, HTTPStatus.NOT_FOUND, {"ok": False, "error": "not_found", "message": str(exc)})
+                return
+            json_response(self, HTTPStatus.OK, {
+                "ok": True,
+                "message": "Account type updated.",
                 "user": self._serialize_admin_user(user),
             })
             return
@@ -14168,6 +14275,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 notes="Registered on the web, then signed up over WhatsApp." if registration else "Signed up over WhatsApp.",
             )
             self.database.set_user_trial(email, trial_days=resolve_default_trial_days(), start_now=True)
+            self.database.update_user_account_type(email, account_type=registered_kind)
             user = self.database.get_user(email) or {}
             self.database.link_user_whatsapp_number(
                 user_id=int(user.get("id") or 0),

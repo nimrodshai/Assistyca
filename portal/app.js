@@ -36,7 +36,11 @@ const ADMIN_CLIENT_TYPES = [
   { value: "qa", label: "QA", className: "is-client-type-qa" },
 ];
 const DEFAULT_ADMIN_CLIENT_TYPE = "demo";
-const VALID_TABS = new Set(["features", "opportunities", "clients", "turns", "personal-details", "preview", "simulator", "billing", "pricing", "settings"]);
+const ADMIN_ACCOUNT_TYPES = [
+  { value: "business", label: "Business" },
+  { value: "family", label: "Family" },
+];
+const VALID_TABS = new Set(["features", "opportunities", "clients", "account-types", "turns", "personal-details", "preview", "simulator", "billing", "pricing", "settings"]);
 const VALID_FEATURE_STUDIO_VIEWS = new Set(["overview", "activation", "editor", "history"]);
 const TAB_ALIASES = new Map([
   ["guidance", "features"],
@@ -1260,6 +1264,11 @@ const state = {
   activeTab: "features",
   settingsMode: "account",
   settingsOpen: false,
+  accountTypes: null,
+  accountTypesLoading: false,
+  accountTypesError: "",
+  accountTypesBusy: {},
+  adminAccountTypeBusyByEmail: {},
   agentTurns: null,
   agentTurnsLoading: false,
   agentTurnsError: "",
@@ -1704,6 +1713,9 @@ const elements = {
   opportunitiesList: document.querySelector("#opportunitiesList"),
   opportunitiesRefreshButton: document.querySelector("#opportunitiesRefreshButton"),
   turnsPanel: document.querySelector("#turnsPanel"),
+  accountTypesPanel: document.querySelector("#accountTypesPanel"),
+  accountTypesContent: document.querySelector("#accountTypesContent"),
+  accountTypesRefreshButton: document.querySelector("#accountTypesRefreshButton"),
   turnsSummary: document.querySelector("#turnsSummary"),
   turnsList: document.querySelector("#turnsList"),
   turnsRefreshButton: document.querySelector("#turnsRefreshButton"),
@@ -2348,6 +2360,7 @@ function normalizeAdminUserRecord(user = {}) {
     isActive: Boolean(user.isActive),
     isAdmin: Boolean(user.isAdmin),
     clientType,
+    accountType: user.accountType === "family" ? "family" : "business",
     registeredAt: String(user.registeredAt || "").trim(),
     lastLoginAt: String(user.lastLoginAt || "").trim(),
     usageCount: Number(user.usageCount || user.usage_count || 0),
@@ -2709,6 +2722,25 @@ function createAdminClientTypeSelect(user, options = {}) {
 
   select.value = selectedClientType;
   select.dataset.adminClientTypeValue = selectedClientType;
+  return select;
+}
+
+function createAdminAccountTypeSelect(user, options = {}) {
+  const normalizedEmail = normalizeEmail(user?.email || "");
+  const selected = user?.accountType === "family" ? "family" : "business";
+  const select = document.createElement("select");
+  select.className = "admin-client-type-select";
+  select.dataset.adminAccountTypeUser = normalizedEmail;
+  select.disabled = Boolean(options.disabled) || Boolean(state.adminAccountTypeBusyByEmail[normalizedEmail]);
+  select.setAttribute("aria-label", `Account type for ${user?.displayName || normalizedEmail || "client"}`);
+  for (const type of ADMIN_ACCOUNT_TYPES) {
+    const option = document.createElement("option");
+    option.value = type.value;
+    option.textContent = type.label;
+    option.selected = type.value === selected;
+    select.append(option);
+  }
+  select.value = selected;
   return select;
 }
 
@@ -12653,7 +12685,7 @@ function setActiveTab(tab, options = {}) {
   if (nextTab === "clients" && !canManageClients()) {
     nextTab = "features";
   }
-  if (nextTab === "turns" && !canManageClients()) {
+  if ((nextTab === "turns" || nextTab === "account-types") && !canManageClients()) {
     nextTab = "features";
   }
 
@@ -12697,6 +12729,9 @@ function setActiveTab(tab, options = {}) {
   }
   if (nextTab === "turns") {
     void refreshAgentTurns();
+  }
+  if (nextTab === "account-types") {
+    void refreshAccountTypes();
   }
 }
 
@@ -14377,7 +14412,7 @@ function createAdminUsersListView() {
 
   const thead = document.createElement("thead");
   const headRow = document.createElement("tr");
-  for (const heading of ["Client", "Email", "Client type", "Free trial", "Cost this month", "Active", "Last login", ""]) {
+  for (const heading of ["Client", "Email", "Account type", "Client type", "Free trial", "Cost this month", "Active", "Last login", ""]) {
     const cell = document.createElement("th");
     cell.textContent = heading;
     headRow.append(cell);
@@ -14398,6 +14433,11 @@ function createAdminUsersListView() {
 
     const emailCell = document.createElement("td");
     emailCell.textContent = user.email;
+
+    const accountTypeCell = document.createElement("td");
+    accountTypeCell.append(createAdminAccountTypeSelect(user, {
+      disabled: Boolean(state.adminDeleteBusyByEmail[user.email]),
+    }));
 
     const clientTypeCell = document.createElement("td");
     clientTypeCell.append(createAdminClientTypeSelect(user, {
@@ -14433,7 +14473,7 @@ function createAdminUsersListView() {
     actionCell.append(manageButton);
 
     row.classList.toggle("is-inactive-client", !user.isActive);
-    row.append(nameCell, emailCell, clientTypeCell, trialCell, spendCell, activeCell, lastLoginCell, actionCell);
+    row.append(nameCell, emailCell, accountTypeCell, clientTypeCell, trialCell, spendCell, activeCell, lastLoginCell, actionCell);
     tbody.append(row);
   }
 
@@ -14615,6 +14655,7 @@ function createAdminUserDetailView(user) {
   const infoRows = document.createElement("div");
   infoRows.className = "detail-stack";
   infoRows.append(
+    createAdminDetailRow("Account type", user.accountType === "family" ? "Family" : "Business"),
     createAdminDetailRow("Client type", getAdminClientTypeLabel(user.clientType)),
     createAdminDetailRow("Free trial", describeAdminTrial(user).label),
     createAdminDetailRow("Login", user.isActive ? "Active" : "Inactive"),
@@ -14636,6 +14677,9 @@ function createAdminUserDetailView(user) {
     disabled: isDeleting || isStatusSaving,
     help: true,
   });
+  infoActions.append(createAdminAccountTypeSelect(user, {
+    disabled: isDeleting || isStatusSaving,
+  }));
   infoActions.append(clientTypeControl);
   infoActions.append(trialControl);
   infoActions.append(statusControl);
@@ -14996,6 +15040,52 @@ async function saveAdminUserStatus(email, isActive) {
     renderApp();
     if (updatedUser) {
       setStatus(updatedUser.isActive ? "Client activated" : "Client disabled");
+    }
+  }
+}
+
+async function saveAdminUserAccountType(email, accountType) {
+  const normalizedEmail = normalizeEmail(email);
+  const nextType = accountType === "family" ? "family" : "business";
+  const user = state.adminUsers.find((entry) => entry.email === normalizedEmail);
+  if (!canManageClients() || !user || state.adminAccountTypeBusyByEmail[normalizedEmail]) {
+    return;
+  }
+  const previousType = user.accountType === "family" ? "family" : "business";
+  if (previousType === nextType) {
+    return;
+  }
+
+  const setType = (value) => {
+    state.adminUsers = state.adminUsers.map((entry) => (
+      entry.email === normalizedEmail ? { ...entry, accountType: value } : entry
+    ));
+  };
+  state.adminAccountTypeBusyByEmail = { ...state.adminAccountTypeBusyByEmail, [normalizedEmail]: true };
+  setType(nextType);
+  renderApp();
+
+  let saved = false;
+  try {
+    const response = await apiRequest(`/api/admin/users/${encodeURIComponent(normalizedEmail)}/account-type`, {
+      method: "POST",
+      body: { accountType: nextType },
+    });
+    upsertAdminUserState(response.user || { ...user, accountType: nextType });
+    // The grid's account counts moved with it.
+    state.accountTypes = null;
+    saved = true;
+  } catch (error) {
+    setType(previousType);
+    openAuthAlert("Couldn’t update account type", formatApiErrorMessage(error, "We couldn’t update that account type right now."), {
+      eyebrow: "Account type",
+    });
+  } finally {
+    const { [normalizedEmail]: _ignore, ...nextBusy } = state.adminAccountTypeBusyByEmail;
+    state.adminAccountTypeBusyByEmail = nextBusy;
+    renderApp();
+    if (saved) {
+      setStatus(`Account type set to ${nextType === "family" ? "Family" : "Business"}`);
     }
   }
 }
@@ -31617,6 +31707,7 @@ function updateOpportunityNavigation() {
 const ADMIN_RAIL_TABS = [
   { tab: "opportunities", isAllowed: canReviewOpportunities },
   { tab: "clients", isAllowed: canManageClients },
+  { tab: "account-types", isAllowed: canManageClients },
   { tab: "preview", isAllowed: isAdminUser },
   { tab: "simulator", isAllowed: isAdminUser },
   { tab: "turns", isAllowed: canManageClients },
@@ -31680,6 +31771,201 @@ function updateClientNavigation() {
     persistLastPrimaryTab();
     setHashForTab("features");
   }
+}
+
+// -- Admin > Account types: which features business and family accounts get ---
+
+async function refreshAccountTypes() {
+  if (!canManageClients() || state.accountTypesLoading) {
+    return null;
+  }
+
+  state.accountTypesLoading = true;
+  state.accountTypesError = "";
+  updateAccountTypesPanel();
+
+  try {
+    state.accountTypes = await apiRequest("/api/admin/account-types", { timeoutMs: 15000 });
+    return state.accountTypes;
+  } catch (error) {
+    state.accountTypesError = formatApiErrorMessage(error, "We couldn’t load the account types right now.");
+    return null;
+  } finally {
+    state.accountTypesLoading = false;
+    updateAccountTypesPanel();
+  }
+}
+
+function setAccountTypeFeatureLocally(accountType, featureId, allowed) {
+  const features = Array.isArray(state.accountTypes?.features) ? state.accountTypes.features : [];
+  state.accountTypes = {
+    ...state.accountTypes,
+    features: features.map((feature) => (
+      feature.featureId === featureId
+        ? { ...feature, allowed: { ...feature.allowed, [accountType]: allowed } }
+        : feature
+    )),
+  };
+}
+
+async function saveAccountTypeFeature(accountType, featureId, allowed) {
+  const key = `${accountType}:${featureId}`;
+  if (!canManageClients() || state.accountTypesBusy[key]) {
+    return;
+  }
+
+  state.accountTypesBusy = { ...state.accountTypesBusy, [key]: true };
+  setAccountTypeFeatureLocally(accountType, featureId, allowed);
+  updateAccountTypesPanel();
+
+  try {
+    const response = await apiRequest("/api/admin/account-types", {
+      method: "POST",
+      body: { accountType, featureId, allowed },
+    });
+    state.accountTypes = response;
+    const typeLabel = ADMIN_ACCOUNT_TYPES.find((entry) => entry.value === accountType)?.label || accountType;
+    const featureLabel = (response.features || []).find((entry) => entry.featureId === featureId)?.label || featureId;
+    setStatus(`${featureLabel} ${allowed ? "on" : "off"} for ${typeLabel.toLowerCase()} accounts`);
+  } catch (error) {
+    setAccountTypeFeatureLocally(accountType, featureId, !allowed);
+    openAuthAlert("Couldn’t change that feature", formatApiErrorMessage(error, "The change was not saved."), {
+      eyebrow: "Account types",
+    });
+  } finally {
+    const { [key]: _ignore, ...nextBusy } = state.accountTypesBusy;
+    state.accountTypesBusy = nextBusy;
+    updateAccountTypesPanel();
+  }
+}
+
+function createAccountTypeSwitch(accountType, feature) {
+  const allowed = Boolean(feature.allowed?.[accountType.value]);
+  const label = document.createElement("label");
+  label.className = "admin-switch";
+
+  const input = document.createElement("input");
+  input.type = "checkbox";
+  input.checked = allowed;
+  input.disabled = Boolean(state.accountTypesBusy[`${accountType.value}:${feature.featureId}`]);
+  input.dataset.accountType = accountType.value;
+  input.dataset.accountTypeFeature = feature.featureId;
+  input.setAttribute("aria-label", `${feature.label} for ${accountType.label.toLowerCase()} accounts`);
+
+  const track = document.createElement("span");
+  track.className = "admin-switch-track";
+  track.setAttribute("aria-hidden", "true");
+
+  const text = document.createElement("span");
+  text.className = "account-types-switch-text";
+  text.textContent = allowed ? "On" : "Off";
+
+  label.append(input, track, text);
+  return label;
+}
+
+function createAccountTypesGrid(data) {
+  const accountTypes = Array.isArray(data.accountTypes) ? data.accountTypes : [];
+  const features = Array.isArray(data.features) ? data.features : [];
+
+  const card = document.createElement("article");
+  card.className = "glass-card turns-table-card account-types-card";
+  const table = document.createElement("table");
+  table.className = "turns-table account-types-table";
+
+  const head = document.createElement("thead");
+  const headRow = document.createElement("tr");
+  const featureHeading = document.createElement("th");
+  featureHeading.textContent = "Feature";
+  headRow.append(featureHeading);
+  for (const accountType of accountTypes) {
+    const cell = document.createElement("th");
+    cell.className = "account-types-type-heading";
+    const name = document.createElement("span");
+    name.textContent = accountType.label;
+    const count = document.createElement("small");
+    const accounts = Number(accountType.accountCount || 0);
+    count.textContent = `${accounts} account${accounts === 1 ? "" : "s"}`;
+    cell.append(name, count);
+    headRow.append(cell);
+  }
+  head.append(headRow);
+
+  const body = document.createElement("tbody");
+  for (const feature of features) {
+    const row = document.createElement("tr");
+    const nameCell = document.createElement("td");
+    nameCell.className = "account-types-feature";
+    const name = document.createElement("strong");
+    name.textContent = feature.label;
+    const description = document.createElement("span");
+    description.textContent = feature.description;
+    nameCell.append(name, description);
+    row.append(nameCell);
+    for (const accountType of accountTypes) {
+      const cell = document.createElement("td");
+      cell.className = "account-types-switch-cell";
+      cell.append(createAccountTypeSwitch(accountType, feature));
+      row.append(cell);
+    }
+    body.append(row);
+  }
+
+  table.append(head, body);
+  card.append(table);
+  return card;
+}
+
+function createAccountTypesAlwaysOn(data) {
+  const card = document.createElement("article");
+  card.className = "glass-card account-types-always-on";
+  const title = document.createElement("h3");
+  title.textContent = "Always on, for every account";
+  const list = document.createElement("ul");
+  for (const entry of Array.isArray(data.alwaysOn) ? data.alwaysOn : []) {
+    const item = document.createElement("li");
+    const label = document.createElement("strong");
+    label.textContent = entry.label;
+    const description = document.createElement("span");
+    description.textContent = entry.description;
+    item.append(label, description);
+    list.append(item);
+  }
+  card.append(title, list);
+  return card;
+}
+
+function updateAccountTypesPanel() {
+  if (!elements.accountTypesPanel || !elements.accountTypesContent) {
+    return;
+  }
+
+  if (elements.accountTypesRefreshButton) {
+    elements.accountTypesRefreshButton.disabled = state.accountTypesLoading || !canManageClients();
+    elements.accountTypesRefreshButton.textContent = state.accountTypesLoading ? "Refreshing" : "Refresh";
+  }
+
+  if (!canManageClients()) {
+    elements.accountTypesContent.replaceChildren();
+    return;
+  }
+
+  // A reload can land on this tab before anything asked for the grid.
+  if (state.accountTypes === null && !state.accountTypesLoading && !state.accountTypesError && state.activeTab === "account-types") {
+    void refreshAccountTypes();
+  }
+
+  const data = state.accountTypes;
+  if (state.accountTypesError && !data) {
+    elements.accountTypesContent.replaceChildren(createAdminEmptyState("The account types did not load", state.accountTypesError));
+    return;
+  }
+  if (!data) {
+    elements.accountTypesContent.replaceChildren(createAdminEmptyState("Loading account types", "Reading which features each kind of account gets."));
+    return;
+  }
+
+  elements.accountTypesContent.replaceChildren(createAccountTypesGrid(data), createAccountTypesAlwaysOn(data));
 }
 
 // -- Admin > Turns: the three numbers and the turns behind them ---------------
@@ -34947,6 +35233,7 @@ function updatePanelVisibility() {
   elements.featuresPanel.classList.toggle("is-hidden", state.activeTab !== "features" || inStudio);
   elements.opportunitiesPanel?.classList.toggle("is-hidden", state.activeTab !== "opportunities");
   elements.turnsPanel?.classList.toggle("is-hidden", state.activeTab !== "turns");
+  elements.accountTypesPanel?.classList.toggle("is-hidden", state.activeTab !== "account-types");
   elements.clientsPanel?.classList.toggle("is-hidden", state.activeTab !== "clients");
   elements.personalDetailsPanel.classList.toggle("is-hidden", state.activeTab !== "personal-details");
   elements.featureStudioPanel.classList.toggle("is-hidden", !inStudio);
@@ -35056,6 +35343,7 @@ function renderApp(options = {}) {
   updateFeatureList();
   updateOpportunitiesPanel();
   updateTurnsPanel();
+  updateAccountTypesPanel();
   updateFeatureActivationFields();
   populateMonitorTimezoneOptions();
   updateMonitorFields();
@@ -36731,6 +37019,11 @@ function bindEvents() {
 
     elements.adminUsersPane.addEventListener("change", (event) => {
       const target = event.target;
+      if (target instanceof HTMLSelectElement && target.dataset.adminAccountTypeUser) {
+        void saveAdminUserAccountType(target.dataset.adminAccountTypeUser || "", target.value);
+        return;
+      }
+
       if (target instanceof HTMLSelectElement && target.dataset.adminClientTypeUser) {
         void saveAdminUserClientType(target.dataset.adminClientTypeUser || "", target.value);
         return;
@@ -37288,6 +37581,21 @@ function bindEvents() {
   if (elements.turnsRefreshButton) {
     elements.turnsRefreshButton.addEventListener("click", () => {
       void refreshAgentTurns();
+    });
+  }
+
+  if (elements.accountTypesRefreshButton) {
+    elements.accountTypesRefreshButton.addEventListener("click", () => {
+      void refreshAccountTypes();
+    });
+  }
+
+  if (elements.accountTypesContent) {
+    elements.accountTypesContent.addEventListener("change", (event) => {
+      const target = event.target;
+      if (target instanceof HTMLInputElement && target.dataset.accountTypeFeature) {
+        void saveAccountTypeFeature(target.dataset.accountType || "", target.dataset.accountTypeFeature, target.checked);
+      }
     });
   }
 

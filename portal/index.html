@@ -10,7 +10,7 @@
     />
     <meta name="color-scheme" content="light dark" />
     <script src="./theme-init.js?v=1"></script>
-    <link rel="stylesheet" href="./styles.css?v=168" />
+    <link rel="stylesheet" href="./styles.css?v=169" />
   </head>
   <body data-view="loading">
     <div class="orb orb-left" aria-hidden="true"></div>
@@ -292,6 +292,9 @@
               </button>
               <button class="menu-item" type="button" role="menuitem" data-admin-tab="clients">
                 Clients
+              </button>
+              <button class="menu-item" type="button" role="menuitem" data-admin-tab="account-types">
+                Account types
               </button>
               <button class="menu-item" type="button" role="menuitem" data-admin-tab="preview">
                 Preview
@@ -577,6 +580,27 @@
 
         <div id="turnsSummary" class="opportunities-summary turns-summary" aria-live="polite"></div>
         <div id="turnsList" class="opportunities-list turns-list"></div>
+      </section>
+
+      <section id="accountTypesPanel" class="tab-panel opportunities-panel account-types-panel is-hidden">
+        <div class="panel-intro opportunities-intro">
+          <div>
+            <p class="eyebrow">Admin</p>
+            <h1>Account types</h1>
+            <p class="lede compact">
+              Who an account is for, and which features it may use. A feature switched off is gone from the
+              assistant for that kind of account, in the chat and on WhatsApp.
+            </p>
+          </div>
+
+          <div class="opportunities-actions">
+            <button id="accountTypesRefreshButton" class="ghost-button small" type="button">
+              Refresh
+            </button>
+          </div>
+        </div>
+
+        <div id="accountTypesContent" class="account-types-content" aria-live="polite"></div>
       </section>
 
       <section id="clientsPanel" class="tab-panel clients-panel is-hidden">
@@ -1849,6 +1873,6 @@ Owner said afternoons are easier."
 
     <script src="https://accounts.google.com/gsi/client" async defer data-google-identity-services="true"></script>
     <script src="./connection-identity.js?v=1"></script>
-    <script src="./app.js?v=222"></script>
+    <script src="./app.js?v=223"></script>
   </body>
 </html>

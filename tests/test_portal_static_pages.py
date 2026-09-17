@@ -206,7 +206,7 @@ class PortalStaticPageTests(unittest.TestCase):
         html = (self.root / "portal" / "index.html").read_text(encoding="utf-8")
         styles = (self.root / "portal" / "styles.css").read_text(encoding="utf-8")
 
-        self.assertIn("styles.css?v=168", html)
+        self.assertIn("styles.css?v=169", html)
         self.assertIn(':root[data-theme="dark"] .panel-intro h1', styles)
         self.assertIn(':root[data-theme="dark"] .client-metric', styles)
         self.assertIn(':root[data-theme="dark"] .admin-users-table-wrap', styles)
@@ -1762,7 +1762,7 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn("proposal.revision", script)
         self.assertIn("proposalRevision", script)
         self.assertIn('apiRequest("/api/agent/turn"', script)
-        self.assertIn("styles.css?v=168", html)
+        self.assertIn("styles.css?v=169", html)
         self.assertIn("app.js?v=", html)
         self.assertIn("https://accounts.google.com/gsi/client", html)
         self.assertIn('data-google-identity-services="true"', html)
@@ -2606,9 +2606,9 @@ class AdminFreeTrialControlTests(unittest.TestCase):
 
         # Dropped here, the whole control would silently render "No limit".
         self.assertIn("trial: normalizeAdminTrial(user.trial || null),", script)
-        self.assertIn('for (const heading of ["Client", "Email", "Client type", "Free trial",', script)
+        self.assertIn('for (const heading of ["Client", "Email", "Account type", "Client type", "Free trial",', script)
         self.assertIn("trialCell.append(createAdminTrialControl(user, {", script)
-        self.assertIn("row.append(nameCell, emailCell, clientTypeCell, trialCell, spendCell,", script)
+        self.assertIn("row.append(nameCell, emailCell, accountTypeCell, clientTypeCell, trialCell, spendCell,", script)
 
     def test_the_control_posts_the_day_count_to_the_trial_route(self) -> None:
         script = (self.root / "portal" / "app.js").read_text(encoding="utf-8")
