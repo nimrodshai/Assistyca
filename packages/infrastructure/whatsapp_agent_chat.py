@@ -561,6 +561,13 @@ def build_signup_concierge_prompt(
         )
 
     registered_kind = normalize_text(registered.get("kind")).lower() if registered else ""
+    if account_created and registered_kind == "family":
+        # A family's week is held for them only once we know who is in it, so
+        # the welcome is also the first question of getting to know them.
+        task += (
+            " Then, in the same message, say in a sentence that to look after their week you would like to "
+            "get to know the family first, and ask one question only: who is at home with them."
+        )
     if registered:
         task = (
             "They registered on the Assistyca website first and gave their name and, in a line, what they "

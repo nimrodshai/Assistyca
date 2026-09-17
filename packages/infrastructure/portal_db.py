@@ -30,6 +30,7 @@ from packages.infrastructure.agent_approvals import approval_fingerprint
 from packages.infrastructure.agent_approvals import approval_matches
 from packages.infrastructure.feature_catalog import load_default_feature_catalog
 from packages.infrastructure.insurance_manager import INSURANCE_POLICY_STATUSES
+from packages.infrastructure import household
 from packages.infrastructure.insurance_manager import choose_applicable_version
 from packages.infrastructure.insurance_manager import match_expense_to_policies
 from packages.infrastructure.insurance_manager import normalize_policy_version
@@ -405,6 +406,69 @@ CREATE TABLE IF NOT EXISTS agent_turns (
 );
 CREATE INDEX IF NOT EXISTS idx_agent_turns_created ON agent_turns(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_agent_turns_user_created ON agent_turns(user_id, created_at DESC);
+"""
+
+HOUSEHOLD_TABLES_SQL = """
+-- The family an account keeps, apart from the short remembered facts that
+-- give way to newer ones: nothing here is dropped to make room, only when
+-- the person says so or the account is deleted.
+CREATE TABLE IF NOT EXISTS household_profiles (
+    user_id INTEGER PRIMARY KEY,
+    account_kind TEXT NOT NULL DEFAULT 'business',
+    getting_to_know TEXT NOT NULL DEFAULT 'not_started',
+    ask_again_on TEXT NOT NULL DEFAULT '',
+    share_token TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_household_profiles_share_token
+ON household_profiles(share_token) WHERE share_token <> '';
+
+CREATE TABLE IF NOT EXISTS household_members (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    name_key TEXT NOT NULL,
+    role TEXT NOT NULL DEFAULT 'other',
+    age INTEGER,
+    age_noted_on TEXT NOT NULL DEFAULT '',
+    school TEXT NOT NULL DEFAULT '',
+    email TEXT NOT NULL DEFAULT '',
+    phone TEXT NOT NULL DEFAULT '',
+    notes TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_household_members_name
+ON household_members(user_id, name_key);
+
+-- One row per thing that happens every week: kindergarten Sunday to
+-- Thursday, football on Tuesdays. who is the names it is for; days are
+-- weekday codes; drop_off_by and pick_up_by are who drives, "me" for the
+-- account holder, empty while nobody is down for it.
+CREATE TABLE IF NOT EXISTS household_activities (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    title TEXT NOT NULL,
+    who_json TEXT NOT NULL DEFAULT '[]',
+    days TEXT NOT NULL DEFAULT '',
+    start_time TEXT NOT NULL DEFAULT '',
+    end_time TEXT NOT NULL DEFAULT '',
+    place TEXT NOT NULL DEFAULT '',
+    drop_off_by TEXT NOT NULL DEFAULT '',
+    pick_up_by TEXT NOT NULL DEFAULT '',
+    notes TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_household_activities_user
+ON household_activities(user_id, start_time);
 """
 
 INSURANCE_TABLES_SQL = """
@@ -1464,6 +1528,7 @@ class PortalDatabase:
                 conn.executescript(MAILBOX_FINDINGS_TABLE_SQL)
                 conn.executescript(INBOX_WATCH_TABLE_SQL)
                 self._ensure_insurance_tables(conn)
+                self._ensure_household_tables(conn)
                 self._seed_default_model_prices(conn)
                 if self.bootstrap_registered_emails and self.count_registered_users(conn) == 0:
                     self._seed_registered_emails(conn, self.bootstrap_registered_emails)
@@ -1478,6 +1543,29 @@ class PortalDatabase:
         columns = {row["name"] for row in conn.execute("PRAGMA table_info(account_list_items)").fetchall()}
         if "due_on" not in columns:
             conn.execute("ALTER TABLE account_list_items ADD COLUMN due_on TEXT")
+
+    def _ensure_household_tables(self, conn: sqlite3.Connection) -> None:
+        """The family store, and the one change it makes to remembered facts:
+        a fact can be pinned, so the few that must never give way to newer
+        ones (who the account is, whether it is a family) stay."""
+
+        conn.executescript(HOUSEHOLD_TABLES_SQL)
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(account_facts)").fetchall()}
+        if "pinned" not in columns:
+            conn.execute("ALTER TABLE account_facts ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0")
+            # What a registration said was filed as ordinary facts before
+            # facts could be pinned; those are the ones pinning exists for.
+            conn.execute("UPDATE account_facts SET pinned = 1 WHERE fact_key IN ('name', 'their family', 'what they do')")
+            # Families registered before the profile existed are known by
+            # the fact their registration left.
+            stamp = now_iso()
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO household_profiles (user_id, account_kind, getting_to_know, created_at, updated_at)
+                SELECT DISTINCT user_id, 'family', 'not_started', ?, ? FROM account_facts WHERE fact_key = 'their family'
+                """,
+                (stamp, stamp),
+            )
 
     def _ensure_insurance_tables(self, conn: sqlite3.Connection) -> None:
         """The versioned policy store, kept separate from short account facts."""
@@ -7777,14 +7865,15 @@ class PortalDatabase:
         policies = self.list_insurance_policies(user_id=user_id)
         return match_expense_to_policies(policies, expense)
 
-    def save_account_fact(self, *, user_id: int, key: str, fact: str) -> dict[str, Any]:
+    def save_account_fact(self, *, user_id: int, key: str, fact: str, pinned: bool = False) -> dict[str, Any]:
         """Remember one thing the owner told us about how their business works.
 
         Which vendor bills in which currency, that two names are the same
         company, when their year starts: things that were true last month and
         will be true next month. The key is what the fact is about, so telling
         us again corrects what we had rather than stacking a second copy of it
-        beside the first.
+        beside the first. A pinned fact never gives way to newer ones; saying
+        it again keeps it pinned.
         """
 
         if int(user_id or 0) <= 0:
@@ -7798,13 +7887,14 @@ class PortalDatabase:
         with self._connection() as conn:
             conn.execute(
                 """
-                INSERT INTO account_facts (user_id, fact_key, fact, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO account_facts (user_id, fact_key, fact, pinned, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?)
                 ON CONFLICT(user_id, fact_key) DO UPDATE SET
                     fact = excluded.fact,
+                    pinned = MAX(account_facts.pinned, excluded.pinned),
                     updated_at = excluded.updated_at
                 """,
-                (int(user_id), fact_key, text, now, now),
+                (int(user_id), fact_key, text, 1 if pinned else 0, now, now),
             )
             # An account that remembers everything remembers nothing useful,
             # and every one of these travels with every turn. The oldest go
@@ -7813,9 +7903,9 @@ class PortalDatabase:
             conn.execute(
                 """
                 DELETE FROM account_facts
-                WHERE user_id = ? AND id NOT IN (
+                WHERE user_id = ? AND pinned = 0 AND id NOT IN (
                     SELECT id FROM account_facts
-                    WHERE user_id = ?
+                    WHERE user_id = ? AND pinned = 0
                     ORDER BY updated_at DESC, id DESC
                     LIMIT ?
                 )
@@ -7837,11 +7927,14 @@ class PortalDatabase:
             rows = conn.execute(
                 """
                 SELECT * FROM account_facts
-                WHERE user_id = ?
-                ORDER BY updated_at DESC, id DESC
-                LIMIT ?
+                WHERE user_id = ? AND (pinned = 1 OR id IN (
+                    SELECT id FROM account_facts WHERE user_id = ? AND pinned = 0
+                    ORDER BY updated_at DESC, id DESC
+                    LIMIT ?
+                ))
+                ORDER BY pinned DESC, updated_at DESC, id DESC
                 """,
-                (int(user_id), ACCOUNT_FACT_LIMIT),
+                (int(user_id), int(user_id), ACCOUNT_FACT_LIMIT),
             ).fetchall()
         return [fact for fact in (self._load_account_fact_row(row) for row in rows) if fact]
 
@@ -7864,6 +7957,7 @@ class PortalDatabase:
         return {
             "key": str(row["fact_key"] or ""),
             "fact": str(row["fact"] or ""),
+            "pinned": bool(row["pinned"]) if "pinned" in row.keys() else False,
             "createdAt": str(row["created_at"] or ""),
             "updatedAt": str(row["updated_at"] or ""),
         }
@@ -9097,6 +9191,327 @@ class PortalDatabase:
                 params,
             ).fetchall()
         return [record for record in (self._receipt_row_to_record(row) for row in rows) if record]
+
+    # -- household ---------------------------------------------------------
+
+    def _household_profile_row(self, row: sqlite3.Row | None) -> dict[str, Any] | None:
+        if row is None:
+            return None
+        return {
+            "userId": int(row["user_id"]),
+            "accountKind": str(row["account_kind"] or "business"),
+            "gettingToKnow": str(row["getting_to_know"] or "not_started"),
+            "askAgainOn": str(row["ask_again_on"] or ""),
+            "shareToken": str(row["share_token"] or ""),
+            "createdAt": str(row["created_at"] or ""),
+            "updatedAt": str(row["updated_at"] or ""),
+        }
+
+    def get_household_profile(self, *, user_id: int) -> dict[str, Any] | None:
+        if int(user_id or 0) <= 0:
+            return None
+        with self._connection() as conn:
+            row = conn.execute("SELECT * FROM household_profiles WHERE user_id = ?", (int(user_id),)).fetchone()
+        return self._household_profile_row(row)
+
+    def save_household_profile(
+        self,
+        *,
+        user_id: int,
+        account_kind: str | None = None,
+        getting_to_know: str | None = None,
+        ask_again_on: str | None = None,
+    ) -> dict[str, Any]:
+        """Set what is given and keep the rest. A new profile is a business
+        account that has not started getting to know anyone."""
+
+        if int(user_id or 0) <= 0:
+            raise ValueError("User id is required.")
+        if getting_to_know is not None and getting_to_know not in household.GETTING_TO_KNOW_STATUSES:
+            raise ValueError(f"getting_to_know must be one of: {', '.join(household.GETTING_TO_KNOW_STATUSES)}.")
+        now = now_iso()
+        with self._connection() as conn:
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO household_profiles (user_id, account_kind, getting_to_know, created_at, updated_at)
+                VALUES (?, 'business', 'not_started', ?, ?)
+                """,
+                (int(user_id), now, now),
+            )
+            updates: list[str] = []
+            values: list[Any] = []
+            if account_kind is not None:
+                updates.append("account_kind = ?")
+                values.append(household.normalize_account_kind(account_kind))
+            if getting_to_know is not None:
+                updates.append("getting_to_know = ?")
+                values.append(getting_to_know)
+            if ask_again_on is not None:
+                updates.append("ask_again_on = ?")
+                values.append(normalize_text(ask_again_on)[:10])
+            if updates:
+                conn.execute(
+                    f"UPDATE household_profiles SET {', '.join(updates)}, updated_at = ? WHERE user_id = ?",
+                    (*values, now, int(user_id)),
+                )
+            row = conn.execute("SELECT * FROM household_profiles WHERE user_id = ?", (int(user_id),)).fetchone()
+        return self._household_profile_row(row) or {}
+
+    def _household_member_row(self, row: sqlite3.Row | None) -> dict[str, Any] | None:
+        if row is None:
+            return None
+        return {
+            "id": int(row["id"]),
+            "userId": int(row["user_id"]),
+            "name": str(row["name"] or ""),
+            "role": str(row["role"] or "other"),
+            "age": int(row["age"]) if row["age"] is not None else None,
+            "ageNotedOn": str(row["age_noted_on"] or ""),
+            "school": str(row["school"] or ""),
+            "email": str(row["email"] or ""),
+            "phone": str(row["phone"] or ""),
+            "notes": str(row["notes"] or ""),
+            "createdAt": str(row["created_at"] or ""),
+            "updatedAt": str(row["updated_at"] or ""),
+        }
+
+    def list_household_members(self, *, user_id: int) -> list[dict[str, Any]]:
+        """Partner first, then the children, then anyone else, each in the
+        order they were first told about."""
+
+        if int(user_id or 0) <= 0:
+            return []
+        with self._connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM household_members WHERE user_id = ?
+                ORDER BY CASE role WHEN 'partner' THEN 0 WHEN 'child' THEN 1 ELSE 2 END, id
+                """,
+                (int(user_id),),
+            ).fetchall()
+        return [member for member in (self._household_member_row(row) for row in rows) if member]
+
+    def save_household_member(
+        self,
+        *,
+        user_id: int,
+        name: str,
+        role: str | None = None,
+        age: int | None = None,
+        school: str | None = None,
+        email: str | None = None,
+        phone: str | None = None,
+        notes: str | None = None,
+        previous_name: str | None = None,
+    ) -> dict[str, Any]:
+        """Add someone, or tell us more about someone already here.
+
+        The name is who it is: the same name again fills in what was given
+        and keeps the rest. previous_name renames someone. None keeps a
+        value; an empty string clears it.
+        """
+
+        if int(user_id or 0) <= 0:
+            raise ValueError("User id is required.")
+        display = household.clean(name, household.MAX_NAME_LENGTH)
+        if not display:
+            raise ValueError("A family member needs a name.")
+        key = household.name_key(display)
+        lookup = household.name_key(previous_name) if normalize_text(previous_name) else key
+        if email is not None and normalize_text(email) and not household.normalize_email_address(email):
+            raise ValueError(f"{normalize_text(email)!r} is not an email address.")
+        now = now_iso()
+        with self._connection() as conn:
+            existing = conn.execute(
+                "SELECT * FROM household_members WHERE user_id = ? AND name_key = ?", (int(user_id), lookup)
+            ).fetchone()
+            if existing is None:
+                if lookup != key:
+                    raise ValueError(f"Nobody called {normalize_text(previous_name)!r} is in the family yet.")
+                count = int(conn.execute(
+                    "SELECT COUNT(*) FROM household_members WHERE user_id = ?", (int(user_id),)
+                ).fetchone()[0] or 0)
+                if count >= household.MAX_MEMBERS:
+                    raise ValueError("The family already has as many people as it can keep.")
+                conn.execute(
+                    """
+                    INSERT INTO household_members
+                        (user_id, name, name_key, role, age, age_noted_on, school, email, phone, notes, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        int(user_id), display, key, household.normalize_role(role),
+                        int(age) if age is not None else None, now[:10] if age is not None else "",
+                        household.clean(school), household.normalize_email_address(email),
+                        household.clean(phone, 40), household.clean(notes), now, now,
+                    ),
+                )
+            else:
+                if lookup != key:
+                    clash = conn.execute(
+                        "SELECT id FROM household_members WHERE user_id = ? AND name_key = ? AND id <> ?",
+                        (int(user_id), key, int(existing["id"])),
+                    ).fetchone()
+                    if clash is not None:
+                        raise ValueError(f"Someone called {display!r} is already in the family.")
+                # The name as first told stays unless this is a rename: "shirly"
+                # typed in passing is not a correction of "Shirly".
+                updates = ["name = ?", "name_key = ?"]
+                values: list[Any] = [display if lookup != key else str(existing["name"]), key]
+                if role is not None:
+                    updates.append("role = ?")
+                    values.append(household.normalize_role(role))
+                if age is not None:
+                    updates.extend(["age = ?", "age_noted_on = ?"])
+                    values.extend([int(age), now[:10]])
+                for column, value, limit in (("school", school, household.MAX_TEXT_LENGTH), ("phone", phone, 40), ("notes", notes, household.MAX_TEXT_LENGTH)):
+                    if value is not None:
+                        updates.append(f"{column} = ?")
+                        values.append(household.clean(value, limit))
+                if email is not None:
+                    updates.append("email = ?")
+                    values.append(household.normalize_email_address(email))
+                conn.execute(
+                    f"UPDATE household_members SET {', '.join(updates)}, updated_at = ? WHERE id = ?",
+                    (*values, now, int(existing["id"])),
+                )
+            row = conn.execute(
+                "SELECT * FROM household_members WHERE user_id = ? AND name_key = ?", (int(user_id), key)
+            ).fetchone()
+        return self._household_member_row(row) or {}
+
+    def remove_household_member(self, *, user_id: int, name: str) -> bool:
+        key = household.name_key(name)
+        if int(user_id or 0) <= 0 or not key:
+            return False
+        with self._connection() as conn:
+            cursor = conn.execute(
+                "DELETE FROM household_members WHERE user_id = ? AND name_key = ?", (int(user_id), key)
+            )
+        return cursor.rowcount > 0
+
+    def _household_activity_row(self, row: sqlite3.Row | None) -> dict[str, Any] | None:
+        if row is None:
+            return None
+        try:
+            who = [str(name) for name in json.loads(row["who_json"] or "[]") if normalize_text(name)]
+        except (TypeError, ValueError):
+            who = []
+        return {
+            "id": int(row["id"]),
+            "userId": int(row["user_id"]),
+            "title": str(row["title"] or ""),
+            "who": who,
+            "days": [code for code in str(row["days"] or "").split(",") if code],
+            "startTime": str(row["start_time"] or ""),
+            "endTime": str(row["end_time"] or ""),
+            "place": str(row["place"] or ""),
+            "dropOffBy": str(row["drop_off_by"] or ""),
+            "pickUpBy": str(row["pick_up_by"] or ""),
+            "notes": str(row["notes"] or ""),
+            "createdAt": str(row["created_at"] or ""),
+            "updatedAt": str(row["updated_at"] or ""),
+        }
+
+    def list_household_activities(self, *, user_id: int) -> list[dict[str, Any]]:
+        if int(user_id or 0) <= 0:
+            return []
+        with self._connection() as conn:
+            rows = conn.execute(
+                "SELECT * FROM household_activities WHERE user_id = ? ORDER BY start_time = '', start_time, id",
+                (int(user_id),),
+            ).fetchall()
+        return [activity for activity in (self._household_activity_row(row) for row in rows) if activity]
+
+    def get_household_activity(self, *, user_id: int, activity_id: int) -> dict[str, Any] | None:
+        with self._connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM household_activities WHERE id = ? AND user_id = ?", (int(activity_id), int(user_id))
+            ).fetchone()
+        return self._household_activity_row(row)
+
+    def save_household_activity(
+        self,
+        *,
+        user_id: int,
+        activity_id: int | None = None,
+        title: str | None = None,
+        who: Iterable[Any] | None = None,
+        days: Iterable[Any] | None = None,
+        start_time: str | None = None,
+        end_time: str | None = None,
+        place: str | None = None,
+        drop_off_by: str | None = None,
+        pick_up_by: str | None = None,
+        notes: str | None = None,
+    ) -> dict[str, Any]:
+        """Add a weekly activity, or change one by its id. None keeps a value;
+        an empty string clears it. A new one needs a title and a day."""
+
+        if int(user_id or 0) <= 0:
+            raise ValueError("User id is required.")
+        fields: dict[str, Any] = {}
+        if title is not None:
+            fields["title"] = household.clean(title, household.MAX_TITLE_LENGTH)
+            if not fields["title"]:
+                raise ValueError("An activity needs a title.")
+        if who is not None:
+            names = [household.clean(name, household.MAX_NAME_LENGTH) for name in who]
+            fields["who_json"] = json.dumps([name for name in names if name][:10], ensure_ascii=False)
+        if days is not None:
+            codes = household.normalize_days(days)
+            if not codes and activity_id is None:
+                raise ValueError("An activity needs at least one day of the week.")
+            if codes:
+                fields["days"] = ",".join(codes)
+        for column, value, is_time in (("start_time", start_time, True), ("end_time", end_time, True)):
+            if value is None:
+                continue
+            normalized = household.normalize_time(value) if normalize_text(value) else ""
+            if normalize_text(value) and not normalized:
+                raise ValueError(f"{normalize_text(value)!r} is not a time of day; use HH:MM.")
+            fields[column] = normalized
+        for column, value in (("place", place), ("drop_off_by", drop_off_by), ("pick_up_by", pick_up_by), ("notes", notes)):
+            if value is not None:
+                fields[column] = household.clean(value)
+        now = now_iso()
+        with self._connection() as conn:
+            if activity_id is None:
+                if not fields.get("title") or not fields.get("days"):
+                    raise ValueError("A new activity needs a title and at least one day of the week.")
+                count = int(conn.execute(
+                    "SELECT COUNT(*) FROM household_activities WHERE user_id = ?", (int(user_id),)
+                ).fetchone()[0] or 0)
+                if count >= household.MAX_ACTIVITIES:
+                    raise ValueError("The week already has as many activities as it can keep.")
+                columns = ["user_id", *fields.keys(), "created_at", "updated_at"]
+                cursor = conn.execute(
+                    f"INSERT INTO household_activities ({', '.join(columns)}) VALUES ({', '.join('?' for _ in columns)})",
+                    (int(user_id), *fields.values(), now, now),
+                )
+                activity_id = int(cursor.lastrowid or 0)
+            else:
+                exists = conn.execute(
+                    "SELECT id FROM household_activities WHERE id = ? AND user_id = ?", (int(activity_id), int(user_id))
+                ).fetchone()
+                if exists is None:
+                    raise LookupError(f"There is no activity {activity_id} in this week.")
+                if fields:
+                    conn.execute(
+                        f"UPDATE household_activities SET {', '.join(f'{column} = ?' for column in fields)}, updated_at = ? WHERE id = ?",
+                        (*fields.values(), now, int(activity_id)),
+                    )
+            row = conn.execute("SELECT * FROM household_activities WHERE id = ?", (int(activity_id),)).fetchone()
+        return self._household_activity_row(row) or {}
+
+    def remove_household_activity(self, *, user_id: int, activity_id: int) -> bool:
+        if int(user_id or 0) <= 0:
+            return False
+        with self._connection() as conn:
+            cursor = conn.execute(
+                "DELETE FROM household_activities WHERE id = ? AND user_id = ?", (int(activity_id), int(user_id))
+            )
+        return cursor.rowcount > 0
 
     # -- lists -------------------------------------------------------------
 

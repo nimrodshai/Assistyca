@@ -154,7 +154,7 @@ class TellingTests(unittest.TestCase):
         text = iw.build_alert_instruction([self.entry], hold_minutes=10, offer_calendar=True)
         self.assertIn("1. From Dana Levi", text)
         self.assertIn("call create_calendar_event once", text)
-        self.assertIn("When knownFacts gives that person's email address, put it in attendees", text)
+        self.assertIn("When household.members gives that person's email address, put it in attendees", text)
         self.assertIn("send you the email address of their partner", text)
         self.assertIn("never guess an address", text)
         self.assertNotIn("do not use any tool", text)

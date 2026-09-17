@@ -28,8 +28,15 @@ import re
 import time
 import uuid
 from dataclasses import dataclass, field
+from datetime import date
 from datetime import datetime
+from datetime import timedelta
+from datetime import timezone
 from typing import Any, Callable
+from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfoNotFoundError
+
+from packages.infrastructure import household
 
 from packages.infrastructure.agent_proposals import ASSISTANT_CAPABILITIES_PITCH
 from packages.infrastructure.assistant_voice import ASSISTANT_VOICE
@@ -1439,6 +1446,148 @@ def _tool_remember_fact(context: LoopContext, args: dict[str, Any]) -> dict[str,
     return _ok({"key": key, "fact": fact})
 
 
+def _optional_text(args: dict[str, Any], key: str) -> str | None:
+    """None when the model left a field out, so the stored value stays."""
+
+    value = args.get(key)
+    return None if value is None else str(value)
+
+
+def _household_today(context: LoopContext) -> date:
+    try:
+        return datetime.now(ZoneInfo(context.timezone_name or "UTC")).date()
+    except (ZoneInfoNotFoundError, ValueError):
+        return datetime.now(timezone.utc).date()
+
+
+def _household_payload(context: LoopContext) -> dict[str, Any]:
+    database = context.database
+    return household.describe_household(
+        profile=database.get_household_profile(user_id=context.user_id),
+        members=database.list_household_members(user_id=context.user_id),
+        activities=database.list_household_activities(user_id=context.user_id),
+        today=_household_today(context),
+    )
+
+
+def _tool_save_family_member(context: LoopContext, args: dict[str, Any]) -> dict[str, Any]:
+    name = str(args.get("name") or "").strip()
+    if not name:
+        return _error("choice_required", "A family member needs a name.")
+    age = args.get("age")
+    try:
+        age_value = int(age) if age is not None else None
+    except (TypeError, ValueError):
+        return _error("choice_required", "age is a whole number of years, or null.")
+    try:
+        member = context.database.save_household_member(
+            user_id=context.user_id,
+            name=name,
+            role=_optional_text(args, "role"),
+            age=age_value,
+            school=_optional_text(args, "school"),
+            email=_optional_text(args, "email"),
+            phone=_optional_text(args, "phone"),
+            notes=_optional_text(args, "notes"),
+            previous_name=_optional_text(args, "previous_name"),
+        )
+    except ValueError as exc:
+        return _error("choice_required", str(exc))
+    except Exception as exc:  # noqa: BLE001
+        return _error("internal", f"That could not be saved: {exc}", can_retry=True)
+    return _ok({"saved": {key: member.get(key) for key in ("name", "role", "age", "school", "email", "phone", "notes")}})
+
+
+def _tool_remove_family_member(context: LoopContext, args: dict[str, Any]) -> dict[str, Any]:
+    name = str(args.get("name") or "").strip()
+    try:
+        removed = context.database.remove_household_member(user_id=context.user_id, name=name)
+    except Exception as exc:  # noqa: BLE001
+        return _error("internal", f"That could not be removed: {exc}", can_retry=True)
+    if not removed:
+        names = [member["name"] for member in context.database.list_household_members(user_id=context.user_id)]
+        return _error("not_found", f"Nobody called {name!r} is in the family.", family=names)
+    return _ok({"removed": name})
+
+
+def _tool_save_week_activity(context: LoopContext, args: dict[str, Any]) -> dict[str, Any]:
+    raw_id = args.get("id")
+    try:
+        activity_id = int(raw_id) if raw_id is not None else None
+    except (TypeError, ValueError):
+        return _error("choice_required", "id is the number of an activity from household.week, or null for a new one.")
+    who = args.get("who")
+    days = args.get("days")
+    try:
+        activity = context.database.save_household_activity(
+            user_id=context.user_id,
+            activity_id=activity_id,
+            title=_optional_text(args, "title"),
+            who=who if isinstance(who, list) and (who or activity_id is None) else None,
+            days=days if isinstance(days, list) and (days or activity_id is None) else None,
+            start_time=_optional_text(args, "start_time"),
+            end_time=_optional_text(args, "end_time"),
+            place=_optional_text(args, "place"),
+            drop_off_by=_optional_text(args, "drop_off_by"),
+            pick_up_by=_optional_text(args, "pick_up_by"),
+            notes=_optional_text(args, "notes"),
+        )
+    except LookupError as exc:
+        return _error("not_found", str(exc))
+    except ValueError as exc:
+        return _error("choice_required", str(exc))
+    except Exception as exc:  # noqa: BLE001
+        return _error("internal", f"That could not be saved: {exc}", can_retry=True)
+    saved = {
+        key: activity.get(key)
+        for key in ("id", "title", "who", "days", "startTime", "endTime", "place", "dropOffBy", "pickUpBy", "notes")
+    }
+    saved["nobodyDownFor"] = household.activity_gaps(activity)
+    return _ok({"saved": saved})
+
+
+def _tool_remove_week_activity(context: LoopContext, args: dict[str, Any]) -> dict[str, Any]:
+    try:
+        activity_id = int(args.get("id"))
+    except (TypeError, ValueError):
+        return _error("choice_required", "id is the number of an activity from household.week.")
+    if not context.database.remove_household_activity(user_id=context.user_id, activity_id=activity_id):
+        return _error("not_found", f"There is no activity {activity_id} in this week.")
+    return _ok({"removed": activity_id})
+
+
+def _tool_show_family_week(context: LoopContext, args: dict[str, Any]) -> dict[str, Any]:
+    try:
+        payload = _household_payload(context)
+    except Exception:  # noqa: BLE001
+        return _error("internal", "Could not read the family's week just now.", can_retry=True)
+    by_day = {
+        code: [activity for activity in payload["week"] if code in (activity.get("days") or [])]
+        for code in household.WEEKDAY_CODES
+    }
+    return _ok({"members": payload["members"], "byDay": {code: items for code, items in by_day.items() if items}})
+
+
+def _tool_set_getting_to_know(context: LoopContext, args: dict[str, Any]) -> dict[str, Any]:
+    status = str(args.get("status") or "").strip().lower()
+    if status not in {"in_progress", "postponed", "done"}:
+        return _error("choice_required", "status is in_progress, postponed or done.")
+    ask_again_on = ""
+    if status == "postponed":
+        try:
+            days = max(1, min(14, int(args.get("ask_again_in_days") or 2)))
+        except (TypeError, ValueError):
+            days = 2
+        ask_again_on = (_household_today(context) + timedelta(days=days)).isoformat()
+    try:
+        profile = context.database.save_household_profile(
+            user_id=context.user_id, getting_to_know=status, ask_again_on=ask_again_on,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return _error("internal", f"That could not be saved: {exc}", can_retry=True)
+    return _ok({"status": profile.get("gettingToKnow"), "askAgainOn": profile.get("askAgainOn") or None})
+
+
 def _tool_show_findings(context: LoopContext, args: dict[str, Any]) -> dict[str, Any]:
     """What the mailbox scans found and have not been told to go away."""
 
@@ -2492,8 +2641,8 @@ TOOLS: list[ToolSpec] = [
             "Keep something durable the person told you about how their business works: how a vendor bills, "
             "what a name is short for, when their year starts. key is a few lowercase words naming what it is "
             "about; the same key corrects an earlier fact. Not one-off instructions, not figures a lookup can "
-            "read, nothing personal they did not offer as a working fact. The name and email address of a "
-            "partner or co-parent they invite to things, when they give it, is one to keep."
+            "read, nothing personal they did not offer as a working fact. Family members and their week go "
+            "in save_family_member and save_week_activity, never here."
         ),
         parameters=_params({"key": {"type": "string"}, "fact": {"type": "string"}}),
         side_effect=True,
@@ -2505,6 +2654,92 @@ TOOLS: list[ToolSpec] = [
         parameters=_params({"key": {"type": "string"}}),
         side_effect=True,
         run=_tool_forget_fact,
+    ),
+    ToolSpec(
+        name="save_family_member",
+        description=(
+            "Keep someone in the person's family for good: their partner, a child, anyone else at home or "
+            "close to it. name is who it is; saving the same name again fills in what is given and keeps the "
+            "rest, and previous_name renames someone. role is partner, child or other. age is years, for a "
+            "child. school is the school or kindergarten by name. email and phone are how to reach them, for "
+            "invitations. notes is anything durable worth knowing (class, allergies they mentioned). Pass null "
+            "for anything not said; an empty string clears a value. Family goes here, never in remember_fact."
+        ),
+        parameters=_params({
+            "name": {"type": "string"},
+            "previous_name": {"type": ["string", "null"]},
+            "role": {"type": ["string", "null"], "enum": ["partner", "child", "other", None]},
+            "age": {"type": ["integer", "null"]},
+            "school": {"type": ["string", "null"]},
+            "email": {"type": ["string", "null"]},
+            "phone": {"type": ["string", "null"]},
+            "notes": {"type": ["string", "null"]},
+        }),
+        side_effect=True,
+        run=_tool_save_family_member,
+    ),
+    ToolSpec(
+        name="remove_family_member",
+        description="Take someone out of the family because the person asks to. name is as in household.members.",
+        parameters=_params({"name": {"type": "string"}}),
+        side_effect=True,
+        run=_tool_remove_family_member,
+    ),
+    ToolSpec(
+        name="save_week_activity",
+        description=(
+            "Keep something that happens every week in the family's week: kindergarten or school hours, a "
+            "class, practice, a regular visit. id is null for a new one, or the id from household.week to "
+            "change one. title is what it is, in the person's words. who is the family members it is for, by "
+            "name. days is the weekdays it runs. start_time and end_time are HH:MM. place is where. "
+            "drop_off_by and pick_up_by are who takes them and who collects them: 'me' when it is the person "
+            "themselves, the name as they say it otherwise, an empty string when nobody is down for it yet. "
+            "When changing one, pass null (or an empty array) for what stays as it is."
+        ),
+        parameters=_params({
+            "id": {"type": ["integer", "null"]},
+            "title": {"type": ["string", "null"]},
+            "who": {"type": "array", "items": {"type": "string"}},
+            "days": {"type": "array", "items": {"type": "string", "enum": list(household.WEEKDAY_CODES)}},
+            "start_time": {"type": ["string", "null"]},
+            "end_time": {"type": ["string", "null"]},
+            "place": {"type": ["string", "null"]},
+            "drop_off_by": {"type": ["string", "null"]},
+            "pick_up_by": {"type": ["string", "null"]},
+            "notes": {"type": ["string", "null"]},
+        }),
+        side_effect=True,
+        run=_tool_save_week_activity,
+    ),
+    ToolSpec(
+        name="remove_week_activity",
+        description="Take an activity out of the family's week because it stopped or the person asks to. id is from household.week.",
+        parameters=_params({"id": {"type": "integer"}}),
+        side_effect=True,
+        run=_tool_remove_week_activity,
+    ),
+    ToolSpec(
+        name="show_family_week",
+        description=(
+            "The family and their week laid out day by day, with what has nobody down for the drop-off or "
+            "pickup. For 'what does our week look like', 'who's picking up Tom on Tuesday', 'what's on today'."
+        ),
+        parameters=_params({}),
+        run=_tool_show_family_week,
+    ),
+    ToolSpec(
+        name="set_getting_to_know",
+        description=(
+            "Where getting to know the family stands: in_progress once it has started, postponed when the "
+            "person says not now (ask_again_in_days is when to bring it up again, 2 unless they said), done "
+            "when the family and their week are in."
+        ),
+        parameters=_params({
+            "status": {"type": "string", "enum": ["in_progress", "postponed", "done"]},
+            "ask_again_in_days": {"type": ["integer", "null"]},
+        }),
+        side_effect=True,
+        run=_tool_set_getting_to_know,
     ),
     ToolSpec(
         name="show_findings",
@@ -2721,10 +2956,29 @@ AGENT_LOOP_INSTRUCTIONS = (
     "wrote when they registered: it is what their business is, and every example or suggestion you offer "
     "fits it. When the owner states something about their "
     "business that will still be true next month, call remember_fact; when they say something is no longer "
-    "true, call forget_fact. Keep only what is durable and about the business - with one addition: the "
-    "people they bring into their plans. When they give the email address of their partner, co-parent or "
-    "someone they invite to things, call remember_fact with the person's role as the key (partner, "
-    "co-parent) and their name and address as the fact, so the next invitation needs no asking.\n"
+    "true, call forget_fact. Keep only what is durable and about the business; the family is kept elsewhere.\n"
+    "Family: CONTEXT.household, when it is there, is the person's family and their week, kept for good and "
+    "never in knownFacts - the people (a partner and how to reach them, the children, their ages and "
+    "schools) and every activity that happens each week, with who drops off and who picks up. Save what "
+    "they tell you about them the moment they say it, with save_family_member and save_week_activity, and "
+    "keep it current when something changes; never use remember_fact for family. A partner's email "
+    "address they give you is saved on the partner. Read household before asking anything it already "
+    "answers.\n"
+    "Getting to know a family: when household.accountKind is family and household.gettingToKnow.status is "
+    "not_started or in_progress, getting to know them comes first, so you can hold their week for them. "
+    "Answer whatever they asked first, then ask the next thing household does not hold yet, one question in "
+    "a message, warmly and briefly, in this order: who is at home - a partner's name, then the children's "
+    "names and ages; the partner's email address, for invitations; each child's school or kindergarten, "
+    "which days and what hours, and who usually takes them and collects them; then each child's regular "
+    "activities after that - what, which days, what time, who drives there and who picks up. Several "
+    "answers in one message are all saved. Nobody has to have a partner or children, and nothing has to be "
+    "answered: take what they give, and skip what they pass on. Call set_getting_to_know with in_progress "
+    "when you ask the first question. When they say not now, later or are busy, call it with postponed, "
+    "say in a few words that you will pick it up another time, and stop asking. When status is postponed "
+    "and askAgainOn is today or earlier, after answering their message ask once, lightly, whether now is a "
+    "good time to carry on. When the people and their week are in, or they say that is everything, call it "
+    "with done and show them their week in a few short lines, with anything that has nobody down for the "
+    "pickup named plainly. After done, do not ask again.\n"
     f"{ASSISTANT_VOICE}\n"
     "Write the reply like a capable assistant in a real chat: concise, specific, varied. Do not mirror the "
     "request back, do not reuse the wording of recent assistant replies, do not start every reply the same "
@@ -2808,6 +3062,7 @@ def build_loop_context_text(
     lists_page: str = "",
     receipts_page: str = "",
     trial_ended: bool = False,
+    household_block: dict[str, Any] | None = None,
 ) -> str:
     normalized_channel = "whatsapp" if str(channel or "").lower() == "whatsapp" else "portal"
     safe_context = {k: v for k, v in (tool_context or {}).items() if k != "connectLinks"}
@@ -2820,7 +3075,7 @@ def build_loop_context_text(
         "now": now,
         "connected": sorted(connected_sources(tool_context)),
         "toolContext": safe_context,
-        "knownFacts": facts[:40],
+        "knownFacts": facts,
         "recentConversation": conversation[-MAX_CONVERSATION_MESSAGES:],
         "latestUserMessage": user_message,
         "attachedPhoto": attached_photo,
@@ -2837,6 +3092,8 @@ def build_loop_context_text(
         context["openQuestion"] = open_question
     if trial_ended:
         context["trialEnded"] = True
+    if household_block:
+        context["household"] = household_block
     return (
         f"{_CHANNEL_RULES[normalized_channel]}\n"
         + (_PHOTO_RULES if attached_photo else "")
@@ -2860,6 +3117,7 @@ def run_agent_loop(
     now: str = "",
     photo: dict[str, Any] | None = None,
     trial_ended: bool = False,
+    household_block: dict[str, Any] | None = None,
 ) -> LoopResult:
     """Run one turn. call_model takes the input items and the tool definitions
     and returns an OpenAIResult-like object with output_text and raw_response.
@@ -2904,6 +3162,7 @@ def run_agent_loop(
         lists_page="" if trial_ended else lists_page,
         receipts_page="" if trial_ended else receipts_page,
         trial_ended=trial_ended,
+        household_block=household_block,
     )
     input_items: list[dict[str, Any]] = build_agent_turn_input(context_text, photo) or [
         {"role": "user", "content": context_text},
