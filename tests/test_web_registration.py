@@ -49,11 +49,8 @@ def registration(**overrides):
 
 
 def family_registration(**overrides):
-    return registration(
-        kind="family",
-        business="Three kids, 6 to 12, football and ballet most afternoons",
-        **overrides,
-    )
+    # A family is asked for a name and a phone, nothing about itself.
+    return registration(**{"kind": "family", "business": "", **overrides})
 
 
 class WebRegistrationTests(unittest.TestCase):
@@ -231,6 +228,7 @@ class WebRegistrationTests(unittest.TestCase):
         # is the only place a pickup rota is offered at all.
         prompt = self.model.call_args.kwargs["prompt"]
         self.assertIn('"registeredFor":"their family"', prompt)
+        self.assertNotIn("whatTheyToldUs", prompt)
         self.assertIn("nobody down for the pickup", prompt)
         self.assertIn("an activity with nobody down for the pickup", prompt)
 
@@ -242,21 +240,27 @@ class WebRegistrationTests(unittest.TestCase):
         self.text("dana@example.com", message_id="wamid.f2")
         user = self.database.get_user("dana@example.com") or {}
         facts = {fact["key"]: fact["fact"] for fact in self.database.list_account_facts(user_id=int(user["id"]))}
-        self.assertEqual(facts["their family"], "Three kids, 6 to 12, football and ballet most afternoons")
         self.assertNotIn("what they do", facts, "a family was never asked what it does")
+        self.assertNotIn("their family", facts)
 
         # Who they are and that this is a family are pinned, the welcome asks
         # the first getting-to-know question, and the reply will be read with
         # that welcome in view.
         user_id = int(user["id"])
         pinned = {fact["key"] for fact in self.database.list_account_facts(user_id=user_id) if fact["pinned"]}
-        self.assertEqual(pinned, {"name", "their family"})
+        self.assertEqual(pinned, {"name"})
         self.assertIn("who is at home with them", self.model.call_args.kwargs["prompt"])
         profile = self.database.get_household_profile(user_id=user_id) or {}
         self.assertEqual(profile["accountKind"], "family")
         self.assertEqual(profile["gettingToKnow"], "in_progress")
         transcript = self.database.list_recent_whatsapp_agent_messages(user_id=user_id)
         self.assertEqual([entry["role"] for entry in transcript], ["assistant"])
+
+    def test_a_family_is_never_asked_what_it_does(self) -> None:
+        # Whatever arrives in the field, a family's registration keeps none of it.
+        status, payload = self.register(family_registration(business="Anything at all"))
+        self.assertEqual(status, 200, payload)
+        self.assertEqual((self.database.get_whatsapp_signup(PHONE) or {})["registration"]["business"], "")
 
     def test_a_business_is_still_what_an_unanswered_choice_means(self) -> None:
         # Nothing on the page can send this, but a signup row written before

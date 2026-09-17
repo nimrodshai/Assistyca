@@ -14891,7 +14891,9 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         kind = normalize_registration_kind(payload.get("kind"))
         name = capitalize_name(normalize_contact_single_line(payload.get("name"), CONTACT_NAME_MAX_LENGTH))
         phone = normalize_whatsapp_number(payload.get("phone"))
-        business = capitalize_sentence(
+        # Only a business is asked what it does; a family gives a name and a
+        # phone, and anything else sent for it is not kept.
+        business = "" if kind == "family" else capitalize_sentence(
             normalize_contact_single_line(payload.get("business"), CONTACT_BUSINESS_MAX_LENGTH)
         )
 
@@ -14902,12 +14904,8 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             field_errors["name"] = "Enter your name."
         if not 8 <= len(phone) <= 15 or phone.startswith("0"):
             field_errors["phone"] = "Enter the WhatsApp number you will text from, with its country."
-        if len(business) < 2:
-            field_errors["business"] = (
-                "Tell me about your family, in a few words."
-                if kind == "family"
-                else "Tell me what you do, in a few words."
-            )
+        if kind != "family" and len(business) < 2:
+            field_errors["business"] = "Tell me what you do, in a few words."
         if field_errors:
             json_response(self, HTTPStatus.BAD_REQUEST, {
                 "ok": False,

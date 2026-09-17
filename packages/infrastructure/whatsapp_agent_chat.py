@@ -588,9 +588,13 @@ def build_signup_concierge_prompt(
         )
     if registered and erased_minutes_ago is None:
         task = (
-            "They registered on the Assistyca website first and gave their name and, in a line, what they "
-            "registered about (see registeredOnTheWebsite); the first message in the conversation was "
-            "yours. Use what they told you: address them by first name, and never repeat what your earlier "
+            "They registered on the Assistyca website first and gave their name"
+            + (
+                " (see registeredOnTheWebsite)"
+                if not normalize_text(registered.get("business"))
+                else " and, in a line, what they registered about (see registeredOnTheWebsite)"
+            )
+            + "; the first message in the conversation was yours. Use what they told you: address them by first name, and never repeat what your earlier "
             "messages in recentConversation already said - if you give an example, make it a new one that "
             + ("fits their week at home. " if registered_kind == "family" else "fits their line of work. ")
         ) + task
@@ -599,7 +603,9 @@ def build_signup_concierge_prompt(
         "registeredOnTheWebsite": {
             "registeredFor": "their family" if registered_kind == "family" else "their business",
             "name": normalize_text(registered.get("name"))[:120],
-            "whatTheyToldUs": normalize_text(registered.get("business"))[:400],
+            # A family is only asked for a name; nothing else was told.
+            **({"whatTheyToldUs": normalize_text(registered.get("business"))[:400]}
+               if normalize_text(registered.get("business")) else {}),
         } if registered else None,
         "recentConversation": [
             {"role": str(item.get("role") or "user"), "text": str(item.get("text") or "")[:600]}

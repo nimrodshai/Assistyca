@@ -226,10 +226,13 @@
 
       /* When the landing page already asked who this is for, the question is
          not part of this page at all - no card, no dash for it, and no Back
-         on the name, which would promise a step behind it. The name is in
+         on the name, which would promise a step behind it. A family's page
+         has no "what do you do" either. The name is in
          place from the first paint, before the script arrives. */
       html[data-kind-known] .step[data-step="kind"],
       html[data-kind-known] .progress li[data-dot="kind"],
+      html[data-kind-known="family"] .step[data-step="business"],
+      html[data-kind-known="family"] .progress li[data-dot="business"],
       html[data-kind-known] .step[data-step="name"] [data-back] {
         display: none;
       }
@@ -395,8 +398,8 @@
         line-height: 1.5;
       }
 
-      /* The last question has an icon for each kind; only the chosen one
-         is in the layout, so the panel keeps its height. */
+      /* A family is not asked what it does: the phone is its last question,
+         so the phone carries the button that sends. */
       .step[data-kind="business"] .for-family,
       .step[data-kind="family"] .for-business {
         display: none;
@@ -726,8 +729,8 @@
             <ol class="progress" data-progress aria-hidden="true">
               <li data-dot="kind" data-state="current"></li>
               <li data-dot="name"></li>
-              <li></li>
-              <li></li>
+              <li data-dot="phone"></li>
+              <li data-dot="business"></li>
             </ol>
 
             <div class="viewport" data-viewport>
@@ -823,7 +826,7 @@
                 </div>
               </section>
 
-              <section class="step" data-step="phone">
+              <section class="step" data-step="phone" data-kind="business">
                 <div class="step-art" aria-hidden="true">
                   <svg viewBox="0 0 64 64" role="img">
                     <circle class="disc" cx="32" cy="32" r="30" />
@@ -857,13 +860,14 @@
                   <span class="field-error" data-error-for="phone"></span>
                 </div>
                 <div class="step-actions">
-                  <button class="button button-primary" type="button" data-next>Continue</button>
+                  <button class="button button-primary for-business" type="button" data-next>Continue</button>
+                  <button class="button button-primary for-family" type="submit" data-register-submit>Register and text me</button>
                   <button class="button-quiet" type="button" data-back>Back</button>
                 </div>
               </section>
 
-              <section class="step" data-step="business" data-kind="business">
-                <div class="step-art for-business" aria-hidden="true">
+              <section class="step" data-step="business">
+                <div class="step-art" aria-hidden="true">
                   <svg viewBox="0 0 64 64" role="img">
                     <circle class="disc" cx="32" cy="32" r="30" />
                     <rect class="mark" x="16" y="23" width="32" height="20" rx="4" />
@@ -871,15 +875,8 @@
                     <path class="mark" d="M16.6 31.5h30.8" />
                   </svg>
                 </div>
-                <div class="step-art for-family" aria-hidden="true">
-                  <svg viewBox="0 0 64 64" role="img">
-                    <circle class="disc" cx="32" cy="32" r="30" />
-                    <path class="mark" d="M17 41V31l15-11 15 11v10a3 3 0 0 1-3 3H20a3 3 0 0 1-3-3z" />
-                    <path class="mark" d="M27.5 44v-8h9v8" />
-                  </svg>
-                </div>
-                <label class="step-question" for="register-business" data-about-question>And what do you do?</label>
-                <p class="step-hint" data-about-hint>A line is enough, for example "I run a small architecture studio".</p>
+                <label class="step-question" for="register-business">And what do you do?</label>
+                <p class="step-hint">A line is enough, for example "I run a small architecture studio".</p>
                 <div class="field" data-field="business">
                   <input
                     id="register-business"

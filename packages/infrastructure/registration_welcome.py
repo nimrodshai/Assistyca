@@ -173,14 +173,14 @@ def build_registration_welcome_line_prompt(
         "registration": {
             "registeredFor": "their family" if family else "their business",
             "name": normalize_text(name)[:120],
-            "whatTheyToldUs": normalize_text(business)[:400],
+            **({"whatTheyToldUs": normalize_text(business)[:400]} if normalize_text(business) else {}),
         },
         "task": (
             "This person has just registered on the Assistyca website and is about to get their first "
             "WhatsApp message from you. Write only the middle line of it. "
             + (
-                "Show that you read what they told you about their household: name two or three concrete "
-                "things they could say to you, in their own voice, that fit their week - the afternoon runs, "
+                "Name two or three concrete things a parent could say to you, in their own voice, that fit "
+                "a busy family week - the afternoon runs, "
                 "who is driving, an activity with nobody down for the pickup - from whatAssistycaDoes, never "
                 "beyond it."
                 if family
