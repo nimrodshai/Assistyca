@@ -60,6 +60,8 @@ from packages.infrastructure.whatsapp_agent_chat import connections_for_disconne
 from packages.infrastructure.whatsapp_agent_chat import describe_local_time
 from packages.infrastructure.whatsapp_agent_chat import resolve_scheduled_message_run_at
 from packages.tools.news_search import search_news
+from packages.tools.public_records import PublicRecordsError
+from packages.tools.public_records import look_up_property
 from packages.tools.web_search import search_web
 
 # How many tools one turn may run. Six covers every question answered today
@@ -730,6 +732,30 @@ def _tool_search_web(context: LoopContext, args: dict[str, Any]) -> dict[str, An
         "resultCount": len(results),
         "note": str(result.get("note") or ""),
     })
+
+
+def _tool_look_up_property(context: LoopContext, args: dict[str, Any]) -> dict[str, Any]:
+    address = " ".join(str(args.get("address") or "").split())[:300]
+    gush, helka = args.get("gush"), args.get("helka")
+    if not address and not (gush and helka):
+        return _error("choice_required", "An address, or a gush and helka, is needed.")
+    try:
+        result = look_up_property(address=address, gush=gush, helka=helka)
+    except PublicRecordsError as exc:
+        print(f"agent.loop.public_records_failed code={exc.code} error={exc}", flush=True)
+        return _error(exc.code, str(exc), can_retry=True)
+    except Exception as exc:  # noqa: BLE001 - the result envelope keeps the turn alive
+        print(f"agent.loop.public_records_failed error={exc!r}", flush=True)
+        return _error("provider_unavailable", "The public records could not be read just now.", can_retry=True)
+    if not result.get("found"):
+        return _error("nothing_found", str(result.get("reason") or "That place could not be found."))
+    # Only links a tool handed out survive the reply guard; each becomes a button.
+    for plan in result.get("plans") or []:
+        if isinstance(plan, dict) and plan.get("url"):
+            _offer_link(context, str(plan["url"]), f"Plan {plan.get('number') or 'page'}")
+    tabu = result.get("tabuExtract") if isinstance(result.get("tabuExtract"), dict) else {}
+    _offer_link(context, str(tabu.get("url") or ""), "Order Tabu extract")
+    return _ok({key: value for key, value in result.items() if key != "found"})
 
 
 def _tool_search_news(context: LoopContext, args: dict[str, Any]) -> dict[str, Any]:
@@ -2488,6 +2514,24 @@ TOOLS: list[ToolSpec] = [
         run=_tool_search_news,
     ),
     ToolSpec(
+        name="look_up_property",
+        description=(
+            "Israeli public records for a piece of land, read straight from the government sources: its gush and "
+            "helka, registered area and registration status from the Survey of Israel, and the building plans that "
+            "cover it from the Planning Administration - open ones first, each with its stage, goal, deposit date, "
+            "last day for objections, approval date, change in housing units and its mavat link. Also how to order "
+            "the Tabu extract, which alone holds owners, mortgages and liens and is never fetched here. address is "
+            "an Israeli street address with house number and city, or null; gush and helka are numbers, or null. "
+            "Give an address or both numbers."
+        ),
+        parameters=_params({
+            "address": {"type": ["string", "null"]},
+            "gush": {"type": ["integer", "null"]},
+            "helka": {"type": ["integer", "null"]},
+        }),
+        run=_tool_look_up_property,
+    ),
+    ToolSpec(
         name="open_receipts",
         description=(
             "The receipts page: every receipt and invoice Assistyca has pulled from the mailbox for this "
@@ -3178,6 +3222,15 @@ AGENT_LOOP_INSTRUCTIONS = (
     "descriptions, explanations or links. End with one short sentence saying they can ask about any result for "
     "more information. For a follow-up about a named or numbered news item, call search_news again with "
     "mode=details and answer only about that item.\n"
+    "Property in Israel: for a parcel, a gush and helka, what is planned or being built at an address, urban "
+    "renewal, TAMA 38, objections, or who owns a place, call look_up_property rather than search_web. Say the "
+    "gush and helka and the area, then the plans that matter to them: open ones first with their stage and, "
+    "when the objection date has not passed by CONTEXT.today, that objections are still open until then; then "
+    "the approved plans that change what can be built, not every blanket city-wide one. Name at most three plans "
+    "with a url, each url on its own line. When location.exactBuilding is false, say the parcel is the one under the street "
+    "point and may be a neighbour's, and ask for the house number or the gush and helka. Ownership, mortgages "
+    "and liens are not in the result: never guess them - say they are in the Tabu extract, give its url and "
+    "what the order form needs. Say the figures come from the Survey of Israel and the Planning Administration.\n"
     "A recurring request to search or watch the web or the news is a standing action: use schedule_task, which "
     "will call search_web or search_news each time; show_scheduled lists it and cancel_scheduled stops it.\n"
     "Which of the person's calendars are read is theirs to change at any moment: for 'add another calendar', "
