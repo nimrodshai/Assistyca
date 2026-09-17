@@ -59,7 +59,35 @@ Friday.
    24-hour window and the in-app feed fallback are the scheduled-actions
    worker's, exactly as for reminders and mailbox findings.
 
-## Settings
+## Followed conversations
+
+A letter to an authority, a question to a supplier: the person should not
+have to remember to look for the answer, or to chase it
+(`packages/infrastructure/thread_follow.py`, table `followed_threads`).
+
+1. **Starting.** `send_email` with `follow_reply` follows the thread the
+   email went into; the question asking for the yes says so. Replying in a
+   followed thread keeps it followed and waiting again. `follow_email`
+   follows a conversation already in the mailbox, Gmail or Outlook, with no
+   yes; `show_followed_emails` lists them and `stop_following_email` ends
+   one (never behind a feature switch). Following needs the `inbox_watch`
+   feature, since the watch is what notices the answer.
+2. **An answer.** A new inbox message in a followed thread, not from the
+   person, skips the urgency reading, the hold and the daily cap. It is
+   recorded as `notified` with reason `followed_thread` and reported as a
+   one-off action (`source: thread_follow`), in the morning when it lands in
+   quiet hours. On WhatsApp with nothing else waiting, the report may offer
+   one next step for a yes: the reply drafted with `send_email`, or the date
+   with `create_calendar_event`. An automatic acknowledgement is reported
+   but keeps the thread waiting.
+3. **Silence.** A waiting thread is nudged once, the morning after the day
+   the answer was expected, or a week after the person last wrote. Before
+   the nudge the thread itself is read: if the person wrote again from their
+   phone the nudge moves; if an answer landed outside the inbox it is
+   reported instead. The nudge may offer a polite chaser for a yes.
+4. **Ending.** A thread nobody touched for 45 days closes without a word.
+   At most 30 are followed at once.
+
 
 | Variable | Default | Meaning |
 | --- | --- | --- |

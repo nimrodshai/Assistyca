@@ -110,7 +110,7 @@ ACCOUNT_FEATURES: tuple[AccountFeature, ...] = (
     AccountFeature(
         "inbox_watch",
         "Inbox watch",
-        "Watching new mail and alerting on WhatsApp about interviews, meetings and replies due.",
+        "Watching new mail and alerting on WhatsApp about interviews, meetings and replies due, and following an email conversation until it is answered.",
     ),
     AccountFeature(
         "voice_notes",

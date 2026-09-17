@@ -410,6 +410,35 @@ class OutlookDigestRunner:
             "bulk": bool(headers.get("list-unsubscribe")) or precedence in {"bulk", "list", "junk"} or (bool(auto) and auto != "no"),
         }
 
+    def thread_latest(self, access_token: str, thread_id: str) -> dict[str, str] | None:
+        """The newest message in a conversation, drafts aside; None when there is none."""
+
+        token = str(access_token or "").strip()
+        wanted = str(thread_id or "").strip()
+        if not wanted:
+            return None
+        params = urllib_parse.urlencode([
+            ("$filter", "conversationId eq '" + wanted.replace("'", "''") + "'"),
+            ("$select", "id,from,receivedDateTime,isDraft"),
+            ("$top", "50"),
+        ])
+        payload = self._get_json(f"{GRAPH_MESSAGES_API_URL}?{params}", token, missing=(404,))
+        dated = []
+        for message in payload.get("value") if isinstance(payload.get("value"), list) else []:
+            if not isinstance(message, dict) or bool(message.get("isDraft")):
+                continue
+            received = _parse_received(message.get("receivedDateTime"))
+            if received is not None:
+                dated.append((received, message))
+        if not dated:
+            return None
+        received, latest = max(dated, key=lambda pair: pair[0])
+        return {
+            "id": str(latest.get("id") or "").strip(),
+            "from": _format_sender(latest),
+            "receivedAt": received.astimezone(timezone.utc).isoformat(),
+        }
+
     def is_unread(self, access_token: str, message_id: str) -> bool | None:
         token = str(access_token or "").strip()
         encoded = urllib_parse.quote(str(message_id or "").strip(), safe="")

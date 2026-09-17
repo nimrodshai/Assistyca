@@ -222,10 +222,12 @@ from packages.infrastructure.receipt_pairing import RECEIPT_PAIRING_MAX_OUTPUT_T
 from packages.infrastructure.receipt_pairing import RECEIPT_PAIRING_QUESTION_CHARS
 from packages.infrastructure import household
 from packages.infrastructure import inbox_watch
+from packages.infrastructure import thread_follow
 from packages.infrastructure import mailbox_findings
 from packages.infrastructure.inbox_watch_polls import InboxWatchScheduler
 from packages.infrastructure.inbox_watch_polls import load_inbox_watch_config
 from packages.infrastructure.mailbox_finding_scans import FindingScanScheduler
+from packages.infrastructure.mailbox_finding_scans import account_timezone
 from packages.infrastructure.mailbox_finding_scans import load_finding_scan_config
 from packages.infrastructure.family_week_nudges import FamilyWeekNudger
 from packages.infrastructure.family_week_nudges import load_family_week_nudge_config
@@ -4457,6 +4459,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             or path == "/api/agent/files/move"
             or path == "/api/agent/folders/move"
             or path == "/api/agent/email/send"
+            or path.startswith("/api/agent/email/follows")
             or path == "/api/agent/calendar/events"
             or path == "/api/platform-connections"
             or path.startswith("/api/platform-connections/")
@@ -4505,6 +4508,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             or path.startswith("/api/features/")
             or path == "/api/agent/folder-contents"
             or path == "/api/agent/folder-archive"
+            or path == "/api/agent/email/follows"
             or path == "/api/scheduled-actions"
             or path == "/api/source-actions"
             or path == "/api/notifications"
@@ -4573,6 +4577,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             or path == "/api/agent/files/move"
             or path == "/api/agent/folders/move"
             or path == "/api/agent/email/send"
+            or path.startswith("/api/agent/email/follows")
             or path == "/api/agent/calendar/events"
             or path == "/api/platform-connections"
             or path == "/api/platform-connections/calendars"
@@ -4619,6 +4624,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             or path == "/api/whatsapp/connection"
             or path.startswith("/api/whatsapp/my-numbers/")
             or path.startswith("/api/scheduled-actions/")
+            or path.startswith("/api/agent/email/follows/")
             or path.startswith("/api/source-actions/")
             or path.startswith("/api/notifications/")
             or path.startswith("/api/whatsapp/history/")
@@ -4656,6 +4662,9 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
 
     def _handle_api_get(self, parsed: urllib_parse.ParseResult) -> None:
         path = parsed.path.rstrip("/") or "/"
+        if path == "/api/agent/email/follows":
+            self._handle_email_follows_get()
+            return
         if path == "/api/auth/session":
             session = self._get_authenticated_session()
             if session is None:
@@ -4961,6 +4970,10 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             self._handle_agent_calendar_event_post()
             return
 
+        if path == "/api/agent/email/follows":
+            self._handle_email_follow_post()
+            return
+
         if path == "/api/whatsapp/test":
             self._handle_whatsapp_test()
             return
@@ -5059,6 +5072,9 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             return
         if path.startswith("/api/scheduled-actions/"):
             self._handle_scheduled_actions_delete(parsed)
+            return
+        if path.startswith("/api/agent/email/follows/"):
+            self._handle_email_follow_delete(parsed)
             return
         if path.startswith("/api/source-actions/"):
             self._handle_source_actions_delete(parsed)
@@ -5409,6 +5425,9 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         body_text = normalize_contact_message(payload.get("body"), 20_000)
         reply_to_message_id = normalize_contact_single_line(payload.get("replyToMessageId"), 200)
         mailbox_selection = normalize_text(payload.get("mailboxAccount"))
+        follow_reply = payload.get("followReply") is True
+        waiting_for = normalize_contact_single_line(payload.get("waitingFor"), thread_follow.WAITING_FOR_CHARS)
+        expect_answer_by = normalize_contact_single_line(payload.get("expectAnswerBy"), 10)
         if not recipients and not reply_to_message_id:
             json_response(self, HTTPStatus.BAD_REQUEST, {"ok": False, "error": "invalid_recipient", "message": "At least one recipient email address is needed."})
             return
@@ -5519,7 +5538,191 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             "recipientCount": len(sent.get("to") or []),
             "isReply": bool(sent.get("isReply")),
         }), flush=True)
-        json_response(self, HTTPStatus.OK, {"ok": True, "sent": sent, "mailbox": mailbox_name})
+        following = self._follow_sent_email(
+            user_id=int((authenticated_user or {}).get("id") or 0),
+            record=record,
+            mailbox_name=mailbox_name,
+            sent=sent,
+            wanted=follow_reply,
+            waiting_for=waiting_for,
+            expect_answer_by=expect_answer_by,
+        )
+        json_response(self, HTTPStatus.OK, {"ok": True, "sent": sent, "mailbox": mailbox_name, "following": following})
+
+    def _account_zone(self, user_id: int, fallback: str = "") -> ZoneInfo:
+        try:
+            return ZoneInfo(account_timezone(self.database, user_id, fallback))
+        except (ZoneInfoNotFoundError, ValueError):
+            return ZoneInfo("UTC")
+
+    def _follow_sent_email(
+        self,
+        *,
+        user_id: int,
+        record: dict[str, Any],
+        mailbox_name: str,
+        sent: dict[str, Any],
+        wanted: bool,
+        waiting_for: str,
+        expect_answer_by: str,
+    ) -> bool:
+        """Follow the thread an email just went into, when an answer is
+        expected or the thread was already being followed. Never raises: the
+        email has gone, and that is what the person has to hear."""
+
+        try:
+            thread_id = normalize_text(sent.get("threadId"))
+            connection_id = normalize_text(record.get("id"))
+            if user_id <= 0 or not thread_id or not connection_id:
+                return False
+            existing = self.database.get_followed_thread(user_id=user_id, connection_id=connection_id, thread_id=thread_id)
+            already = existing is not None and existing.get("status") != "closed"
+            if not wanted and not already:
+                return False
+            if not account_feature_allowed(self.database, user_id=user_id, feature_id="inbox_watch"):
+                return False
+            if not already and len(self.database.list_followed_threads(user_id=user_id)) >= thread_follow.MAX_OPEN_FOLLOWS:
+                return False
+            now = datetime.now(timezone.utc)
+            expected = expect_answer_by if thread_follow.parse_expected_date(expect_answer_by) else ""
+            self.database.follow_thread(user_id=user_id, entry={
+                "connectionId": connection_id,
+                "mailbox": mailbox_name,
+                "provider": "gmail",
+                "threadId": thread_id,
+                "subject": normalize_text(sent.get("subject")),
+                "counterpart": ", ".join(str(item) for item in (sent.get("to") or [])),
+                "waitingFor": waiting_for,
+                "expectAnswerBy": expected,
+                "lastMessageId": normalize_text(sent.get("id")),
+                "lastActivityAt": now.isoformat(),
+                "nudgeAfter": thread_follow.nudge_after(sent_at=now, expect_answer_by=expected, zone=self._account_zone(user_id)),
+            })
+            return True
+        except Exception as exc:  # noqa: BLE001 - the email is sent; following it is extra
+            print(f"[thread-follow] could not follow a sent email: {exc}", flush=True)
+            return False
+
+    def _handle_email_follows_get(self) -> None:
+        authenticated = self._require_authenticated_user()
+        if authenticated is None:
+            return
+        _session, user = authenticated
+        follows = self.database.list_followed_threads(user_id=int(user.get("id") or 0))
+        json_response(self, HTTPStatus.OK, {"ok": True, "follows": [thread_follow.describe_follow(follow) for follow in follows]})
+
+    def _handle_email_follow_delete(self, parsed: urllib_parse.ParseResult) -> None:
+        """Stop following a conversation. Giving something back is never
+        behind the trial."""
+
+        authenticated = self._require_authenticated_user()
+        if authenticated is None:
+            return
+        _session, user = authenticated
+        tail = (parsed.path.rstrip("/") or "/")[len("/api/agent/email/follows/"):]
+        try:
+            follow_id = int(tail)
+        except ValueError:
+            json_response(self, HTTPStatus.BAD_REQUEST, {"ok": False, "error": "invalid_follow", "message": "The followed email id must be a number."})
+            return
+        if not self.database.close_followed_thread(user_id=int(user.get("id") or 0), row_id=follow_id):
+            json_response(self, HTTPStatus.NOT_FOUND, {"ok": False, "error": "follow_not_found", "message": "That email conversation is not being followed."})
+            return
+        json_response(self, HTTPStatus.OK, {"ok": True, "stopped": follow_id})
+
+    def _handle_email_follow_post(self) -> None:
+        """Follow the conversation one message belongs to, in whichever
+        connected mailbox holds it, and say when an answer comes."""
+
+        authenticated = self._require_authenticated_user()
+        if authenticated is None:
+            return
+        session, user = authenticated
+        if not self._require_active_trial(user):
+            return
+        try:
+            payload = parse_json_body(self)
+        except ValueError as exc:
+            json_response(self, HTTPStatus.BAD_REQUEST, {"ok": False, "error": "invalid_json", "message": str(exc)})
+            return
+        user_id = int(user.get("id") or 0)
+        message_id = normalize_contact_single_line(payload.get("messageId"), 512)
+        mailbox_selection = normalize_text(payload.get("mailboxAccount"))
+        waiting_for = normalize_contact_single_line(payload.get("waitingFor"), thread_follow.WAITING_FOR_CHARS)
+        expect_answer_by = normalize_contact_single_line(payload.get("expectAnswerBy"), 10)
+        if not message_id:
+            json_response(self, HTTPStatus.BAD_REQUEST, {"ok": False, "error": "invalid_message", "message": "Which email to follow is needed: its messageId from read_inbox."})
+            return
+        if not account_feature_allowed(self.database, user_id=user_id, feature_id="inbox_watch"):
+            json_response(self, HTTPStatus.CONFLICT, {"ok": False, "error": "feature_off", "message": "Watching the inbox is switched off for this account, so a conversation cannot be followed."})
+            return
+        records, mailbox_name_for, reader_for = self._mailbox_readers(session)
+        owner_addresses = [mailbox_name_for(record) for record in records]
+        if mailbox_selection:
+            records = [record for record in records if mailbox_matches_selection(record, mailbox_selection)]
+        if not records:
+            json_response(self, HTTPStatus.CONFLICT, {"ok": False, "error": "mailbox_not_connected", "message": "No connected mailbox matches, so there is nothing to follow."})
+            return
+        found: tuple[dict[str, Any], Any, str, dict[str, Any]] | None = None
+        for record in records:
+            reader = reader_for(record)
+            if reader is None:
+                continue
+            runner, access_token = reader
+            try:
+                item = runner.fetch_message(access_token, message_id)
+            except (GmailAuthorizationError, OutlookAuthorizationError, GmailSummaryError, OutlookSummaryError):
+                item = None
+            if item and normalize_text(item.get("threadId")):
+                found = (record, runner, access_token, item)
+                break
+        if found is None:
+            json_response(self, HTTPStatus.NOT_FOUND, {"ok": False, "error": "message_not_found", "message": "That email is not in any connected mailbox any more. Read the inbox again for its messageId."})
+            return
+        record, runner, access_token, item = found
+        connection_id = normalize_text(record.get("id"))
+        thread_id = normalize_text(item.get("threadId"))
+        existing = self.database.get_followed_thread(user_id=user_id, connection_id=connection_id, thread_id=thread_id)
+        if (existing is None or existing.get("status") == "closed") and len(self.database.list_followed_threads(user_id=user_id)) >= thread_follow.MAX_OPEN_FOLLOWS:
+            json_response(self, HTTPStatus.CONFLICT, {"ok": False, "error": "too_many_follows", "message": f"{thread_follow.MAX_OPEN_FOLLOWS} conversations are already followed. Stop following one first."})
+            return
+        try:
+            latest = runner.thread_latest(access_token, thread_id) or {}
+        except (GmailAuthorizationError, OutlookAuthorizationError, GmailSummaryError, OutlookSummaryError):
+            latest = {}
+        last = latest if latest.get("id") else {"id": item.get("id"), "from": item.get("from"), "receivedAt": item.get("receivedAt")}
+        ours = thread_follow.is_from_owner(last, owner_addresses)
+        last_at = _parse_iso_instant(last.get("receivedAt")) or datetime.now(timezone.utc)
+        expected = expect_answer_by if thread_follow.parse_expected_date(expect_answer_by) else ""
+        provider = "outlook" if resolved_connection_provider(record) == MICROSOFT_OUTLOOK_OAUTH_PROVIDER else "gmail"
+        counterpart = item.get("to") if thread_follow.is_from_owner(item, owner_addresses) else item.get("from")
+        follow = self.database.follow_thread(user_id=user_id, entry={
+            "connectionId": connection_id,
+            "mailbox": mailbox_name_for(record),
+            "provider": provider,
+            "threadId": thread_id,
+            "subject": normalize_text(item.get("subject")),
+            "counterpart": normalize_text(counterpart),
+            "waitingFor": waiting_for,
+            "expectAnswerBy": expected,
+            "lastMessageId": normalize_text(last.get("id")),
+            "lastActivityAt": last_at.astimezone(timezone.utc).isoformat(),
+            # A nudge is for silence after the person wrote. When the other
+            # side wrote last, the next move is the person's, not theirs.
+            "nudgeAfter": (
+                thread_follow.nudge_after(
+                    sent_at=last_at, expect_answer_by=expected,
+                    zone=self._account_zone(user_id, normalize_text(payload.get("timezone"))),
+                )
+                if ours
+                else None
+            ),
+        })
+        json_response(self, HTTPStatus.OK, {
+            "ok": True,
+            "follow": thread_follow.describe_follow(follow),
+            "lastWord": "the person" if ours else "the other side",
+        })
 
     def _resolve_calendar_for_write(
         self,
@@ -9631,11 +9834,15 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         counts = {
             "new": 0, "read": 0, "held": 0, "skipped": 0, "notified": 0,
             "released": 0, "deferred": 0, "started": 0, "backlog": 0,
+            "threadReplies": 0, "threadNudges": 0,
             "receiptCandidates": 0, "receiptsJudged": 0, "receiptsStored": 0,
             "receiptsAdded": 0, "receiptsUnsure": 0, "receiptFilesSaved": 0,
         }
         failures: list[dict[str, str]] = []
         readers_by_mailbox: dict[str, tuple[Any, str]] = {}
+        readers_by_connection: dict[str, tuple[Any, str]] = {}
+        follows = self.database.list_followed_threads(user_id=user_id) if user_id > 0 else []
+        thread_replies: dict[int, tuple[dict[str, Any], list[dict[str, Any]]]] = {}
         hold = timedelta(minutes=config.hold_minutes)
         for record in records:
             mailbox_name = mailbox_name_for(record)
@@ -9646,6 +9853,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 continue
             runner, access_token = reader
             readers_by_mailbox[mailbox_name] = (runner, access_token)
+            readers_by_connection[connection_id] = (runner, access_token)
             stored = self.database.get_inbox_watch_cursor(user_id=user_id, connection_id=connection_id)
             try:
                 if stored is None or not stored.get("cursor"):
@@ -9698,6 +9906,14 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 counts["receiptFilesSaved"] += int(receipt_result.get("filesSaved") or 0)
                 to_read: list[dict[str, Any]] = []
                 for item in items:
+                    follow = thread_follow.match_follow(follows, connection_id=connection_id, thread_id=normalize_text(item.get("threadId")))
+                    if follow is not None and not thread_follow.is_from_owner(item, owner_addresses):
+                        # An answer the person asked to hear about: told as
+                        # it comes, never judged for urgency or held.
+                        counts["threadReplies"] += 1
+                        self.database.record_inbox_watch_message(user_id=user_id, entry={**item, "messageId": item["id"], "status": "notified", "reason": "followed_thread"})
+                        thread_replies.setdefault(int(follow["id"]), (follow, []))[1].append(item)
+                        continue
                     reason = inbox_watch.skip_reason(item, owner_addresses=owner_addresses)
                     if reason:
                         counts["skipped"] += 1
@@ -9736,6 +9952,13 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 failures.append({"mailbox": mailbox_name, "message": str(exc)})
             except (GmailSummaryError, OutlookSummaryError) as exc:
                 failures.append({"mailbox": mailbox_name, "message": str(exc)})
+
+        if follows:
+            self._tell_followed_threads(
+                user_id=user_id, follows=follows, replies=thread_replies, readers=readers_by_connection,
+                owner_addresses=owner_addresses, now=now, local_now=local_now, zone=zone,
+                timezone_name=timezone_name, config=config, counts=counts,
+            )
 
         # What has waited long enough. In quiet hours it waits for the morning.
         due = self.database.list_held_inbox_watch_messages(user_id=user_id, due_by=now)
@@ -9803,9 +10026,125 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             for row in to_tell:
                 self.database.update_inbox_watch_message(user_id=user_id, row_id=int(row["id"]), status="notified", reason="", notified=True)
             counts["notified"] = len(to_tell)
-        if counts["new"] or counts["notified"] or failures:
+        if counts["new"] or counts["notified"] or counts["threadNudges"] or failures:
             print(json.dumps({"event": "inbox_watch_poll", "mailboxes": len(records), **counts, "failures": len(failures)}, ensure_ascii=True, sort_keys=True), flush=True)
         return {"ok": True, "mailboxes": len(records), **counts, "failures": failures}
+
+    def _owner_channel(self, user_id: int) -> str:
+        connection = self.database.get_whatsapp_connection_by_user_id(user_id) or {}
+        if normalize_text(connection.get("ownerWaId")):
+            return "whatsapp"
+        return "whatsapp" if self.database.list_user_whatsapp_numbers(user_id=user_id) else "portal"
+
+    def _tell_followed_threads(
+        self,
+        *,
+        user_id: int,
+        follows: list[dict[str, Any]],
+        replies: dict[int, tuple[dict[str, Any], list[dict[str, Any]]]],
+        readers: dict[str, tuple[Any, str]],
+        owner_addresses: list[str],
+        now: datetime,
+        local_now: datetime,
+        zone: ZoneInfo,
+        timezone_name: str,
+        config: Any,
+        counts: dict[str, int],
+    ) -> None:
+        """Report answers in followed threads, and chase the ones gone quiet.
+
+        An answer is told as soon as it is seen, or first thing in the
+        morning when it lands in quiet hours. A thread still silent past its
+        day gets one nudge; before it goes, the thread itself is looked at,
+        because the person may have written again from their phone, or the
+        answer may have landed somewhere the inbox watch does not look.
+        """
+
+        quiet = inbox_watch.in_quiet_hours(local_now, start_hour=config.quiet_start_hour, end_hour=config.quiet_end_hour)
+        run_at = inbox_watch.quiet_hours_end(local_now, start_hour=config.quiet_start_hour, end_hour=config.quiet_end_hour) if quiet else now
+        channel = self._owner_channel(user_id)
+        if not quiet:
+            for follow in self.database.list_followed_threads_due_nudge(user_id=user_id, now=now):
+                if int(follow["id"]) in replies:
+                    continue
+                reader = readers.get(follow["connectionId"])
+                if reader is None:
+                    continue
+                runner, access_token = reader
+                try:
+                    latest = runner.thread_latest(access_token, follow["threadId"])
+                except (GmailAuthorizationError, OutlookAuthorizationError, GmailSummaryError, OutlookSummaryError):
+                    continue
+                if latest is None:
+                    self.database.close_followed_thread(user_id=user_id, row_id=int(follow["id"]))
+                    continue
+                if latest.get("id") and latest["id"] != follow["lastMessageId"]:
+                    if thread_follow.is_from_owner(latest, owner_addresses):
+                        written = _parse_iso_instant(latest.get("receivedAt")) or now
+                        self.database.follow_thread(user_id=user_id, entry={
+                            **follow,
+                            "lastMessageId": latest["id"],
+                            "lastActivityAt": written.isoformat(),
+                            "nudgeAfter": thread_follow.nudge_after(sent_at=written, expect_answer_by="", zone=zone),
+                        })
+                        continue
+                    try:
+                        item = runner.fetch_message(access_token, latest["id"])
+                    except (GmailAuthorizationError, OutlookAuthorizationError, GmailSummaryError, OutlookSummaryError):
+                        item = None
+                    if item:
+                        counts["threadReplies"] += 1
+                        replies[int(follow["id"])] = (follow, [item])
+                        continue
+                self.database.create_scheduled_action(
+                    user_id=user_id,
+                    action_type=STANDING_TASK_ACTION_TYPE,
+                    channel=channel,
+                    recipient_ref="owner",
+                    run_at=now,
+                    timezone_name=timezone_name,
+                    payload={
+                        "title": thread_follow.NUDGE_TITLE,
+                        "instruction": thread_follow.build_nudge_instruction(follow),
+                        "offerInstruction": thread_follow.build_nudge_instruction(follow, offer=True),
+                        "fallbackText": thread_follow.build_nudge_fallback(follow),
+                        "oneOff": True,
+                        "source": "thread_follow",
+                        "followId": int(follow["id"]),
+                    },
+                )
+                self.database.mark_followed_thread_nudged(user_id=user_id, row_id=int(follow["id"]))
+                counts["threadNudges"] += 1
+        for follow_id, (follow, items) in replies.items():
+            ordered = sorted(items, key=lambda item: normalize_text(item.get("receivedAt")))
+            latest = ordered[-1]
+            self.database.record_followed_thread_reply(
+                user_id=user_id,
+                row_id=follow_id,
+                message_id=normalize_text(latest.get("id")),
+                received_at=normalize_text(latest.get("receivedAt")),
+                settles=not all(thread_follow.is_automatic(item) for item in ordered),
+            )
+            self.database.create_scheduled_action(
+                user_id=user_id,
+                action_type=STANDING_TASK_ACTION_TYPE,
+                channel=channel,
+                recipient_ref="owner",
+                run_at=run_at,
+                timezone_name=timezone_name,
+                payload={
+                    "title": thread_follow.REPORT_TITLE,
+                    "instruction": thread_follow.build_reply_report_instruction(follow, ordered),
+                    "offerInstruction": thread_follow.build_reply_report_instruction(follow, ordered, offer=True),
+                    "fallbackText": thread_follow.build_reply_report_fallback(follow, ordered),
+                    "oneOff": True,
+                    "source": "thread_follow",
+                    "followId": follow_id,
+                    "messageIds": [normalize_text(item.get("id")) for item in ordered],
+                },
+            )
+            counts["notified"] += 1
+        self.database.close_idle_followed_threads(user_id=user_id, before=now - timedelta(days=thread_follow.IDLE_CLOSE_DAYS))
 
     def _keep_inbox_watch_receipts(self, session: Any, *, items: list[dict[str, Any]]) -> dict[str, Any]:
         """Judge and keep receipt-like messages found by the inbox poll.
