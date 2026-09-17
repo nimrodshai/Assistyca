@@ -36,6 +36,7 @@ from urllib import request as urllib_request
 from zoneinfo import ZoneInfo
 from zoneinfo import ZoneInfoNotFoundError
 
+from packages.infrastructure.account_types import account_feature_allowed
 from packages.infrastructure.mailbox_findings import FINDINGS_TITLE
 from packages.infrastructure.mailbox_findings import MAX_FINDINGS_PER_MESSAGE
 from packages.infrastructure.mailbox_findings import NOTHING_FOUND_TEXT
@@ -344,6 +345,13 @@ class FindingScanScheduler:
             if not claimed:
                 continue
             processed += 1
+            if not account_feature_allowed(self.database, user_id=int(claimed.get("userId") or 0), feature_id="mailbox_findings"):
+                # Switched off for this kind of account. Tomorrow's scan is
+                # still lined up, so switching it back on needs nothing else.
+                self.database.finish_finding_scan(scan_id=int(claimed["id"]), status="done", summary={"skipped": "not_included"})
+                self._line_up_tomorrow(claimed, now=reference)
+                done += 1
+                continue
             try:
                 summary = self.run_scan(claimed, now=reference)
             except Exception as exc:  # noqa: BLE001 - one account's trouble must not stop the rest
@@ -366,6 +374,9 @@ class FindingScanScheduler:
         up, so a mailbox that refused today is read tomorrow."""
 
         self.database.finish_finding_scan(scan_id=int(scan.get("id") or 0), status="failed", last_error=error)
+        self._line_up_tomorrow(scan, now=now)
+
+    def _line_up_tomorrow(self, scan: dict[str, Any], *, now: datetime) -> None:
         try:
             user_id = int(scan.get("userId") or 0)
             timezone_name = account_timezone(self.database, user_id, normalize_text(scan.get("timezone")))

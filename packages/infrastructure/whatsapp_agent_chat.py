@@ -29,6 +29,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from packages.infrastructure.account_types import account_feature_allowed
 from packages.infrastructure.notification_delivery import DEFAULT_WHATSAPP_API_VERSION
 from packages.infrastructure.notification_delivery import normalize_email
 from packages.infrastructure.notification_delivery import normalize_text
@@ -2510,6 +2511,24 @@ class WhatsAppAgentChat:
         # runs exactly as it would for typed text. A recording that cannot
         # be made out is said so, rather than answered as "[audio]".
         voice_note = False
+        if kind == "audio" and media_id and not account_feature_allowed(
+            self.database, user_id=self.user_id, feature_id="voice_notes",
+        ):
+            reply = self._recover(
+                build_situation(
+                    "unsupported_message",
+                    what_happened="Voice notes are not included in this account, so I can't listen to that one. Typing it works.",
+                ),
+                [],
+            )
+            message_id = self._send_owner_text(reply)
+            return {
+                "type": "owner",
+                "action": "agent_chat_reply",
+                "outcome": "voice_note_not_included",
+                "reply_text": reply,
+                "message_id": message_id,
+            }
         if kind == "audio" and media_id:
             spoken = ""
             try:

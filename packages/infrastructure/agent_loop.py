@@ -206,6 +206,10 @@ class LoopContext:
     # to the person's accounts sends it with the request, and the runner at
     # the other end refuses the request without it.
     approval_token: str = ""
+    # Tools switched off for this kind of account (business or family), by
+    # name, with the feature they belong to. The model sees them marked
+    # unavailable, and a call to one is refused.
+    blocked_tools: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -2543,7 +2547,7 @@ _SOURCE_WORDS = {
 }
 
 
-def tool_definitions(tool_context: dict[str, Any] | None) -> list[dict[str, Any]]:
+def tool_definitions(tool_context: dict[str, Any] | None, blocked: dict[str, str] | None = None) -> list[dict[str, Any]]:
     """The tools as the model sees them, with what is unavailable marked and why."""
 
     have = connected_sources(tool_context)
@@ -2553,8 +2557,18 @@ def tool_definitions(tool_context: dict[str, Any] | None) -> list[dict[str, Any]
         why_not = ""
         if missing:
             why_not = f"{_SOURCE_WORDS.get(missing[0], 'a needed account is not connected')}; use connect_link first."
+        if tool.name in (blocked or {}):
+            definitions.append(tool.definition(False, _not_included_words(blocked[tool.name])))
+            continue
         definitions.append(tool.definition(not missing, why_not))
     return definitions
+
+
+def _not_included_words(feature: str) -> str:
+    return (
+        f"{feature} is not included in this account. Say so in one calm line and offer what you can do instead; "
+        "never offer a sign-in link for it."
+    )
 
 
 # -- the loop ------------------------------------------------------------------
@@ -2862,7 +2876,7 @@ def run_agent_loop(
         # model's only job is to report what happened.
         confirmed_action = _execute_confirmed(context, confirmed_call, tool_calls, completed)
 
-    tools = tool_definitions(context.tool_context)
+    tools = tool_definitions(context.tool_context, context.blocked_tools)
     if trial_ended:
         tools = [definition for definition in tools if definition["name"] in ACCOUNT_RIGHTS_TOOLS]
     # The lists page is in the context from the start, not only inside a
@@ -2924,6 +2938,8 @@ def run_agent_loop(
                     "This turn has used all the lookups it may run. Write the reply from what you have and "
                     "offer to continue in the next message.",
                 )
+            elif tool.name in context.blocked_tools:
+                outcome = _error("not_included", _not_included_words(context.blocked_tools[tool.name]))
             elif tool.confirm:
                 problem = _run_preflight(tool, context, args)
                 if problem is not None:
@@ -2998,7 +3014,10 @@ def _execute(context: LoopContext, tool: ToolSpec, args: dict[str, Any], tool_ca
     started = time.monotonic()
     have = connected_sources(context.tool_context)
     missing = [source for source in tool.requires if source not in have]
-    if missing:
+    if tool.name in context.blocked_tools:
+        # Switched off after the question was asked: the yes does not bring it back.
+        outcome = _error("not_included", _not_included_words(context.blocked_tools[tool.name]))
+    elif missing:
         context.blocked_on_connection = context.blocked_on_connection or missing[0]
         outcome = _error(
             "source_not_connected",
