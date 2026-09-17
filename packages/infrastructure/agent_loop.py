@@ -45,6 +45,7 @@ from packages.infrastructure.agent_proposals import build_agent_turn_input
 from packages.infrastructure.agent_proposals import connected_sources
 from packages.infrastructure.agent_proposals import describe_agent_photo_context
 from packages.infrastructure.calendar_write import build_event_times
+from packages.infrastructure.chat_flow import chat_flow_rules
 from packages.infrastructure.gmail_send import normalize_addresses
 from packages.infrastructure.mailbox_findings import describe_finding
 from packages.infrastructure.recovery_reply import ALLOWED_LINK_HOSTS
@@ -1792,6 +1793,33 @@ def _tool_set_getting_to_know(context: LoopContext, args: dict[str, Any]) -> dic
     return _ok(data)
 
 
+def _tool_set_connect_offer(context: LoopContext, args: dict[str, Any]) -> dict[str, Any]:
+    """Where the offer to connect the mail and the calendar stands, so a "not
+    now" is not asked again tomorrow morning."""
+
+    status = str(args.get("status") or "").strip().lower()
+    if status not in {"in_progress", "postponed", "done"}:
+        return _error("choice_required", "status is in_progress, postponed or done.")
+    ask_again_on = ""
+    if status == "postponed":
+        try:
+            days = max(1, min(30, int(args.get("ask_again_in_days") or 3)))
+        except (TypeError, ValueError):
+            days = 3
+        ask_again_on = (_household_today(context) + timedelta(days=days)).isoformat()
+    try:
+        profile = context.database.save_household_profile(
+            user_id=context.user_id, connect_offer=status, connect_ask_again_on=ask_again_on,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return _error("internal", f"That could not be saved: {exc}", can_retry=True)
+    return _ok({
+        "status": profile.get("connectOffer"),
+        "askAgainOn": profile.get("connectAskAgainOn") or None,
+        "connected": sorted(connected_sources(context.tool_context)),
+    })
+
+
 def _tool_show_findings(context: LoopContext, args: dict[str, Any]) -> dict[str, Any]:
     """What the mailbox scans found and have not been told to go away."""
 
@@ -3146,6 +3174,20 @@ TOOLS: list[ToolSpec] = [
         run=_tool_set_getting_to_know,
     ),
     ToolSpec(
+        name="set_connect_offer",
+        description=(
+            "Where the offer to connect their mail and calendar stands: in_progress once you have offered, "
+            "postponed when they say not now (ask_again_in_days is when to raise it again, 3 unless they "
+            "said), done when both are connected or they have settled it for good."
+        ),
+        parameters=_params({
+            "status": {"type": "string", "enum": ["in_progress", "postponed", "done"]},
+            "ask_again_in_days": {"type": ["integer", "null"]},
+        }),
+        side_effect=True,
+        run=_tool_set_connect_offer,
+    ),
+    ToolSpec(
         name="show_findings",
         description=(
             "What Assistyca noticed on its own while reading the person's mailbox: invoices they sent with no "
@@ -3388,22 +3430,9 @@ AGENT_LOOP_INSTRUCTIONS = (
     "keep it current when something changes; never use remember_fact for family. A partner's email "
     "address they give you is saved on the partner. Read household before asking anything it already "
     "answers.\n"
-    "Getting to know a family: when household.accountKind is family and household.gettingToKnow.status is "
-    "not_started or in_progress, getting to know them comes first, so you can hold their week for them. "
-    "Answer whatever they asked first, then ask the next thing household does not hold yet, one question in "
-    "a message, warmly and briefly, in this order: who is at home - a partner's name, then the children's "
-    "names and birthdays (an age is enough when they would rather not say); the partner's email address, for "
-    "invitations; each child's school or kindergarten, "
-    "which days and what hours, and who usually takes them and collects them; then each child's regular "
-    "activities after that - what, which days, what time, who drives there and who picks up. Several "
-    "answers in one message are all saved. Nobody has to have a partner or children, and nothing has to be "
-    "answered: take what they give, and skip what they pass on. Call set_getting_to_know with in_progress "
-    "when you ask the first question, and again when they pick it up after putting it off. When they say not now, later or are busy, call it with postponed, "
-    "say in a few words that you will pick it up another time, and stop asking. When status is postponed "
-    "and askAgainOn is today or earlier, after answering their message ask once, lightly, whether now is a "
-    "good time to carry on. When the people and their week are in, or they say that is everything, call it "
-    "with done and show them their week in a few short lines, with anything that has nobody down for the "
-    "pickup named plainly. After done, do not ask again.\n"
+    "Getting to know a family, and connecting a business to its mail and calendar, are each an opening "
+    "the conversation works through in its own way: CONTEXT.chatFlow says which one this account is on "
+    "and the rules above it say how to carry it.\n"
     "Birthdays: household.members carries each birthday and nextBirthday. When a birthday is about a month "
     "away and the person wants to get ready, call start_birthday_list with the steps worded in their language "
     "and fitted to who it is for (a four-year-old's party is not a twelve-year-old's), then put the list's "
@@ -3497,6 +3526,7 @@ def build_loop_context_text(
     receipts_page: str = "",
     trial_ended: bool = False,
     household_block: dict[str, Any] | None = None,
+    chat_flow: dict[str, Any] | None = None,
 ) -> str:
     normalized_channel = "whatsapp" if str(channel or "").lower() == "whatsapp" else "portal"
     safe_context = {k: v for k, v in (tool_context or {}).items() if k != "connectLinks"}
@@ -3528,10 +3558,13 @@ def build_loop_context_text(
         context["trialEnded"] = True
     if household_block:
         context["household"] = household_block
+    if chat_flow:
+        context["chatFlow"] = chat_flow
     return (
         f"{_CHANNEL_RULES[normalized_channel]}\n"
         + (_PHOTO_RULES if attached_photo else "")
         + (_TRIAL_ENDED_RULES if trial_ended else "")
+        + ("" if trial_ended else chat_flow_rules(chat_flow))
         + "Respond to CONTEXT.latestUserMessage using the conversation and the tools.\n"
         f"CONTEXT\n{json.dumps(context, ensure_ascii=False, separators=(',', ':'))}"
     )
@@ -3552,6 +3585,7 @@ def run_agent_loop(
     photo: dict[str, Any] | None = None,
     trial_ended: bool = False,
     household_block: dict[str, Any] | None = None,
+    chat_flow: dict[str, Any] | None = None,
 ) -> LoopResult:
     """Run one turn. call_model takes the input items and the tool definitions
     and returns an OpenAIResult-like object with output_text and raw_response.
@@ -3597,6 +3631,7 @@ def run_agent_loop(
         receipts_page="" if trial_ended else receipts_page,
         trial_ended=trial_ended,
         household_block=household_block,
+        chat_flow=None if trial_ended else chat_flow,
     )
     input_items: list[dict[str, Any]] = build_agent_turn_input(context_text, photo) or [
         {"role": "user", "content": context_text},

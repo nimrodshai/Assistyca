@@ -58,6 +58,7 @@ from packages.infrastructure.agent_proposals import AGENT_TURN_MAX_OUTPUT_TOKENS
 from packages.infrastructure.agent_proposals import build_agent_turn_input
 from packages.infrastructure.agent_proposals import build_agent_turn_prompt
 from packages.infrastructure.agent_proposals import build_agent_proposal_revision_prompt
+from packages.infrastructure.agent_proposals import connected_sources
 from packages.infrastructure.agent_proposals import normalize_agent_action_context
 from packages.infrastructure.agent_proposals import normalize_agent_file_context
 from packages.infrastructure.agent_proposals import normalize_agent_folder_context
@@ -153,6 +154,7 @@ from packages.infrastructure.account_types import ACCOUNT_FEATURES_BY_ID
 from packages.infrastructure.account_types import ACCOUNT_TYPE_VALUES
 from packages.infrastructure.account_types import account_feature_allowed
 from packages.infrastructure.account_types import blocked_tools
+from packages.infrastructure.chat_flow import describe_chat_flow
 from packages.infrastructure.account_types import describe_account_types
 from packages.infrastructure.account_types import normalize_account_type
 from packages.infrastructure.portal_db import normalize_user_profile
@@ -11394,6 +11396,10 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 declined_call = {"tool": declined["tool"], "arguments": declined["arguments"]}
         facts = self.database.list_account_facts(user_id=user_id) if user_id > 0 else []
         household_block = self._household_block(user_id, timezone_name)
+        account_type = self.database.get_account_type(user_id=user_id, email=session.email)
+        chat_flow = self._chat_flow_block(
+            user_id, account_type, tool_context, household_block, resolve_local_today(timezone_name),
+        )
         authorization = normalize_text(self.headers.get("Authorization"))
         port = int(self.server.server_address[1])  # type: ignore[attr-defined]
 
@@ -11447,10 +11453,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             week_link=self._page_link_builder(session.email, channel, page="/week", prefix=WEEK_HANDOFF_PREFIX) if household_block else None,
             sender_wa_id=sender_wa_id,
             attached_photo=photo_context,
-            blocked_tools=blocked_tools(
-                self.database.get_account_type_permissions(),
-                self.database.get_account_type(user_id=user_id, email=session.email),
-            ),
+            blocked_tools=blocked_tools(self.database.get_account_type_permissions(), account_type),
             standing_task_id=standing_task_id if news_since else 0,
             news_since=news_since if standing_task_id else None,
         )
@@ -11491,6 +11494,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 photo=photo_context,
                 trial_ended=trial_ended,
                 household_block=household_block,
+                chat_flow=chat_flow,
             )
         except OpenAIError as exc:
             print(f"Agent loop failed: {exc.message}", flush=True)
@@ -11585,6 +11589,31 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         except (ZoneInfoNotFoundError, ValueError):
             today = datetime.now(timezone.utc).date()
         return household.describe_household(profile=profile, members=members, activities=activities, today=today)
+
+    def _chat_flow_block(
+        self,
+        user_id: int,
+        account_type: str,
+        tool_context: dict[str, Any],
+        household_block: dict[str, Any] | None,
+        today: str,
+    ) -> dict[str, Any] | None:
+        """What the opening of this conversation is for: getting to know a
+        family, or getting a business connected to its mail and calendar.
+
+        A family account with no household block is one the house switched
+        the family and week feature off for: there is nothing to get to know,
+        so it opens on connecting like any other account."""
+
+        if user_id <= 0:
+            return None
+        return describe_chat_flow(
+            account_type=account_type,
+            profile=self.database.get_household_profile(user_id=user_id),
+            connected=connected_sources(tool_context),
+            today=today,
+            family_flow_allowed=bool(household_block),
+        )
 
     def _open_agent_approval(self, user_id: int, pending: dict[str, Any] | None) -> dict[str, Any] | None:
         """Write a proposed action down, and hand back only its name and id.

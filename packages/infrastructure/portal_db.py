@@ -478,6 +478,10 @@ CREATE TABLE IF NOT EXISTS household_profiles (
     account_kind TEXT NOT NULL DEFAULT 'business',
     getting_to_know TEXT NOT NULL DEFAULT 'not_started',
     ask_again_on TEXT NOT NULL DEFAULT '',
+    -- Where the offer to connect the mail and the calendar stands. Every
+    -- account is offered it; a family only once its week is in.
+    connect_offer TEXT NOT NULL DEFAULT 'not_started',
+    connect_ask_again_on TEXT NOT NULL DEFAULT '',
     share_token TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
@@ -1647,6 +1651,10 @@ class PortalDatabase:
         member_columns = {row["name"] for row in conn.execute("PRAGMA table_info(household_members)").fetchall()}
         if "birthday" not in member_columns:
             conn.execute("ALTER TABLE household_members ADD COLUMN birthday TEXT NOT NULL DEFAULT ''")
+        profile_columns = {row["name"] for row in conn.execute("PRAGMA table_info(household_profiles)").fetchall()}
+        if "connect_offer" not in profile_columns:
+            conn.execute("ALTER TABLE household_profiles ADD COLUMN connect_offer TEXT NOT NULL DEFAULT 'not_started'")
+            conn.execute("ALTER TABLE household_profiles ADD COLUMN connect_ask_again_on TEXT NOT NULL DEFAULT ''")
         columns = {row["name"] for row in conn.execute("PRAGMA table_info(account_facts)").fetchall()}
         if "pinned" not in columns:
             conn.execute("ALTER TABLE account_facts ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0")
@@ -9527,7 +9535,8 @@ class PortalDatabase:
     # itself (users.account_type), where signup and the admin set it. The
     # profile's own account_kind column predates that and is no longer read.
     _HOUSEHOLD_PROFILE_SELECT = """
-        SELECT u.id AS user_id, u.account_type, p.getting_to_know, p.ask_again_on, p.share_token,
+        SELECT u.id AS user_id, u.account_type, p.getting_to_know, p.ask_again_on,
+               p.connect_offer, p.connect_ask_again_on, p.share_token,
                p.created_at, p.updated_at
         FROM users u LEFT JOIN household_profiles p ON p.user_id = u.id
     """
@@ -9540,6 +9549,8 @@ class PortalDatabase:
             "accountKind": normalize_account_type(row["account_type"]),
             "gettingToKnow": str(row["getting_to_know"] or "not_started"),
             "askAgainOn": str(row["ask_again_on"] or ""),
+            "connectOffer": str(row["connect_offer"] or "not_started"),
+            "connectAskAgainOn": str(row["connect_ask_again_on"] or ""),
             "shareToken": str(row["share_token"] or ""),
             "createdAt": str(row["created_at"] or ""),
             "updatedAt": str(row["updated_at"] or ""),
@@ -9561,6 +9572,8 @@ class PortalDatabase:
         user_id: int,
         getting_to_know: str | None = None,
         ask_again_on: str | None = None,
+        connect_offer: str | None = None,
+        connect_ask_again_on: str | None = None,
     ) -> dict[str, Any]:
         """Set what is given and keep the rest."""
 
@@ -9568,6 +9581,8 @@ class PortalDatabase:
             raise ValueError("User id is required.")
         if getting_to_know is not None and getting_to_know not in household.GETTING_TO_KNOW_STATUSES:
             raise ValueError(f"getting_to_know must be one of: {', '.join(household.GETTING_TO_KNOW_STATUSES)}.")
+        if connect_offer is not None and connect_offer not in household.GETTING_TO_KNOW_STATUSES:
+            raise ValueError(f"connect_offer must be one of: {', '.join(household.GETTING_TO_KNOW_STATUSES)}.")
         now = now_iso()
         with self._connection() as conn:
             conn.execute(
@@ -9585,6 +9600,12 @@ class PortalDatabase:
             if ask_again_on is not None:
                 updates.append("ask_again_on = ?")
                 values.append(normalize_text(ask_again_on)[:10])
+            if connect_offer is not None:
+                updates.append("connect_offer = ?")
+                values.append(connect_offer)
+            if connect_ask_again_on is not None:
+                updates.append("connect_ask_again_on = ?")
+                values.append(normalize_text(connect_ask_again_on)[:10])
             if updates:
                 conn.execute(
                     f"UPDATE household_profiles SET {', '.join(updates)}, updated_at = ? WHERE user_id = ?",

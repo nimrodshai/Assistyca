@@ -258,8 +258,10 @@ class ToolTests(unittest.TestCase):
         self.assertEqual(context["household"]["members"], [{"name": "Tom", "role": "child", "age": 4}])
         self.assertEqual(context["household"]["gettingToKnow"]["status"], "in_progress")
         from packages.infrastructure.agent_loop import AGENT_LOOP_INSTRUCTIONS
-        self.assertIn("one question in a message", AGENT_LOOP_INSTRUCTIONS)
         self.assertIn("never use remember_fact for family", AGENT_LOOP_INSTRUCTIONS)
+        # How to ask travels with the opening this account is on, not with
+        # every account's instructions: see tests/test_chat_flow.py.
+        self.assertNotIn("one question in a message", AGENT_LOOP_INSTRUCTIONS)
 
     def _birthday_member(self, **extra) -> None:
         self.run_tool(
