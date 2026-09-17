@@ -1,10 +1,10 @@
-// The registration page: a name, a phone, a line about them, one request, and
-// a message on WhatsApp. They are asked one at a time, the way the assistant
+// The registration page: a name, a phone, for a business a line about what it
+// does, one request, and a message on WhatsApp. They are asked one at a time, the way the assistant
 // would ask them: an answered question slides off to the left and the next
 // arrives from the right. Who this is for - a business or a family - is asked
 // on the landing page and arrives in the address, and it is what the rest of
-// the page is written around: the last question and the first
-// WhatsApp message all follow it. It is only asked here when nobody has.
+// the page is written around: a family is never asked what it does, so its
+// last question is the phone, and the first WhatsApp message follows it too. It is only asked here when nobody has.
 // The phone is structured rather than typed
 // free: a country picked from a list, a national number typed as they would
 // dial it, and the full international number assembled here and shown back
@@ -95,7 +95,7 @@ window.addEventListener("DOMContentLoaded", () => {
   const nationalInput = form.querySelector("[data-phone-national]");
   const dialLabel = form.querySelector("[data-phone-dial]");
   const preview = form.querySelector("[data-phone-preview]");
-  const submitButton = form.querySelector("[data-register-submit]");
+  const submitButtons = [...form.querySelectorAll("[data-register-submit]")];
   const status = form.querySelector("[data-register-status]");
   const doneTitle = done.querySelector("[data-done-title]");
   const doneText = done.querySelector("[data-done-text]");
@@ -107,8 +107,11 @@ window.addEventListener("DOMContentLoaded", () => {
   // font lands, or the window changes width.
   const flow = form.querySelector("[data-flow]");
   const viewport = form.querySelector("[data-viewport]");
-  const steps = [...form.querySelectorAll("[data-step]")];
-  const dots = [...form.querySelectorAll("[data-progress] li")];
+  const allSteps = [...form.querySelectorAll("[data-step]")];
+  const allDots = [...form.querySelectorAll("[data-progress] li")];
+  // The questions this person is asked, which the choice of kind can change.
+  let steps = allSteps;
+  let dots = allDots;
   const backButtons = [...form.querySelectorAll("[data-back]")];
   let current = 0;
 
@@ -152,7 +155,7 @@ window.addEventListener("DOMContentLoaded", () => {
 
   if (window.ResizeObserver) {
     const observer = new ResizeObserver(() => measure());
-    steps.forEach((step) => observer.observe(step));
+    allSteps.forEach((step) => observer.observe(step));
   }
 
   // Alphabetical by name, so a country is found where the eye expects it.
@@ -223,7 +226,7 @@ window.addEventListener("DOMContentLoaded", () => {
   };
 
   // Tidy the text fields when they leave them: each word of the name with a
-  // capital, the business with a capital first letter. The server does the
+  // capital, what the business does with a capital first letter. The server does the
   // same, so what is stored matches what they saw.
   const capitalizeName = (value) => value
     .trim()
@@ -251,44 +254,30 @@ window.addEventListener("DOMContentLoaded", () => {
     businessInput.value = capitalizeSentence(businessInput.value);
   });
 
-  // Everything the choice rewrites. The page is the same four questions
-  // either way; only the words change, so a family is never asked what its
-  // business is and a business is never asked who drives on Tuesdays.
-  const KINDS = {
-    business: {
-      question: "And what do you do?",
-      hint: 'A line is enough, for example "I run a small architecture studio".',
-      autocomplete: "organization-title",
-      missing: "Tell me what you do, in a few words.",
-    },
-    family: {
-      question: "Tell me about your family.",
-      hint: 'A line is enough, for example "Three kids, 6 to 12, football and ballet most afternoons".',
-      autocomplete: "off",
-      missing: "Tell me about your family, in a few words.",
-    },
-  };
-
-  const aboutStep = form.querySelector('[data-step="business"]');
-  const aboutQuestion = form.querySelector("[data-about-question]");
-  const aboutHint = form.querySelector("[data-about-hint]");
+  const KINDS = ["business", "family"];
   const kindChoices = [...form.querySelectorAll("[data-kind-choice]")];
+  const phoneStep = form.querySelector('[data-step="phone"]');
 
   const chosenKind = () => {
     const picked = kindChoices.find((choice) => choice.checked);
-    return picked && KINDS[picked.value] ? picked.value : "";
+    return picked && KINDS.includes(picked.value) ? picked.value : "";
   };
 
-  // Written out whenever the choice changes, and once more when they come
-  // back and change their mind; the last question is the same field either
-  // way, so only its wording is swapped.
+  // A business is asked what it does; a family is not, so for a family that
+  // question leaves the flow, with its dash, and the phone becomes the last
+  // question and sends. Written out whenever the choice changes, which only
+  // happens on the first question, so where they are in the flow holds.
   const applyKind = () => {
-    const kind = chosenKind();
-    const copy = KINDS[kind] || null;
-    aboutStep.setAttribute("data-kind", kind || "business");
-    aboutQuestion.textContent = (copy || KINDS.business).question;
-    aboutHint.textContent = (copy || KINDS.business).hint;
-    businessInput.setAttribute("autocomplete", (copy || KINDS.business).autocomplete);
+    const family = chosenKind() === "family";
+    steps = allSteps.filter((step) => !(family && step.getAttribute("data-step") === "business"));
+    dots = allDots.filter((dot) => dot.isConnected && !(family && dot.getAttribute("data-dot") === "business"));
+    allSteps.forEach((step) => {
+      step.hidden = !steps.includes(step);
+    });
+    allDots.forEach((dot) => {
+      dot.hidden = !dots.includes(dot);
+    });
+    phoneStep.setAttribute("data-kind", family ? "family" : "business");
     measure();
   };
 
@@ -321,11 +310,13 @@ window.addEventListener("DOMContentLoaded", () => {
   const kindIndex = steps.findIndex((step) => step.getAttribute("data-step") === "kind");
   if (presetChoice && kindIndex >= 0) {
     presetChoice.checked = true;
-    steps.splice(kindIndex, 1)[0].remove();
-    const dot = dots.splice(kindIndex, 1)[0];
+    allSteps.splice(kindIndex, 1)[0].remove();
+    const dot = allDots.splice(kindIndex, 1)[0];
     if (dot) {
       dot.remove();
     }
+    steps = allSteps;
+    dots = allDots;
   }
 
   countrySelect.addEventListener("change", syncPhone);
@@ -426,7 +417,7 @@ window.addEventListener("DOMContentLoaded", () => {
     }
     if (name === "business") {
       const about = businessInput.value.trim();
-      return about.length < 2 ? { business: (KINDS[chosenKind()] || KINDS.business).missing } : {};
+      return about.length < 2 ? { business: "Tell me what you do, in a few words." } : {};
     }
     return {};
   };
@@ -475,14 +466,14 @@ window.addEventListener("DOMContentLoaded", () => {
   // Enter is how a conversation moves on: to the next question, or on the
   // last one to sending. Asked for outright rather than left to the browser,
   // which only submits on its own when a form looks like an ordinary one.
-  steps.forEach((step, index) => {
+  allSteps.forEach((step) => {
     step.querySelectorAll("input").forEach((input) => {
       input.addEventListener("keydown", (event) => {
         if (event.key !== "Enter") {
           return;
         }
         event.preventDefault();
-        if (index < steps.length - 1) {
+        if (steps.indexOf(step) < steps.length - 1) {
           advance();
         } else {
           form.requestSubmit();
@@ -540,7 +531,7 @@ window.addEventListener("DOMContentLoaded", () => {
       name: fullName(),
       phone: internationalNumber(),
       country: countrySelect.value,
-      business: capitalizeSentence(String(data.get("business") || "")),
+      business: chosenKind() === "family" ? "" : capitalizeSentence(String(data.get("business") || "")),
       companyWebsite: String(data.get("companyWebsite") || "").trim(),
     };
 
@@ -551,7 +542,7 @@ window.addEventListener("DOMContentLoaded", () => {
     }
 
     const shownNumber = displayNumber();
-    submitButton.disabled = true;
+    submitButtons.forEach((button) => { button.disabled = true; });
     setStatus("Setting things up…");
     try {
       const response = await fetch("/api/register", {
@@ -584,7 +575,7 @@ window.addEventListener("DOMContentLoaded", () => {
     } catch (error) {
       setStatus("I couldn't reach the server. Check your connection and try again.", "error");
     } finally {
-      submitButton.disabled = false;
+      submitButtons.forEach((button) => { button.disabled = false; });
     }
   });
 });
