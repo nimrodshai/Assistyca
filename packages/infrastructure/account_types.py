@@ -105,7 +105,7 @@ ACCOUNT_FEATURES: tuple[AccountFeature, ...] = (
         "family_week",
         "Family and week",
         "Keeping the family members and their weekly activities, and laying out who is on each drop-off and pickup.",
-        ("save_family_member", "save_week_activity", "show_family_week", "set_getting_to_know"),
+        ("save_family_member", "save_week_activity", "show_family_week", "set_getting_to_know", "start_birthday_list"),
     ),
     AccountFeature(
         "inbox_watch",

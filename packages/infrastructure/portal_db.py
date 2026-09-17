@@ -435,6 +435,8 @@ CREATE TABLE IF NOT EXISTS household_members (
     role TEXT NOT NULL DEFAULT 'other',
     age INTEGER,
     age_noted_on TEXT NOT NULL DEFAULT '',
+    -- YYYY-MM-DD, or --MM-DD when the year was not given.
+    birthday TEXT NOT NULL DEFAULT '',
     school TEXT NOT NULL DEFAULT '',
     email TEXT NOT NULL DEFAULT '',
     phone TEXT NOT NULL DEFAULT '',
@@ -1561,6 +1563,9 @@ class PortalDatabase:
         ones (who the account is, whether it is a family) stay."""
 
         conn.executescript(HOUSEHOLD_TABLES_SQL)
+        member_columns = {row["name"] for row in conn.execute("PRAGMA table_info(household_members)").fetchall()}
+        if "birthday" not in member_columns:
+            conn.execute("ALTER TABLE household_members ADD COLUMN birthday TEXT NOT NULL DEFAULT ''")
         columns = {row["name"] for row in conn.execute("PRAGMA table_info(account_facts)").fetchall()}
         if "pinned" not in columns:
             conn.execute("ALTER TABLE account_facts ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0")
@@ -9296,6 +9301,7 @@ class PortalDatabase:
             "role": str(row["role"] or "other"),
             "age": int(row["age"]) if row["age"] is not None else None,
             "ageNotedOn": str(row["age_noted_on"] or ""),
+            "birthday": str(row["birthday"] or ""),
             "school": str(row["school"] or ""),
             "email": str(row["email"] or ""),
             "phone": str(row["phone"] or ""),
@@ -9332,6 +9338,7 @@ class PortalDatabase:
         phone: str | None = None,
         notes: str | None = None,
         previous_name: str | None = None,
+        birthday: str | None = None,
     ) -> dict[str, Any]:
         """Add someone, or tell us more about someone already here.
 
@@ -9349,6 +9356,8 @@ class PortalDatabase:
         lookup = household.name_key(previous_name) if normalize_text(previous_name) else key
         if email is not None and normalize_text(email) and not household.normalize_email_address(email):
             raise ValueError(f"{normalize_text(email)!r} is not an email address.")
+        if birthday is not None and normalize_text(birthday) and not household.normalize_birthday(birthday):
+            raise ValueError(f"{normalize_text(birthday)!r} is not a birthday; use YYYY-MM-DD, or MM-DD without the year.")
         now = now_iso()
         with self._connection() as conn:
             existing = conn.execute(
@@ -9365,12 +9374,13 @@ class PortalDatabase:
                 conn.execute(
                     """
                     INSERT INTO household_members
-                        (user_id, name, name_key, role, age, age_noted_on, school, email, phone, notes, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        (user_id, name, name_key, role, age, age_noted_on, birthday, school, email, phone, notes, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         int(user_id), display, key, household.normalize_role(role),
                         int(age) if age is not None else None, now[:10] if age is not None else "",
+                        household.normalize_birthday(birthday),
                         household.clean(school), household.normalize_email_address(email),
                         household.clean(phone, 40), household.clean(notes), now, now,
                     ),
@@ -9400,6 +9410,9 @@ class PortalDatabase:
                 if email is not None:
                     updates.append("email = ?")
                     values.append(household.normalize_email_address(email))
+                if birthday is not None:
+                    updates.append("birthday = ?")
+                    values.append(household.normalize_birthday(birthday))
                 conn.execute(
                     f"UPDATE household_members SET {', '.join(updates)}, updated_at = ? WHERE id = ?",
                     (*values, now, int(existing["id"])),
@@ -9535,12 +9548,15 @@ class PortalDatabase:
 
     def list_household_nudge_accounts(self) -> list[int]:
         """Accounts the week nudger has something to look at: a week with
-        anything in it, or getting to know them put off to a set day."""
+        anything in it, a birthday to remember, or getting to know them put
+        off to a set day."""
 
         with self._connection() as conn:
             rows = conn.execute(
                 """
                 SELECT DISTINCT user_id FROM household_activities
+                UNION
+                SELECT DISTINCT user_id FROM household_members WHERE birthday <> ''
                 UNION
                 SELECT user_id FROM household_profiles WHERE getting_to_know = 'postponed' AND ask_again_on <> ''
                 """

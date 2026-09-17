@@ -124,6 +124,25 @@ class NudgerTests(unittest.TestCase):
         self.nudger.run_pending(now=at(SUNDAY, 12, 0))
         self.assertEqual(len([a for a in self.queued() if a["payload"]["title"] == "Getting to know your family"]), 1)
 
+    def test_a_birthday_a_month_away_is_raised_once_with_the_list_offered(self) -> None:
+        self.database.save_household_member(user_id=self.user_id, name="Tom", role="child", birthday="2021-10-20")
+        self.nudger.run_pending(now=at(SUNDAY, 9, 30))
+        self.assertEqual(self.birthdays(), [], "not before ten")
+        self.assertEqual(self.nudger.run_pending(now=at(SUNDAY, 11, 0))["birthdays"], 1)
+        self.nudger.run_pending(now=at(SUNDAY.replace(day=21), 11, 0))
+        [action] = self.birthdays()
+        self.assertIn("Tom (child) has a birthday on 2026-10-20 (Tuesday), in 30 days, turning 5", action["payload"]["instruction"])
+        self.assertIn("ready-made to-do list", action["payload"]["offerInstruction"])
+
+    def test_a_birthday_too_far_or_too_close_is_left_alone(self) -> None:
+        self.database.save_household_member(user_id=self.user_id, name="Noa", role="child", birthday="--11-01")
+        self.database.save_household_member(user_id=self.user_id, name="Shirly", role="partner", birthday="--09-22")
+        self.nudger.run_pending(now=at(SUNDAY, 11, 0))
+        self.assertEqual(self.birthdays(), [])
+
+    def birthdays(self) -> list[dict]:
+        return [a for a in self.queued() if a["payload"]["title"] == "A birthday is coming"]
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -7,7 +7,9 @@ Three moments, each once, on the person's own clock:
 * the evening before: a drop-off or pickup tomorrow that still has nobody,
   while there is time to sort it out;
 * the ride: shortly before the account holder is the one driving, a word
-  that it is time to leave.
+  that it is time to leave;
+* a birthday a month away, with an offer of the ready-made list to get
+  ready for it.
 
 Code decides what is due and says it plainly in the fallback sentence; the
 message itself is written by the assistant from those facts, the way the
@@ -46,6 +48,9 @@ DEFAULT_POLL_SECONDS = 120
 # hour still counts; one that runs hours later has missed it.
 MORNING_WINDOW_HOURS = 3
 EVENING_WINDOW_HOURS = 2
+# A birthday is raised a month ahead. One learned later is still raised
+# while there is a little time, but not in its last days.
+BIRTHDAY_EARLIEST_DAYS = 3
 
 
 @dataclass(frozen=True)
@@ -202,7 +207,7 @@ class FamilyWeekNudger:
 
     def run_pending(self, *, now: datetime | None = None) -> dict[str, Any]:
         reference = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
-        counts = {"accounts": 0, "morning": 0, "evening": 0, "rides": 0, "askedAgain": 0}
+        counts = {"accounts": 0, "morning": 0, "evening": 0, "rides": 0, "birthdays": 0, "askedAgain": 0}
         for user_id in self.database.list_household_nudge_accounts():
             if not account_feature_allowed(self.database, user_id=user_id, feature_id="family_week"):
                 continue
@@ -273,6 +278,42 @@ class FamilyWeekNudger:
                 )
                 counts["rides"] += 1
 
+            if 10 <= local_now.hour < 19:
+                for member in self.database.list_household_members(user_id=user_id):
+                    upcoming = household.next_birthday(member.get("birthday"), today)
+                    if upcoming is None:
+                        continue
+                    days_left = (upcoming - today).days
+                    if not BIRTHDAY_EARLIEST_DAYS <= days_left <= household.BIRTHDAY_REMINDER_DAYS:
+                        continue
+                    if not claim(f"birthday:{member['id']}:{upcoming.isoformat()}"):
+                        continue
+                    turning = household.age_from_birthday(member.get("birthday"), upcoming)
+                    fact = (
+                        f"{member['name']} ({member.get('role')}) has a birthday on {upcoming.isoformat()} "
+                        f"({upcoming.strftime('%A')}), in {days_left} days"
+                        + (f", turning {turning}" if turning is not None else "")
+                    )
+                    self._queue(
+                        user_id=user_id, now=reference, timezone_name=timezone_name,
+                        title="A birthday is coming",
+                        instruction=(
+                            "In one or two short, warm sentences, in the language the person writes to you in, tell "
+                            "them this birthday is coming. The fact is exact; add none, and use no tool.\n"
+                            f"BIRTHDAY: {fact}"
+                        ),
+                        fallback=f"A birthday is coming: {fact}.",
+                        offer=(
+                            "In a few short, warm sentences, in the language the person writes to you in, tell them this "
+                            "birthday is coming, and offer to start a ready-made to-do list to get ready for it - for a "
+                            "child the party, for anyone else the celebration and the present - with each step due in "
+                            "good time, and to help with some of the steps. Ask one question: shall I make the list? "
+                            "The fact is exact; add none, and use no tool.\n"
+                            f"BIRTHDAY: {fact}"
+                        ),
+                    )
+                    counts["birthdays"] += 1
+
             profile = self.database.get_household_profile(user_id=user_id) or {}
             ask_on = normalize_text(profile.get("askAgainOn"))
             if (
@@ -304,7 +345,7 @@ class FamilyWeekNudger:
         while not stop_event.is_set():
             try:
                 summary = self.run_pending()
-                sent = sum(int(summary.get(key) or 0) for key in ("morning", "evening", "rides", "askedAgain"))
+                sent = sum(int(summary.get(key) or 0) for key in ("morning", "evening", "rides", "birthdays", "askedAgain"))
                 if sent:
                     logger(f"[family-week] queued={sent} {summary}")
             except Exception as exc:  # noqa: BLE001 - keep the nudger alive

@@ -14965,7 +14965,10 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             "accountKind": household.normalize_account_kind(profile.get("accountKind")),
             "members": [
                 {key: member[key] for key in ("id", "name", "role", "school", "email", "phone", "notes")}
-                | {"age": household.current_age(member.get("age"), member.get("ageNotedOn"), datetime.now(timezone.utc).date())}
+                | {
+                    "age": household.current_age(member.get("age"), member.get("ageNotedOn"), datetime.now(timezone.utc).date(), member.get("birthday")),
+                    "birthday": member.get("birthday") or "",
+                }
                 for member in self.database.list_household_members(user_id=user_id)
             ],
             "activities": [
