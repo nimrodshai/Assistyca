@@ -385,6 +385,16 @@ class WhatsAppOAuthLinkTests(unittest.TestCase):
         _, _, body = self._open_page(f"{self.base_url}/connect/google?s=forged.value")
         self.assertIn("doesn&#x27;t work", body)
 
+    def test_each_link_opens_where_its_own_provider_returns(self) -> None:
+        handler_class = getattr(self.server.RequestHandlerClass, "func", self.server.RequestHandlerClass)
+        handler = handler_class.__new__(handler_class)
+        handler.server = self.server
+        self.server.config.google_oauth_redirect_uri = "https://google-side.example/api/oauth/google/calendar/callback"
+        self.server.config.microsoft_oauth_redirect_uri = "https://microsoft-side.example/api/oauth/microsoft/email/callback"
+        links = handler._whatsapp_oauth_links(email="dana@acme.co", wa_id=PHONE)
+        self.assertTrue(links["google"].startswith("https://google-side.example/connect/google?"))
+        self.assertTrue(links["microsoft"].startswith("https://microsoft-side.example/connect/microsoft?"))
+
     def test_the_microsoft_callback_takes_the_same_path(self) -> None:
         self.database.register_user("dana@outlook.com")
         handler = "packages.infrastructure.portal_auth.server.PortalAuthHandler"

@@ -13012,20 +13012,23 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 )
             except ValueError:
                 continue
-            links[provider] = f"{self._whatsapp_oauth_start_origin()}{WHATSAPP_OAUTH_START_PREFIX}{provider}?{urllib_parse.urlencode({'s': state})}"
+            links[provider] = f"{self._whatsapp_oauth_start_origin(provider)}{WHATSAPP_OAUTH_START_PREFIX}{provider}?{urllib_parse.urlencode({'s': state})}"
         return links
 
-    def _whatsapp_oauth_start_origin(self) -> str:
-        """The site a sign-in link opens on: the one the provider returns to.
+    def _whatsapp_oauth_start_origin(self, provider: str) -> str:
+        """The site a sign-in link opens on: the one that provider returns to.
 
         That address is known to reach this server - the sign-in could not
-        finish otherwise - which the public base URL is not always.
+        finish otherwise - which the public base URL is not always. Each
+        provider's own, since the two may be configured differently.
         """
 
-        for redirect_uri in (self._google_calendar_oauth_redirect_uri(), self._microsoft_oauth_redirect_uri()):
-            parsed = urllib_parse.urlparse(normalize_text(redirect_uri))
-            if parsed.scheme == "https" and parsed.netloc:
-                return f"https://{parsed.netloc}"
+        redirect_uri = (
+            self._google_calendar_oauth_redirect_uri() if provider == "google" else self._microsoft_oauth_redirect_uri()
+        )
+        parsed = urllib_parse.urlparse(normalize_text(redirect_uri))
+        if parsed.scheme == "https" and parsed.netloc:
+            return f"https://{parsed.netloc}"
         return self._public_origin_url()
 
     def _whatsapp_provider_auth_url(self, provider: str, state: str, payload: dict[str, Any]) -> str:
