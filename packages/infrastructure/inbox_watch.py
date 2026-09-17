@@ -396,11 +396,11 @@ ALERT_CALENDAR_OFFER = (
     "for their yes. Then end the message with the one question that asks for it, naming the title, day "
     "and time. Whether someone else should be invited is your judgement from the email and knownFacts: a "
     "child's kindergarten or school, a family event, something a partner or co-parent also has a part in. "
-    "When knownFacts gives that person's email address, put it in attendees and name them in the question. "
-    "When the email plainly concerns them but knownFacts has no address for them, propose the event "
-    "without guests and add, in the same question, that they can send you the email address of their "
-    "partner (by name when knownFacts has one) to invite them too. Invite nobody else, and never guess an "
-    "address. When none of the emails is something for the diary, or the tool is UNAVAILABLE, call no "
+    "When household.members gives that person's email address, put it in attendees and name them in the "
+    "question. When the email plainly concerns them but household has no address for them, propose the "
+    "event without guests and add, in the same question, that they can send you the email address of "
+    "their partner (by name when household has one) to invite them too. Invite nobody else, and never "
+    "guess an address. When none of the emails is something for the diary, or the tool is UNAVAILABLE, call no "
     "tool and ask nothing. Do not offer to reply for them unless they have that set up."
 )
 

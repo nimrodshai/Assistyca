@@ -214,6 +214,7 @@ from packages.infrastructure.receipt_pairing import RECEIPT_PAIRING_INSTRUCTIONS
 from packages.infrastructure.receipt_pairing import RECEIPT_PAIRING_MAX_CLUSTER
 from packages.infrastructure.receipt_pairing import RECEIPT_PAIRING_MAX_OUTPUT_TOKENS
 from packages.infrastructure.receipt_pairing import RECEIPT_PAIRING_QUESTION_CHARS
+from packages.infrastructure import household
 from packages.infrastructure import inbox_watch
 from packages.infrastructure import mailbox_findings
 from packages.infrastructure.inbox_watch_polls import InboxWatchScheduler
@@ -10984,6 +10985,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             if declined is not None:
                 declined_call = {"tool": declined["tool"], "arguments": declined["arguments"]}
         facts = self.database.list_account_facts(user_id=user_id) if user_id > 0 else []
+        household_block = self._household_block(user_id, timezone_name)
         authorization = normalize_text(self.headers.get("Authorization"))
         port = int(self.server.server_address[1])  # type: ignore[attr-defined]
 
@@ -11060,6 +11062,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 open_question=open_question,
                 photo=photo_context,
                 trial_ended=trial_ended,
+                household_block=household_block,
             )
         except OpenAIError as exc:
             print(f"Agent loop failed: {exc.message}", flush=True)
@@ -11129,6 +11132,25 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             "fallbackUsed": result.fallback_used,
             "blockedOnConnection": result.blocked_on_connection,
         })
+
+    def _household_block(self, user_id: int, timezone_name: str) -> dict[str, Any] | None:
+        """The family as the assistant reads it, for an account that has one.
+
+        A family account always carries it, so getting to know them can begin
+        from an empty one; any other account once it keeps someone."""
+
+        if user_id <= 0:
+            return None
+        profile = self.database.get_household_profile(user_id=user_id)
+        members = self.database.list_household_members(user_id=user_id)
+        activities = self.database.list_household_activities(user_id=user_id)
+        if not household.should_describe_household(profile, members, activities):
+            return None
+        try:
+            today = datetime.now(ZoneInfo(timezone_name or "UTC")).date()
+        except (ZoneInfoNotFoundError, ValueError):
+            today = datetime.now(timezone.utc).date()
+        return household.describe_household(profile=profile, members=members, activities=activities, today=today)
 
     def _open_agent_approval(self, user_id: int, pending: dict[str, Any] | None) -> dict[str, Any] | None:
         """Write a proposed action down, and hand back only its name and id.
@@ -14163,7 +14185,10 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 for key, fact in registration_facts(
                     name=registered_name, business=registered_business, kind=registered_kind,
                 ):
-                    self.database.save_account_fact(user_id=int(user.get("id") or 0), key=key, fact=fact)
+                    # Who they are and what the account is for never give way
+                    # to newer facts.
+                    self.database.save_account_fact(user_id=int(user.get("id") or 0), key=key, fact=fact, pinned=True)
+                self.database.save_household_profile(user_id=int(user.get("id") or 0), account_kind=registered_kind)
         except (ValueError, KeyError, sqlite3.Error) as exc:
             print(f"WhatsApp signup could not create the account: {exc}", flush=True)
             return self._finish_whatsapp_signup_step(
@@ -14198,6 +14223,17 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         link_line = build_connect_links_line(email, self._whatsapp_oauth_links(email=email, wa_id=sender_wa_id))
         if link_line:
             welcome = f"{welcome}\n\n{link_line}"
+        new_user_id = int((self.database.get_user(email) or {}).get("id") or 0)
+        if new_user_id > 0:
+            # The welcome is the first message of the account's conversation:
+            # the reply to it is read with it in view. For a family it asked
+            # the first getting-to-know question, so that has started.
+            try:
+                self.database.save_whatsapp_agent_message(user_id=new_user_id, role="assistant", text=welcome)
+                if registration and normalize_registration_kind(registration.get("kind")) == "family":
+                    self.database.save_household_profile(user_id=new_user_id, getting_to_know="in_progress")
+            except (ValueError, sqlite3.Error) as exc:
+                print(f"WhatsApp signup welcome could not be kept: {exc}", flush=True)
         return self._finish_whatsapp_signup_step(sender_wa_id, "signup_completed", welcome)
 
     def _write_whatsapp_signup_reply(
