@@ -470,6 +470,10 @@ class OutlookDigestRunner:
         # costs a bigger response rather than a request per message.
         want_body = bool(include_body or include_attachments)
         safe_max = max(1, min(GRAPH_MAX_SEARCH_MESSAGES, int(max_results or GRAPH_MAX_DIGEST_MESSAGES)))
+        # Whether this read stopped with matching mail still behind it, so the
+        # caller can say the answer is short rather than let it pass as whole.
+        self.left_mail_behind = False
+        self.read_limit = safe_max
         output_dir = Path(attachment_output_dir) if attachment_output_dir else None
         if include_attachments and output_dir is not None:
             output_dir.mkdir(parents=True, exist_ok=True)
@@ -494,6 +498,7 @@ class OutlookDigestRunner:
                     continue
                 cached = remembered.get(message_id)
                 if fetched >= safe_max and not isinstance(cached, dict):
+                    self.left_mail_behind = True
                     continue
                 # A draft reply quotes the message it answers, so a receipt
                 # someone started replying to would come back a second time,
@@ -565,6 +570,10 @@ class OutlookDigestRunner:
             if (known is None and len(summaries) >= safe_max) or not next_link:
                 break
             url = next_link
+        else:
+            if next_link:
+                # The pages ran out before the search did.
+                self.left_mail_behind = True
         return summaries
 
     def save_message_attachments(
@@ -751,6 +760,7 @@ class OutlookDigestRunner:
                 "summary": header,
                 "messageCount": 0,
                 "items": [],
+                **self._read_limits(),
             }
         lines = [header, "", f"{len(items)} recent message{'s' if len(items) != 1 else ''}:"]
         for index, item in enumerate(items, start=1):
@@ -768,4 +778,11 @@ class OutlookDigestRunner:
             "summary": f"{header} - {len(items)} message{'s' if len(items) != 1 else ''}",
             "messageCount": len(items),
             "items": items,
+            **self._read_limits(),
+        }
+
+    def _read_limits(self) -> dict[str, Any]:
+        return {
+            "leftMailBehind": bool(getattr(self, "left_mail_behind", False)),
+            "readLimit": int(getattr(self, "read_limit", 0) or 0),
         }

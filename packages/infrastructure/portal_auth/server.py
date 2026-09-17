@@ -7880,8 +7880,16 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                     # providers return them in, so a capped month is the
                     # recent end of itself rather than an arbitrary slice.
                     kept_items, was_capped = receipt_ledger.cap_fresh_items(mailbox_items, search_max_results)
-                    if was_capped:
-                        capped_mailboxes.append({"mailbox": mailbox_name, "limit": search_max_results})
+                    if was_capped or (is_custom_google_batch and result.get("leftMailBehind")):
+                        # The reader holds its own, lower ceiling and stops
+                        # there without cutting anything this list can see, so
+                        # its word counts as much as the count above. A search
+                        # that stopped in June must not answer for May.
+                        read_limit = int(result.get("readLimit") or 0)
+                        capped_mailboxes.append({
+                            "mailbox": mailbox_name,
+                            "limit": min(search_max_results, read_limit) if read_limit else search_max_results,
+                        })
                         result = {
                             **result,
                             "items": kept_items,

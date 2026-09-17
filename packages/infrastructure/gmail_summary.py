@@ -14,6 +14,7 @@ from urllib import request as urllib_request
 from packages.infrastructure import mail_attachments
 from packages.infrastructure import mail_body
 from packages.infrastructure.mail_search import DEFAULT_DIGEST_QUERY
+from packages.infrastructure.mail_search import MAIL_QUERY_MAX_LENGTH
 from packages.infrastructure.mail_search import MailQuery
 from packages.infrastructure.mail_search import to_gmail_query
 
@@ -105,7 +106,7 @@ class GmailAccessValidator:
 
         params = urllib_parse.urlencode({
             "maxResults": "1",
-            "q": resolve_gmail_query(query)[:200],
+            "q": resolve_gmail_query(query)[:MAIL_QUERY_MAX_LENGTH],
         })
         request = urllib_request.Request(
             f"{GMAIL_MESSAGES_API_URL}?{params}",
@@ -418,6 +419,9 @@ class GmailDigestRunner:
             page_token = str(payload.get("nextPageToken") or "").strip()
             if len(messages) >= max_results or not page_token:
                 break
+        if page_token or len(messages) > max_results:
+            # The listing ran out of pages before the search ran out of mail.
+            self.left_mail_behind = True
         return messages[:max_results]
 
     def fetch_message_summaries(
@@ -450,8 +454,17 @@ class GmailDigestRunner:
         # Saving an attachment needs the whole message anyway, so a run that
         # saves them reads the body whether or not it asked for it.
         want_body = bool(include_body or include_attachments)
-        safe_query = resolve_gmail_query(query)[:200]
+        # The query arrives already fitted to its ceiling, with the words that
+        # can be spared dropped first. Cutting it shorter here took the end off
+        # it, and the end is where the vendor sits: "PlayStation Plus OR Sony"
+        # fell away and the search read everyone's receipts instead.
+        safe_query = resolve_gmail_query(query)[:MAIL_QUERY_MAX_LENGTH]
+        # Whether this read stopped with matching mail still behind it, so the
+        # caller can say the answer is short rather than let it pass as whole.
+        self.left_mail_behind = False
+        self.read_limit = 0
         safe_max = max(1, min(GMAIL_MAX_SEARCH_MESSAGES, int(max_results or GMAIL_MAX_DIGEST_MESSAGES)))
+        self.read_limit = safe_max
         list_max = safe_max if known is None else GMAIL_MAX_SEARCH_PAGES * GMAIL_LIST_PAGE_SIZE
         raw_messages = self._list_message_ids(token, query=safe_query, max_results=list_max)
         listed_ids = [
@@ -478,6 +491,7 @@ class GmailDigestRunner:
             if fetched >= safe_max:
                 # Past the download ceiling. Older messages the ledger holds
                 # are still gathered above; the rest wait for the next run.
+                self.left_mail_behind = True
                 continue
             fetched += 1
             encoded_message_id = urllib_parse.quote(message_id, safe="")
@@ -678,6 +692,7 @@ class GmailDigestRunner:
                 "summary": header,
                 "messageCount": 0,
                 "items": [],
+                **self._read_limits(),
             }
         lines = [header, "", f"{len(items)} recent message{'s' if len(items) != 1 else ''}:"]
         for index, item in enumerate(items, start=1):
@@ -688,6 +703,13 @@ class GmailDigestRunner:
             "summary": f"{header} - {len(items)} message{'s' if len(items) != 1 else ''}",
             "messageCount": len(items),
             "items": items,
+            **self._read_limits(),
+        }
+
+    def _read_limits(self) -> dict[str, Any]:
+        return {
+            "leftMailBehind": bool(getattr(self, "left_mail_behind", False)),
+            "readLimit": int(getattr(self, "read_limit", 0) or 0),
         }
 
 
