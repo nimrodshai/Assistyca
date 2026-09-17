@@ -3002,7 +3002,7 @@ AGENT_LOOP_INSTRUCTIONS = (
     "activities after that - what, which days, what time, who drives there and who picks up. Several "
     "answers in one message are all saved. Nobody has to have a partner or children, and nothing has to be "
     "answered: take what they give, and skip what they pass on. Call set_getting_to_know with in_progress "
-    "when you ask the first question. When they say not now, later or are busy, call it with postponed, "
+    "when you ask the first question, and again when they pick it up after putting it off. When they say not now, later or are busy, call it with postponed, "
     "say in a few words that you will pick it up another time, and stop asking. When status is postponed "
     "and askAgainOn is today or earlier, after answering their message ask once, lightly, whether now is a "
     "good time to carry on. When the people and their week are in, or they say that is everything, call it "

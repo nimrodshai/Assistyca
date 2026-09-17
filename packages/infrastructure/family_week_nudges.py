@@ -1,0 +1,323 @@
+"""The nudges that make a family's week something held for them.
+
+Three moments, each once, on the person's own clock:
+
+* the morning: what today holds, who takes and who collects, and anything
+  nobody is down for yet;
+* the evening before: a drop-off or pickup tomorrow that still has nobody,
+  while there is time to sort it out;
+* the ride: shortly before the account holder is the one driving, a word
+  that it is time to leave.
+
+Code decides what is due and says it plainly in the fallback sentence; the
+message itself is written by the assistant from those facts, the way the
+mailbox alerts are. Each is claimed in the database before it is queued, so
+two polls cannot send it twice, and a moment the poll missed is skipped
+rather than sent late. A family that put off getting to know them is asked
+once, lightly, on the day they were told it would come back.
+"""
+
+from __future__ import annotations
+
+import os
+import threading
+from dataclasses import dataclass
+from datetime import date
+from datetime import datetime
+from datetime import timedelta
+from datetime import timezone
+from typing import Any
+from typing import Callable
+from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfoNotFoundError
+
+from packages.infrastructure import household
+from packages.infrastructure.account_types import account_feature_allowed
+from packages.infrastructure.portal_db import normalize_text
+from packages.infrastructure.standing_tasks import STANDING_TASK_ACTION_TYPE
+from packages.infrastructure.whatsapp_agent_chat import infer_timezone_from_wa_id
+
+NUDGE_SOURCE = "family_week"
+DEFAULT_MORNING_HOUR = 7
+DEFAULT_EVENING_HOUR = 20
+DEFAULT_RIDE_LEAD_MINUTES = 30
+DEFAULT_POLL_SECONDS = 120
+# How late a moment may still be told. A poll that runs a little after the
+# hour still counts; one that runs hours later has missed it.
+MORNING_WINDOW_HOURS = 3
+EVENING_WINDOW_HOURS = 2
+
+
+@dataclass(frozen=True)
+class FamilyWeekNudgeConfig:
+    enabled: bool = True
+    morning_hour: int = DEFAULT_MORNING_HOUR
+    evening_hour: int = DEFAULT_EVENING_HOUR
+    ride_lead_minutes: int = DEFAULT_RIDE_LEAD_MINUTES
+    poll_seconds: int = DEFAULT_POLL_SECONDS
+
+
+def _parse_int(value: str | None, default: int) -> int:
+    try:
+        return int(normalize_text(value) or default)
+    except (TypeError, ValueError):
+        return default
+
+
+def load_family_week_nudge_config() -> FamilyWeekNudgeConfig:
+    enabled_text = normalize_text(os.getenv("PORTAL_FAMILY_NUDGES_ENABLED")).lower()
+    return FamilyWeekNudgeConfig(
+        enabled=enabled_text not in {"0", "false", "no", "off", "disabled"},
+        morning_hour=min(23, max(0, _parse_int(os.getenv("PORTAL_FAMILY_MORNING_HOUR"), DEFAULT_MORNING_HOUR))),
+        evening_hour=min(23, max(0, _parse_int(os.getenv("PORTAL_FAMILY_EVENING_HOUR"), DEFAULT_EVENING_HOUR))),
+        ride_lead_minutes=min(180, max(5, _parse_int(os.getenv("PORTAL_FAMILY_RIDE_LEAD_MINUTES"), DEFAULT_RIDE_LEAD_MINUTES))),
+        poll_seconds=max(30, _parse_int(os.getenv("PORTAL_FAMILY_NUDGE_POLL_SECONDS"), DEFAULT_POLL_SECONDS)),
+    )
+
+
+# -- what is due, in code -----------------------------------------------------
+
+
+def activities_on(activities: list[dict[str, Any]], day: date) -> list[dict[str, Any]]:
+    code = household.weekday_code(day)
+    return [activity for activity in activities if code in (activity.get("days") or [])]
+
+
+def _who(activity: dict[str, Any]) -> str:
+    return ", ".join(activity.get("who") or [])
+
+
+def _ride_word(value: Any, owner_names: list[str]) -> str:
+    return "you" if household.is_self(value, owner_names) else normalize_text(value)
+
+
+def describe_activity_line(activity: dict[str, Any], owner_names: list[str]) -> str:
+    """One activity as a plain line: time, what, for whom, who takes and collects."""
+
+    parts = []
+    times = normalize_text(activity.get("startTime"))
+    if times and normalize_text(activity.get("endTime")):
+        times = f"{times}-{activity['endTime']}"
+    head = f"{times} {activity.get('title')}".strip()
+    if _who(activity):
+        head += f" ({_who(activity)})"
+    parts.append(head)
+    takes = _ride_word(activity.get("dropOffBy"), owner_names)
+    collects = _ride_word(activity.get("pickUpBy"), owner_names)
+    parts.append(f"takes: {takes}" if takes else "nobody takes them yet")
+    parts.append(f"collects: {collects}" if collects else "nobody collects them yet")
+    return ", ".join(parts)
+
+
+def gap_lines(activities: list[dict[str, Any]]) -> list[str]:
+    lines = []
+    for activity in activities:
+        gaps = household.activity_gaps(activity)
+        if not gaps:
+            continue
+        what = f"{activity.get('title')}" + (f" ({_who(activity)})" if _who(activity) else "")
+        when = normalize_text(activity.get("startTime") if gaps == ["drop_off"] else activity.get("endTime") or activity.get("startTime"))
+        missing = " and ".join({"drop_off": "the drop-off", "pick_up": "the pickup"}[gap] for gap in gaps)
+        lines.append(f"{what}{' at ' + when if when else ''}: nobody is down for {missing}")
+    return lines
+
+
+def rides_due(
+    activities: list[dict[str, Any]],
+    *,
+    owner_names: list[str],
+    local_now: datetime,
+    lead_minutes: int,
+) -> list[dict[str, Any]]:
+    """The drives today the account holder is down for, whose leaving time
+    has come: within lead_minutes before it, and not yet past."""
+
+    due = []
+    for activity in activities_on(activities, local_now.date()):
+        for leg, who_key, time_key in (("drop_off", "dropOffBy", "startTime"), ("pick_up", "pickUpBy", "endTime")):
+            if not household.is_self(activity.get(who_key), owner_names):
+                continue
+            clock = household.normalize_time(activity.get(time_key))
+            if not clock:
+                continue
+            hour, minute = (int(part) for part in clock.split(":"))
+            moment = local_now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+            if moment - timedelta(minutes=lead_minutes) <= local_now < moment:
+                due.append({"activity": activity, "leg": leg, "at": clock})
+    return due
+
+
+# -- the nudger ----------------------------------------------------------------
+
+
+class FamilyWeekNudger:
+    def __init__(self, database: Any, *, config: FamilyWeekNudgeConfig | None = None) -> None:
+        self.database = database
+        self.config = config or load_family_week_nudge_config()
+
+    def _timezone_for_user(self, user_id: int) -> str:
+        try:
+            connection = self.database.get_whatsapp_connection_by_user_id(user_id) or {}
+        except Exception:  # noqa: BLE001
+            connection = {}
+        wa_id = normalize_text(connection.get("ownerWaId"))
+        if not wa_id:
+            linked = self.database.list_user_whatsapp_numbers(user_id=user_id)
+            wa_id = normalize_text(linked[0].get("waId")) if linked else ""
+        inferred = infer_timezone_from_wa_id(wa_id) if wa_id else ""
+        return inferred or "UTC"
+
+    def _owner_names(self, user_id: int) -> list[str]:
+        user = self.database.get_user_by_id(user_id) or {}
+        names = [normalize_text(user.get("displayName"))]
+        for fact in self.database.list_account_facts(user_id=user_id):
+            if fact.get("key") == "name":
+                names.append(normalize_text(fact.get("fact")).removeprefix("Their name is ").rstrip("."))
+        return [name for name in names if name]
+
+    def _queue(self, *, user_id: int, now: datetime, timezone_name: str, title: str, instruction: str, fallback: str, offer: str = "") -> None:
+        connection = self.database.get_whatsapp_connection_by_user_id(user_id) or {}
+        owner_wa_id = normalize_text(connection.get("ownerWaId"))
+        if not owner_wa_id:
+            linked = self.database.list_user_whatsapp_numbers(user_id=user_id)
+            owner_wa_id = normalize_text(linked[0].get("waId")) if linked else ""
+        payload: dict[str, Any] = {
+            "title": title,
+            "instruction": instruction,
+            "fallbackText": fallback,
+            "oneOff": True,
+            "source": NUDGE_SOURCE,
+        }
+        if offer:
+            payload["offerInstruction"] = offer
+        self.database.create_scheduled_action(
+            user_id=user_id,
+            action_type=STANDING_TASK_ACTION_TYPE,
+            channel="whatsapp" if owner_wa_id else "portal",
+            recipient_ref="owner",
+            run_at=now,
+            timezone_name=timezone_name,
+            payload=payload,
+        )
+
+    def run_pending(self, *, now: datetime | None = None) -> dict[str, Any]:
+        reference = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+        counts = {"accounts": 0, "morning": 0, "evening": 0, "rides": 0, "askedAgain": 0}
+        for user_id in self.database.list_household_nudge_accounts():
+            if not account_feature_allowed(self.database, user_id=user_id, feature_id="family_week"):
+                continue
+            counts["accounts"] += 1
+            timezone_name = self._timezone_for_user(user_id)
+            try:
+                zone = ZoneInfo(timezone_name)
+            except (ZoneInfoNotFoundError, ValueError):
+                zone, timezone_name = ZoneInfo("UTC"), "UTC"
+            local_now = reference.astimezone(zone)
+            today = local_now.date()
+            activities = self.database.list_household_activities(user_id=user_id)
+            owner_names = self._owner_names(user_id)
+            claim = lambda key: self.database.claim_household_nudge(user_id=user_id, nudge_key=key)  # noqa: E731
+
+            todays = activities_on(activities, today)
+            if todays and self.config.morning_hour <= local_now.hour < self.config.morning_hour + MORNING_WINDOW_HOURS:
+                if claim(f"morning:{today.isoformat()}"):
+                    lines = [describe_activity_line(activity, owner_names) for activity in todays]
+                    gaps = gap_lines(todays)
+                    self._queue(
+                        user_id=user_id, now=reference, timezone_name=timezone_name,
+                        title="Today in your family's week",
+                        instruction=(
+                            "It is the morning. Write the person one short WhatsApp message with what today holds for "
+                            "their family, in the language they write to you in: each thing with its time and who takes "
+                            "and collects, and, plainly and last, anything nobody is down for yet. 'you' is the person. "
+                            "The facts are exact; add none, and use no tool.\nTODAY:\n" + "\n".join(lines)
+                            + ("\nNOBODY DOWN FOR:\n" + "\n".join(gaps) if gaps else "")
+                        ),
+                        fallback="Today:\n" + "\n".join(f"• {line}" for line in lines),
+                    )
+                    counts["morning"] += 1
+
+            tomorrow = today + timedelta(days=1)
+            tomorrow_gaps = gap_lines(activities_on(activities, tomorrow))
+            if tomorrow_gaps and self.config.evening_hour <= local_now.hour < self.config.evening_hour + EVENING_WINDOW_HOURS:
+                if claim(f"evening:{tomorrow.isoformat()}"):
+                    self._queue(
+                        user_id=user_id, now=reference, timezone_name=timezone_name,
+                        title="Tomorrow still needs someone",
+                        instruction=(
+                            "It is the evening. In one or two short sentences, in the language the person writes to you "
+                            "in, tell them what tomorrow still has nobody down for, so there is time to sort it out. The "
+                            "facts are exact; add none, and use no tool.\nTOMORROW:\n" + "\n".join(tomorrow_gaps)
+                        ),
+                        fallback="Tomorrow still needs someone:\n" + "\n".join(f"• {line}" for line in tomorrow_gaps),
+                    )
+                    counts["evening"] += 1
+
+            for ride in rides_due(activities, owner_names=owner_names, local_now=local_now, lead_minutes=self.config.ride_lead_minutes):
+                activity = ride["activity"]
+                if not claim(f"ride:{today.isoformat()}:{activity['id']}:{ride['leg']}"):
+                    continue
+                verb = "take" if ride["leg"] == "drop_off" else "collect"
+                who = _who(activity) or "them"
+                place = normalize_text(activity.get("place"))
+                fact = f"{verb} {who} - {activity.get('title')} at {ride['at']}" + (f", {place}" if place else "")
+                self._queue(
+                    user_id=user_id, now=reference, timezone_name=timezone_name,
+                    title="Time to leave soon",
+                    instruction=(
+                        "The person is the one driving shortly. In one short sentence, in the language they write to "
+                        "you in, remind them what it is and when. The fact is exact; add nothing, and use no tool.\n"
+                        f"DRIVE: {fact}"
+                    ),
+                    fallback=f"Soon: {fact}.",
+                )
+                counts["rides"] += 1
+
+            profile = self.database.get_household_profile(user_id=user_id) or {}
+            ask_on = normalize_text(profile.get("askAgainOn"))
+            if (
+                profile.get("accountKind") == "family"
+                and profile.get("gettingToKnow") == "postponed"
+                and ask_on
+                and ask_on <= today.isoformat()
+                and 10 <= local_now.hour < 19
+                and claim(f"ask_again:{ask_on}")
+            ):
+                self._queue(
+                    user_id=user_id, now=reference, timezone_name=timezone_name,
+                    title="Getting to know your family",
+                    instruction="Nothing to say today: write one short line that you are here when they want to set up their family's week.",
+                    fallback="Whenever suits you, I can set up your family's week - just tell me who is at home.",
+                    offer=(
+                        "A few days ago the person said they would rather get to know each other later, so you could hold "
+                        "their family's week for them. In one or two light sentences, in the language they write to you "
+                        "in, ask whether now is a good time to carry on, and if it is, ask the next thing household does "
+                        "not hold yet. No pressure: make it easy to say not now. Use no tool."
+                    ),
+                )
+                self.database.save_household_profile(user_id=user_id, ask_again_on="")
+                counts["askedAgain"] += 1
+        return {"ok": True, **counts}
+
+    def serve_forever(self, stop_event: threading.Event, *, log: Callable[[str], None] | None = None) -> None:
+        logger = log or (lambda _message: None)
+        while not stop_event.is_set():
+            try:
+                summary = self.run_pending()
+                sent = sum(int(summary.get(key) or 0) for key in ("morning", "evening", "rides", "askedAgain"))
+                if sent:
+                    logger(f"[family-week] queued={sent} {summary}")
+            except Exception as exc:  # noqa: BLE001 - keep the nudger alive
+                logger(f"[family-week] error: {exc}")
+            stop_event.wait(max(30, int(self.config.poll_seconds)))
+
+
+__all__ = [
+    "FamilyWeekNudgeConfig",
+    "FamilyWeekNudger",
+    "activities_on",
+    "describe_activity_line",
+    "gap_lines",
+    "load_family_week_nudge_config",
+    "rides_due",
+]

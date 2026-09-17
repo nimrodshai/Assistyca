@@ -470,6 +470,16 @@ CREATE TABLE IF NOT EXISTS household_activities (
 
 CREATE INDEX IF NOT EXISTS idx_household_activities_user
 ON household_activities(user_id, start_time);
+
+-- Each nudge about the week once: this morning's plan, tomorrow's gaps, a
+-- drive. The row is the claim, so two polls never send the same one.
+CREATE TABLE IF NOT EXISTS household_nudges (
+    user_id INTEGER NOT NULL,
+    nudge_key TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY(user_id, nudge_key),
+    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+);
 """
 
 INSURANCE_TABLES_SQL = """
@@ -9504,6 +9514,35 @@ class PortalDatabase:
                     )
             row = conn.execute("SELECT * FROM household_activities WHERE id = ?", (int(activity_id),)).fetchone()
         return self._household_activity_row(row) or {}
+
+    def list_household_nudge_accounts(self) -> list[int]:
+        """Accounts the week nudger has something to look at: a week with
+        anything in it, or getting to know them put off to a set day."""
+
+        with self._connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT DISTINCT user_id FROM household_activities
+                UNION
+                SELECT user_id FROM household_profiles WHERE getting_to_know = 'postponed' AND ask_again_on <> ''
+                """
+            ).fetchall()
+        return sorted(int(row["user_id"]) for row in rows)
+
+    def claim_household_nudge(self, *, user_id: int, nudge_key: str) -> bool:
+        """True the first time a nudge is claimed, False ever after. Claims
+        older than a fortnight are cleared; their keys carry dates."""
+
+        now = datetime.now(timezone.utc)
+        with self._connection() as conn:
+            conn.execute(
+                "DELETE FROM household_nudges WHERE created_at < ?", ((now - timedelta(days=14)).isoformat(),)
+            )
+            cursor = conn.execute(
+                "INSERT OR IGNORE INTO household_nudges (user_id, nudge_key, created_at) VALUES (?, ?, ?)",
+                (int(user_id), normalize_text(nudge_key)[:160], now.isoformat()),
+            )
+        return cursor.rowcount > 0
 
     def remove_household_activity(self, *, user_id: int, activity_id: int) -> bool:
         if int(user_id or 0) <= 0:
