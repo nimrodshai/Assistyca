@@ -143,6 +143,32 @@ class AgentWebSearchTests(unittest.TestCase):
         self.assertEqual(tool_output["items"][0]["details"], "Hands-on exhibits from 10:00 to 15:00.")
         self.assertNotIn("sourceUrl", tool_output["items"][0])
 
+    def test_a_search_that_runs_out_of_time_says_it_took_too_long(self) -> None:
+        call = {
+            "type": "function_call",
+            "name": "search_web",
+            "call_id": "web-3",
+            "arguments": json.dumps({"query": "WhatsApp agent news", "location": None, "date_range": None, "mode": "list"}),
+        }
+        model = _Model([_round(call), _round(reply="The search took too long this time.")])
+
+        with mock.patch(
+            "packages.infrastructure.agent_loop.search_public_web",
+            side_effect=TimeoutError("The read operation timed out"),
+        ):
+            run_agent_loop(
+                context=self._context(),
+                call_model=model,
+                user_message="Any WhatsApp agent news?",
+                conversation=[],
+                today="2026-09-17",
+            )
+
+        tool_output = json.loads(model.inputs[1][-1]["output"])
+        self.assertFalse(tool_output["ok"])
+        self.assertEqual(tool_output["error"]["code"], "timed_out")
+        self.assertIn("took too long", tool_output["error"]["whatHappened"])
+
     def test_agent_rules_make_web_lists_compact_and_schedulable(self) -> None:
         self.assertIn("exactly one numbered line per result containing only its title and date", AGENT_LOOP_INSTRUCTIONS)
         self.assertIn("A recurring request to search or watch the web is a standing action", AGENT_LOOP_INSTRUCTIONS)

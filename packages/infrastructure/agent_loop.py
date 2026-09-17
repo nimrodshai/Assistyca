@@ -716,6 +716,11 @@ def _tool_search_web(context: LoopContext, args: dict[str, Any]) -> dict[str, An
             billing_email=context.email,
             usage_recorder=context.database,
         )
+    except TimeoutError as exc:
+        # We stopped waiting; the search service did not refuse. Saying so
+        # keeps our own limit from reading as someone else's outage.
+        print(f"agent.loop.web_search_failed error={exc!r}", flush=True)
+        return _error("timed_out", "The web search took too long and was stopped before it finished.", can_retry=True)
     except Exception as exc:  # noqa: BLE001 - the result envelope keeps the turn alive
         print(f"agent.loop.web_search_failed error={exc!r}", flush=True)
         return _error("provider_unavailable", "The public web search could not be completed just now.", can_retry=True)

@@ -18,6 +18,10 @@ PUBLIC_WEB_SEARCH_COMPLEXITY = TaskComplexity.IMPORTANT
 PUBLIC_WEB_SEARCH_MODEL = model_for_complexity(PUBLIC_WEB_SEARCH_COMPLEXITY)
 PUBLIC_WEB_SEARCH_MAX_RESULTS = 5
 PUBLIC_WEB_SEARCH_MAX_OUTPUT_TOKENS = 2600
+# A search reads several pages before it answers and routinely runs past the
+# minute every other OpenAI call is given. Three minutes still fits inside
+# the five a WhatsApp or scheduled turn waits for the whole loop.
+PUBLIC_WEB_SEARCH_TIMEOUT_SECONDS = 180.0
 
 PUBLIC_WEB_SEARCH_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -153,9 +157,13 @@ def search_public_web(
         max_output_tokens=PUBLIC_WEB_SEARCH_MAX_OUTPUT_TOKENS,
         usage_recorder=usage_recorder,
         price_resolver=price_resolver,
-        config=load_openai_config(default_model=PUBLIC_WEB_SEARCH_MODEL, strict_tracking=False),
+        config=load_openai_config(
+            default_model=PUBLIC_WEB_SEARCH_MODEL,
+            timeout_seconds=PUBLIC_WEB_SEARCH_TIMEOUT_SECONDS,
+            strict_tracking=False,
+        ),
         metadata={"mode": normalized_mode, "maxResults": limit},
-        tools=[{"type": "web_search", "search_context_size": "high"}],
+        tools=[{"type": "web_search", "search_context_size": "medium"}],
         reasoning=resolve_task_reasoning(PUBLIC_WEB_SEARCH_COMPLEXITY),
         extra_payload={
             "tool_choice": "required",
@@ -182,6 +190,7 @@ __all__ = [
     "PUBLIC_WEB_SEARCH_COMPLEXITY",
     "PUBLIC_WEB_SEARCH_MAX_RESULTS",
     "PUBLIC_WEB_SEARCH_SCHEMA",
+    "PUBLIC_WEB_SEARCH_TIMEOUT_SECONDS",
     "build_public_web_search_prompt",
     "search_public_web",
 ]
