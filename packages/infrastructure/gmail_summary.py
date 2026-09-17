@@ -23,6 +23,7 @@ GMAIL_MESSAGES_API_URL = "https://gmail.googleapis.com/gmail/v1/users/me/message
 # accounts apart. gmail.readonly already covers this, so no extra consent.
 GMAIL_PROFILE_API_URL = "https://gmail.googleapis.com/gmail/v1/users/me/profile"
 GMAIL_HISTORY_API_URL = "https://gmail.googleapis.com/gmail/v1/users/me/history"
+GMAIL_THREADS_API_URL = "https://gmail.googleapis.com/gmail/v1/users/me/threads"
 # How many history pages one change check reads. A mailbox that receives
 # more than this between two checks is caught up over the next ones.
 GMAIL_HISTORY_MAX_PAGES = 5
@@ -372,6 +373,30 @@ class GmailDigestRunner:
             "labels": labels,
             "unread": "UNREAD" in labels,
             "bulk": _announces_bulk(message),
+        }
+
+    def thread_latest(self, access_token: str, thread_id: str) -> dict[str, str] | None:
+        """The newest message in a thread, drafts aside, as its id, sender and
+        time; None when the thread is gone. Tells a followed thread whether
+        someone wrote in it where the inbox watch does not look."""
+
+        token = str(access_token or "").strip()
+        encoded = urllib_parse.quote(str(thread_id or "").strip(), safe="")
+        if not encoded:
+            return None
+        params = urllib_parse.urlencode([("format", "metadata"), ("metadataHeaders", "From")])
+        thread = self._get_json(f"{GMAIL_THREADS_API_URL}/{encoded}?{params}", token, missing=(404,))
+        messages = [
+            message for message in (thread.get("messages") if isinstance(thread.get("messages"), list) else [])
+            if isinstance(message, dict) and not _is_draft(message)
+        ]
+        if not messages:
+            return None
+        latest = max(messages, key=lambda message: int(str(message.get("internalDate") or "0")) if str(message.get("internalDate") or "0").isdigit() else 0)
+        return {
+            "id": str(latest.get("id") or "").strip(),
+            "from": _header_value(latest, "From"),
+            "receivedAt": _internal_date(latest),
         }
 
     def is_unread(self, access_token: str, message_id: str) -> bool | None:

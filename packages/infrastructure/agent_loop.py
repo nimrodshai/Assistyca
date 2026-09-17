@@ -2042,6 +2042,9 @@ def _send_email_payload(context: LoopContext, args: dict[str, Any]) -> dict[str,
         "body": str(args.get("body") or "").strip(),
         "replyToMessageId": str(args.get("reply_to_message_id") or "").strip(),
         "mailboxAccount": str(args.get("mailbox") or "").strip(),
+        "followReply": args.get("follow_reply") is True,
+        "waitingFor": " ".join(str(args.get("waiting_for") or "").split())[:200],
+        "expectAnswerBy": str(args.get("expect_answer_by") or "").strip()[:10],
     }
 
 
@@ -2077,8 +2080,94 @@ def _tool_send_email(context: LoopContext, args: dict[str, Any]) -> dict[str, An
                 "isReply": bool(sent.get("isReply")),
             },
             "mailbox": str(response.get("mailbox") or ""),
+            "following": bool(response.get("following")),
         })
     return _write_failure(response, status, source="gmail_send")
+
+
+def _follow_failure(response: dict[str, Any], status: int) -> dict[str, Any]:
+    code = str(response.get("error") or "").strip().lower()
+    message = str(response.get("message") or "").strip()
+    if code == "message_not_found":
+        return _error("nothing_found", message)
+    if code in {"feature_off", "too_many_follows"}:
+        return _error("not_supported", message)
+    return _write_failure(response, status, source="mailbox")
+
+
+def _tool_follow_email(context: LoopContext, args: dict[str, Any]) -> dict[str, Any]:
+    payload = {
+        "messageId": str(args.get("message_id") or "").strip(),
+        "waitingFor": " ".join(str(args.get("waiting_for") or "").split())[:200],
+        "expectAnswerBy": str(args.get("expect_answer_by") or "").strip()[:10],
+        "mailboxAccount": str(args.get("mailbox") or "").strip(),
+        "timezone": context.timezone_name,
+    }
+    if not payload["messageId"]:
+        return _error("choice_required", "Which email to follow is needed: read the inbox first and pass its messageId.")
+    response, status = context.api("POST", "/api/agent/email/follows", payload)
+    if status == 200 and response.get("ok"):
+        return _ok({
+            "following": response.get("follow") if isinstance(response.get("follow"), dict) else {},
+            "lastWord": str(response.get("lastWord") or ""),
+            "note": (
+                "Every answer that arrives in this conversation will be reported on its own. When the person wrote "
+                "last, a quiet thread gets one reminder after the day the answer was due, or after a week."
+            ),
+        })
+    return _follow_failure(response, status)
+
+
+def _followed_emails(context: LoopContext) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
+    response, status = context.api("GET", "/api/agent/email/follows")
+    if status != 200 or not response.get("ok"):
+        return [], _error("internal", "Could not read which email conversations are followed just now.", can_retry=True)
+    return [entry for entry in (response.get("follows") or []) if isinstance(entry, dict)], None
+
+
+def _tool_show_followed_emails(context: LoopContext, args: dict[str, Any]) -> dict[str, Any]:
+    follows, problem = _followed_emails(context)
+    if problem is not None:
+        return problem
+    return _ok({"followed": follows})
+
+
+def _tool_stop_following_email(context: LoopContext, args: dict[str, Any]) -> dict[str, Any]:
+    follows, problem = _followed_emails(context)
+    if problem is not None:
+        return problem
+    if not follows:
+        return _error("nothing_found", "No email conversation is being followed, so there is nothing to stop.")
+    try:
+        wanted_id = int(args.get("id") or 0)
+    except (TypeError, ValueError):
+        wanted_id = 0
+    if wanted_id:
+        matches = [entry for entry in follows if int(entry.get("id") or 0) == wanted_id]
+    else:
+        words = [
+            word for word in re.findall(r"[\w']+", str(args.get("what") or "").lower())
+            if len(word) > 2 and word not in _CANCEL_STOP_WORDS and word not in {"email", "emails", "thread", "conversation", "following", "watching", "thing"}
+        ]
+        scored = []
+        for entry in follows:
+            text = " ".join(str(entry.get(key) or "") for key in ("subject", "with", "waitingFor")).lower()
+            hits = sum(1 for word in words if word in text)
+            if hits:
+                scored.append((hits, entry))
+        best = max((hits for hits, _ in scored), default=0)
+        matches = [entry for hits, entry in scored if hits == best]
+        if not words and len(follows) == 1:
+            matches = follows
+    if not matches:
+        return _error("nothing_found", "No followed conversation matches that; ask which one they mean.", candidates=follows)
+    if len(matches) > 1:
+        return _error("choice_required", "More than one followed conversation matches; ask which one, naming each.", candidates=matches)
+    target = matches[0]
+    response, status = context.api("DELETE", f"/api/agent/email/follows/{int(target.get('id') or 0)}")
+    if status != 200 or not response.get("ok"):
+        return _error("internal", "Could not stop following that just now.", can_retry=True)
+    return _ok({"stopped": target})
 
 
 def _describe_send_email(context: LoopContext, args: dict[str, Any]) -> str:
@@ -2106,7 +2195,8 @@ def _describe_send_email(context: LoopContext, args: dict[str, Any]) -> str:
     preview = " ".join(payload["body"].split())
     if len(preview) > 160:
         preview = preview[:157].rstrip() + "..."
-    return f"{what}, saying: {preview}"
+    follow = ", and tell you when they answer" if payload["followReply"] else ""
+    return f"{what}, saying: {preview}{follow}"
 
 
 def _event_payload(context: LoopContext, args: dict[str, Any], *, action: str) -> dict[str, Any]:
@@ -2504,7 +2594,11 @@ TOOLS: list[ToolSpec] = [
             "and ready to go, signed with their name when known. To answer an email they read, pass "
             "reply_to_message_id as the messageId from the read_inbox record: the reply lands in the same "
             "thread, and to and subject may then be empty and null. mailbox is the Gmail address to send "
-            "from when they have more than one, else null."
+            "from when they have more than one, else null. follow_reply true follows the conversation and "
+            "reports the answer when it comes: set it when the email asks something or starts a matter an "
+            "answer is expected for - a request to an office or authority, a question to a supplier, a "
+            "booking - and false for a thank-you or a plain note. waiting_for is what they are waiting for in "
+            "a few words, else null; expect_answer_by is YYYY-MM-DD when a day for the answer is known, else null."
         ),
         parameters=_params({
             "to": {"type": "array", "items": {"type": "string"}},
@@ -2513,12 +2607,60 @@ TOOLS: list[ToolSpec] = [
             "body": {"type": "string"},
             "reply_to_message_id": {"type": ["string", "null"]},
             "mailbox": {"type": ["string", "null"]},
+            "follow_reply": {"type": "boolean"},
+            "waiting_for": {"type": ["string", "null"]},
+            "expect_answer_by": {"type": ["string", "null"]},
         }),
         requires=("gmail_send",),
         side_effect=True,
         confirm=True,
         run=_tool_send_email,
         preflight=_preflight_send_email,
+    ),
+    ToolSpec(
+        name="follow_email",
+        description=(
+            "Follow an email conversation that is already in their mailbox and report each answer when it "
+            "comes: 'tell me when the consulate answers', 'keep an eye on the thread with the council', 'let me "
+            "know if the landlord replies'. message_id is the messageId of any email in that conversation from a "
+            "read_inbox record; read the inbox first when you do not have it. waiting_for is what they are "
+            "waiting for in a few words; expect_answer_by is YYYY-MM-DD when they named a day, else null; "
+            "mailbox is the mailbox's address when they have more than one, else null. Emails sent with "
+            "send_email and follow_reply are followed already."
+        ),
+        parameters=_params({
+            "message_id": {"type": "string"},
+            "waiting_for": {"type": ["string", "null"]},
+            "expect_answer_by": {"type": ["string", "null"]},
+            "mailbox": {"type": ["string", "null"]},
+        }),
+        requires=LOOKUP_SOURCE_REQUIREMENTS["email-digest"],
+        side_effect=True,
+        run=_tool_follow_email,
+    ),
+    ToolSpec(
+        name="show_followed_emails",
+        description=(
+            "List the email conversations being followed for an answer: who with, the subject, what they are "
+            "waiting for, and whether an answer has come. For 'which emails are you watching', 'what am I "
+            "still waiting to hear back on'."
+        ),
+        parameters=_params({}),
+        run=_tool_show_followed_emails,
+    ),
+    ToolSpec(
+        name="stop_following_email",
+        description=(
+            "Stop following an email conversation: 'stop watching the consulate thread', 'that's settled, "
+            "forget it'. what is the person's words for it; id is its number from show_followed_emails when "
+            "known, else null. No yes is needed."
+        ),
+        parameters=_params({
+            "what": {"type": "string"},
+            "id": {"type": ["integer", "null"]},
+        }),
+        side_effect=True,
+        run=_tool_stop_following_email,
     ),
     ToolSpec(
         name="create_calendar_event",
@@ -3020,7 +3162,13 @@ AGENT_LOOP_INSTRUCTIONS = (
     "is sent; for a meeting its title, day, time and calendar, and who is invited. Write the email in the "
     "person's voice and in the language they wrote in, complete and ready to send, signed with their name "
     "when you know it. To answer an email they read, pass reply_to_message_id from the read_inbox record's "
-    "messageId; read the inbox first when you do not have it. To change or cancel a meeting, pass eventId "
+    "messageId; read the inbox first when you do not have it. An email that expects an answer is sent with "
+    "follow_reply true, and the question asking for the yes says in the same breath that you will tell them "
+    "when the answer comes; when the result says following, the report says so too. Replying in a followed "
+    "conversation keeps it followed. For a conversation already in the mailbox, follow_email does the same "
+    "with no yes needed; show_followed_emails lists them and stop_following_email ends one. Each answer is "
+    "reported by itself as it arrives, so never schedule a reminder or a standing action to check for one. "
+    "To change or cancel a meeting, pass eventId "
     "and calendarId from a read_calendar record; read the calendar first when you do not have them. When "
     "send_email or a calendar write is UNAVAILABLE because the permission was not granted, say that reading "
     "still works and that connecting Google again adds it, and give the connect_link.\n"

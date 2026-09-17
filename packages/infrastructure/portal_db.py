@@ -343,6 +343,45 @@ ON inbox_watch_messages(user_id, status, notify_after);
 
 INBOX_WATCH_MESSAGE_STATUSES = ("held", "notified", "skipped")
 INBOX_WATCH_MAX_ROWS = 5000
+
+FOLLOWED_THREADS_TABLE_SQL = """
+-- Email conversations the person asked to be told about: a letter sent
+-- to an authority, a question to a supplier. The inbox watch reports each
+-- answer that arrives in the thread, and nudges once when none has come
+-- by nudge_after. status: waiting, answered (still followed), closed.
+CREATE TABLE IF NOT EXISTS followed_threads (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    connection_id TEXT NOT NULL,
+    mailbox TEXT NOT NULL DEFAULT '',
+    provider TEXT NOT NULL DEFAULT '',
+    thread_id TEXT NOT NULL,
+    subject TEXT NOT NULL DEFAULT '',
+    counterpart TEXT NOT NULL DEFAULT '',
+    waiting_for TEXT NOT NULL DEFAULT '',
+    expect_answer_by TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'waiting',
+    last_message_id TEXT NOT NULL DEFAULT '',
+    last_activity_at TEXT NOT NULL DEFAULT '',
+    last_reply_at TEXT NOT NULL DEFAULT '',
+    reply_count INTEGER NOT NULL DEFAULT 0,
+    nudge_after TEXT NOT NULL DEFAULT '',
+    nudged_at TEXT NOT NULL DEFAULT '',
+    started_at TEXT NOT NULL,
+    closed_at TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_followed_threads_thread
+ON followed_threads(user_id, connection_id, thread_id);
+
+CREATE INDEX IF NOT EXISTS idx_followed_threads_status
+ON followed_threads(user_id, status);
+"""
+
+FOLLOWED_THREAD_STATUSES = ("waiting", "answered", "closed")
 ACCOUNT_FINDING_STATUSES = ("new", "told", "dismissed", "resolved")
 ACCOUNT_FINDING_SCAN_STATUSES = ("pending", "running", "done", "failed")
 
@@ -538,6 +577,7 @@ ON insurance_policy_versions(policy_id, effective_from DESC, effective_to);
 INSURANCE_SOURCE_MAX_BYTES = 15 * 1024 * 1024
 
 USER_OWNED_TABLES = (
+    "followed_threads",
     "account_receipts",
     "receipt_mail_reads",
     "agent_turns",
@@ -1540,6 +1580,7 @@ class PortalDatabase:
                 conn.executescript(RECEIPT_MAIL_READS_TABLE_SQL)
                 conn.executescript(MAILBOX_FINDINGS_TABLE_SQL)
                 conn.executescript(INBOX_WATCH_TABLE_SQL)
+                conn.executescript(FOLLOWED_THREADS_TABLE_SQL)
                 self._ensure_insurance_tables(conn)
                 self._ensure_household_tables(conn)
                 self._seed_default_model_prices(conn)
@@ -9003,7 +9044,9 @@ class PortalDatabase:
         cutoff = parse_datetime(since).astimezone(timezone.utc).isoformat()
         with self._connection() as conn:
             return int(conn.execute(
-                "SELECT COUNT(*) FROM inbox_watch_messages WHERE user_id = ? AND status = 'notified' AND notified_at >= ?",
+                # Answers in a thread the person asked to follow are not alerts they
+                # did not ask for, so they never use up the day's allowance.
+                "SELECT COUNT(*) FROM inbox_watch_messages WHERE user_id = ? AND status = 'notified' AND reason <> 'followed_thread' AND notified_at >= ?",
                 (int(user_id), cutoff),
             ).fetchone()[0] or 0)
 
@@ -9016,6 +9059,180 @@ class PortalDatabase:
                 (int(user_id), *wanted, max(1, int(limit))),
             ).fetchall()
         return [record for record in (self._inbox_watch_row(row) for row in rows) if record]
+
+    @staticmethod
+    def _followed_thread_row(row: sqlite3.Row | None) -> dict[str, Any] | None:
+        if row is None:
+            return None
+        return {
+            "id": int(row["id"]),
+            "userId": int(row["user_id"]),
+            "connectionId": str(row["connection_id"] or ""),
+            "mailbox": str(row["mailbox"] or ""),
+            "provider": str(row["provider"] or ""),
+            "threadId": str(row["thread_id"] or ""),
+            "subject": str(row["subject"] or ""),
+            "counterpart": str(row["counterpart"] or ""),
+            "waitingFor": str(row["waiting_for"] or ""),
+            "expectAnswerBy": str(row["expect_answer_by"] or ""),
+            "status": str(row["status"] or ""),
+            "lastMessageId": str(row["last_message_id"] or ""),
+            "lastActivityAt": str(row["last_activity_at"] or ""),
+            "lastReplyAt": str(row["last_reply_at"] or ""),
+            "replyCount": int(row["reply_count"] or 0),
+            "nudgeAfter": str(row["nudge_after"] or ""),
+            "nudgedAt": str(row["nudged_at"] or ""),
+            "startedAt": str(row["started_at"] or ""),
+            "closedAt": str(row["closed_at"] or ""),
+        }
+
+    def follow_thread(self, *, user_id: int, entry: dict[str, Any]) -> dict[str, Any]:
+        """Start following a thread, or pick it up again: the person has just
+        written in it, so it is waiting for an answer from now. What they are
+        waiting for is only replaced when a new description is given."""
+
+        connection_id = normalize_text(entry.get("connectionId"))
+        thread_id = normalize_text(entry.get("threadId"))
+        if int(user_id or 0) <= 0 or not connection_id or not thread_id:
+            raise ValueError("A user, a mailbox and a thread are needed to follow a conversation.")
+        now = now_iso()
+        activity = normalize_text(entry.get("lastActivityAt")) or now
+        nudge = entry.get("nudgeAfter")
+        nudge_text = parse_datetime(nudge).astimezone(timezone.utc).isoformat() if nudge else ""
+        with self._connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO followed_threads (
+                    user_id, connection_id, mailbox, provider, thread_id, subject, counterpart, waiting_for,
+                    expect_answer_by, status, last_message_id, last_activity_at, nudge_after, nudged_at,
+                    started_at, closed_at, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'waiting', ?, ?, ?, '', ?, '', ?, ?)
+                ON CONFLICT(user_id, connection_id, thread_id) DO UPDATE SET
+                    mailbox = excluded.mailbox,
+                    provider = excluded.provider,
+                    subject = CASE WHEN excluded.subject = '' THEN followed_threads.subject ELSE excluded.subject END,
+                    counterpart = CASE WHEN excluded.counterpart = '' THEN followed_threads.counterpart ELSE excluded.counterpart END,
+                    waiting_for = CASE WHEN excluded.waiting_for = '' THEN followed_threads.waiting_for ELSE excluded.waiting_for END,
+                    expect_answer_by = excluded.expect_answer_by,
+                    status = 'waiting',
+                    last_message_id = CASE WHEN excluded.last_message_id = '' THEN followed_threads.last_message_id ELSE excluded.last_message_id END,
+                    last_activity_at = excluded.last_activity_at,
+                    nudge_after = excluded.nudge_after,
+                    nudged_at = '',
+                    started_at = CASE WHEN followed_threads.status = 'closed' THEN excluded.started_at ELSE followed_threads.started_at END,
+                    closed_at = '',
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    int(user_id), connection_id, normalize_text(entry.get("mailbox"))[:200],
+                    normalize_text(entry.get("provider"))[:40], thread_id, normalize_text(entry.get("subject"))[:300],
+                    normalize_text(entry.get("counterpart"))[:300], normalize_text(entry.get("waitingFor"))[:200],
+                    normalize_text(entry.get("expectAnswerBy"))[:10], normalize_text(entry.get("lastMessageId"))[:300],
+                    activity, nudge_text, now, now, now,
+                ),
+            )
+            row = conn.execute(
+                "SELECT * FROM followed_threads WHERE user_id = ? AND connection_id = ? AND thread_id = ?",
+                (int(user_id), connection_id, thread_id),
+            ).fetchone()
+        return self._followed_thread_row(row) or {}
+
+    def get_followed_thread(self, *, user_id: int, connection_id: str, thread_id: str) -> dict[str, Any] | None:
+        with self._connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM followed_threads WHERE user_id = ? AND connection_id = ? AND thread_id = ?",
+                (int(user_id), normalize_text(connection_id), normalize_text(thread_id)),
+            ).fetchone()
+        return self._followed_thread_row(row)
+
+    def list_followed_threads(self, *, user_id: int, statuses: tuple[str, ...] = ("waiting", "answered"), limit: int = 50) -> list[dict[str, Any]]:
+        wanted = [status for status in statuses if status in FOLLOWED_THREAD_STATUSES] or ["waiting", "answered"]
+        placeholders = ",".join("?" for _ in wanted)
+        with self._connection() as conn:
+            rows = conn.execute(
+                f"SELECT * FROM followed_threads WHERE user_id = ? AND status IN ({placeholders}) ORDER BY id DESC LIMIT ?",
+                (int(user_id), *wanted, max(1, int(limit))),
+            ).fetchall()
+        return [record for record in (self._followed_thread_row(row) for row in rows) if record]
+
+    def record_followed_thread_reply(self, *, user_id: int, row_id: int, message_id: str, received_at: str = "", settles: bool = True) -> bool:
+        """An answer arrived. An automatic acknowledgement does not settle
+        anything, so the thread keeps waiting and keeps its nudge."""
+
+        now = now_iso()
+        at = normalize_text(received_at) or now
+        with self._connection() as conn:
+            cursor = conn.execute(
+                f"""
+                UPDATE followed_threads SET
+                    last_message_id = ?, last_activity_at = ?, last_reply_at = ?, reply_count = reply_count + 1,
+                    {"status = 'answered', nudge_after = ''," if settles else ""}
+                    updated_at = ?
+                WHERE user_id = ? AND id = ? AND status <> 'closed'
+                """,
+                (normalize_text(message_id)[:300], at, at, now, int(user_id), int(row_id)),
+            )
+        return cursor.rowcount > 0
+
+    def list_followed_threads_due_nudge(self, *, user_id: int, now: str | datetime) -> list[dict[str, Any]]:
+        reference = parse_datetime(now).astimezone(timezone.utc).isoformat()
+        with self._connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM followed_threads
+                WHERE user_id = ? AND status = 'waiting' AND nudge_after <> '' AND nudge_after <= ? AND nudged_at = ''
+                ORDER BY nudge_after ASC, id ASC
+                """,
+                (int(user_id), reference),
+            ).fetchall()
+        return [record for record in (self._followed_thread_row(row) for row in rows) if record]
+
+    def mark_followed_thread_nudged(self, *, user_id: int, row_id: int) -> bool:
+        now = now_iso()
+        with self._connection() as conn:
+            cursor = conn.execute(
+                "UPDATE followed_threads SET nudged_at = ?, updated_at = ? WHERE user_id = ? AND id = ?",
+                (now, now, int(user_id), int(row_id)),
+            )
+        return cursor.rowcount > 0
+
+    def postpone_followed_thread_nudge(self, *, user_id: int, row_id: int, nudge_after: str | datetime, last_activity_at: str = "") -> bool:
+        now = now_iso()
+        with self._connection() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE followed_threads SET nudge_after = ?,
+                    last_activity_at = CASE WHEN ? = '' THEN last_activity_at ELSE ? END, updated_at = ?
+                WHERE user_id = ? AND id = ?
+                """,
+                (
+                    parse_datetime(nudge_after).astimezone(timezone.utc).isoformat(),
+                    normalize_text(last_activity_at), normalize_text(last_activity_at), now, int(user_id), int(row_id),
+                ),
+            )
+        return cursor.rowcount > 0
+
+    def close_followed_thread(self, *, user_id: int, row_id: int) -> bool:
+        now = now_iso()
+        with self._connection() as conn:
+            cursor = conn.execute(
+                "UPDATE followed_threads SET status = 'closed', closed_at = ?, updated_at = ? WHERE user_id = ? AND id = ? AND status <> 'closed'",
+                (now, now, int(user_id), int(row_id)),
+            )
+        return cursor.rowcount > 0
+
+    def close_idle_followed_threads(self, *, user_id: int, before: str | datetime) -> int:
+        cutoff = parse_datetime(before).astimezone(timezone.utc).isoformat()
+        now = now_iso()
+        with self._connection() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE followed_threads SET status = 'closed', closed_at = ?, updated_at = ?
+                WHERE user_id = ? AND status <> 'closed' AND last_activity_at < ?
+                """,
+                (now, now, int(user_id), cutoff),
+            )
+        return int(cursor.rowcount or 0)
 
     def create_account_receipt(self, *, user_id: int, record: dict[str, Any]) -> dict[str, Any]:
         """A receipt the owner typed in by hand: no email behind it."""
