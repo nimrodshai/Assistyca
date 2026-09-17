@@ -113,6 +113,10 @@ class SituationShapeTests(unittest.TestCase):
         self.assertNotIn("link", option)
         option = make_option("connect", link="http://accounts.google.com/plain")
         self.assertNotIn("link", option)
+        option = make_option("connect", link="https://assistyca.com/connect/google?s=abc")
+        self.assertEqual(option["link"], "https://assistyca.com/connect/google?s=abc", "our own sign-in link opens on our site")
+        option = make_option("connect", link="https://evil.example/connect/elsewhere?s=abc")
+        self.assertNotIn("link", option)
 
     def test_a_report_over_the_wire_is_read_as_data(self) -> None:
         situation = normalize_situation({

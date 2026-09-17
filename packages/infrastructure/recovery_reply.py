@@ -40,9 +40,11 @@ RECOVERY_CODES = frozenset({
 })
 OPTION_KINDS = frozenset({"connect", "reconnect", "retry", "say", "choose"})
 # Where a link an option carries may point. A recovery reply is the one place
-# the assistant is handed a URL to repeat, so the hosts are the sign-in pages
-# and nothing else; any other link is dropped before the model sees it.
+# the assistant is handed a URL to repeat, so the links are sign-in links and
+# nothing else; any other link is dropped before the model sees it. Our own
+# sign-in links open on our site and send the browser on to the provider.
 ALLOWED_LINK_HOSTS = ("accounts.google.com", "login.microsoftonline.com", "login.live.com")
+SIGN_IN_START_PATHS = ("/connect/google?", "/connect/microsoft?")
 
 RECOVERY_MAX_OUTPUT_TOKENS = 1200
 RECOVERY_MAX_REPLY_LENGTH = 700
@@ -284,7 +286,10 @@ def _link_is_allowed(link: Any) -> bool:
     if not text.startswith("https://"):
         return False
     host = text[len("https://"):].split("/", 1)[0].split("?", 1)[0].lower()
-    return any(host == allowed or host.endswith(f".{allowed}") for allowed in ALLOWED_LINK_HOSTS)
+    if any(host == allowed or host.endswith(f".{allowed}") for allowed in ALLOWED_LINK_HOSTS):
+        return True
+    path = text[len("https://") + len(host):]
+    return bool(host) and path.startswith(SIGN_IN_START_PATHS)
 
 
 def _flatten(value: Any) -> str:
