@@ -310,6 +310,8 @@ from packages.infrastructure.whatsapp_agent_chat import build_calendar_choice_in
 from packages.infrastructure.whatsapp_agent_chat import build_calendar_choice_text
 from packages.infrastructure.whatsapp_agent_chat import calendars_missing_colour
 from packages.infrastructure.whatsapp_agent_chat import build_link_existing_account_text
+from packages.infrastructure.whatsapp_agent_chat import send_with_link_buttons
+from packages.infrastructure.whatsapp_agent_chat import sign_in_link_buttons
 from packages.infrastructure.whatsapp_agent_chat import resolve_whatsapp_signup_daily_cap
 from packages.infrastructure.whatsapp_agent_chat import whatsapp_signup_enabled
 from packages.infrastructure.registration_welcome import build_registration_welcome_line_prompt
@@ -14670,6 +14672,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             links = self._whatsapp_oauth_links(email=email, wa_id=sender_wa_id, purpose="link_account")
             return self._finish_whatsapp_signup_step(
                 sender_wa_id, "signup_email_taken", build_link_existing_account_text(email, links),
+                links=sign_in_link_buttons(links),
             )
 
         try:
@@ -14734,7 +14737,8 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             typing_for_message_id=normalize_text(event.get("source_message_id")),
             registration=registration,
         )
-        link_line = build_connect_links_line(email, self._whatsapp_oauth_links(email=email, wa_id=sender_wa_id))
+        connect_links = self._whatsapp_oauth_links(email=email, wa_id=sender_wa_id)
+        link_line = build_connect_links_line(email, connect_links)
         if link_line:
             welcome = f"{welcome}\n\n{link_line}"
         new_user_id = int((self.database.get_user(email) or {}).get("id") or 0)
@@ -14748,7 +14752,9 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                     self.database.save_household_profile(user_id=new_user_id, getting_to_know="in_progress")
             except (ValueError, sqlite3.Error) as exc:
                 print(f"WhatsApp signup welcome could not be kept: {exc}", flush=True)
-        return self._finish_whatsapp_signup_step(sender_wa_id, "signup_completed", welcome)
+        return self._finish_whatsapp_signup_step(
+            sender_wa_id, "signup_completed", welcome, links=sign_in_link_buttons(connect_links),
+        )
 
     def _write_whatsapp_signup_reply(
         self,
@@ -14809,12 +14815,25 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             reply = fallback
         return reply
 
-    def _finish_whatsapp_signup_step(self, sender_wa_id: str, action: str, reply: str) -> dict[str, Any]:
+    def _finish_whatsapp_signup_step(
+        self,
+        sender_wa_id: str,
+        action: str,
+        reply: str,
+        *,
+        links: list[dict[str, str]] | None = None,
+    ) -> dict[str, Any]:
         self.database.append_whatsapp_signup_message(wa_id=sender_wa_id, role="assistant", text=reply)
         message_id = ""
         error_text = ""
         try:
-            message_id = send_assistyca_text(recipient_wa_id=sender_wa_id, text=reply)
+            # A sign-in link is a long signed address; it goes as a button.
+            message_id = send_with_link_buttons(
+                reply,
+                links,
+                send_text=lambda text: send_assistyca_text(recipient_wa_id=sender_wa_id, text=text),
+                send_interactive=lambda payload: send_assistyca_interactive(recipient_wa_id=sender_wa_id, payload=payload),
+            )
         except Exception as exc:  # noqa: BLE001 - the state is saved even if the note is not
             error_text = str(exc)
             print(f"WhatsApp signup reply could not be sent: {exc}", flush=True)

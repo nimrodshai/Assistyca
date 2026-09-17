@@ -1412,6 +1412,51 @@ def lift_links_from_reply(reply: str, links: list[dict[str, Any]] | None) -> tup
     return text, used
 
 
+def send_with_link_buttons(
+    reply_text: str,
+    links: list[dict[str, Any]] | None,
+    *,
+    send_text: Callable[[str], str],
+    send_interactive: Callable[[dict[str, Any]], str],
+) -> str:
+    """Send a reply with each known link as a button under it.
+
+    The first button sits under the reply itself; any further link gets a
+    small message of its own. Should a button not go through, the plain
+    text with the address goes instead, so the person always gets the link.
+    """
+
+    text, used = lift_links_from_reply(reply_text, links)
+    if not used:
+        return send_text(reply_text)
+    first, rest = used[0], used[1:]
+    body = text or "Tap the button to open it."
+    if len(body) > LINK_BUTTON_BODY_LIMIT:
+        # Too long for one bubble with a button: the words first, then the button.
+        send_text(body)
+        body = "Tap the button below to open it."
+    message_id = send_interactive(build_link_button_payload(body=body, label=first["label"], url=first["url"]))
+    if not message_id:
+        return send_text(reply_text)
+    for link in rest:
+        if not send_interactive(build_link_button_payload(body=link["label"], label=link["label"], url=link["url"])):
+            send_text(f"{link['label']}:\n{link['url']}")
+    return message_id
+
+
+SIGN_IN_BUTTON_LABELS = {"google": "Sign in with Google", "microsoft": "Microsoft sign-in"}
+
+
+def sign_in_link_buttons(links: dict[str, str] | None) -> list[dict[str, str]]:
+    """The provider sign-in links, each with the words its button shows."""
+
+    return [
+        {"url": str(url), "label": SIGN_IN_BUTTON_LABELS.get(provider, "Sign in")}
+        for provider, url in (links or {}).items()
+        if str(url or "").startswith("https://")
+    ]
+
+
 def format_agent_reply_for_whatsapp(text: Any) -> str:
     """Reshape a portal-flavoured reply into WhatsApp text.
 
@@ -2466,22 +2511,9 @@ class WhatsAppAgentChat:
         address goes instead, so the person always gets the link.
         """
 
-        text, used = lift_links_from_reply(reply_text, links)
-        if not used:
-            return self._send_owner_text(reply_text)
-        first, rest = used[0], used[1:]
-        body = text or "Tap the button to open it."
-        if len(body) > LINK_BUTTON_BODY_LIMIT:
-            # Too long for one bubble with a button: the words first, then the button.
-            self._send_owner_text(body)
-            body = "Tap the button below to open it."
-        message_id = self._send_owner_interactive(build_link_button_payload(body=body, label=first["label"], url=first["url"]))
-        if not message_id:
-            return self._send_owner_text(reply_text)
-        for link in rest:
-            if not self._send_owner_interactive(build_link_button_payload(body=link["label"], label=link["label"], url=link["url"])):
-                self._send_owner_text(f"{link['label']}:\n{link['url']}")
-        return message_id
+        return send_with_link_buttons(
+            reply_text, links, send_text=self._send_owner_text, send_interactive=self._send_owner_interactive,
+        )
 
     # -- the whole loop ----------------------------------------------------
 
