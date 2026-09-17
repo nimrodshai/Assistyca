@@ -258,6 +258,7 @@ from packages.infrastructure.agent_loop import ACCOUNT_RIGHTS_TOOLS
 from packages.infrastructure.agent_loop import AGENT_LOOP_INSTRUCTIONS
 from packages.infrastructure.agent_loop import LOOP_MAX_OUTPUT_TOKENS
 from packages.infrastructure.agent_loop import LoopContext
+from packages.infrastructure.agent_loop import TOOLS_BY_NAME
 from packages.infrastructure.agent_loop import REPLY_TEXT_FORMAT
 from packages.infrastructure.agent_loop import run_agent_loop
 from packages.infrastructure.agent_turns import AgentTurnSamplingScheduler
@@ -12429,6 +12430,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             **describe_account_types(
                 self.database.get_account_type_permissions(),
                 self.database.count_accounts_by_type(),
+                set(TOOLS_BY_NAME),
             ),
         })
 
@@ -12461,7 +12463,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         )
         json_response(self, HTTPStatus.OK, {
             "ok": True,
-            **describe_account_types(permissions, self.database.count_accounts_by_type()),
+            **describe_account_types(permissions, self.database.count_accounts_by_type(), set(TOOLS_BY_NAME)),
         })
 
     def _handle_admin_users_get(self) -> None:

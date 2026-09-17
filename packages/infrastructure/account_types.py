@@ -162,8 +162,18 @@ def account_feature_allowed(database: Any, *, user_id: int = 0, email: str = "",
     return feature_allowed(permissions, account_type, feature_id)
 
 
-def describe_account_types(permissions: dict[str, dict[str, bool]] | None, counts: dict[str, int] | None = None) -> dict[str, Any]:
-    """The admin page's grid."""
+def describe_account_types(
+    permissions: dict[str, dict[str, bool]] | None,
+    counts: dict[str, int] | None = None,
+    available_tools: set[str] | frozenset[str] | None = None,
+) -> dict[str, Any]:
+    """The admin page's grid. A feature whose tools this build does not have
+    yet is left out, so a switch never appears for something that is not there."""
+
+    features = [
+        feature for feature in ACCOUNT_FEATURES
+        if available_tools is None or not feature.tools or any(tool in available_tools for tool in feature.tools)
+    ]
 
     return {
         "accountTypes": [
@@ -180,7 +190,7 @@ def describe_account_types(permissions: dict[str, dict[str, bool]] | None, count
                     for account_type in ACCOUNT_TYPE_VALUES
                 },
             }
-            for feature in ACCOUNT_FEATURES
+            for feature in features
         ],
         "alwaysOn": list(ALWAYS_ON_ABILITIES),
     }

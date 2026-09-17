@@ -16,6 +16,7 @@ from unittest import mock
 from packages.infrastructure.account_types import ACCOUNT_FEATURES
 from packages.infrastructure.account_types import account_feature_allowed
 from packages.infrastructure.account_types import blocked_tools
+from packages.infrastructure.account_types import describe_account_types
 from packages.infrastructure.account_types import feature_allowed
 from packages.infrastructure.agent_loop import ACCOUNT_RIGHTS_TOOLS
 from packages.infrastructure.agent_loop import LoopContext
@@ -26,10 +27,19 @@ from packages.infrastructure.portal_db import PortalDatabase
 
 
 class CatalogueTests(unittest.TestCase):
-    def test_every_gated_tool_exists(self) -> None:
+    def test_a_feature_arrives_whole(self) -> None:
+        # A feature's tools are all in this build or none of them are: a
+        # half-present feature is a typo, not a feature still on its way.
         for feature in ACCOUNT_FEATURES:
-            for tool in feature.tools:
-                self.assertIn(tool, TOOLS_BY_NAME, f"{feature.feature_id} names a tool that does not exist")
+            present = [tool in TOOLS_BY_NAME for tool in feature.tools]
+            self.assertTrue(all(present) or not any(present), f"{feature.feature_id} names a tool that does not exist")
+
+    def test_the_grid_leaves_out_a_feature_this_build_does_not_have(self) -> None:
+        grid = describe_account_types({}, {}, {"read_inbox", "send_email"})
+        ids = [feature["featureId"] for feature in grid["features"]]
+        self.assertIn("mail", ids)
+        self.assertIn("inbox_watch", ids)
+        self.assertNotIn("receipts", ids)
 
     def test_leaving_and_giving_back_are_never_gated(self) -> None:
         gated = {tool for feature in ACCOUNT_FEATURES for tool in feature.tools}
