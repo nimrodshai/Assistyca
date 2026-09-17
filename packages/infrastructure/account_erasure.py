@@ -123,6 +123,9 @@ def erase_account(
     # them go.
     phones = [str(record.get("waId") or "") for record in database.list_user_whatsapp_numbers(user_id=user_id)]
     result.signups_removed = database.delete_whatsapp_signups(user_id=user_id, wa_ids=phones)
+    # The phone keeps writing after the account is gone. Its next message is
+    # answered knowing the deletion happened, not as a stranger's hello.
+    database.mark_whatsapp_phones_erased(phones)
     database.delete_user(normalized_email)
     return result
 

@@ -300,6 +300,7 @@ from packages.infrastructure.whatsapp_agent_chat import SIGNUP_ASK_EMAIL_TEXT
 from packages.infrastructure.whatsapp_agent_chat import SIGNUP_EMAIL_TAKEN_TEXT
 from packages.infrastructure.whatsapp_agent_chat import SIGNUP_MAX_EMAIL_ATTEMPTS
 from packages.infrastructure.whatsapp_agent_chat import SIGNUP_REOPEN_AFTER_SECONDS
+from packages.infrastructure.whatsapp_agent_chat import SIGNUP_AFTER_ERASURE_TEXT
 from packages.infrastructure.whatsapp_agent_chat import SIGNUP_WELCOME_TEXT
 from packages.infrastructure.whatsapp_agent_chat import build_whatsapp_signup_link
 from packages.infrastructure.whatsapp_agent_chat import build_connect_links_line
@@ -14580,6 +14581,14 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         if not sender_wa_id:
             return None
 
+        erased_at = _parse_iso_moment(self.database.whatsapp_phone_erased_at(sender_wa_id))
+        sent_at = _parse_iso_moment(self._parse_whatsapp_message_timestamp(event.get("timestamp")))
+        if erased_at and sent_at and sent_at < erased_at:
+            # Written to the account before it was deleted, and only arriving
+            # now: Meta redelivers a message a restart cut off. It was meant
+            # for an account that no longer exists, so it opens nothing.
+            return {"type": "signup", "action": "signup_ignored", "reason": "sent_before_erasure"}
+
         now = datetime.now(timezone.utc)
         signup = self.database.get_whatsapp_signup(sender_wa_id)
         status = normalize_text((signup or {}).get("status"))
@@ -14640,9 +14649,13 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 user_message=message_text,
                 transcript=transcript,
                 attempt=attempt,
-                fallback=SIGNUP_ASK_EMAIL_TEXT if attempt <= 1 else SIGNUP_ASK_EMAIL_AGAIN_TEXT,
+                fallback=(
+                    SIGNUP_AFTER_ERASURE_TEXT if erased_at
+                    else SIGNUP_ASK_EMAIL_TEXT if attempt <= 1 else SIGNUP_ASK_EMAIL_AGAIN_TEXT
+                ),
                 typing_for_message_id=normalize_text(event.get("source_message_id")),
                 registration=registration,
+                account_erased_at=erased_at,
             )
             return self._finish_whatsapp_signup_step(
                 sender_wa_id,
@@ -14747,6 +14760,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         account_created: bool = False,
         typing_for_message_id: str = "",
         registration: dict[str, Any] | None = None,
+        account_erased_at: datetime | None = None,
     ) -> str:
         """One model-written line of the signup conversation, or the fixed one.
 
@@ -14767,6 +14781,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             attempt=attempt,
             account_created=account_created,
             registration=registration,
+            account_erased_at=account_erased_at,
         )
         try:
             # The phone shows "typing..." while the model writes the line.

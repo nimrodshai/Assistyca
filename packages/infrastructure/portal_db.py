@@ -597,6 +597,14 @@ ON insurance_policy_versions(policy_id, effective_from DESC, effective_to);
 
 INSURANCE_SOURCE_MAX_BYTES = 15 * 1024 * 1024
 
+ERASED_PHONE_MEMORY_SECONDS = 86400
+
+
+def _erased_phone_hash(wa_id: str) -> str:
+    number = normalize_whatsapp_lookup_id(wa_id)
+    return hashlib.sha256(f"erased-whatsapp-phone:{number}".encode("utf-8")).hexdigest() if number else ""
+
+
 USER_OWNED_TABLES = (
     "followed_threads",
     "account_receipts",
@@ -905,6 +913,15 @@ CREATE TABLE IF NOT EXISTS whatsapp_signups (
     started_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     completed_at TEXT
+);
+
+-- A phone whose account was deleted in the last day, so the next message
+-- from it is answered by someone who knows the account is gone rather than
+-- by a stranger's greeting. Only a hash of the number is kept, and only for
+-- a day: an erased account leaves nothing that reads as a phone number.
+CREATE TABLE IF NOT EXISTS erased_whatsapp_phones (
+    phone_hash TEXT PRIMARY KEY,
+    erased_at TEXT NOT NULL
 );
 
 -- Every WhatsApp message id the platform number has already acted on. Meta
@@ -5948,6 +5965,36 @@ class PortalDatabase:
             cursor = conn.execute(f"DELETE FROM whatsapp_signups WHERE {' OR '.join(clauses)}", params)
             conn.commit()
             return int(cursor.rowcount or 0)
+
+    def mark_whatsapp_phones_erased(self, wa_ids: list[str]) -> None:
+        """Note that these phones' account was just deleted, and forget older notes."""
+
+        hashes = sorted({_erased_phone_hash(value) for value in wa_ids} - {""})
+        stamp = now_iso()
+        cutoff = (datetime.now(timezone.utc) - timedelta(seconds=ERASED_PHONE_MEMORY_SECONDS)).isoformat()
+        with self._connection() as conn:
+            conn.execute("DELETE FROM erased_whatsapp_phones WHERE erased_at < ?", (cutoff,))
+            for phone_hash in hashes:
+                conn.execute(
+                    "INSERT INTO erased_whatsapp_phones (phone_hash, erased_at) VALUES (?, ?) "
+                    "ON CONFLICT(phone_hash) DO UPDATE SET erased_at = excluded.erased_at",
+                    (phone_hash, stamp),
+                )
+            conn.commit()
+
+    def whatsapp_phone_erased_at(self, wa_id: str) -> str | None:
+        """When this phone's account was deleted, if that was within the last day."""
+
+        phone_hash = _erased_phone_hash(wa_id)
+        if not phone_hash:
+            return None
+        cutoff = (datetime.now(timezone.utc) - timedelta(seconds=ERASED_PHONE_MEMORY_SECONDS)).isoformat()
+        with self._connection() as conn:
+            row = conn.execute(
+                "SELECT erased_at FROM erased_whatsapp_phones WHERE phone_hash = ? AND erased_at >= ?",
+                (phone_hash, cutoff),
+            ).fetchone()
+        return str(row["erased_at"]) if row is not None else None
 
     def count_whatsapp_signups_since(self, moment: datetime, *, completed_only: bool = False) -> int:
         """How many phones started (or finished) signing up after this moment."""

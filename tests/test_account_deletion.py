@@ -112,6 +112,9 @@ class AccountDeletionTests(unittest.TestCase):
 
         self.assertIsNone(database.get_whatsapp_signup("972501234567"))
         self.assertIsNotNone(database.get_whatsapp_signup("972509999999"))
+        # The phone's next message is answered knowing the account is gone.
+        self.assertIsNotNone(database.whatsapp_phone_erased_at("972501234567"))
+        self.assertIsNone(database.whatsapp_phone_erased_at("972509999999"))
 
     def test_account_delete_ends_the_session_it_was_asked_from(self) -> None:
         self.server.database.register_user("owner@example.com")
