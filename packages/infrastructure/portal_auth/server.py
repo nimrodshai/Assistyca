@@ -14392,7 +14392,12 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         access_token: str,
         business_account_id: str,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
-        webhook_url = f"{self._public_base_url()}/webhooks/whatsapp"
+        # Production puts a relay in front of the webhook so a message sent
+        # mid-deploy waits for the new server instead of being refused.
+        webhook_url = (
+            normalize_text(os.getenv("WHATSAPP_WEBHOOK_URL"))
+            or f"{self._public_base_url()}/webhooks/whatsapp"
+        )
         verify_token = normalize_text(os.getenv("WHATSAPP_VERIFY_TOKEN"))
         subscribe_kwargs: dict[str, Any] = {
             "access_token": access_token,

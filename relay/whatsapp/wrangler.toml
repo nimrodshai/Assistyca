@@ -1,0 +1,22 @@
+# Deploy: CLOUDFLARE_API_TOKEN=$(cat ~/.cloudflare-token) pnpm dlx wrangler deploy
+# The app secret is set once with `wrangler secret put WHATSAPP_APP_SECRET`.
+name = "assistyca-whatsapp-relay"
+main = "worker.js"
+account_id = "2972e7ecd9300ecdaef65b5c471ffffe"
+compatibility_date = "2025-09-01"
+workers_dev = false
+routes = [{ pattern = "hook.assistyca.com", custom_domain = true }]
+
+[vars]
+ORIGIN_URL = "https://assistyca-portal-prod.onrender.com"
+
+[[durable_objects.bindings]]
+name = "DELIVERY"
+class_name = "Delivery"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Delivery"]
+
+[observability]
+enabled = true
