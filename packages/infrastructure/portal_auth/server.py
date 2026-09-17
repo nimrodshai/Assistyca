@@ -11417,6 +11417,19 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         # unlink runs over loopback with the caller's own session, which
         # refuses any number that is not linked to it.
         sender_wa_id = normalize_whatsapp_number(payload.get("senderWaId")) if channel == "whatsapp" else ""
+        # A recurring task says which one it is and where its news starts.
+        # The ledger is read by this account and this row together, so a row
+        # id from another account finds nothing.
+        standing_task = payload.get("standingTask") if isinstance(payload.get("standingTask"), dict) else {}
+        try:
+            standing_task_id = max(0, int(standing_task.get("actionId") or 0))
+        except (TypeError, ValueError):
+            standing_task_id = 0
+        try:
+            news_since = datetime.fromisoformat(normalize_text(standing_task.get("newsSince")).replace("Z", "+00:00"))
+            news_since = news_since if news_since.tzinfo else news_since.replace(tzinfo=timezone.utc)
+        except ValueError:
+            news_since = None
         context = LoopContext(
             api=loopback,
             database=self.database,
@@ -11435,6 +11448,8 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 self.database.get_account_type_permissions(),
                 self.database.get_account_type(user_id=user_id, email=session.email),
             ),
+            standing_task_id=standing_task_id if news_since else 0,
+            news_since=news_since if standing_task_id else None,
         )
         model = resolve_task_model(AGENT_TURN_COMPLEXITY, "PORTAL_ASSISTANT_MODEL", "OPENAI_MODEL")
 
@@ -11541,6 +11556,8 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             "links": result.links,
             "fallbackUsed": result.fallback_used,
             "blockedOnConnection": result.blocked_on_connection,
+            "nothingNew": result.nothing_new,
+            "newsFound": result.news_found,
         })
 
     def _household_block(self, user_id: int, timezone_name: str) -> dict[str, Any] | None:

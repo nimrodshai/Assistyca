@@ -16,6 +16,7 @@ from packages.infrastructure.notification_delivery import send_whatsapp_notifica
 from packages.infrastructure.portal_db import PortalDatabase
 from packages.infrastructure.portal_db import normalize_text
 from packages.infrastructure.standing_tasks import STANDING_TASK_ACTION_TYPE
+from packages.infrastructure.standing_tasks import NothingNewToSend
 from packages.infrastructure.standing_tasks import is_standing_task
 from packages.infrastructure.standing_tasks import next_task_run_at
 
@@ -151,6 +152,12 @@ class ScheduledActionScheduler:
             standing = is_standing_task(claimed)
             try:
                 provider_message_id = self._dispatch(claimed)
+            except NothingNewToSend:
+                # Nothing to say is a good run, not a failure: no message, and
+                # the task moves on to next time.
+                print(f"[scheduled-actions] action={claimed.get('id')} nothing new, no message sent", flush=True)
+                self._reschedule(claimed, now=reference, nothing_new=True)
+                continue
             except Exception as exc:  # noqa: BLE001 - keep later due actions moving
                 failed += 1
                 if standing:
@@ -203,6 +210,7 @@ class ScheduledActionScheduler:
         *,
         provider_message_id: str = "",
         error: str = "",
+        nothing_new: bool = False,
         now: datetime,
     ) -> None:
         """Move a standing action on to its next occurrence.
@@ -230,9 +238,23 @@ class ScheduledActionScheduler:
             return
         payload.pop("sentAt", None)
         payload.pop("failedAt", None)
+        news_found = payload.pop("newsFound", None)
+        if not error:
+            # The next run's news starts here. What this run sent is written
+            # down now that it has been delivered, never before.
+            payload["newsCoveredUntil"] = now.isoformat()
+            if isinstance(news_found, list) and news_found and not nothing_new:
+                try:
+                    self.database.save_standing_news_sent(
+                        user_id=int(action.get("userId") or 0),
+                        action_id=action_id,
+                        items=news_found,
+                    )
+                except Exception as exc:  # noqa: BLE001 - the message went; a lost record only risks a repeat
+                    print(f"[scheduled-actions] action={action_id} could not record the news it sent: {exc}", flush=True)
         payload.update({
             "lastRunAt": now.isoformat(),
-            "lastRunStatus": "failed" if error else "success",
+            "lastRunStatus": "failed" if error else ("nothing_new" if nothing_new else "success"),
             "runCount": int(payload.get("runCount") or 0) + 1,
             "nextRunAt": next_run.isoformat(),
         })
