@@ -1517,12 +1517,58 @@ def _tool_save_family_member(context: LoopContext, args: dict[str, Any]) -> dict
             phone=_optional_text(args, "phone"),
             notes=_optional_text(args, "notes"),
             previous_name=_optional_text(args, "previous_name"),
+            birthday=_optional_text(args, "birthday"),
         )
     except ValueError as exc:
         return _error("choice_required", str(exc))
     except Exception as exc:  # noqa: BLE001
         return _error("internal", f"That could not be saved: {exc}", can_retry=True)
-    return _ok({"saved": {key: member.get(key) for key in ("name", "role", "age", "school", "email", "phone", "notes")}})
+    return _ok({"saved": {key: member.get(key) for key in ("name", "role", "age", "birthday", "school", "email", "phone", "notes")}})
+
+
+def _tool_start_birthday_list(context: LoopContext, args: dict[str, Any]) -> dict[str, Any]:
+    """The ready-made birthday to-do list for one family member, each step
+    due the right number of days before, worded by the model."""
+
+    name = str(args.get("name") or "").strip()
+    key = household.name_key(name)
+    member = next(
+        (entry for entry in context.database.list_household_members(user_id=context.user_id) if household.name_key(entry.get("name")) == key),
+        None,
+    )
+    if member is None:
+        return _error("not_found", f"Nobody called {name!r} is in the family.")
+    today = _household_today(context)
+    birthday_on = household.next_birthday(member.get("birthday"), today)
+    if birthday_on is None:
+        return _error("choice_required", f"{member['name']}'s birthday is not known yet; ask for it and save it first.")
+    template = household.birthday_list_items(member.get("role"), birthday_on, today)
+    by_step = {entry["step"]: entry for entry in template}
+    wanted = [entry for entry in (args.get("items") or []) if isinstance(entry, dict) and str(entry.get("text") or "").strip()]
+    if not wanted:
+        wanted = [{"step": entry["step"], "text": entry["text"]} for entry in template]
+    list_name = str(args.get("list_name") or "").strip() or f"{member['name']}'s birthday"
+    existing = context.database.find_account_lists(user_id=context.user_id, name=list_name)
+    if any(str(entry.get("name") or "").casefold() == list_name.casefold() for entry in existing):
+        return _error("already_exists", f"A list called {list_name!r} already exists. Use show_lists or update_list for it.")
+    try:
+        record = context.database.create_account_list(user_id=context.user_id, name=list_name, kind="todo", items=[])
+        by_due: dict[str, list[str]] = {}
+        for entry in wanted:
+            step = by_step.get(entry.get("step")) if isinstance(entry.get("step"), int) else None
+            due = step["dueOn"] if step else birthday_on.isoformat()
+            by_due.setdefault(due, []).append(str(entry["text"]).strip())
+        for due, texts in sorted(by_due.items()):
+            context.database.add_account_list_items(user_id=context.user_id, list_id=int(record["id"]), texts=texts, due_on=due)
+        record = context.database.get_account_list(user_id=context.user_id, list_id=int(record["id"])) or record
+    except ValueError as exc:
+        return _error("not_supported", str(exc))
+    except Exception as exc:  # noqa: BLE001
+        return _error("internal", f"The list could not be made: {exc}", can_retry=True)
+    return _ok(_list_payload(
+        context, record, created=True, birthday={"name": member["name"], "on": birthday_on.isoformat(),
+        "turning": household.age_from_birthday(member.get("birthday"), birthday_on)},
+    ))
 
 
 def _tool_remove_family_member(context: LoopContext, args: dict[str, Any]) -> dict[str, Any]:
@@ -2693,7 +2739,8 @@ TOOLS: list[ToolSpec] = [
             "Keep someone in the person's family for good: their partner, a child, anyone else at home or "
             "close to it. name is who it is; saving the same name again fills in what is given and keeps the "
             "rest, and previous_name renames someone. role is partner, child or other. age is years, for a "
-            "child. school is the school or kindergarten by name. email and phone are how to reach them, for "
+            "child. birthday is YYYY-MM-DD, or MM-DD when they did not say the year. school is the school or "
+            "kindergarten by name. email and phone are how to reach them, for "
             "invitations. notes is anything durable worth knowing (class, allergies they mentioned). Pass null "
             "for anything not said; an empty string clears a value. Family goes here, never in remember_fact."
         ),
@@ -2702,6 +2749,7 @@ TOOLS: list[ToolSpec] = [
             "previous_name": {"type": ["string", "null"]},
             "role": {"type": ["string", "null"], "enum": ["partner", "child", "other", None]},
             "age": {"type": ["integer", "null"]},
+            "birthday": {"type": ["string", "null"]},
             "school": {"type": ["string", "null"]},
             "email": {"type": ["string", "null"]},
             "phone": {"type": ["string", "null"]},
@@ -2709,6 +2757,31 @@ TOOLS: list[ToolSpec] = [
         }),
         side_effect=True,
         run=_tool_save_family_member,
+    ),
+    ToolSpec(
+        name="start_birthday_list",
+        description=(
+            "Make the ready-made to-do list for a family member's coming birthday, each step due the right number "
+            "of days before it (a step whose day has passed is due today). name is who from household.members; "
+            "their birthday must be saved. list_name is the list's name in the person's language, or null for "
+            "the default. items is the steps worded in the person's language, each with step, the number of the "
+            "ready-made step it is, or null for one of your own (due on the birthday). Leave out steps that do "
+            "not fit them, and pass an empty array to use the ready-made steps as they are. For a child the steps "
+            "are: " + "; ".join(f"{index}. {text}" for index, (text, _days) in enumerate(household.BIRTHDAY_LIST_TEMPLATES["child"], start=1))
+            + ". For anyone else: "
+            + "; ".join(f"{index}. {text}" for index, (text, _days) in enumerate(household.BIRTHDAY_LIST_TEMPLATES["adult"], start=1))
+            + "."
+        ),
+        parameters=_params({
+            "name": {"type": "string"},
+            "list_name": {"type": ["string", "null"]},
+            "items": {
+                "type": "array",
+                "items": _params({"step": {"type": ["integer", "null"]}, "text": {"type": "string"}}),
+            },
+        }),
+        side_effect=True,
+        run=_tool_start_birthday_list,
     ),
     ToolSpec(
         name="remove_family_member",
@@ -2997,7 +3070,8 @@ AGENT_LOOP_INSTRUCTIONS = (
     "not_started or in_progress, getting to know them comes first, so you can hold their week for them. "
     "Answer whatever they asked first, then ask the next thing household does not hold yet, one question in "
     "a message, warmly and briefly, in this order: who is at home - a partner's name, then the children's "
-    "names and ages; the partner's email address, for invitations; each child's school or kindergarten, "
+    "names and birthdays (an age is enough when they would rather not say); the partner's email address, for "
+    "invitations; each child's school or kindergarten, "
     "which days and what hours, and who usually takes them and collects them; then each child's regular "
     "activities after that - what, which days, what time, who drives there and who picks up. Several "
     "answers in one message are all saved. Nobody has to have a partner or children, and nothing has to be "
@@ -3008,6 +3082,12 @@ AGENT_LOOP_INSTRUCTIONS = (
     "good time to carry on. When the people and their week are in, or they say that is everything, call it "
     "with done and show them their week in a few short lines, with anything that has nobody down for the "
     "pickup named plainly. After done, do not ask again.\n"
+    "Birthdays: household.members carries each birthday and nextBirthday. When a birthday is about a month "
+    "away and the person wants to get ready, call start_birthday_list with the steps worded in their language "
+    "and fitted to who it is for (a four-year-old's party is not a twelve-year-old's), then put the list's "
+    "link on its own line. After that, offer to take one or two of the steps off their hands with what you "
+    "can actually do here - search_web for a place, an activity or a cake near them, write the invitation text "
+    "for them to send, put the party in the calendar - one offer, briefly, and do nothing until they say which.\n"
     "Their week is also a page of their own, where they can change who drives and share a read-only link "
     "with the other parent: when a result carries weekPage - showing the week, finishing getting to know "
     "them - say so in a sentence and put that link on its own line exactly as given, once.\n"

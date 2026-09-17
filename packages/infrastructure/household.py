@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import re
 from datetime import date
+from datetime import timedelta
 from typing import Any
 from typing import Iterable
 
@@ -102,9 +103,114 @@ def is_self(who: Any, owner_names: Iterable[str] = ()) -> bool:
     return text in names or text in firsts
 
 
-def current_age(age: Any, noted_on: Any, today: date) -> int | None:
-    """An age said once keeps counting: said as 4 two years ago is 6 now."""
+_BIRTHDAY_RE = re.compile(r"^\s*(?:(\d{4})-)?(\d{1,2})-(\d{1,2})\s*$")
+BIRTHDAY_REMINDER_DAYS = 30
 
+# The ready-made birthday list: each step with how many days before the
+# birthday it is due. A child's birthday is a party; anyone else's is a
+# celebration and a present. The assistant words each step in the person's
+# language and leaves out what does not fit; the days come from here.
+BIRTHDAY_LIST_TEMPLATES: dict[str, tuple[tuple[str, int], ...]] = {
+    "child": (
+        ("Decide what kind of party, where, and roughly how many children", 28),
+        ("Book the place or the activity", 24),
+        ("Put together the guest list", 24),
+        ("Send the invitations", 21),
+        ("Plan the celebration at kindergarten or school", 10),
+        ("Confirm who is coming", 7),
+        ("Order or bake the cake", 7),
+        ("Buy the present", 7),
+        ("Party bags for the guests", 5),
+        ("Decorations, candles, plates and drinks", 3),
+        ("Charge the phone or camera for photos", 1),
+    ),
+    "adult": (
+        ("Decide how to celebrate: dinner, a trip, a party or a quiet day", 28),
+        ("Book the restaurant, place or tickets", 21),
+        ("Arrange a babysitter if needed", 14),
+        ("Choose and order the present", 14),
+        ("Invite whoever should be there", 14),
+        ("Order the cake or flowers", 5),
+        ("Write the card", 2),
+    ),
+}
+
+
+def birthday_template_kind(role: Any) -> str:
+    return "child" if normalize_role(role) == "child" else "adult"
+
+
+def normalize_birthday(value: Any) -> str:
+    """"2021-10-12" stays; "10-12" (no year given) becomes "--10-12";
+    anything that is not a real day becomes ""."""
+
+    text = str(value or "").strip()
+    if text.startswith("--"):
+        text = text[2:]
+    match = _BIRTHDAY_RE.match(text)
+    if not match:
+        return ""
+    year, month, day = match.group(1), int(match.group(2)), int(match.group(3))
+    try:
+        date(int(year) if year else 2000, month, day)
+    except ValueError:
+        return ""
+    return f"{year}-{month:02d}-{day:02d}" if year else f"--{month:02d}-{day:02d}"
+
+
+def _birthday_parts(birthday: Any) -> tuple[int | None, int, int] | None:
+    text = normalize_birthday(birthday)
+    if not text:
+        return None
+    if text.startswith("--"):
+        return None, int(text[2:4]), int(text[5:7])
+    return int(text[:4]), int(text[5:7]), int(text[8:10])
+
+
+def _on_year(year: int, month: int, day: int) -> date:
+    # 29 February is kept on 28 February in a year without it.
+    try:
+        return date(year, month, day)
+    except ValueError:
+        return date(year, month, 28)
+
+
+def next_birthday(birthday: Any, today: date) -> date | None:
+    """The next time the birthday comes round, today included."""
+
+    parts = _birthday_parts(birthday)
+    if parts is None:
+        return None
+    _year, month, day = parts
+    upcoming = _on_year(today.year, month, day)
+    return upcoming if upcoming >= today else _on_year(today.year + 1, month, day)
+
+
+def age_from_birthday(birthday: Any, today: date) -> int | None:
+    parts = _birthday_parts(birthday)
+    if parts is None or parts[0] is None:
+        return None
+    year, month, day = parts
+    return today.year - year - ((today.month, today.day) < (month, day))
+
+
+def birthday_list_items(role: Any, birthday_on: date, today: date) -> list[dict[str, Any]]:
+    """The template for this person, each step with its due date. A step
+    whose day has already gone is due today rather than overdue."""
+
+    return [
+        {"step": index, "text": text, "dueOn": max(today, birthday_on - timedelta(days=days)).isoformat()}
+        for index, (text, days) in enumerate(BIRTHDAY_LIST_TEMPLATES[birthday_template_kind(role)], start=1)
+    ]
+
+
+def current_age(age: Any, noted_on: Any, today: date, birthday: Any = "") -> int | None:
+    """An age said once keeps counting: said as 4 two years ago is 6 now.
+    A birthday with its year, when there is one, is the better source."""
+
+    from_birthday = age_from_birthday(birthday, today)
+    if from_birthday is not None:
+        return from_birthday
     try:
         years = int(age)
     except (TypeError, ValueError):
@@ -126,6 +232,10 @@ def activity_gaps(activity: dict[str, Any]) -> list[str]:
     if not clean(activity.get("pickUpBy")):
         gaps.append("pick_up")
     return gaps
+
+
+def _iso(day: date | None) -> str | None:
+    return day.isoformat() if day else None
 
 
 def describe_household(
@@ -150,7 +260,9 @@ def describe_household(
                 for key, value in {
                     "name": member.get("name"),
                     "role": member.get("role"),
-                    "age": current_age(member.get("age"), member.get("ageNotedOn"), today),
+                    "age": current_age(member.get("age"), member.get("ageNotedOn"), today, member.get("birthday")),
+                    "birthday": member.get("birthday") or None,
+                    "nextBirthday": _iso(next_birthday(member.get("birthday"), today)),
                     "school": member.get("school") or None,
                     "email": member.get("email") or None,
                     "phone": member.get("phone") or None,
@@ -197,12 +309,19 @@ __all__ = [
     "MAX_MEMBERS",
     "MEMBER_ROLES",
     "WEEKDAY_CODES",
+    "BIRTHDAY_LIST_TEMPLATES",
+    "BIRTHDAY_REMINDER_DAYS",
     "activity_gaps",
+    "age_from_birthday",
+    "birthday_list_items",
+    "birthday_template_kind",
     "clean",
     "current_age",
     "describe_household",
     "is_self",
     "name_key",
+    "next_birthday",
+    "normalize_birthday",
     "normalize_account_kind",
     "normalize_days",
     "normalize_email_address",

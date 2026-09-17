@@ -45,6 +45,29 @@ class RulesTests(unittest.TestCase):
         self.assertEqual(household.current_age(4, "2024-09-01", date(2026, 9, 17)), 6)
         self.assertIsNone(household.current_age(None, "", date(2026, 9, 17)))
 
+    def test_a_birthday_is_kept_with_or_without_its_year(self) -> None:
+        self.assertEqual(household.normalize_birthday("2021-10-12"), "2021-10-12")
+        self.assertEqual(household.normalize_birthday("10-12"), "--10-12")
+        self.assertEqual(household.normalize_birthday("--2-29"), "--02-29")
+        self.assertEqual(household.normalize_birthday("2021-02-30"), "")
+        self.assertEqual(household.normalize_birthday("next Tuesday"), "")
+        today = date(2026, 9, 17)
+        self.assertEqual(household.next_birthday("2021-10-12", today), date(2026, 10, 12))
+        self.assertEqual(household.next_birthday("2021-09-17", today), today)
+        self.assertEqual(household.next_birthday("2021-03-01", today), date(2027, 3, 1))
+        self.assertEqual(household.next_birthday("--02-29", date(2026, 3, 1)), date(2027, 2, 28))
+        self.assertEqual(household.age_from_birthday("2021-10-12", today), 4)
+        self.assertIsNone(household.age_from_birthday("--10-12", today))
+        self.assertEqual(household.current_age(9, "2026-01-01", today, "2021-10-12"), 4, "the birthday wins")
+
+    def test_the_ready_made_list_counts_back_from_the_birthday(self) -> None:
+        items = household.birthday_list_items("child", date(2026, 10, 12), date(2026, 9, 17))
+        self.assertEqual(items[0], {"step": 1, "text": "Decide what kind of party, where, and roughly how many children", "dueOn": "2026-09-17"})
+        self.assertEqual([i["dueOn"] for i in items if i["text"] == "Send the invitations"], ["2026-09-21"])
+        self.assertEqual(items[-1]["dueOn"], "2026-10-11")
+        partner = household.birthday_list_items("partner", date(2026, 10, 12), date(2026, 9, 1))
+        self.assertIn("Write the card", [i["text"] for i in partner])
+
     def test_a_family_account_is_described_even_before_anyone_is_known(self) -> None:
         self.assertTrue(household.should_describe_household({"accountKind": "family"}, [], []))
         self.assertFalse(household.should_describe_household({"accountKind": "business"}, [], []))
@@ -81,9 +104,11 @@ class StoreTests(unittest.TestCase):
         self.database.save_account_fact(user_id=self.user_id, key="vendor", fact="Bills in dollars")
         with sqlite3.connect(self.path) as conn:
             conn.execute("ALTER TABLE account_facts DROP COLUMN pinned")
+            conn.execute("ALTER TABLE household_members DROP COLUMN birthday")
         reopened = PortalDatabase(self.path)
         pinned = {fact["key"]: fact["pinned"] for fact in reopened.list_account_facts(user_id=self.user_id)}
         self.assertEqual(pinned, {"their family": True, "vendor": False})
+        self.assertEqual(reopened.save_household_member(user_id=self.user_id, name="Tom", birthday="10-12")["birthday"], "--10-12")
 
     def test_the_kind_of_account_is_the_one_signup_and_the_admin_set(self) -> None:
         profile = self.database.get_household_profile(user_id=self.user_id) or {}
@@ -102,6 +127,14 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(member["email"], "")
         with self.assertRaises(ValueError):
             self.database.save_household_member(user_id=self.user_id, name="Shirly", email="not an address")
+
+    def test_a_birthday_is_saved_checked_and_cleared(self) -> None:
+        member = self.database.save_household_member(user_id=self.user_id, name="Tom", role="child", birthday="2021-10-12")
+        self.assertEqual(member["birthday"], "2021-10-12")
+        with self.assertRaises(ValueError):
+            self.database.save_household_member(user_id=self.user_id, name="Tom", birthday="soon")
+        self.assertEqual(self.database.save_household_member(user_id=self.user_id, name="Tom", notes="x")["birthday"], "2021-10-12")
+        self.assertEqual(self.database.save_household_member(user_id=self.user_id, name="Tom", birthday="")["birthday"], "")
 
     def test_a_member_can_be_renamed_and_removed(self) -> None:
         self.database.save_household_member(user_id=self.user_id, name="Tom", role="child", age=4)
@@ -227,6 +260,43 @@ class ToolTests(unittest.TestCase):
         from packages.infrastructure.agent_loop import AGENT_LOOP_INSTRUCTIONS
         self.assertIn("one question in a message", AGENT_LOOP_INSTRUCTIONS)
         self.assertIn("never use remember_fact for family", AGENT_LOOP_INSTRUCTIONS)
+
+    def _birthday_member(self, **extra) -> None:
+        self.run_tool(
+            "save_family_member", name="Tom", previous_name=None, role="child", age=None, birthday="2021-10-12",
+            school=None, email=None, phone=None, notes=None, **extra,
+        )
+
+    def test_the_birthday_list_is_worded_by_the_model_and_dated_by_code(self) -> None:
+        self._birthday_member()
+        from unittest import mock
+        with mock.patch("packages.infrastructure.agent_loop._household_today", return_value=date(2026, 9, 12)):
+            made = self.run_tool(
+                "start_birthday_list", name="tom", list_name="יום הולדת לתום",
+                items=[
+                    {"step": 1, "text": "להחליט איזו מסיבה ואיפה"},
+                    {"step": 4, "text": "לשלוח הזמנות"},
+                    {"step": None, "text": "להזמין את סבתא"},
+                ],
+            )
+        self.assertTrue(made["ok"], made)
+        self.assertEqual(made["list"]["name"], "יום הולדת לתום")
+        self.assertEqual(made["birthday"], {"name": "Tom", "on": "2026-10-12", "turning": 5})
+        due = {item["text"]: item["dueOn"] for item in made["list"]["items"]}
+        self.assertEqual(due, {"להחליט איזו מסיבה ואיפה": "2026-09-14", "לשלוח הזמנות": "2026-09-21", "להזמין את סבתא": "2026-10-12"})
+        again = self.run_tool("start_birthday_list", name="Tom", list_name="יום הולדת לתום", items=[])
+        self.assertEqual(again["error"]["code"], "already_exists")
+
+    def test_the_ready_made_steps_are_used_when_none_are_worded(self) -> None:
+        self._birthday_member()
+        made = self.run_tool("start_birthday_list", name="Tom", list_name=None, items=[])
+        self.assertEqual(made["list"]["name"], "Tom's birthday")
+        self.assertEqual(made["list"]["itemCount"], len(household.BIRTHDAY_LIST_TEMPLATES["child"]))
+
+    def test_no_list_without_a_birthday(self) -> None:
+        self.run_tool("save_family_member", name="Noa", previous_name=None, role="child", age=8, birthday=None, school=None, email=None, phone=None, notes=None)
+        refused = self.run_tool("start_birthday_list", name="Noa", list_name=None, items=[])
+        self.assertEqual(refused["error"]["code"], "choice_required")
 
     def test_showing_the_week_hands_over_the_page_link(self) -> None:
         self.context.week_link = lambda: "https://assistyca.com/week/open/abc"

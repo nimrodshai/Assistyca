@@ -50,6 +50,11 @@
     const details = [];
     if (member.role === "partner") details.push("partner");
     if (member.age !== null && member.age !== undefined) details.push(String(member.age));
+    if (member.birthday) {
+      const [month, day] = member.birthday.slice(-5).split("-").map(Number);
+      const label = new Date(2000, month - 1, day).toLocaleDateString(undefined, { day: "numeric", month: "short" });
+      details.push(`birthday ${label}`);
+    }
     if (member.school) details.push(member.school);
     if (details.length) item.append(el("span", "person-detail", details.join(" · ")));
     return item;
