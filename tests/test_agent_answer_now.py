@@ -15,9 +15,11 @@ import sys
 import tempfile
 import threading
 import unittest
+from datetime import date
 from pathlib import Path
 from typing import Any
 from unittest import mock
+from urllib import parse as urllib_parse
 from urllib import request as urllib_request
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -25,6 +27,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from packages.infrastructure.agent_proposals import build_agent_turn_prompt
 from packages.infrastructure.gmail_summary import GMAIL_MAX_DIGEST_MESSAGES
 from packages.infrastructure.gmail_summary import GmailDigestRunner
+from packages.infrastructure.portal_auth.server import AGENT_GMAIL_BATCH_SEARCH_TERMS as AGENT_RECEIPT_SEARCH_TERMS
 from packages.infrastructure.mail_search import MailQuery
 from packages.infrastructure.openai_api import OpenAIError
 from packages.infrastructure.mail_search import to_gmail_query
@@ -1116,6 +1119,28 @@ class AgentAnswerRunTests(unittest.TestCase):
         # describe the same set of receipts.
         self.assertEqual(payload["receiptCount"], AGENT_RECEIPT_ANSWER_MAX_MESSAGES)
 
+    def test_a_reader_that_stopped_early_is_reported_as_short(self) -> None:
+        # The reader holds a lower ceiling than the run and stops there
+        # without handing back anything past it, so the run cannot count
+        # what it cut. The reader's own word is what says the year was not
+        # all read - without it "nothing since June" passed as "nothing".
+        payload = self._run_answer(
+            {
+                "result": "Find receipts from Render for August 2026",
+                "vendor": "Render",
+                "manualRunMonth": "2026-08",
+            },
+            digest={
+                "summary": "Gmail digest",
+                "messageCount": 0,
+                "items": [],
+                "leftMailBehind": True,
+                "readLimit": 100,
+            },
+        )
+
+        self.assertEqual(payload["cappedMailboxes"], [{"mailbox": "Gmail", "limit": 100}])
+
     def test_a_mailbox_that_fits_says_nothing_about_a_ceiling(self) -> None:
         payload = self._run_answer({
             "result": "Find receipts from Render for August 2026",
@@ -1268,6 +1293,59 @@ class GmailSearchReachTests(unittest.TestCase):
 
         self.assertEqual(len(items), GMAIL_MAX_DIGEST_MESSAGES)
         self.assertEqual(len(pages), 1)
+
+    def _listing_opener(self, listed: list[str], ids: list[str]):
+        def opener(request, *, timeout):  # type: ignore[no-untyped-def]
+            url = getattr(request, "full_url", str(request))
+            if "/messages?" in url:
+                listed.append(url)
+                return _FakeGmailResponse({"messages": [{"id": value} for value in ids]})
+            return _FakeGmailResponse({
+                "id": url.rsplit("/", 1)[-1].split("?")[0],
+                "payload": {"headers": [{"name": "Subject", "value": "Receipt"}]},
+            })
+
+        return opener
+
+    def test_the_vendor_reaches_gmail_whole(self) -> None:
+        # "Am I paying for PlayStation Plus?" searched a year of everyone's
+        # receipts: the reader cut the query at 200 characters, the receipt
+        # words filled them, and the names at the end - the Sony a PayPal
+        # receipt carries - never reached Gmail. Its May receipt sat behind
+        # four months of other mail.
+        listed: list[str] = []
+        query = MailQuery(
+            terms=AGENT_RECEIPT_SEARCH_TERMS,
+            required_any=("PlayStation Plus", "Sony", "PlayStation Network"),
+            after=date(2025, 9, 1),
+            before=date(2026, 10, 1),
+        )
+        GmailDigestRunner(opener=self._listing_opener(listed, ["one"])).run(
+            "token", query=query, max_results=10, include_body=True,
+        )
+
+        sent = urllib_parse.parse_qs(urllib_parse.urlparse(listed[0]).query)["q"][0]
+        self.assertEqual(sent, to_gmail_query(query))
+        self.assertIn('("PlayStation Plus" OR Sony OR "PlayStation Network")', sent)
+
+    def test_a_read_that_stops_with_mail_behind_it_says_so(self) -> None:
+        listed: list[str] = []
+        result = GmailDigestRunner(opener=self._listing_opener(listed, ["a", "b", "c"])).run(
+            "token", query=MailQuery(terms=("receipt",)), max_results=2, include_body=True,
+            known=lambda ids: {},
+        )
+
+        self.assertEqual(len(result["items"]), 2)
+        self.assertTrue(result["leftMailBehind"])
+        self.assertEqual(result["readLimit"], 2)
+
+    def test_a_read_that_reaches_the_end_says_nothing_was_left(self) -> None:
+        result = GmailDigestRunner(opener=self._listing_opener([], ["a", "b"])).run(
+            "token", query=MailQuery(terms=("receipt",)), max_results=5, include_body=True,
+            known=lambda ids: {},
+        )
+
+        self.assertFalse(result["leftMailBehind"])
 
 
 class GmailDraftTests(unittest.TestCase):
