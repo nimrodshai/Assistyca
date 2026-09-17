@@ -11,6 +11,7 @@ from __future__ import annotations
 import itertools
 import sys
 import unittest
+from unittest import mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -113,10 +114,12 @@ class SituationShapeTests(unittest.TestCase):
         self.assertNotIn("link", option)
         option = make_option("connect", link="http://accounts.google.com/plain")
         self.assertNotIn("link", option)
-        option = make_option("connect", link="https://assistyca.com/connect/google?s=abc")
-        self.assertEqual(option["link"], "https://assistyca.com/connect/google?s=abc", "our own sign-in link opens on our site")
-        option = make_option("connect", link="https://evil.example/connect/elsewhere?s=abc")
-        self.assertNotIn("link", option)
+        with mock.patch.dict("os.environ", {"PUBLIC_BASE_URL": "https://assistyca.com", "GOOGLE_OAUTH_REDIRECT_URI": "",
+                                            "MICROSOFT_OAUTH_REDIRECT_URI": ""}):
+            option = make_option("connect", link="https://assistyca.com/connect/google?s=abc")
+            self.assertEqual(option["link"], "https://assistyca.com/connect/google?s=abc", "our own sign-in link opens on our site")
+            option = make_option("connect", link="https://evil.example/connect/google?s=abc")
+            self.assertNotIn("link", option, "the sign-in path on someone else's site is still someone else's site")
 
     def test_a_report_over_the_wire_is_read_as_data(self) -> None:
         situation = normalize_situation({

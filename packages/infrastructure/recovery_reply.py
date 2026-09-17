@@ -17,6 +17,7 @@ would otherwise write a customer-facing string builds a report instead.
 from __future__ import annotations
 
 import json
+import os
 import re
 from typing import Any, Iterable
 
@@ -289,7 +290,20 @@ def _link_is_allowed(link: Any) -> bool:
     if any(host == allowed or host.endswith(f".{allowed}") for allowed in ALLOWED_LINK_HOSTS):
         return True
     path = text[len("https://") + len(host):]
-    return bool(host) and path.startswith(SIGN_IN_START_PATHS)
+    return bool(host) and host in _own_hosts() and path.startswith(SIGN_IN_START_PATHS)
+
+
+def _own_hosts() -> set[str]:
+    """This server's own hosts: the addresses the sign-ins return to, and the public one."""
+
+    hosts: set[str] = set()
+    for name in ("GOOGLE_OAUTH_REDIRECT_URI", "MICROSOFT_OAUTH_REDIRECT_URI", "PUBLIC_BASE_URL"):
+        value = str(os.getenv(name) or "").strip()
+        if value.startswith("https://"):
+            host = value[len("https://"):].split("/", 1)[0].split("?", 1)[0].lower()
+            if host:
+                hosts.add(host)
+    return hosts
 
 
 def _flatten(value: Any) -> str:
