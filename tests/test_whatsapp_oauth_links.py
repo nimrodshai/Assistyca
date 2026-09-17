@@ -177,31 +177,45 @@ class WhatsAppOAuthLinkTests(unittest.TestCase):
     def _last_reply(self) -> str:
         return self.sent.call_args.kwargs["message_text"]
 
+    def _last_button(self) -> tuple[str, str, str]:
+        """The body, button words and address of the last link button sent."""
+
+        interactive = self.sent.call_args.kwargs["interactive"]
+        self.assertEqual(interactive["type"], "cta_url")
+        parameters = interactive["action"]["parameters"]
+        return interactive["body"]["text"], parameters["display_text"], parameters["url"]
+
     # --- the links themselves -------------------------------------------
 
     def test_a_new_account_is_welcomed_with_a_sign_in_link_not_a_website(self) -> None:
         self._webhook("hi", message_id="wamid.a1")
         result = self._webhook("dana@gmail.com", message_id="wamid.a2")
         self.assertEqual(result["results"][0]["action"], "signup_completed")
-        reply = self._last_reply()
-        self.assertIn("https://assistyca.example/connect/google?s=", reply)
-        self.assertNotIn("assistyca.com", reply)
-        self.assertNotIn("Settings", reply)
+        # The sign-in goes as a button: the long signed address stays out of the words.
+        body, label, url = self._last_button()
+        self.assertEqual(label, "Sign in with Google")
+        self.assertIn("https://assistyca.example/connect/google?s=", url)
+        self.assertNotIn("https://", body)
+        self.assertNotIn("assistyca.com", body)
+        self.assertNotIn("Settings", body)
         # An Outlook address gets the Microsoft door instead.
         self._webhook("hi", sender="447700900999", message_id="wamid.a3")
         self._webhook("dana@outlook.com", sender="447700900999", message_id="wamid.a4")
-        self.assertIn("/connect/microsoft?", self._last_reply())
-        self.assertNotIn("/connect/google?", self._last_reply())
+        _, label, url = self._last_button()
+        self.assertEqual(label, "Microsoft sign-in")
+        self.assertIn("/connect/microsoft?", url)
 
     def test_an_existing_address_gets_a_sign_in_link_to_prove_it_is_theirs(self) -> None:
         self.database.register_user("owner@gmail.com")
         self._webhook("hi", message_id="wamid.b1")
         result = self._webhook("owner@gmail.com", message_id="wamid.b2")
         self.assertEqual(result["results"][0]["action"], "signup_email_taken")
-        reply = self._last_reply()
-        self.assertIn("already has an Assistyca account", reply)
-        self.assertIn("https://assistyca.example/connect/google?", reply)
-        self.assertNotIn("assistyca.com", reply)
+        body, label, url = self._last_button()
+        self.assertIn("already has an Assistyca account", body)
+        self.assertTrue(body.endswith("link this phone to it."), body)
+        self.assertEqual(label, "Sign in with Google")
+        self.assertIn("https://assistyca.example/connect/google?", url)
+        self.assertNotIn("assistyca.com", body)
         # And the phone is not linked by the claim alone.
         self.assertEqual(self.database.get_user_id_for_whatsapp_number(PHONE), 0)
 
