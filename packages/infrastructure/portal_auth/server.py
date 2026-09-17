@@ -1023,6 +1023,7 @@ STATIC_PAGE_ALIASES: dict[str, Path] = {
     "/register/family": Path("portal/register.html"),
     "/lists": Path("portal/lists.html"),
     "/receipts": Path("portal/receipts.html"),
+    "/week": Path("portal/week.html"),
 }
 # The public, read-only view of one shared list. The token is the rest of
 # the path; the page reads it from its own address and asks the API.
@@ -1047,6 +1048,10 @@ LISTS_HANDOFF_PREFIX = "/lists/open/"
 # The same one-time code, landing on the receipts page instead. The code
 # only says whose account signs in; the page comes from the address.
 RECEIPTS_HANDOFF_PREFIX = "/receipts/open/"
+WEEK_HANDOFF_PREFIX = "/week/open/"
+# The read-only week the other parent opens from a link.
+WEEK_SHARE_PAGE_PREFIX = "/w/"
+WEEK_SHARE_PAGE = Path("portal/week-share.html")
 LISTS_HANDOFF_TTL_SECONDS = 48 * 3600
 
 # Every response carries these. The portal serves no inline scripts -- the theme
@@ -4467,6 +4472,9 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             or path == "/api/receipts"
             or path.startswith("/api/receipts/")
             or path.startswith("/api/public/lists/")
+            or path == "/api/household"
+            or path.startswith("/api/household/")
+            or path.startswith("/api/public/week/")
         ):
             self.send_response(HTTPStatus.NO_CONTENT)
             send_api_headers(self)
@@ -4506,8 +4514,13 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             or path == "/api/receipts"
             or path.startswith("/api/receipts/")
             or path.startswith("/api/public/lists/")
+            or path == "/api/household"
+            or path.startswith("/api/public/week/")
         ):
             self._handle_api_get(parsed)
+            return
+        if path.startswith(WEEK_HANDOFF_PREFIX):
+            self._handle_page_handoff(parsed, prefix=WEEK_HANDOFF_PREFIX, page="/week")
             return
         if path.startswith(LISTS_HANDOFF_PREFIX):
             self._handle_lists_handoff(parsed)
@@ -4574,6 +4587,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             or path.startswith("/api/lists/")
             or path == "/api/receipts"
             or path.startswith("/api/receipts/")
+            or path.startswith("/api/household/")
             or path == "/api/findings/scan"
             or path == "/api/inbox-watch/poll"
         ):
@@ -4607,6 +4621,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             or path.startswith("/api/whatsapp/history/")
             or path.startswith("/api/lists/")
             or path.startswith("/api/receipts/")
+            or path.startswith("/api/household/")
         ):
             try:
                 self._handle_api_delete(parsed)
@@ -4629,6 +4644,8 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             return self._send_static_page(static_alias)
         if parsed.path.startswith(LIST_SHARE_PAGE_PREFIX) and len(parsed.path) > len(LIST_SHARE_PAGE_PREFIX):
             return self._send_static_page(LIST_SHARE_PAGE)
+        if parsed.path.startswith(WEEK_SHARE_PAGE_PREFIX) and len(parsed.path) > len(WEEK_SHARE_PAGE_PREFIX):
+            return self._send_static_page(WEEK_SHARE_PAGE)
         if not is_public_static_path(parsed.path):
             self.send_error(HTTPStatus.NOT_FOUND)
             return None
@@ -4680,6 +4697,12 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             return
         if path.startswith("/api/public/lists/"):
             self._handle_public_list_get(parsed)
+            return
+        if path == "/api/household":
+            self._handle_household_get()
+            return
+        if path.startswith("/api/public/week/"):
+            self._handle_public_week_get(parsed)
             return
         if path == "/api/scheduled-actions":
             self._handle_scheduled_actions_get(parsed)
@@ -4958,6 +4981,9 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         if path == "/api/lists" or path.startswith("/api/lists/"):
             self._handle_lists_post(parsed)
             return
+        if path.startswith("/api/household/"):
+            self._handle_household_post(parsed)
+            return
         if path == "/api/receipts" or path.startswith("/api/receipts/"):
             self._handle_receipts_post(parsed)
             return
@@ -5021,6 +5047,9 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             return
         if path.startswith("/api/lists/"):
             self._handle_lists_delete(parsed)
+            return
+        if path.startswith("/api/household/"):
+            self._handle_household_delete(parsed)
             return
         if path.startswith("/api/receipts/"):
             self._handle_receipts_delete(parsed)
@@ -11057,6 +11086,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             channel="whatsapp" if channel == "whatsapp" else "portal",
             list_link=self._lists_link_builder(session.email, channel),
             receipts_link=self._receipts_link_builder(session.email, channel),
+            week_link=self._page_link_builder(session.email, channel, page="/week", prefix=WEEK_HANDOFF_PREFIX) if household_block else None,
             sender_wa_id=sender_wa_id,
             attached_photo=photo_context,
             blocked_tools=blocked_tools(
@@ -14888,6 +14918,163 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             return f"{base}{RECEIPTS_HANDOFF_PREFIX}{code}"
 
         return build
+
+    def _page_link_builder(self, email: str, channel: str, *, page: str, prefix: str) -> Callable[[], str]:
+        """A portal page as a link: the page itself in the browser, a short
+        one-time sign-in code from WhatsApp, as for lists and receipts."""
+
+        base = self._public_base_url()
+        is_whatsapp = normalize_text(channel).lower() == "whatsapp"
+        user = self.database.get_user(email) if is_whatsapp else None
+        user_id = int((user or {}).get("id") or 0)
+
+        def build() -> str:
+            if not is_whatsapp or user_id <= 0:
+                return f"{base}{page}"
+            code = self.database.create_list_open_code(
+                user_id=user_id, list_id=0, expires_at=time.time() + LISTS_HANDOFF_TTL_SECONDS,
+            )
+            return f"{base}{prefix}{code}"
+
+        return build
+
+    # -- the family's week -------------------------------------------------
+
+    def _household_owner_name(self, user_id: int) -> str:
+        facts = {fact["key"]: fact["fact"] for fact in self.database.list_account_facts(user_id=user_id)}
+        user = self.database.get_user_by_id(user_id) or {}
+        name = normalize_text(user.get("displayName") or user.get("display_name"))
+        if not name:
+            match = re.match(r"^Their name is (.+?)\.?$", normalize_text(facts.get("name")))
+            name = match.group(1) if match else ""
+        return name
+
+    def _household_page_payload(self, user_id: int) -> dict[str, Any]:
+        profile = self.database.get_household_profile(user_id=user_id) or {}
+        token = normalize_text(profile.get("shareToken"))
+        return {
+            "ok": True,
+            "ownerName": self._household_owner_name(user_id),
+            "accountKind": household.normalize_account_kind(profile.get("accountKind")),
+            "members": [
+                {key: member[key] for key in ("id", "name", "role", "school", "email", "phone", "notes")}
+                | {"age": household.current_age(member.get("age"), member.get("ageNotedOn"), datetime.now(timezone.utc).date())}
+                for member in self.database.list_household_members(user_id=user_id)
+            ],
+            "activities": [
+                {key: value for key, value in activity.items() if key != "userId"}
+                for activity in self.database.list_household_activities(user_id=user_id)
+            ],
+            "share": {
+                "enabled": bool(token),
+                "url": f"{self._public_base_url()}{WEEK_SHARE_PAGE_PREFIX}{token}" if token else "",
+            },
+        }
+
+    def _handle_household_get(self) -> None:
+        authenticated = self._require_authenticated_user()
+        if authenticated is None:
+            return
+        _session, user = authenticated
+        json_response(self, HTTPStatus.OK, self._household_page_payload(int(user.get("id") or 0)))
+
+    def _household_path_parts(self, parsed: urllib_parse.ParseResult) -> list[str]:
+        return [urllib_parse.unquote(part) for part in parsed.path.strip("/").split("/") if part][2:]
+
+    def _handle_household_post(self, parsed: urllib_parse.ParseResult) -> None:
+        """Add or change an activity, or turn the share link on or off. The
+        same store the assistant writes to; the page is another way in."""
+
+        authenticated = self._require_authenticated_user()
+        if authenticated is None:
+            return
+        _session, user = authenticated
+        user_id = int(user.get("id") or 0)
+        try:
+            payload = parse_json_body(self)
+        except ValueError as exc:
+            json_response(self, HTTPStatus.BAD_REQUEST, {"ok": False, "error": "invalid_json", "message": str(exc)})
+            return
+        parts = self._household_path_parts(parsed)
+        if parts == ["share"]:
+            self.database.set_household_share(user_id=user_id, enabled=bool(payload.get("enabled")))
+            json_response(self, HTTPStatus.OK, self._household_page_payload(user_id))
+            return
+        if parts and parts[0] == "activities" and len(parts) <= 2:
+            activity_id = None
+            if len(parts) == 2:
+                activity_id = self._parse_list_id(parts[1])
+                if activity_id <= 0:
+                    self.send_error(HTTPStatus.NOT_FOUND)
+                    return
+
+            def text(key: str) -> str | None:
+                return None if payload.get(key) is None else str(payload.get(key))
+
+            try:
+                self.database.save_household_activity(
+                    user_id=user_id,
+                    activity_id=activity_id,
+                    title=text("title"),
+                    who=payload.get("who") if isinstance(payload.get("who"), list) else None,
+                    days=payload.get("days") if isinstance(payload.get("days"), list) else None,
+                    start_time=text("startTime"),
+                    end_time=text("endTime"),
+                    place=text("place"),
+                    drop_off_by=text("dropOffBy"),
+                    pick_up_by=text("pickUpBy"),
+                    notes=text("notes"),
+                )
+            except LookupError as exc:
+                json_response(self, HTTPStatus.NOT_FOUND, {"ok": False, "error": "activity_not_found", "message": str(exc)})
+                return
+            except ValueError as exc:
+                json_response(self, HTTPStatus.BAD_REQUEST, {"ok": False, "error": "invalid_activity", "message": str(exc)})
+                return
+            json_response(self, HTTPStatus.OK, self._household_page_payload(user_id))
+            return
+        self.send_error(HTTPStatus.NOT_FOUND)
+
+    def _handle_household_delete(self, parsed: urllib_parse.ParseResult) -> None:
+        authenticated = self._require_authenticated_user()
+        if authenticated is None:
+            return
+        _session, user = authenticated
+        user_id = int(user.get("id") or 0)
+        parts = self._household_path_parts(parsed)
+        removed = False
+        if len(parts) == 2 and parts[0] == "activities":
+            removed = self.database.remove_household_activity(user_id=user_id, activity_id=self._parse_list_id(parts[1]))
+        elif len(parts) == 2 and parts[0] == "members":
+            removed = self.database.remove_household_member(user_id=user_id, name=parts[1])
+        else:
+            self.send_error(HTTPStatus.NOT_FOUND)
+            return
+        if not removed:
+            json_response(self, HTTPStatus.NOT_FOUND, {"ok": False, "error": "not_found", "message": "That is not in your week."})
+            return
+        json_response(self, HTTPStatus.OK, self._household_page_payload(user_id))
+
+    def _handle_public_week_get(self, parsed: urllib_parse.ParseResult) -> None:
+        """The week for anyone holding its link: who does what, when. First
+        names and the activities only - no email, phone, notes or ages."""
+
+        token = urllib_parse.unquote(parsed.path[len("/api/public/week/"):]).strip("/")
+        profile = self.database.get_household_profile_by_share_token(token) if token else None
+        if profile is None:
+            json_response(self, HTTPStatus.NOT_FOUND, {"ok": False, "error": "week_not_found", "message": "This week is not shared, or the link has been turned off."})
+            return
+        user_id = int(profile["userId"])
+        owner = self._household_owner_name(user_id)
+        json_response(self, HTTPStatus.OK, {
+            "ok": True,
+            "ownerName": owner.split(" ")[0] if owner else "",
+            "members": [{"name": member["name"], "role": member["role"]} for member in self.database.list_household_members(user_id=user_id)],
+            "activities": [
+                {key: activity[key] for key in ("id", "title", "who", "days", "startTime", "endTime", "place", "dropOffBy", "pickUpBy")}
+                for activity in self.database.list_household_activities(user_id=user_id)
+            ],
+        })
 
     def _handle_lists_handoff(self, parsed: urllib_parse.ParseResult) -> None:
         """Spend a one-time code from a WhatsApp link and open the lists page."""

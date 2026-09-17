@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>Our week</title>
+    <meta name="color-scheme" content="light dark" />
+    <meta name="robots" content="noindex" />
+    <script src="/portal/theme-init.js?v=1"></script>
+    <link rel="stylesheet" href="/portal/week.css?v=1" />
+  </head>
+  <body data-view="loading">
+    <header class="topbar">
+      <h1 id="pageTitle" class="topbar-title">Our week</h1>
+      <a class="topbar-link" href="/">Assistyca</a>
+    </header>
+
+    <main class="shell">
+      <section id="loadingView" class="view" aria-live="polite" aria-busy="true">
+        <div class="spinner" aria-hidden="true"></div>
+        <span class="sr-only">Loading the week</span>
+      </section>
+
+      <section id="missingView" class="view is-hidden">
+        <div class="card">
+          <h2>This week is not shared</h2>
+          <p>The link may have been turned off. Ask whoever sent it for a fresh one.</p>
+        </div>
+      </section>
+
+      <section id="weekView" class="view is-hidden">
+        <div id="gapsCard" class="card gaps is-hidden" role="note">
+          <p id="gapsText"></p>
+        </div>
+        <p id="emptyWeek" class="card is-hidden">Nothing in this week yet.</p>
+        <div id="days" class="view"></div>
+      </section>
+    </main>
+    <script src="/portal/week-common.js?v=1"></script>
+    <script src="/portal/week-share.js?v=1"></script>
+  </body>
+</html>

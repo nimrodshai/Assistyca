@@ -5,7 +5,11 @@ from __future__ import annotations
 import json
 import sqlite3
 import tempfile
+import threading
+import time
 import unittest
+import urllib.error as urllib_error
+import urllib.request as urllib_request
 from datetime import date
 from pathlib import Path
 
@@ -14,6 +18,8 @@ from packages.infrastructure.agent_loop import LoopContext
 from packages.infrastructure.agent_loop import TOOLS_BY_NAME
 from packages.infrastructure.agent_loop import build_loop_context_text
 from packages.infrastructure.portal_db import ACCOUNT_FACT_LIMIT
+from packages.infrastructure.portal_auth.server import PortalConfig
+from packages.infrastructure.portal_auth.server import create_server
 from packages.infrastructure.portal_db import PortalDatabase
 
 
@@ -217,6 +223,126 @@ class ToolTests(unittest.TestCase):
         from packages.infrastructure.agent_loop import AGENT_LOOP_INSTRUCTIONS
         self.assertIn("one question in a message", AGENT_LOOP_INSTRUCTIONS)
         self.assertIn("never use remember_fact for family", AGENT_LOOP_INSTRUCTIONS)
+
+    def test_showing_the_week_hands_over_the_page_link(self) -> None:
+        self.context.week_link = lambda: "https://assistyca.com/week/open/abc"
+        week = self.run_tool("show_family_week")
+        self.assertEqual(week["weekPage"], "https://assistyca.com/week/open/abc")
+        self.assertIn("https://assistyca.com/week/open/abc", self.context.links_offered)
+        done = self.run_tool("set_getting_to_know", status="done", ask_again_in_days=None)
+        self.assertEqual(done["weekPage"], "https://assistyca.com/week/open/abc")
+
+
+class _NoRedirect(urllib_request.HTTPRedirectHandler):
+    def redirect_request(self, *args, **kwargs):  # noqa: ANN002, ANN003
+        return None
+
+
+class WeekPageTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.root = Path(__file__).resolve().parents[1]
+        self.server = create_server(
+            "127.0.0.1", 0, self.root,
+            PortalConfig(db_path=Path(self.temp_dir.name) / "portal.db", session_secret="week-page-test-secret-0123456789abcdef"),
+        )
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+        self.base_url = f"http://127.0.0.1:{self.server.server_address[1]}"
+        self.database = self.server.database
+        self.database.register_user("parent@example.com", display_name="Dana Levi")
+        self.user_id = int((self.database.get_user("parent@example.com") or {})["id"])
+        code, _ = self.server.store.issue_challenge("parent@example.com")
+        ok, error, result = self.server.store.verify_code("parent@example.com", code)
+        self.assertTrue(ok, error)
+        self.token = str((result or {}).get("token") or "")
+
+    def tearDown(self) -> None:
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join(timeout=5)
+        self.temp_dir.cleanup()
+
+    def request(self, method: str, path: str, body: dict | None = None, *, signed_in: bool = True) -> tuple[int, dict]:
+        headers = {"Content-Type": "application/json", "Origin": self.base_url}
+        if signed_in:
+            headers["Authorization"] = f"Bearer {self.token}"
+        request = urllib_request.Request(
+            f"{self.base_url}{path}", data=json.dumps(body).encode() if body is not None else None, method=method, headers=headers,
+        )
+        try:
+            with urllib_request.urlopen(request, timeout=10) as response:
+                return int(response.status), json.loads(response.read().decode() or "{}")
+        except urllib_error.HTTPError as exc:
+            raw = exc.read().decode() or "{}"
+            try:
+                return int(exc.code), json.loads(raw)
+            except ValueError:
+                return int(exc.code), {}
+
+    def test_the_week_is_read_changed_and_emptied_from_the_page(self) -> None:
+        self.database.save_household_member(user_id=self.user_id, name="Tom", role="child", age=4, email=None)
+        status, created = self.request("POST", "/api/household/activities", {
+            "title": "Football", "who": ["Tom"], "days": ["tue"], "startTime": "17:00", "endTime": "18:00",
+            "place": "Park", "dropOffBy": "me", "pickUpBy": "",
+        })
+        self.assertEqual(status, 200, created)
+        self.assertEqual(created["ownerName"], "Dana Levi")
+        self.assertEqual([m["name"] for m in created["members"]], ["Tom"])
+        activity = created["activities"][0]
+        self.assertNotIn("userId", activity)
+
+        status, changed = self.request("POST", f"/api/household/activities/{activity['id']}", {"pickUpBy": "Shirly"})
+        self.assertEqual(status, 200, changed)
+        self.assertEqual(changed["activities"][0]["pickUpBy"], "Shirly")
+        self.assertEqual(changed["activities"][0]["title"], "Football")
+
+        status, refused = self.request("POST", "/api/household/activities", {"title": "Ballet", "days": []})
+        self.assertEqual((status, refused["error"]), (400, "invalid_activity"))
+
+        status, removed = self.request("DELETE", f"/api/household/activities/{activity['id']}")
+        self.assertEqual((status, removed["activities"]), (200, []))
+        status, _ = self.request("DELETE", f"/api/household/activities/{activity['id']}")
+        self.assertEqual(status, 404)
+
+    def test_the_page_needs_a_sign_in(self) -> None:
+        status, _ = self.request("GET", "/api/household", signed_in=False)
+        self.assertEqual(status, 401)
+
+    def test_a_shared_link_shows_who_drives_and_nothing_private(self) -> None:
+        self.database.save_household_member(user_id=self.user_id, name="Shirly", role="partner", email="shirly@example.com", phone="0501234567")
+        self.database.save_household_activity(user_id=self.user_id, title="Ballet", who=["Noa"], days=["mon"], drop_off_by="me", notes="bring water")
+        status, shared = self.request("POST", "/api/household/share", {"enabled": True})
+        self.assertEqual(status, 200)
+        url = shared["share"]["url"]
+        token = url.rsplit("/w/", 1)[1]
+
+        status, public = self.request("GET", f"/api/public/week/{token}", signed_in=False)
+        self.assertEqual(status, 200, public)
+        self.assertEqual(public["ownerName"], "Dana")
+        self.assertEqual(public["members"], [{"name": "Shirly", "role": "partner"}])
+        raw = json.dumps(public)
+        for private in ("shirly@example.com", "0501234567", "bring water", "parent@example.com"):
+            self.assertNotIn(private, raw)
+        with urllib_request.urlopen(f"{self.base_url}/w/{token}", timeout=10) as response:
+            self.assertIn("week-share.js", response.read().decode())
+
+        self.request("POST", "/api/household/share", {"enabled": False})
+        status, _ = self.request("GET", f"/api/public/week/{token}", signed_in=False)
+        self.assertEqual(status, 404)
+
+    def test_a_whatsapp_link_signs_the_phone_in_and_opens_the_week(self) -> None:
+        with urllib_request.urlopen(f"{self.base_url}/week", timeout=10) as response:
+            self.assertIn("week.js", response.read().decode())
+        code = self.database.create_list_open_code(user_id=self.user_id, list_id=0, expires_at=time.time() + 60)
+        opener = urllib_request.build_opener(_NoRedirect)
+        try:
+            opener.open(f"{self.base_url}/week/open/{code}", timeout=10)
+            self.fail("expected a redirect")
+        except urllib_error.HTTPError as exc:
+            self.assertEqual(exc.code, 302)
+            self.assertEqual(exc.headers["Location"], "/week")
+            self.assertIn("assistyca_portal_session", exc.headers.get("Set-Cookie", ""))
 
 
 if __name__ == "__main__":
