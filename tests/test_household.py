@@ -76,16 +76,20 @@ class StoreTests(unittest.TestCase):
         self.database.save_account_fact(user_id=self.user_id, key="name", fact="Their name is Dana Levi.")
         self.assertTrue(self.database.list_account_facts(user_id=self.user_id)[0]["pinned"])
 
-    def test_an_older_database_pins_what_registration_said_and_knows_its_families(self) -> None:
+    def test_an_older_database_pins_what_registration_said(self) -> None:
         self.database.save_account_fact(user_id=self.user_id, key="their family", fact="Two kids")
         self.database.save_account_fact(user_id=self.user_id, key="vendor", fact="Bills in dollars")
         with sqlite3.connect(self.path) as conn:
             conn.execute("ALTER TABLE account_facts DROP COLUMN pinned")
-            conn.execute("DELETE FROM household_profiles")
         reopened = PortalDatabase(self.path)
         pinned = {fact["key"]: fact["pinned"] for fact in reopened.list_account_facts(user_id=self.user_id)}
         self.assertEqual(pinned, {"their family": True, "vendor": False})
-        self.assertEqual((reopened.get_household_profile(user_id=self.user_id) or {})["accountKind"], "family")
+
+    def test_the_kind_of_account_is_the_one_signup_and_the_admin_set(self) -> None:
+        profile = self.database.get_household_profile(user_id=self.user_id) or {}
+        self.assertEqual((profile["accountKind"], profile["gettingToKnow"]), ("business", "not_started"))
+        self.database.update_user_account_type("parent@example.com", account_type="family")
+        self.assertEqual((self.database.get_household_profile(user_id=self.user_id) or {})["accountKind"], "family")
 
     def test_a_member_is_filled_in_over_time_and_keeps_their_spelling(self) -> None:
         self.database.save_household_member(user_id=self.user_id, name="Shirly", role="partner")
@@ -141,7 +145,7 @@ class StoreTests(unittest.TestCase):
         self.assertFalse(self.database.remove_household_activity(user_id=stranger, activity_id=activity["id"]))
 
     def test_deleting_the_account_takes_the_family_with_it(self) -> None:
-        self.database.save_household_profile(user_id=self.user_id, account_kind="family")
+        self.database.save_household_profile(user_id=self.user_id, getting_to_know="in_progress")
         self.database.save_household_member(user_id=self.user_id, name="Tom", role="child")
         self.database.save_household_activity(user_id=self.user_id, title="Ballet", days=["mon"])
         with sqlite3.connect(self.path) as conn:
