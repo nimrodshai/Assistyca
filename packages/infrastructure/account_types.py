@@ -102,6 +102,12 @@ ACCOUNT_FEATURES: tuple[AccountFeature, ...] = (
         ("search_news",),
     ),
     AccountFeature(
+        "public_records",
+        "Property records",
+        "Israeli public records for an address or parcel: gush and helka, the plans covering it, and ordering a Tabu extract.",
+        ("look_up_property",),
+    ),
+    AccountFeature(
         "mailbox_findings",
         "Mailbox findings",
         "Reading a newly connected mailbox unasked and reporting what stands out, then a daily digest.",
