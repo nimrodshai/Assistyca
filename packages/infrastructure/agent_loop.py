@@ -1162,11 +1162,22 @@ def describe_delete_account(context: LoopContext) -> str:
 def _tool_delete_account(context: LoopContext, args: dict[str, Any]) -> dict[str, Any]:
     response, status = context.api("DELETE", "/api/account")
     if status == 200 and response.get("ok"):
+        if response.get("registeredAgain"):
+            # A house address is registered again the moment it is erased, so
+            # "the account is gone" would be contradicted by the next sign-in.
+            return _ok({
+                "deleted": True,
+                "note": (
+                    "Everything stored in the account is erased and nothing can be brought back, and this phone "
+                    "is unlinked. This address is one the portal always keeps registered, so an empty account "
+                    "under it stays; signing in with it again links to that empty account."
+                ),
+            })
         return _ok({
             "deleted": True,
             "note": (
                 "The account and everything stored in it are gone, and nothing can be brought back. The "
-                "next message from this phone is treated as a stranger's and starts a fresh signup."
+                "next message from this phone is answered knowing the account was just deleted."
             ),
         })
     code = str(response.get("error") or "")

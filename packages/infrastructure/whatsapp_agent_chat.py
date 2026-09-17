@@ -500,6 +500,7 @@ def build_signup_concierge_prompt(
     attempt: int,
     account_created: bool = False,
     registration: dict[str, Any] | None = None,
+    account_erased_at: datetime | None = None,
 ) -> str:
     """The pre-account conversation: answer the person, and get to the email.
 
@@ -515,7 +516,24 @@ def build_signup_concierge_prompt(
         normalize_text(registered.get("name")) or normalize_text(registered.get("business"))
     ) else {}
     asked_a_question = looks_like_a_question(user_message)
-    if account_created:
+    erased_minutes_ago = (
+        max(0, int((datetime.now(timezone.utc) - account_erased_at).total_seconds() // 60))
+        if account_erased_at and not account_created else None
+    )
+    if erased_minutes_ago is not None:
+        # Not a stranger: someone who deleted their account a moment ago and
+        # is still in the same chat. "Are we deleted?" deserves a yes, and a
+        # push for an email would read as if the deletion never happened.
+        task = (
+            "This person deleted their Assistyca account from this chat a little while ago (see "
+            "accountDeletedMinutesAgo). The deletion is done: the account and everything in it are erased, "
+            "their sign-ins were revoked, and this phone is unlinked. There is nothing left to delete. If "
+            "they ask whether it is deleted, or ask to delete it, say plainly that it already is. If they "
+            "ask anything else, answer it honestly. Do not ask for an email address unless they say they "
+            "want to use Assistyca again; if they do, say that you need an email address to set up a new "
+            "account and ask for it."
+        )
+    elif account_created:
         task = (
             "Their account has just been created from the email they gave. Welcome them briefly, and if "
             "they asked something earlier in this conversation, pick that up now rather than starting over. "
@@ -568,7 +586,7 @@ def build_signup_concierge_prompt(
             " Then, in the same message, say in a sentence that to look after their week you would like to "
             "get to know the family first, and ask one question only: who is at home with them."
         )
-    if registered:
+    if registered and erased_minutes_ago is None:
         task = (
             "They registered on the Assistyca website first and gave their name and, in a line, what they "
             "registered about (see registeredOnTheWebsite); the first message in the conversation was "
@@ -588,6 +606,7 @@ def build_signup_concierge_prompt(
             for item in transcript[-8:]
         ],
         "latestUserMessage": normalize_text(user_message)[:1200],
+        "accountDeletedMinutesAgo": erased_minutes_ago,
         "task": task,
     }
     return (
@@ -623,6 +642,10 @@ SIGNUP_ASK_EMAIL_TEXT = (
 )
 SIGNUP_ASK_EMAIL_AGAIN_TEXT = (
     "That doesn't look like an email address. What email should I use for your account?"
+)
+SIGNUP_AFTER_ERASURE_TEXT = (
+    "Your Assistyca account is deleted, and there is nothing left to remove. If you ever want to start "
+    "again, just send me an email address and I'll set up a new one."
 )
 SIGNUP_EMAIL_TAKEN_TEXT = (
     "That address already has an Assistyca account. Sign in at assistyca.com and get a code "

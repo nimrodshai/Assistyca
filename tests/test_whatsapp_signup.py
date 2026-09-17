@@ -25,12 +25,12 @@ APP_SECRET = "signup-test-secret"
 NEW_PHONE = "447700900123"
 
 
-def payload(text, *, sender=NEW_PHONE, message_id="wamid.s1", name="Dana"):
+def payload(text, *, sender=NEW_PHONE, message_id="wamid.s1", name="Dana", timestamp="1756700000"):
     return {"object": "whatsapp_business_account", "entry": [{"id": "waba-1", "changes": [{"field": "messages", "value": {
         "messaging_product": "whatsapp",
         "metadata": {"display_phone_number": "1555", "phone_number_id": PLATFORM},
         "contacts": [{"profile": {"name": name}, "wa_id": sender}],
-        "messages": [{"from": sender, "id": message_id, "timestamp": "1756700000", "type": "text", "text": {"body": text}}],
+        "messages": [{"from": sender, "id": message_id, "timestamp": timestamp, "type": "text", "text": {"body": text}}],
     }}]}]}
 
 
@@ -141,6 +141,42 @@ class WhatsAppSignupTests(unittest.TestCase):
         self.assertIn("already has an Assistyca account", self.replies()[-1])
         self.assertEqual(self.database.get_user_id_for_whatsapp_number(NEW_PHONE), 0)
         self.assertEqual(self.database.list_user_whatsapp_numbers(user_id=int(owner["id"])), [])
+
+    def test_a_message_sent_before_the_account_was_deleted_opens_nothing(self) -> None:
+        # A deploy cut the turn off, Meta redelivered the message, and by then
+        # the account it was written to had been deleted.
+        self.database.mark_whatsapp_phones_erased([NEW_PHONE])
+        before = str(int((datetime.now(timezone.utc) - timedelta(minutes=6)).timestamp()))
+
+        result = self.post("delete my account please", message_id="wamid.late", timestamp=before)
+
+        self.assertEqual(result["results"][0]["action"], "signup_ignored")
+        self.assertEqual(result["results"][0]["reason"], "sent_before_erasure")
+        self.assertEqual(self.sent.call_count, 0)
+        self.assertEqual(self.model.call_count, 0)
+        self.assertIsNone(self.database.get_whatsapp_signup(NEW_PHONE))
+
+    def test_after_a_deletion_the_chat_knows_the_account_is_gone(self) -> None:
+        self.database.mark_whatsapp_phones_erased([NEW_PHONE])
+        after = str(int((datetime.now(timezone.utc) + timedelta(seconds=5)).timestamp()))
+
+        result = self.post("are we deleted?", message_id="wamid.after", timestamp=after)
+
+        self.assertEqual(result["results"][0]["action"], "signup_started")
+        prompt = self.model.call_args.kwargs["prompt"]
+        self.assertIn('"accountDeletedMinutesAgo":0', prompt)
+        self.assertIn("There is nothing left to delete", prompt)
+        self.assertNotIn("then say that you need an email address", prompt)
+
+    def test_a_deletion_is_forgotten_after_a_day(self) -> None:
+        self.database.mark_whatsapp_phones_erased([NEW_PHONE])
+        with self.database._connection() as conn:
+            conn.execute("UPDATE erased_whatsapp_phones SET erased_at = ?",
+                         ((datetime.now(timezone.utc) - timedelta(days=2)).isoformat(),))
+            conn.commit()
+            stored = [row[0] for row in conn.execute("SELECT phone_hash FROM erased_whatsapp_phones")]
+        self.assertIsNone(self.database.whatsapp_phone_erased_at(NEW_PHONE))
+        self.assertTrue(stored and NEW_PHONE not in stored[0], "only a hash of the number is kept")
 
     def test_enough_non_answers_and_it_stops_spending(self) -> None:
         for i, text in enumerate(["hi", "what?", "no", "hmm"], start=1):
