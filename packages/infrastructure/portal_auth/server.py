@@ -11210,6 +11210,10 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
 
         if user_id <= 0:
             return None
+        if not account_feature_allowed(self.database, user_id=user_id, feature_id="family_week"):
+            # Switched off for this kind of account: the tools are refused,
+            # so the assistant is not handed a family to get to know either.
+            return None
         profile = self.database.get_household_profile(user_id=user_id)
         members = self.database.list_household_members(user_id=user_id)
         activities = self.database.list_household_activities(user_id=user_id)
@@ -14328,7 +14332,6 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                     # Who they are and what the account is for never give way
                     # to newer facts.
                     self.database.save_account_fact(user_id=int(user.get("id") or 0), key=key, fact=fact, pinned=True)
-                self.database.save_household_profile(user_id=int(user.get("id") or 0), account_kind=registered_kind)
         except (ValueError, KeyError, sqlite3.Error) as exc:
             print(f"WhatsApp signup could not create the account: {exc}", flush=True)
             return self._finish_whatsapp_signup_step(

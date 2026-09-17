@@ -414,6 +414,7 @@ HOUSEHOLD_TABLES_SQL = """
 -- the person says so or the account is deleted.
 CREATE TABLE IF NOT EXISTS household_profiles (
     user_id INTEGER PRIMARY KEY,
+    -- No longer read: the account's kind is users.account_type.
     account_kind TEXT NOT NULL DEFAULT 'business',
     getting_to_know TEXT NOT NULL DEFAULT 'not_started',
     ask_again_on TEXT NOT NULL DEFAULT '',
@@ -1556,16 +1557,6 @@ class PortalDatabase:
             # What a registration said was filed as ordinary facts before
             # facts could be pinned; those are the ones pinning exists for.
             conn.execute("UPDATE account_facts SET pinned = 1 WHERE fact_key IN ('name', 'their family', 'what they do')")
-            # Families registered before the profile existed are known by
-            # the fact their registration left.
-            stamp = now_iso()
-            conn.execute(
-                """
-                INSERT OR IGNORE INTO household_profiles (user_id, account_kind, getting_to_know, created_at, updated_at)
-                SELECT DISTINCT user_id, 'family', 'not_started', ?, ? FROM account_facts WHERE fact_key = 'their family'
-                """,
-                (stamp, stamp),
-            )
 
     def _ensure_insurance_tables(self, conn: sqlite3.Connection) -> None:
         """The versioned policy store, kept separate from short account facts."""
@@ -9194,12 +9185,21 @@ class PortalDatabase:
 
     # -- household ---------------------------------------------------------
 
+    # Whether the account is a business or a family lives on the account
+    # itself (users.account_type), where signup and the admin set it. The
+    # profile's own account_kind column predates that and is no longer read.
+    _HOUSEHOLD_PROFILE_SELECT = """
+        SELECT u.id AS user_id, u.account_type, p.getting_to_know, p.ask_again_on, p.share_token,
+               p.created_at, p.updated_at
+        FROM users u LEFT JOIN household_profiles p ON p.user_id = u.id
+    """
+
     def _household_profile_row(self, row: sqlite3.Row | None) -> dict[str, Any] | None:
         if row is None:
             return None
         return {
             "userId": int(row["user_id"]),
-            "accountKind": str(row["account_kind"] or "business"),
+            "accountKind": normalize_account_type(row["account_type"]),
             "gettingToKnow": str(row["getting_to_know"] or "not_started"),
             "askAgainOn": str(row["ask_again_on"] or ""),
             "shareToken": str(row["share_token"] or ""),
@@ -9208,22 +9208,23 @@ class PortalDatabase:
         }
 
     def get_household_profile(self, *, user_id: int) -> dict[str, Any] | None:
+        """The account's kind and where getting to know the family stands.
+        Every account has one; nothing started reads as not_started."""
+
         if int(user_id or 0) <= 0:
             return None
         with self._connection() as conn:
-            row = conn.execute("SELECT * FROM household_profiles WHERE user_id = ?", (int(user_id),)).fetchone()
+            row = conn.execute(f"{self._HOUSEHOLD_PROFILE_SELECT} WHERE u.id = ?", (int(user_id),)).fetchone()
         return self._household_profile_row(row)
 
     def save_household_profile(
         self,
         *,
         user_id: int,
-        account_kind: str | None = None,
         getting_to_know: str | None = None,
         ask_again_on: str | None = None,
     ) -> dict[str, Any]:
-        """Set what is given and keep the rest. A new profile is a business
-        account that has not started getting to know anyone."""
+        """Set what is given and keep the rest."""
 
         if int(user_id or 0) <= 0:
             raise ValueError("User id is required.")
@@ -9240,9 +9241,6 @@ class PortalDatabase:
             )
             updates: list[str] = []
             values: list[Any] = []
-            if account_kind is not None:
-                updates.append("account_kind = ?")
-                values.append(household.normalize_account_kind(account_kind))
             if getting_to_know is not None:
                 updates.append("getting_to_know = ?")
                 values.append(getting_to_know)
@@ -9254,7 +9252,7 @@ class PortalDatabase:
                     f"UPDATE household_profiles SET {', '.join(updates)}, updated_at = ? WHERE user_id = ?",
                     (*values, now, int(user_id)),
                 )
-            row = conn.execute("SELECT * FROM household_profiles WHERE user_id = ?", (int(user_id),)).fetchone()
+            row = conn.execute(f"{self._HOUSEHOLD_PROFILE_SELECT} WHERE u.id = ?", (int(user_id),)).fetchone()
         return self._household_profile_row(row) or {}
 
     def set_household_share(self, *, user_id: int, enabled: bool) -> dict[str, Any]:
@@ -9275,7 +9273,7 @@ class PortalDatabase:
         if not share_token:
             return None
         with self._connection() as conn:
-            row = conn.execute("SELECT * FROM household_profiles WHERE share_token = ?", (share_token,)).fetchone()
+            row = conn.execute(f"{self._HOUSEHOLD_PROFILE_SELECT} WHERE p.share_token = ?", (share_token,)).fetchone()
         return self._household_profile_row(row)
 
     def _household_member_row(self, row: sqlite3.Row | None) -> dict[str, Any] | None:
