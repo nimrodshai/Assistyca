@@ -32,7 +32,9 @@ python3 -m unittest \
   tests.test_openai_sampling \
   tests.test_voice_notes \
   tests.test_agent_answer_now \
-  tests.test_public_web_search \
+  tests.test_news_search \
+  tests.test_agent_news_search \
+  tests.test_web_search \
   tests.test_agent_web_search \
   tests.test_scheduled_monitor \
   tests.test_whatsapp_tool_delivery \

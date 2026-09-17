@@ -5,13 +5,13 @@ import unittest
 from types import SimpleNamespace
 from unittest import mock
 
-from packages.tools.public_web_search.search import PUBLIC_WEB_SEARCH_MAX_RESULTS
-from packages.tools.public_web_search.search import PUBLIC_WEB_SEARCH_TIMEOUT_SECONDS
-from packages.tools.public_web_search.search import build_public_web_search_prompt
-from packages.tools.public_web_search.search import search_public_web
+from packages.tools.news_search.search import NEWS_SEARCH_MAX_RESULTS
+from packages.tools.news_search.search import NEWS_SEARCH_TIMEOUT_SECONDS
+from packages.tools.news_search.search import build_news_search_prompt
+from packages.tools.news_search.search import search_news
 
 
-class PublicWebSearchTests(unittest.TestCase):
+class NewsSearchTests(unittest.TestCase):
     def test_search_requires_live_web_and_returns_at_most_five_dated_titles(self) -> None:
         items = [
             {
@@ -26,21 +26,21 @@ class PublicWebSearchTests(unittest.TestCase):
         response = SimpleNamespace(output_text=json.dumps({"items": items}))
 
         with mock.patch(
-            "packages.tools.public_web_search.search.call_openai_response",
+            "packages.tools.news_search.search.call_openai_response",
             return_value=response,
         ) as call_openai:
-            result = search_public_web(
+            result = search_news(
                 query="activities for children",
                 location="central Israel",
                 date_range="2026-09-13 to 2026-09-19",
                 billing_email="owner@example.com",
             )
 
-        self.assertEqual(len(result["items"]), PUBLIC_WEB_SEARCH_MAX_RESULTS)
+        self.assertEqual(len(result["items"]), NEWS_SEARCH_MAX_RESULTS)
         self.assertEqual(result["items"][0]["title"], "Activity 0")
         kwargs = call_openai.call_args.kwargs
         self.assertEqual(kwargs["tools"], [{"type": "web_search", "search_context_size": "medium"}])
-        self.assertEqual(kwargs["config"].timeout_seconds, PUBLIC_WEB_SEARCH_TIMEOUT_SECONDS)
+        self.assertEqual(kwargs["config"].timeout_seconds, NEWS_SEARCH_TIMEOUT_SECONDS)
         self.assertEqual(kwargs["extra_payload"]["tool_choice"], "required")
         self.assertEqual(kwargs["reasoning"], {"effort": "medium"})
         self.assertEqual(kwargs["metadata"], {"mode": "list", "maxResults": 5})
@@ -66,17 +66,17 @@ class PublicWebSearchTests(unittest.TestCase):
         }))
 
         with mock.patch(
-            "packages.tools.public_web_search.search.call_openai_response",
+            "packages.tools.news_search.search.call_openai_response",
             return_value=response,
         ):
-            result = search_public_web(query="Family science day", mode="details")
+            result = search_news(query="Family science day", mode="details")
 
         self.assertEqual(result["mode"], "details")
         self.assertEqual(len(result["items"]), 1)
         self.assertEqual(result["items"][0]["details"], "Hands-on exhibits from 10:00 to 15:00.")
 
     def test_prompt_keeps_page_text_as_evidence_not_instructions(self) -> None:
-        prompt = build_public_web_search_prompt(
+        prompt = build_news_search_prompt(
             query="children's events",
             location="Tel Aviv",
             date_range="2026-09-13 to 2026-09-19",
@@ -90,11 +90,11 @@ class PublicWebSearchTests(unittest.TestCase):
         response = SimpleNamespace(output_text="not json")
 
         with mock.patch(
-            "packages.tools.public_web_search.search.call_openai_response",
+            "packages.tools.news_search.search.call_openai_response",
             return_value=response,
         ):
             with self.assertRaisesRegex(RuntimeError, "invalid structured response"):
-                search_public_web(query="children's events")
+                search_news(query="children's events")
 
 
 if __name__ == "__main__":

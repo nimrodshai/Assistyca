@@ -92,8 +92,14 @@ ACCOUNT_FEATURES: tuple[AccountFeature, ...] = (
     AccountFeature(
         "web_search",
         "Web search",
-        "Looking things up on the public web: events, venues, prices, opening hours.",
+        "Finding things on the web: hotels, concerts, events, restaurants, prices, opening hours.",
         ("search_web",),
+    ),
+    AccountFeature(
+        "news_search",
+        "News",
+        "The latest news and dated updates on a topic, asked for or every day.",
+        ("search_news",),
     ),
     AccountFeature(
         "mailbox_findings",
