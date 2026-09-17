@@ -151,7 +151,28 @@ class WhatsAppOAuthLinkTests(unittest.TestCase):
             with opener.open(f"{self.base_url}{path}?{query}", timeout=15) as response:
                 return int(response.status), response.headers.get("Content-Type", ""), response.read().decode("utf-8", "replace")
         except urllib_request.HTTPError as exc:  # type: ignore[attr-defined]
+            location = exc.headers.get("Location", "")
+            if not location.startswith("/signed-in?"):
+                return int(exc.code), location, ""
+        # A WhatsApp sign-in is finished by the callback and shown by the
+        # page it sends the browser on to - that page is what a person sees.
+        self.last_done_url = f"{self.base_url}{location}"
+        return self._open_page(self.last_done_url)
+
+    def _open_without_redirect(self, url: str) -> tuple[int, str, str]:
+        class NoRedirect(urllib_request.HTTPRedirectHandler):
+            def redirect_request(self, *args, **kwargs):
+                return None
+
+        try:
+            with urllib_request.build_opener(NoRedirect).open(url, timeout=15) as response:
+                return int(response.status), "", response.read().decode("utf-8", "replace")
+        except urllib_request.HTTPError as exc:  # type: ignore[attr-defined]
             return int(exc.code), exc.headers.get("Location", ""), ""
+
+    def _open_page(self, url: str) -> tuple[int, str, str]:
+        with urllib_request.urlopen(url, timeout=15) as response:
+            return int(response.status), response.headers.get("Content-Type", ""), response.read().decode("utf-8", "replace")
 
     def _last_reply(self) -> str:
         return self.sent.call_args.kwargs["message_text"]
@@ -163,15 +184,14 @@ class WhatsAppOAuthLinkTests(unittest.TestCase):
         result = self._webhook("dana@gmail.com", message_id="wamid.a2")
         self.assertEqual(result["results"][0]["action"], "signup_completed")
         reply = self._last_reply()
-        self.assertIn("accounts.google.com/o/oauth2/v2/auth", reply)
-        self.assertIn("login_hint=dana%40gmail.com", reply)
+        self.assertIn("https://assistyca.example/connect/google?s=", reply)
         self.assertNotIn("assistyca.com", reply)
         self.assertNotIn("Settings", reply)
         # An Outlook address gets the Microsoft door instead.
         self._webhook("hi", sender="447700900999", message_id="wamid.a3")
         self._webhook("dana@outlook.com", sender="447700900999", message_id="wamid.a4")
-        self.assertIn("login.microsoftonline.com", self._last_reply())
-        self.assertNotIn("accounts.google.com", self._last_reply())
+        self.assertIn("/connect/microsoft?", self._last_reply())
+        self.assertNotIn("/connect/google?", self._last_reply())
 
     def test_an_existing_address_gets_a_sign_in_link_to_prove_it_is_theirs(self) -> None:
         self.database.register_user("owner@gmail.com")
@@ -180,7 +200,7 @@ class WhatsAppOAuthLinkTests(unittest.TestCase):
         self.assertEqual(result["results"][0]["action"], "signup_email_taken")
         reply = self._last_reply()
         self.assertIn("already has an Assistyca account", reply)
-        self.assertIn("accounts.google.com", reply)
+        self.assertIn("https://assistyca.example/connect/google?", reply)
         self.assertNotIn("assistyca.com", reply)
         # And the phone is not linked by the claim alone.
         self.assertEqual(self.database.get_user_id_for_whatsapp_number(PHONE), 0)
@@ -201,8 +221,12 @@ class WhatsAppOAuthLinkTests(unittest.TestCase):
         items = self.model.call_args.kwargs["input"]
         shown = [json.loads(item["output"]) for item in items if item.get("type") == "function_call_output"]
         self.assertEqual(shown[0]["error"]["code"], "source_not_connected")
-        self.assertIn("accounts.google.com/o/oauth2/v2/auth", shown[1]["link"])
-        self.assertIn("login_hint=dana%40gmail.com", shown[1]["link"])
+        self.assertIn("https://assistyca.example/connect/google?s=", shown[1]["link"])
+        status, location, _ = self._open_without_redirect(shown[1]["link"].replace("https://assistyca.example", self.base_url))
+        self.assertEqual(status, 303, "a fresh link goes straight on to Google")
+        self.assertIn("accounts.google.com/o/oauth2/v2/auth", location)
+        self.assertIn("login_hint=dana%40gmail.com", location)
+        self.assertIn("gmail", location)
         context = str(items[0]["content"])
         self.assertNotIn("connectLinks", context, "the link reaches the model through the tool, never the context")
         self.assertIn("Never send the person to a website except a link a tool returned", context)
@@ -232,6 +256,44 @@ class WhatsAppOAuthLinkTests(unittest.TestCase):
         self.assertIn("If I see anything worth your attention, I'll let you know.", reply)
         self.assertNotIn("going through", reply)
         self.assertNotIn("your mail now", reply)
+
+    def test_refreshing_the_page_after_a_sign_in_repeats_nothing(self) -> None:
+        self.database.register_user("dana@gmail.com")
+        handler = "packages.infrastructure.portal_auth.server.PortalAuthHandler"
+        with (
+            mock.patch(f"{handler}._exchange_google_calendar_oauth_code", return_value={"access_token": "at", "refresh_token": "rt", "scope": "x"}) as exchange,
+            mock.patch(f"{handler}._save_google_oauth_connections", return_value=[{"accountAddress": "dana@gmail.com"}]) as save,
+        ):
+            self._callback("google", self._state())
+            messages_after_sign_in = self.sent.call_count
+            status, _, body = self._open_page(self.last_done_url)
+            status_again, _, body_again = self._open_page(self.last_done_url)
+
+        self.assertEqual((status, status_again), (200, 200))
+        self.assertIn("Google connected!", body)
+        self.assertEqual(body, body_again)
+        exchange.assert_called_once()
+        save.assert_called_once()
+        self.assertEqual(self.sent.call_count, messages_after_sign_in, "a reload says nothing in WhatsApp")
+
+    def test_the_done_page_neither_trusts_a_tampered_address_nor_carries_an_email(self) -> None:
+        status, _, body = self._open_page(f"{self.base_url}/signed-in?r=forged.value")
+        self.assertEqual(status, 200)
+        self.assertNotIn("connected!", body)
+
+        self.database.register_user("owner@gmail.com")
+        handler = "packages.infrastructure.portal_auth.server.PortalAuthHandler"
+        with (
+            mock.patch(f"{handler}._exchange_google_calendar_oauth_code", return_value={"access_token": "at", "refresh_token": "rt", "scope": "x"}),
+            mock.patch("packages.infrastructure.portal_auth.server.GmailAccessValidator") as validator,
+            mock.patch(f"{handler}._save_google_oauth_connections"),
+        ):
+            validator.return_value.validate.return_value = {"emailAddress": "mallory@gmail.com"}
+            self._callback("google", self._state(email="owner@gmail.com", purpose="link_account"))
+        token = urllib_parse.parse_qs(urllib_parse.urlparse(self.last_done_url).query)["r"][0]
+        body_value = token.split(".", 1)[0]
+        decoded = base64.urlsafe_b64decode(body_value + "=" * (-len(body_value) % 4)).decode("utf-8")
+        self.assertNotIn("owner@gmail.com", decoded)
 
     def test_linking_an_existing_account_requires_the_matching_google_account(self) -> None:
         self.database.register_user("owner@gmail.com")
@@ -302,6 +364,26 @@ class WhatsAppOAuthLinkTests(unittest.TestCase):
         self._save_google_row(status="needs_attention", address="dana.work@gmail.com")
         self._callback("google", self._state(issuedAt=int(time.time()) - 3 * 3600))
         self.assertIn("had expired", self._last_reply())
+
+    def test_tapping_an_old_link_says_so_before_any_sign_in(self) -> None:
+        self.database.register_user("dana@gmail.com")
+        old = urllib_parse.urlencode({"s": self._state(issuedAt=int(time.time()) - 3 * 3600)})
+        messages_before = self.sent.call_count
+
+        status, location, _ = self._open_without_redirect(f"{self.base_url}/connect/google?{old}")
+        self.assertEqual(status, 303)
+        self.assertTrue(location.startswith("/signed-in?"), "an old link never reaches Google")
+        _, _, body = self._open_page(f"{self.base_url}{location}")
+        self.assertIn("out of date", body)
+        self.assertIn("fresh one", body)
+
+        self._save_google_row(status="connected")
+        _, _, body = self._open_page(f"{self.base_url}/connect/google?{old}")
+        self.assertIn("nothing to do: Google is still connected", body)
+        self.assertEqual(self.sent.call_count, messages_before, "tapping a link writes nothing in the chat")
+
+        _, _, body = self._open_page(f"{self.base_url}/connect/google?s=forged.value")
+        self.assertIn("doesn&#x27;t work", body)
 
     def test_the_microsoft_callback_takes_the_same_path(self) -> None:
         self.database.register_user("dana@outlook.com")
