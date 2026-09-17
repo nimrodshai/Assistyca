@@ -2693,8 +2693,11 @@ AGENT_ANSWER_MAX_SPAN_MONTHS = 6
 # ceiling is there because a month of everyone's receipts is a lot of mail to
 # read; a year of one vendor's is a handful of messages, and a year is the
 # window the question "am I still paying for this" actually needs - a yearly
-# subscription charges once, and six months can miss it entirely.
-AGENT_ANSWER_MAX_SPAN_MONTHS_FOR_VENDOR = 12
+# subscription charges once, and six months can miss it entirely. It is
+# thirteen, not twelve: this month and the twelve before it. Asked on the 17th
+# of September, twelve months start in October and miss the renewal paid on
+# the 25th of last September - the one charge a yearly plan leaves.
+AGENT_ANSWER_MAX_SPAN_MONTHS_FOR_VENDOR = 13
 # How many names one vendor may be searched under at once.
 AGENT_VENDOR_NAME_LIMIT = 6
 

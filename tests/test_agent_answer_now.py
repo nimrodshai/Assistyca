@@ -958,6 +958,19 @@ class AgentAnswerRunTests(unittest.TestCase):
         self.assertEqual(query.before.isoformat(), "2026-10-01")
         self.assertNotIn("monthsNotSearched", payload)
 
+    def test_last_septembers_yearly_renewal_is_in_reach_in_september(self) -> None:
+        # Twelve months asked on 17 Sep 2026 start in October and miss a
+        # yearly plan renewed on 25 Sep 2025, due again next week. This month
+        # and the twelve before it reach that charge.
+        payload = self._run_span("2025-09," + self.TWELVE_MONTHS, [
+            self._receipt_item(1, "Thu, 25 Sep 2025 10:00:00 +0300", "$79.99"),
+        ])
+
+        self.assertEqual(self.run_call.kwargs["query"].after.isoformat(), "2025-09-01")
+        self.assertNotIn("monthsNotSearched", payload)
+        self.assertEqual(payload["months"][0]["monthLabel"], "Sep 2025")
+        self.assertEqual(payload["months"][0]["receiptCount"], 1)
+
     def test_a_year_of_everyone_still_stops_at_six_months(self) -> None:
         # Without a vendor the same year is every receipt-ish email the
         # mailbox holds, which is not one search.
