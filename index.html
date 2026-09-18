@@ -137,17 +137,9 @@
         pointer-events: none;
       }
 
-      .brand {
-        display: inline-block;
-        padding: 1.4rem 0 0;
-        font-size: 1.3rem;
-        font-weight: 600;
-        letter-spacing: -0.02em;
-        text-decoration: none;
-      }
-
       .kicker {
-        margin: 2.6rem 0 1rem;
+        margin: 0 0 1rem;
+        padding-top: 1.6rem;
         font-size: 0.74rem;
         font-weight: 500;
         letter-spacing: 0.3em;
@@ -642,6 +634,19 @@
         color: var(--muted);
       }
 
+      .powered {
+        flex-basis: 100%;
+        text-align: center;
+      }
+
+      .site-footer .powered a {
+        margin-left: 0.3rem;
+        font-size: 1.05rem;
+        font-weight: 600;
+        letter-spacing: -0.02em;
+        color: var(--ink);
+      }
+
       .site-footer a {
         color: var(--muted);
         text-decoration: none;
@@ -708,12 +713,8 @@
       /* ---------- Wider screens ---------- */
 
       @media (min-width: 48rem) {
-        .brand {
-          padding-top: 2rem;
-        }
-
         .kicker {
-          margin-top: 3.4rem;
+          padding-top: 2.6rem;
         }
 
         .stage {
@@ -762,7 +763,6 @@
   <body>
     <header class="hero">
       <div class="col">
-        <a class="brand" href="/" aria-label="Assistyca home">Assistyca</a>
         <p class="kicker">Less to juggle. More life.</p>
         <h1>Your life, organized. <span>Inside WhatsApp.</span></h1>
         <p class="lede">An AI assistant that keeps track of the details, so you can focus on what matters.</p>
@@ -918,7 +918,7 @@
     </main>
 
     <footer class="site-footer">
-      <span>© Assistyca</span>
+      <span class="powered">Powered by<a href="/" aria-label="Assistyca home">Assistyca</a></span>
       <a href="/portal/">Sign in</a>
       <a href="/about">About Nimrod</a>
       <a href="/privacy.html">Privacy</a>
