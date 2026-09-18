@@ -165,8 +165,22 @@ class WhatsAppSignupTests(unittest.TestCase):
         self.assertEqual(result["results"][0]["action"], "signup_started")
         prompt = self.model.call_args.kwargs["prompt"]
         self.assertIn('"accountDeletedMinutesAgo":0', prompt)
-        self.assertIn("There is nothing left to delete", prompt)
-        self.assertNotIn("then say that you need an email address", prompt)
+        self.assertIn("nothing remains to delete", prompt)
+        self.assertIn("say plainly that it is already done", prompt)
+
+    def test_a_hello_after_a_deletion_is_a_fresh_start(self) -> None:
+        # The goodbye says "just write" to start again; a "hi" is them doing
+        # that, and it must not be answered with the deletion.
+        self.database.mark_whatsapp_phones_erased([NEW_PHONE])
+        after = str(int((datetime.now(timezone.utc) + timedelta(seconds=5)).timestamp()))
+
+        result = self.post("hi", message_id="wamid.hi", timestamp=after)
+
+        self.assertEqual(result["results"][0]["action"], "signup_started")
+        prompt = self.model.call_args.kwargs["prompt"]
+        self.assertIn("treat this as a fresh start", prompt)
+        self.assertIn("do not mention the deletion", prompt)
+        self.assertIn("say that you need an email address", prompt)
 
     def test_a_deletion_is_forgotten_after_a_day(self) -> None:
         self.database.mark_whatsapp_phones_erased([NEW_PHONE])
