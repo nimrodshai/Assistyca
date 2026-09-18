@@ -178,13 +178,12 @@ class WebRegistrationTests(unittest.TestCase):
         self.assertEqual(send["template"]["name"], "assistyca_welcome1")
         self.assertEqual(send["template"]["language"], {"code": "en"})
         # The template greets them by first name itself; what the model wrote
-        # is the line under it, on one line, with the way out for a number
-        # somebody typed wrong.
+        # is the line under it, on one line, and nothing is added to it.
         components = {component["type"]: component for component in send["template"]["components"]}
         greeted, body = [parameter["text"] for parameter in components["body"]["parameters"]]
         self.assertEqual(greeted, "Dana")
         self.assertIn("tile supplier'. Reply here and we'll get you set up.", body)
-        self.assertIn("If you didn't register at assistyca.com, just ignore this message.", body)
+        self.assertNotIn("If you didn't register", body)
         self.assertNotIn("\n", body)
         # A test server has no public address, so Meta gets no picture to fetch.
         self.assertNotIn("header", components)

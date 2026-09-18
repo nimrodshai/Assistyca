@@ -25,7 +25,6 @@ import os
 from typing import Any
 
 from packages.infrastructure.portal_db import normalize_text
-from packages.infrastructure.whatsapp_agent_chat import REGISTRATION_NOT_YOU_TEXT
 from packages.infrastructure.whatsapp_agent_chat import SIGNUP_PRODUCT_SUMMARY
 from packages.infrastructure.whatsapp_agent_chat import first_name
 from packages.infrastructure.whatsapp_agent_chat import flatten_for_template
@@ -42,20 +41,28 @@ DEFAULT_REGISTRATION_WELCOME_HEADER_IMAGE_PATH = "/assets/assistyca-whatsapp-hea
 REGISTRATION_WELCOME_GREETING = "Hi {name} 👋 I'm Assistyca and I'm here to help."
 REGISTRATION_WELCOME_CLOSING = "Tap the action below, or just tell me what you need first."
 
-# The model writes the middle line; when it does not, these do. They say what
-# the person can hand over without claiming to know anything about them.
+# The shape of {{2}}, as Nimrod wrote it for the template: who they are, then
+# three things they could say to us, in their own words.
+REGISTRATION_WELCOME_LINE_EXAMPLE = (
+    "Since you’re a software developer, you can tell me things like “what did I spend on "
+    "software last month?”, “did the plumber ever send the invoice?”, or “summarise that "
+    "long thread in three lines.”"
+)
+
+# The model writes the middle line; when it does not, these do. They keep the
+# example's shape without claiming to know anything about them.
 REGISTRATION_WELCOME_LINE_FALLBACK = (
-    "You can hand me the things you would rather not hold in your head - your inbox, your calendar, "
-    "the receipts to chase, the follow-up you keep meaning to send."
+    "You can tell me things like “what did I spend on software last month?”, “did the plumber "
+    "ever send the invoice?”, or “summarise that long thread in three lines.”"
 )
 REGISTRATION_WELCOME_FAMILY_LINE_FALLBACK = (
-    "You can hand me the week you would rather not hold in your head - who is driving to which "
-    "activity, the pickup nobody is down for, the reminder you keep meaning to set."
+    "You can tell me things like “who is driving Noah to soccer on Tuesday?”, “remind me to "
+    "pack the swim bag”, or “what does our week look like?”"
 )
 
 # A body variable may not be empty, and one long enough to overrun the body is
-# rejected outright. The greeting, the closing and the note about a mistyped
-# number together leave this much room for the line we write.
+# rejected outright. The greeting and the closing leave this much room for the
+# line we write.
 REGISTRATION_WELCOME_LINE_MAX_CHARS = 700
 
 
@@ -123,15 +130,10 @@ def registration_welcome_line_fallback(*, kind: str = "business") -> str:
 
 
 def compose_registration_welcome_line(line: Any, *, kind: str = "business") -> str:
-    """The middle line exactly as it goes into {{2}}: one line, and the way out.
-
-    The note about a mistyped number rides along in the same variable because
-    the template has no other slot for it, and it has to be there: the phone
-    on the page was typed by somebody who may have typed it wrong.
-    """
+    """The middle line exactly as it goes into {{2}}: one line, nothing added."""
 
     written = flatten_for_template(line)[:REGISTRATION_WELCOME_LINE_MAX_CHARS].strip()
-    return f"{written or registration_welcome_line_fallback(kind=kind)} {REGISTRATION_NOT_YOU_TEXT}"
+    return written or registration_welcome_line_fallback(kind=kind)
 
 
 def build_registration_welcome_message(*, name: Any, line: str) -> str:
@@ -170,6 +172,7 @@ def build_registration_welcome_line_prompt(
             "yourLine": "<what you are writing>",
             "lastLine": REGISTRATION_WELCOME_CLOSING,
         },
+        "exampleLine": REGISTRATION_WELCOME_LINE_EXAMPLE,
         "registration": {
             "registeredFor": "their family" if family else "their business",
             "name": normalize_text(name)[:120],
@@ -185,8 +188,10 @@ def build_registration_welcome_line_prompt(
                 "beyond it."
                 if family
                 else
-                "Show that you read what they do: name two or three concrete things they could say to you, in "
-                "their own voice, that fit their work - from whatAssistycaDoes, never beyond it."
+                "Show that you read what they do: open with what they do (\"Since you're a ...\"), then "
+                "name three concrete things they could say to you, in their own voice and in quotation marks, "
+                "that fit their work - from whatAssistycaDoes, never beyond it. Write it in the shape of "
+                "exampleLine, not its words."
             )
             + " Do not greet them, do not introduce yourself, do not welcome them to anything, do not sign "
             "off, and do not ask them to reply - the lines around yours already do all of that. Do not ask "
@@ -211,7 +216,9 @@ __all__ = [
     "DEFAULT_REGISTRATION_WELCOME_TEMPLATE_NAME",
     "REGISTRATION_WELCOME_CLOSING",
     "REGISTRATION_WELCOME_GREETING",
+    "REGISTRATION_WELCOME_LINE_EXAMPLE",
     "REGISTRATION_WELCOME_LINE_FALLBACK",
+    "REGISTRATION_WELCOME_FAMILY_LINE_FALLBACK",
     "RegistrationWelcomeTemplate",
     "build_registration_welcome_line_prompt",
     "build_registration_welcome_message",

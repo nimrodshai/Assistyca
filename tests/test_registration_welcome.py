@@ -68,10 +68,10 @@ class RegistrationWelcomeMessageTests(unittest.TestCase):
         self.assertIn("I can chase the receipts and keep the calendar tidy.", message)
         self.assertTrue(message.endswith(f"\n{REGISTRATION_WELCOME_CLOSING}"))
 
-    def test_the_line_carries_the_way_out_for_a_mistyped_number(self) -> None:
+    def test_the_line_goes_into_the_template_as_written(self) -> None:
         line = compose_registration_welcome_line("Hand me the follow-ups.")
 
-        self.assertIn("If you didn't register at assistyca.com", line)
+        self.assertEqual(line, "Hand me the follow-ups.")
 
     def test_a_line_the_model_did_not_write_falls_back(self) -> None:
         self.assertTrue(compose_registration_welcome_line("").startswith(registration_welcome_line_fallback()))
@@ -82,8 +82,8 @@ class RegistrationWelcomeMessageTests(unittest.TestCase):
         )
 
     def test_a_family_registrant_is_answered_about_their_week(self) -> None:
-        self.assertIn("pickup", registration_welcome_line_fallback(kind="family"))
-        self.assertIn("receipts", registration_welcome_line_fallback())
+        self.assertIn("soccer", registration_welcome_line_fallback(kind="family"))
+        self.assertIn("invoice", registration_welcome_line_fallback())
 
     def test_the_variables_are_the_first_name_and_the_line(self) -> None:
         line = compose_registration_welcome_line("Two things:\nthe inbox and the calendar.")
@@ -104,6 +104,7 @@ class RegistrationWelcomeMessageTests(unittest.TestCase):
         self.assertIn("Write only the middle line", prompt)
         self.assertIn("Do not greet them", prompt)
         self.assertIn("A physiotherapy clinic", prompt)
+        self.assertIn("Since you", prompt)
 
 
 class RegistrationWelcomeSendTests(unittest.TestCase):
