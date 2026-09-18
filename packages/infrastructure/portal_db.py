@@ -5925,6 +5925,19 @@ class PortalDatabase:
             conn.commit()
         return self.get_whatsapp_signup(number) or {}
 
+    def set_whatsapp_signup_status(self, *, wa_id: str, status: str) -> None:
+        """Move an open signup between asking for an email and confirming an erasure."""
+
+        number = normalize_whatsapp_lookup_id(wa_id)
+        if not number or status not in {"awaiting_email", "confirming_erasure"}:
+            return
+        with self._connection() as conn:
+            conn.execute(
+                "UPDATE whatsapp_signups SET status = ?, updated_at = ? WHERE wa_id = ?",
+                (status, now_iso(), number),
+            )
+            conn.commit()
+
     def complete_whatsapp_signup(self, *, wa_id: str, user_id: int) -> dict[str, Any]:
         number = normalize_whatsapp_lookup_id(wa_id)
         stamp = now_iso()
