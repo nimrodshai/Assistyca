@@ -139,7 +139,7 @@
 
       .kicker {
         margin: 0 0 1rem;
-        padding-top: 1.6rem;
+        padding-top: 3.79rem;
         font-size: 0.74rem;
         font-weight: 500;
         letter-spacing: 0.3em;
@@ -160,11 +160,13 @@
         color: var(--accent);
       }
 
-      /* The space under the text is what the wordmark above it used to take,
-         so the phone stays where it was when the titles moved up */
+      /* The titles sit halfway between the top of the page and the handset;
+         the space above the kicker and under this line add up to what the
+         old wordmark and the longer line took, so the phone stays put */
       .lede {
         margin: 0 auto;
-        padding-bottom: 4.42rem;
+        padding-bottom: 2.23rem;
+        text-wrap: balance;
         max-width: 22rem;
         font-size: clamp(1rem, 3.9vw, 1.12rem);
         color: var(--ink-soft);
@@ -717,11 +719,11 @@
 
       @media (min-width: 48rem) {
         .kicker {
-          padding-top: 2.6rem;
+          padding-top: 5.78rem;
         }
 
         .lede {
-          padding-bottom: 4.82rem;
+          padding-bottom: 1.64rem;
         }
 
         .stage {
@@ -772,7 +774,7 @@
       <div class="col">
         <p class="kicker">Less to juggle. More life.</p>
         <h1>Your life, organized. <span>Inside WhatsApp.</span></h1>
-        <p class="lede">An AI assistant that keeps track of the details, so you can focus on what matters.</p>
+        <p class="lede">An AI assistant that helps you focus on what matters.</p>
 
         <div class="stage" aria-label="An example conversation with Assistyca">
           <div class="phone">
