@@ -6,10 +6,8 @@ from unittest import mock
 
 from packages.infrastructure.notification_delivery import send_whatsapp_notification
 from packages.infrastructure.registration_welcome import REGISTRATION_WELCOME_CLOSING
-from packages.infrastructure.registration_welcome import build_registration_welcome_line_prompt
 from packages.infrastructure.registration_welcome import build_registration_welcome_message
-from packages.infrastructure.registration_welcome import compose_registration_welcome_line
-from packages.infrastructure.registration_welcome import registration_welcome_line_fallback
+from packages.infrastructure.registration_welcome import REGISTRATION_WELCOME_LINE
 from packages.infrastructure.registration_welcome import registration_welcome_template_parameters
 from packages.infrastructure.registration_welcome import resolve_registration_welcome_template
 
@@ -61,50 +59,29 @@ class RegistrationWelcomeTemplateTests(unittest.TestCase):
 
 class RegistrationWelcomeMessageTests(unittest.TestCase):
     def test_the_message_reads_as_the_template_will_render_it(self) -> None:
-        line = compose_registration_welcome_line("I can chase the receipts and keep the calendar tidy.")
-        message = build_registration_welcome_message(name="Dana Levi", line=line)
+        message = build_registration_welcome_message(name="Dana Levi")
 
-        self.assertTrue(message.startswith("Hi Dana \U0001F44B I'm Assistyca and I'm here to help.\n"))
-        self.assertIn("I can chase the receipts and keep the calendar tidy.", message)
-        self.assertTrue(message.endswith(f"\n{REGISTRATION_WELCOME_CLOSING}"))
-
-    def test_the_line_goes_into_the_template_as_written(self) -> None:
-        line = compose_registration_welcome_line("Hand me the follow-ups.")
-
-        self.assertEqual(line, "Hand me the follow-ups.")
-
-    def test_a_line_the_model_did_not_write_falls_back(self) -> None:
-        self.assertTrue(compose_registration_welcome_line("").startswith(registration_welcome_line_fallback()))
-        self.assertTrue(
-            compose_registration_welcome_line("", kind="family").startswith(
-                registration_welcome_line_fallback(kind="family")
-            )
+        self.assertEqual(
+            message,
+            "Hi Dana \U0001F44B I'm Assistyca and I'm here to help.\n"
+            f"{REGISTRATION_WELCOME_LINE}\n{REGISTRATION_WELCOME_CLOSING}",
         )
 
-    def test_a_family_registrant_is_answered_about_their_week(self) -> None:
-        self.assertIn("soccer", registration_welcome_line_fallback(kind="family"))
-        self.assertIn("invoice", registration_welcome_line_fallback())
-
-    def test_the_variables_are_the_first_name_and_the_line(self) -> None:
-        line = compose_registration_welcome_line("Two things:\nthe inbox and the calendar.")
-        parameters = registration_welcome_template_parameters(name="Dana Levi", line=line)
-
-        self.assertEqual(parameters[0], "Dana")
-        self.assertNotIn("\n", parameters[1])
-        self.assertIn("the inbox and the calendar.", parameters[1])
+    def test_the_variables_are_the_first_name_and_the_fixed_line(self) -> None:
+        self.assertEqual(
+            registration_welcome_template_parameters(name="Dana Levi"),
+            [
+                "Dana",
+                "Since you’re a software developer, you can tell me things like “what did I spend on "
+                "software last month?”, “did the plumber ever send the invoice?”, or “summarise "
+                "that long thread in three lines.”",
+            ],
+        )
 
     def test_a_registrant_with_no_name_is_still_greeted(self) -> None:
-        parameters = registration_welcome_template_parameters(name="", line="anything")
+        parameters = registration_welcome_template_parameters(name="")
 
         self.assertEqual(parameters[0], "there")
-
-    def test_the_prompt_asks_for_the_middle_line_only(self) -> None:
-        prompt = build_registration_welcome_line_prompt(name="Dana", business="A physiotherapy clinic")
-
-        self.assertIn("Write only the middle line", prompt)
-        self.assertIn("Do not greet them", prompt)
-        self.assertIn("A physiotherapy clinic", prompt)
-        self.assertIn("Since you", prompt)
 
 
 class RegistrationWelcomeSendTests(unittest.TestCase):
