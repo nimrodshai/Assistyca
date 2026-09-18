@@ -100,6 +100,11 @@ window.addEventListener("DOMContentLoaded", () => {
   const doneTitle = done.querySelector("[data-done-title]");
   const doneText = done.querySelector("[data-done-text]");
   const doneLink = done.querySelector("[data-done-link]");
+  const doneOr = done.querySelector("[data-done-or]");
+  const doneResend = done.querySelector("[data-done-resend]");
+  const doneStatus = done.querySelector("[data-done-status]");
+  // What was sent, kept so "Send again" can send the same registration.
+  let sentValues = null;
 
   // One question on screen at a time. The panels are stacked on top of each
   // other and slid sideways, so the box has to be told how tall the question
@@ -486,9 +491,25 @@ window.addEventListener("DOMContentLoaded", () => {
   render(false);
   flow.setAttribute("data-ready", "true");
 
+  const postRegistration = async (values) => {
+    const response = await fetch("/api/register", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify(values),
+    });
+    let payload = {};
+    try {
+      payload = await response.json();
+    } catch (error) {
+      payload = {};
+    }
+    return { ok: response.ok && payload.ok, payload };
+  };
+
   const showDone = (payload, shownNumber) => {
     form.hidden = true;
     done.hidden = false;
+    document.documentElement.setAttribute("data-registered", "");
     const ours = String(payload.assistycaNumber || "").trim();
     doneText.textContent = "";
     if (payload.whatsappSent) {
@@ -501,19 +522,49 @@ window.addEventListener("DOMContentLoaded", () => {
       doneTitle.textContent = "Almost there";
       doneText.textContent = payload.whatsappLink
         ? "I couldn't reach your phone just now. Open WhatsApp with the button below, say hi, and we'll get started."
-        : "I couldn't reach your phone just now. Please try again in a little while.";
+        : "I couldn't reach your phone just now. Try sending again in a moment.";
     }
+    doneLink.hidden = !payload.whatsappLink;
     if (payload.whatsappLink) {
       doneLink.href = payload.whatsappLink;
-      doneLink.hidden = false;
-      doneLink.textContent = payload.whatsappSent ? "Didn't get it? Open WhatsApp" : "Open WhatsApp";
-      if (payload.whatsappSent) {
-        doneLink.classList.remove("button-primary");
-        doneLink.classList.add("button-secondary");
-      }
     }
-    done.scrollIntoView({ behavior: "smooth", block: "start" });
+    doneResend.hidden = false;
+    doneResend.textContent = payload.whatsappSent ? "Didn't get it? Send again" : "Try sending again";
+    doneOr.hidden = doneLink.hidden;
+    window.scrollTo({ top: 0, behavior: "smooth" });
   };
+
+  // The same registration again: the server reopens the signup and sends the
+  // welcome once more. A pause after each try keeps an impatient thumb from
+  // sending five in a row.
+  doneResend.addEventListener("click", async () => {
+    if (!sentValues) {
+      return;
+    }
+    doneResend.disabled = true;
+    doneStatus.removeAttribute("data-tone");
+    doneStatus.textContent = "Sending…";
+    let pause = 30000;
+    try {
+      const { ok, payload } = await postRegistration(sentValues);
+      if (ok && payload.whatsappSent) {
+        doneStatus.textContent = "Sent again. It can take a minute to arrive.";
+      } else if (ok) {
+        doneStatus.textContent = payload.whatsappLink
+          ? "I still couldn't reach your phone. Open WhatsApp and say hi instead."
+          : "I still couldn't reach your phone. Please try again in a little while.";
+      } else {
+        doneStatus.setAttribute("data-tone", "error");
+        doneStatus.textContent = String(payload.message || "Something went wrong. Please try again in a moment.");
+        pause = 5000;
+      }
+    } catch (error) {
+      doneStatus.setAttribute("data-tone", "error");
+      doneStatus.textContent = "I couldn't reach the server. Check your connection and try again.";
+      pause = 3000;
+    }
+    window.setTimeout(() => { doneResend.disabled = false; }, pause);
+  });
 
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
@@ -545,20 +596,11 @@ window.addEventListener("DOMContentLoaded", () => {
     submitButtons.forEach((button) => { button.disabled = true; });
     setStatus("Setting things up…");
     try {
-      const response = await fetch("/api/register", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Accept: "application/json" },
-        body: JSON.stringify(values),
-      });
-      let payload = {};
-      try {
-        payload = await response.json();
-      } catch (error) {
-        payload = {};
-      }
+      const { ok, payload } = await postRegistration(values);
 
-      if (response.ok && payload.ok) {
+      if (ok) {
         setStatus("");
+        sentValues = values;
         showDone(payload, shownNumber);
         return;
       }
