@@ -178,6 +178,75 @@ class WhatsAppSignupTests(unittest.TestCase):
         self.assertIsNone(self.database.whatsapp_phone_erased_at(NEW_PHONE))
         self.assertTrue(stored and NEW_PHONE not in stored[0], "only a hash of the number is kept")
 
+    def _answers(self, *outputs):
+        """The concierge says these, in order, one per turn."""
+
+        queue = list(outputs)
+        self.model.side_effect = lambda **kw: SimpleNamespace(output_text=json.dumps(queue.pop(0)))
+
+    def test_asking_to_be_forgotten_needs_no_email_and_erases_after_a_yes(self) -> None:
+        # Someone who registered on the web and never gave an email still
+        # holds a name, a line about their work and a conversation with us.
+        self.database.start_web_registration(wa_id=NEW_PHONE, name="Nimrod Shai", business="Plumbing")
+        self._answers(
+            {"reply": "I can erase your name, your registration and this chat. Reply yes to confirm.", "erase": "ask"},
+            {"reply": "", "erase": "yes"},
+        )
+
+        asked = self.post("Delete my account", message_id="wamid.e1")
+        self.assertEqual(asked["results"][0]["action"], "signup_erase_confirm")
+        prompt = self.model.call_args.kwargs["prompt"]
+        self.assertIn("do not ask for an email", prompt)
+        self.assertIn("what they told you when they registered", prompt)
+        self.assertEqual(self.database.get_whatsapp_signup(NEW_PHONE)["status"], "confirming_erasure")
+        self.assertNotIn("email", self.replies()[-1].lower())
+
+        done = self.post("yes", message_id="wamid.e2")
+        self.assertEqual(done["results"][0]["action"], "signup_erased")
+        self.assertIn('"erasureAwaitingTheirYes":true', self.model.call_args.kwargs["prompt"])
+        self.assertIsNone(self.database.get_whatsapp_signup(NEW_PHONE), "nothing may stay under the number")
+        self.assertIsNotNone(self.database.whatsapp_phone_erased_at(NEW_PHONE))
+        self.assertIn("erased", self.replies()[-1])
+
+    def test_a_no_to_the_erasure_keeps_everything(self) -> None:
+        self.database.start_web_registration(wa_id=NEW_PHONE, name="Dana", business="Bakery")
+        self._answers(
+            {"reply": "I can erase what I hold for this phone. Shall I?", "erase": "ask"},
+            {"reply": "Nothing was deleted.", "erase": "no"},
+        )
+        self.post("forget me", message_id="wamid.n1")
+        kept = self.post("actually no", message_id="wamid.n2")
+        self.assertEqual(kept["results"][0]["action"], "signup_erase_declined")
+        signup = self.database.get_whatsapp_signup(NEW_PHONE) or {}
+        self.assertEqual(signup["status"], "awaiting_email")
+        self.assertEqual(signup["registration"]["name"], "Dana")
+
+    def test_something_else_while_the_erasure_waits_keeps_the_question_open(self) -> None:
+        self._answers(
+            {"reply": "I can erase what I hold for this phone. Shall I?", "erase": "ask"},
+            {"reply": "It's the assistant on WhatsApp. The deletion still waits for your yes.", "erase": "none"},
+            {"reply": "", "erase": "yes"},
+        )
+        self.post("delete my data", message_id="wamid.o1")
+        aside = self.post("wait, what is this service?", message_id="wamid.o2")
+        self.assertEqual(aside["results"][0]["action"], "signup_erase_confirm")
+        self.assertEqual(self.database.get_whatsapp_signup(NEW_PHONE)["status"], "confirming_erasure")
+        done = self.post("ok yes delete", message_id="wamid.o3")
+        self.assertEqual(done["results"][0]["action"], "signup_erased")
+
+    def test_a_deletion_request_on_the_last_turn_is_not_swallowed_by_giving_up(self) -> None:
+        for i, text in enumerate(["hi", "what?", "no", "hmm"], start=1):
+            self.post(text, message_id=f"wamid.g{i}")
+        self._answers({"reply": "I can erase what I hold for this phone. Shall I?", "erase": "ask"})
+        result = self.post("delete everything about me", message_id="wamid.g5")
+        self.assertEqual(result["results"][0]["action"], "signup_erase_confirm")
+
+    def test_a_yes_without_a_pending_question_erases_nothing(self) -> None:
+        self._answers({"reply": "Happy to help. What email should I use?", "erase": "yes"})
+        result = self.post("yes", message_id="wamid.y1")
+        self.assertEqual(result["results"][0]["action"], "signup_started")
+        self.assertIsNotNone(self.database.get_whatsapp_signup(NEW_PHONE))
+
     def test_enough_non_answers_and_it_stops_spending(self) -> None:
         for i, text in enumerate(["hi", "what?", "no", "hmm"], start=1):
             self.post(text, message_id=f"wamid.s{i}")

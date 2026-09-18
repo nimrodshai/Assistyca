@@ -298,6 +298,10 @@ from packages.infrastructure.whatsapp_agent_chat import SIGNUP_CONCIERGE_INSTRUC
 from packages.infrastructure.whatsapp_agent_chat import assistyca_typing
 from packages.infrastructure.whatsapp_agent_chat import build_signup_concierge_prompt
 from packages.infrastructure.whatsapp_agent_chat import normalize_signup_concierge_reply
+from packages.infrastructure.whatsapp_agent_chat import signup_erase_intent
+from packages.infrastructure.whatsapp_agent_chat import SIGNUP_ERASE_CONFIRM_TEXT
+from packages.infrastructure.whatsapp_agent_chat import SIGNUP_ERASE_KEPT_TEXT
+from packages.infrastructure.whatsapp_agent_chat import SIGNUP_ERASED_TEXT
 from packages.infrastructure.whatsapp_agent_chat import SIGNUP_ASK_EMAIL_TEXT
 from packages.infrastructure.whatsapp_agent_chat import SIGNUP_EMAIL_TAKEN_TEXT
 from packages.infrastructure.whatsapp_agent_chat import SIGNUP_MAX_EMAIL_ATTEMPTS
@@ -14635,7 +14639,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             # messages from us would only cost money.
             return {"type": "signup", "action": "signup_ignored", "reason": "abandoned"}
 
-        if status != "awaiting_email" or stale:
+        if status not in {"awaiting_email", "confirming_erasure"} or stale:
             cap = resolve_whatsapp_signup_daily_cap()
             started_today = self.database.count_whatsapp_signups_since(now - timedelta(days=1))
             if cap and started_today >= cap:
@@ -14657,6 +14661,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
 
         transcript = list((signup or {}).get("transcript") or [])
         registration = (signup or {}).get("registration") if isinstance((signup or {}).get("registration"), dict) else {}
+        erasure_pending = normalize_text((signup or {}).get("status")) == "confirming_erasure"
         attempt = int((signup or {}).get("attempts") or 0) + 1
         if (now - last_touch).total_seconds() > SIGNUP_ESCALATION_WINDOW_SECONDS:
             # Coming back after an hour is a new conversation, not the fourth
@@ -14668,6 +14673,42 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
 
         email = find_email_in_text(message_text)
         if not is_valid_email(email):
+            # This is the conversation, not a form: answer what they said,
+            # and steer to the email with a firmer hand each turn - unless
+            # they asked to be forgotten, which is read here too, before any
+            # giving up, so that request is never met with silence.
+            reply, erase = self._write_whatsapp_signup_reply(
+                user_message=message_text,
+                transcript=transcript,
+                attempt=attempt,
+                fallback=(
+                    SIGNUP_AFTER_ERASURE_TEXT if erased_at
+                    else SIGNUP_ERASE_CONFIRM_TEXT if erasure_pending
+                    else SIGNUP_ASK_EMAIL_TEXT if attempt <= 1 else SIGNUP_ASK_EMAIL_AGAIN_TEXT
+                ),
+                typing_for_message_id=normalize_text(event.get("source_message_id")),
+                registration=registration,
+                account_erased_at=erased_at,
+                erasure_pending=erasure_pending,
+            )
+            if erasure_pending and erase == "yes":
+                return self._erase_whatsapp_signup(sender_wa_id)
+            if erasure_pending and erase == "no":
+                self.database.set_whatsapp_signup_status(wa_id=sender_wa_id, status="awaiting_email")
+                return self._finish_whatsapp_signup_step(
+                    sender_wa_id, "signup_erase_declined", reply or SIGNUP_ERASE_KEPT_TEXT,
+                )
+            if erase == "ask" and not erased_at:
+                self.database.set_whatsapp_signup_status(wa_id=sender_wa_id, status="confirming_erasure")
+                return self._finish_whatsapp_signup_step(
+                    sender_wa_id, "signup_erase_confirm", reply or SIGNUP_ERASE_CONFIRM_TEXT,
+                )
+            if erasure_pending:
+                # Still waiting on their yes: not a turn without an email,
+                # and never a reason to stop answering.
+                return self._finish_whatsapp_signup_step(
+                    sender_wa_id, "signup_erase_confirm", reply or SIGNUP_ERASE_CONFIRM_TEXT,
+                )
             give_up = attempt >= SIGNUP_MAX_EMAIL_ATTEMPTS
             self.database.record_whatsapp_signup_attempt(wa_id=sender_wa_id, give_up=give_up)
             if give_up:
@@ -14676,20 +14717,6 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                     "signup_abandoned",
                     "No problem — text me again whenever you'd like to set this up.",
                 )
-            # This is the conversation, not a form: answer what they said,
-            # and steer to the email with a firmer hand each turn.
-            reply = self._write_whatsapp_signup_reply(
-                user_message=message_text,
-                transcript=transcript,
-                attempt=attempt,
-                fallback=(
-                    SIGNUP_AFTER_ERASURE_TEXT if erased_at
-                    else SIGNUP_ASK_EMAIL_TEXT if attempt <= 1 else SIGNUP_ASK_EMAIL_AGAIN_TEXT
-                ),
-                typing_for_message_id=normalize_text(event.get("source_message_id")),
-                registration=registration,
-                account_erased_at=erased_at,
-            )
             return self._finish_whatsapp_signup_step(
                 sender_wa_id,
                 "signup_started" if attempt <= 1 else "signup_email_invalid",
@@ -14759,7 +14786,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         )
         # The welcome picks up whatever they asked before giving the email,
         # so the conversation continues rather than restarting at "hello".
-        welcome = self._write_whatsapp_signup_reply(
+        welcome, _ = self._write_whatsapp_signup_reply(
             user_message=message_text,
             transcript=transcript,
             attempt=attempt,
@@ -14798,8 +14825,13 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         typing_for_message_id: str = "",
         registration: dict[str, Any] | None = None,
         account_erased_at: datetime | None = None,
-    ) -> str:
+        erasure_pending: bool = False,
+    ) -> tuple[str, str]:
         """One model-written line of the signup conversation, or the fixed one.
+
+        Also returns what the model read about erasure ("ask", "yes", "no" or
+        ""), so a request to be forgotten is judged by the model and carried
+        out by the server.
 
         Unbilled on purpose: there is no account to charge and a stranger's
         address is never a billing identity, so this is house cost, the same
@@ -14819,7 +14851,9 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             account_created=account_created,
             registration=registration,
             account_erased_at=account_erased_at,
+            erasure_pending=erasure_pending,
         )
+        erase = ""
         try:
             # The phone shows "typing..." while the model writes the line.
             with assistyca_typing(typing_for_message_id):
@@ -14837,14 +14871,39 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                     ),
                     metadata={"source": "whatsapp_signup", "attempt": attempt, "accountCreated": account_created},
                 )
-            reply = normalize_signup_concierge_reply(
-                parse_contact_agent_json(result.output_text),
-                fallback=fallback,
-            )
+            parsed = parse_contact_agent_json(result.output_text)
+            erase = signup_erase_intent(parsed)
+            # A confirmed yes is answered by the fixed line once it is done,
+            # so an empty reply there is expected, not a failure.
+            reply = normalize_signup_concierge_reply(parsed, fallback="" if erase == "yes" else fallback)
         except (OpenAIError, ValueError, json.JSONDecodeError) as exc:
             print(f"WhatsApp signup concierge failed: {getattr(exc, 'message', exc)}", flush=True)
             reply = fallback
-        return reply
+        return reply, erase
+
+    def _erase_whatsapp_signup(self, sender_wa_id: str) -> dict[str, Any]:
+        """Forget a phone that never opened an account, on its own say-so.
+
+        The signup row is everything held for it - the name, what was typed
+        on the registration page, and the conversation - so that row goes.
+        The phone is then noted as erased (a hash, for a day) so the next
+        message is answered by someone who knows it is gone.
+        """
+
+        self.database.delete_whatsapp_signups(user_id=0, wa_ids=[sender_wa_id])
+        self.database.mark_whatsapp_phones_erased([sender_wa_id])
+        print(
+            json.dumps(
+                {
+                    "event": "whatsapp_signup_erased",
+                    "senderWaId": self._mask_whatsapp_log_identifier(sender_wa_id),
+                },
+                ensure_ascii=True,
+                sort_keys=True,
+            ),
+            flush=True,
+        )
+        return self._finish_whatsapp_signup_step(sender_wa_id, "signup_erased", SIGNUP_ERASED_TEXT)
 
     def _finish_whatsapp_signup_step(
         self,
