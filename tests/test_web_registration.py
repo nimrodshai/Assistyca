@@ -16,6 +16,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 from packages.infrastructure.portal_auth.server import PortalConfig, create_server
+from packages.infrastructure.registration_welcome import REGISTRATION_WELCOME_LINE
 from packages.infrastructure.whatsapp_agent_chat import build_registration_welcome_prompt
 from packages.infrastructure.whatsapp_agent_chat import build_signup_concierge_prompt
 from packages.infrastructure.whatsapp_agent_chat import flatten_for_template
@@ -24,7 +25,6 @@ from packages.infrastructure.whatsapp_agent_chat import flatten_for_template
 PLATFORM = "platform-phone-1"
 APP_SECRET = "register-test-secret"
 PHONE = "972507322341"
-WELCOME = "Hi Dana! For a studio like yours, try 'Chase the invoice from the tile supplier'.\nReply here and we'll get you set up."
 
 
 def webhook_payload(text, *, sender=PHONE, message_id="wamid.r1", name="Dana on WhatsApp"):
@@ -91,8 +91,6 @@ class WebRegistrationTests(unittest.TestCase):
         self.model = self.model_patch.start()
 
     def _model(self, **kwargs):
-        if kwargs.get("tool_name") == "whatsapp_registration_welcome":
-            return SimpleNamespace(output_text=json.dumps({"reply": WELCOME}))
         prompt = str(kwargs.get("prompt") or "")
         if "account has just been created" in prompt:
             return SimpleNamespace(output_text=json.dumps({"reply": "You're in, Dana. Shall we start with that tile supplier?"}))
@@ -166,25 +164,20 @@ class WebRegistrationTests(unittest.TestCase):
         })
         self.assertEqual([m["role"] for m in signup["transcript"]], ["assistant"])
 
-        # The welcome was written by the model from what they typed, went out
-        # as the approved template on one line, and says who to ignore it.
-        prompt = self.model.call_args.kwargs["prompt"]
-        self.assertIn("architecture studio", prompt)
-        self.assertIn("Dana Levi", prompt)
-        self.assertNotIn("billing_email", self.model.call_args.kwargs, "a stranger is never a billing identity")
+        # The welcome is the approved template with the fixed line; no model
+        # is asked to write it.
+        self.assertFalse(self.model.called)
         send = self.template_sent.call_args.kwargs
         self.assertEqual(send["recipient_wa_id"], PHONE)
         self.assertIsNone(send["message_text"])
         self.assertEqual(send["template"]["name"], "assistyca_welcome1")
         self.assertEqual(send["template"]["language"], {"code": "en"})
-        # The template greets them by first name itself; what the model wrote
-        # is the line under it, on one line, and nothing is added to it.
+        # The template greets them by first name itself; the line under it is
+        # the fixed one, word for word.
         components = {component["type"]: component for component in send["template"]["components"]}
         greeted, body = [parameter["text"] for parameter in components["body"]["parameters"]]
         self.assertEqual(greeted, "Dana")
-        self.assertIn("tile supplier'. Reply here and we'll get you set up.", body)
-        self.assertNotIn("If you didn't register", body)
-        self.assertNotIn("\n", body)
+        self.assertEqual(body, REGISTRATION_WELCOME_LINE)
         # A test server has no public address, so Meta gets no picture to fetch.
         self.assertNotIn("header", components)
 
@@ -223,13 +216,10 @@ class WebRegistrationTests(unittest.TestCase):
         signup = self.database.get_whatsapp_signup(PHONE) or {}
         self.assertEqual(signup["registration"]["kind"], "family")
 
-        # The welcome is written about the afternoons, and the family sentence
-        # is the only place a pickup rota is offered at all.
-        prompt = self.model.call_args.kwargs["prompt"]
-        self.assertIn('"registeredFor":"their family"', prompt)
-        self.assertNotIn("whatTheyToldUs", prompt)
-        self.assertIn("nobody down for the pickup", prompt)
-        self.assertIn("an activity with nobody down for the pickup", prompt)
+        # A family gets the same approved welcome as a business.
+        sent = self.template_sent.call_args.kwargs["template"]
+        self.assertEqual(sent["name"], "assistyca_welcome1")
+        self.assertEqual(sent["components"][-1]["parameters"][1]["text"], REGISTRATION_WELCOME_LINE)
 
         self.text("Yes please", message_id="wamid.f1")
         concierge_prompt = self.model.call_args.kwargs["prompt"]
@@ -273,7 +263,8 @@ class WebRegistrationTests(unittest.TestCase):
         signup = self.database.get_whatsapp_signup(PHONE) or {}
         self.assertEqual(signup["registration"]["name"], "Nimrod Shai-Cohen")
         self.assertEqual(signup["registration"]["business"], "Barber in tel aviv")
-        self.assertIn("Nimrod Shai-Cohen", self.model.call_args.kwargs["prompt"])
+        greeted = self.template_sent.call_args.kwargs["template"]["components"][-1]["parameters"][0]["text"]
+        self.assertEqual(greeted, "Nimrod")
 
     def test_the_fields_are_checked_before_anything_is_recorded(self) -> None:
         status, payload = self.register(registration(kind="", name="D", phone="+9720", business=""))
