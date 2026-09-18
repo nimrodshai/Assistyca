@@ -160,8 +160,11 @@
         color: var(--accent);
       }
 
+      /* The space under the text is what the wordmark above it used to take,
+         so the phone stays where it was when the titles moved up */
       .lede {
         margin: 0 auto;
+        padding-bottom: 4.42rem;
         max-width: 22rem;
         font-size: clamp(1rem, 3.9vw, 1.12rem);
         color: var(--ink-soft);
@@ -715,6 +718,10 @@
       @media (min-width: 48rem) {
         .kicker {
           padding-top: 2.6rem;
+        }
+
+        .lede {
+          padding-bottom: 4.82rem;
         }
 
         .stage {
