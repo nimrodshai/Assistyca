@@ -521,21 +521,7 @@ def build_signup_concierge_prompt(
         max(0, int((datetime.now(timezone.utc) - account_erased_at).total_seconds() // 60))
         if account_erased_at and not account_created else None
     )
-    if erased_minutes_ago is not None:
-        # Not a stranger: someone who deleted their account a moment ago and
-        # is still in the same chat. "Are we deleted?" deserves a yes, and a
-        # push for an email would read as if the deletion never happened.
-        task = (
-            "This person deleted their Assistyca account from this chat a little while ago - or, if they "
-            "never finished opening one, the details they had given (see accountDeletedMinutesAgo). The "
-            "deletion is done: everything held for them is erased, any sign-ins were revoked, and this phone "
-            "is no longer tied to anything. There is nothing left to delete. If "
-            "they ask whether it is deleted, or ask to delete it, say plainly that it already is. If they "
-            "ask anything else, answer it honestly. Do not ask for an email address unless they say they "
-            "want to use Assistyca again; if they do, say that you need an email address to set up a new "
-            "account and ask for it."
-        )
-    elif erasure_pending:
+    if erasure_pending:
         # They asked to be forgotten and were asked to confirm. The yes is
         # read here, with the question in view, and the server does the rest;
         # anything else is answered without dropping the question.
@@ -612,6 +598,19 @@ def build_signup_concierge_prompt(
             + "; the first message in the conversation was yours. Use what they told you: address them by first name, and never repeat what your earlier "
             "messages in recentConversation already said - if you give an example, make it a new one that "
             + ("fits their week at home. " if registered_kind == "family" else "fits their line of work. ")
+        ) + task
+    if erased_minutes_ago is not None:
+        # The deletion is only news if they ask about it. The goodbye told
+        # them to just write to start again, so a "hi" after it is exactly
+        # that: a fresh start, met like any first hello - not a reminder of
+        # what was erased.
+        task = (
+            "Background: this phone's Assistyca account, or the details it had given before opening one, was "
+            "erased at their request a little while ago (see accountDeletedMinutesAgo); nothing is left and "
+            "nothing remains to delete. Only if they ask about the deletion, or ask to delete something, say "
+            "plainly that it is already done, set nothing else in motion, and do not ask for an email. "
+            "Otherwise do not mention the deletion or their old account at all: your goodbye told them to "
+            "just write if they wanted to start again, so treat this as a fresh start from someone new. "
         ) + task
     if erased_minutes_ago is None and not account_created and not erasure_pending:
         # Asking to be forgotten is never met with a request for more data:
@@ -694,8 +693,8 @@ SIGNUP_ERASED_TEXT = (
 )
 SIGNUP_ERASE_KEPT_TEXT = "Nothing was deleted. I'm here whenever you want to carry on."
 SIGNUP_AFTER_ERASURE_TEXT = (
-    "Your Assistyca account is deleted, and there is nothing left to remove. If you ever want to start "
-    "again, just send me an email address and I'll set up a new one."
+    "Hi - I'm Assistyca, your assistant. Everything from before is erased. If you'd like to start again, "
+    "what email should I set your account up with?"
 )
 SIGNUP_EMAIL_TAKEN_TEXT = (
     "That address already has an Assistyca account. Sign in at assistyca.com and get a code "
