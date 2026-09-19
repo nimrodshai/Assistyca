@@ -88,6 +88,16 @@ class FamilyWelcomeTemplateTests(unittest.TestCase):
                     "assistyca_welcome_family_1",
                 )
 
+    def test_a_family_welcome_carries_the_waving_robot(self) -> None:
+        for name in ("Dana Levi", "דנה לוי"):
+            with self.subTest(name=name), mock.patch.dict(os.environ, {}, clear=True):
+                self.assertEqual(
+                    resolve_registration_welcome_template(
+                        base_url="https://assistyca.com/", kind="family", name=name
+                    ).header_image_url,
+                    "https://assistyca.com/assets/assistyca-whatsapp-header-family.jpg",
+                )
+
     def test_a_business_keeps_its_welcome_whatever_the_language(self) -> None:
         with mock.patch.dict(os.environ, {}, clear=True):
             template = resolve_registration_welcome_template(kind="business", name="דנה לוי")
