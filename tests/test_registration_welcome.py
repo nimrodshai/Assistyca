@@ -57,6 +57,44 @@ class RegistrationWelcomeTemplateTests(unittest.TestCase):
             )
 
 
+class FamilyWelcomeTemplateTests(unittest.TestCase):
+    def test_a_family_with_an_english_name_gets_the_english_family_welcome(self) -> None:
+        with mock.patch.dict(os.environ, {}, clear=True):
+            template = resolve_registration_welcome_template(kind="family", name="Dana Levi")
+
+        self.assertEqual((template.name, template.language), ("assistyca_welcome_family_1", "en"))
+        self.assertEqual(
+            registration_welcome_template_parameters(name="Dana Levi", kind="family"),
+            ["Dana", 'No more "Did you remember to take Noah to soccer?". I\'ll keep track of who\'s '
+             "taking who, and remind them in time."],
+        )
+
+    def test_a_family_with_a_hebrew_name_gets_the_hebrew_family_welcome(self) -> None:
+        with mock.patch.dict(os.environ, {}, clear=True):
+            template = resolve_registration_welcome_template(kind="family", name="יוני כהן")
+
+        self.assertEqual((template.name, template.language), ("assistyca_welcome_family_1_hebrew", "he"))
+        self.assertEqual(
+            registration_welcome_template_parameters(name="יוני כהן", kind="family"),
+            ["יוני", 'בואו נשים סוף להודעות כמו "זכרת לקחת את יוני לכדורגל?". אני אעקוב מי לוקח את מי, '
+             "ואזכיר להם בזמן."],
+        )
+
+    def test_any_other_language_gets_english(self) -> None:
+        for name in ("Мария", "محمد", "José", ""):
+            with self.subTest(name=name):
+                self.assertEqual(
+                    resolve_registration_welcome_template(kind="family", name=name).name,
+                    "assistyca_welcome_family_1",
+                )
+
+    def test_a_business_keeps_its_welcome_whatever_the_language(self) -> None:
+        with mock.patch.dict(os.environ, {}, clear=True):
+            template = resolve_registration_welcome_template(kind="business", name="דנה לוי")
+
+        self.assertEqual((template.name, template.language), ("assistyca_welcome1", "en"))
+
+
 class RegistrationWelcomeMessageTests(unittest.TestCase):
     def test_the_message_reads_as_the_template_will_render_it(self) -> None:
         message = build_registration_welcome_message(name="Dana Levi")

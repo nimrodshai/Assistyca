@@ -15053,13 +15053,14 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             })
             return
 
-        # One approved template for everyone: their first name and a fixed line.
-        welcome = build_registration_welcome_message(name=name)
+        # An approved template: the business welcome, or the family one in
+        # the language their name was typed in.
+        welcome = build_registration_welcome_message(name=name, kind=kind)
         # The signup conversation starts with the welcome, so the reply to it
         # is answered as a reply and not as a first hello.
         self.database.append_whatsapp_signup_message(wa_id=phone, role="assistant", text=welcome)
 
-        template = resolve_registration_welcome_template(base_url=self._public_base_url())
+        template = resolve_registration_welcome_template(base_url=self._public_base_url(), kind=kind, name=name)
         sent_message_id = ""
         send_error = ""
         for header_image_url in (template.header_image_url, ""):
@@ -15069,7 +15070,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                     message_text=flatten_for_template(welcome),
                     template_name=template.name,
                     template_language=template.language,
-                    template_parameters=registration_welcome_template_parameters(name=name),
+                    template_parameters=registration_welcome_template_parameters(name=name, kind=kind),
                     template_header_image_url=header_image_url,
                 )
                 send_error = ""

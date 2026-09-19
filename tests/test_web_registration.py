@@ -16,6 +16,8 @@ from types import SimpleNamespace
 from unittest import mock
 
 from packages.infrastructure.portal_auth.server import PortalConfig, create_server
+from packages.infrastructure.registration_welcome import FAMILY_WELCOME_LINE
+from packages.infrastructure.registration_welcome import HEBREW_FAMILY_WELCOME_LINE
 from packages.infrastructure.registration_welcome import REGISTRATION_WELCOME_LINE
 from packages.infrastructure.whatsapp_agent_chat import build_registration_welcome_prompt
 from packages.infrastructure.whatsapp_agent_chat import build_signup_concierge_prompt
@@ -216,10 +218,11 @@ class WebRegistrationTests(unittest.TestCase):
         signup = self.database.get_whatsapp_signup(PHONE) or {}
         self.assertEqual(signup["registration"]["kind"], "family")
 
-        # A family gets the same approved welcome as a business.
+        # A family gets the family welcome, in English for a name typed in English.
         sent = self.template_sent.call_args.kwargs["template"]
-        self.assertEqual(sent["name"], "assistyca_welcome1")
-        self.assertEqual(sent["components"][-1]["parameters"][1]["text"], REGISTRATION_WELCOME_LINE)
+        self.assertEqual(sent["name"], "assistyca_welcome_family_1")
+        self.assertEqual(sent["language"], {"code": "en"})
+        self.assertEqual(sent["components"][-1]["parameters"][1]["text"], FAMILY_WELCOME_LINE)
 
         self.text("Yes please", message_id="wamid.f1")
         concierge_prompt = self.model.call_args.kwargs["prompt"]
@@ -244,6 +247,20 @@ class WebRegistrationTests(unittest.TestCase):
         self.assertEqual(profile["gettingToKnow"], "in_progress")
         transcript = self.database.list_recent_whatsapp_agent_messages(user_id=user_id)
         self.assertEqual([entry["role"] for entry in transcript], ["assistant"])
+
+    def test_a_family_that_types_its_name_in_hebrew_is_welcomed_in_hebrew(self) -> None:
+        status, payload = self.register(family_registration(name="דנה לוי"))
+        self.assertEqual(status, 200, payload)
+
+        sent = self.template_sent.call_args.kwargs["template"]
+        self.assertEqual(sent["name"], "assistyca_welcome_family_1_hebrew")
+        self.assertEqual(sent["language"], {"code": "he"})
+        greeted, line = [parameter["text"] for parameter in sent["components"][-1]["parameters"]]
+        self.assertEqual(greeted, "דנה")
+        self.assertEqual(line, HEBREW_FAMILY_WELCOME_LINE)
+        # The conversation we keep says what their phone showed, in Hebrew.
+        transcript = (self.database.get_whatsapp_signup(PHONE) or {})["transcript"]
+        self.assertTrue(transcript[0]["text"].startswith("היי דנה 👋"))
 
     def test_a_family_is_never_asked_what_it_does(self) -> None:
         # Whatever arrives in the field, a family's registration keeps none of it.
