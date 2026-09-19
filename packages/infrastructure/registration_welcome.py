@@ -37,6 +37,9 @@ DEFAULT_REGISTRATION_WELCOME_TEMPLATE_LANGUAGE = "en"
 # A media header is supplied per message, never once at approval: Meta fetches
 # this URL every time we send, so it has to be a public address of ours.
 DEFAULT_REGISTRATION_WELCOME_HEADER_IMAGE_PATH = "/assets/assistyca-whatsapp-header-tagline.png"
+# The waving robot Nimrod set on both family templates in WhatsApp Manager.
+# Meta shows whatever we send, not what the template was approved with.
+FAMILY_WELCOME_HEADER_IMAGE_PATH = "/assets/assistyca-whatsapp-header-family.jpg"
 
 REGISTRATION_WELCOME_GREETING = "Hi {name} 👋 I'm Assistyca and I'm here to help."
 REGISTRATION_WELCOME_CLOSING = "Tap the action below, or just tell me what you need first."
@@ -136,19 +139,18 @@ def resolve_registration_welcome_template(
     from a laptop.
     """
 
-    header_image_url = normalize_text(os.getenv("WHATSAPP_REGISTRATION_WELCOME_HEADER_IMAGE_URL"))
-    if not header_image_url:
-        site = normalize_text(base_url).rstrip("/")
-        header_image_url = (
-            f"{site}{DEFAULT_REGISTRATION_WELCOME_HEADER_IMAGE_PATH}" if is_publicly_fetchable(site) else ""
-        )
+    site = normalize_text(base_url).rstrip("/")
+    public = is_publicly_fetchable(site)
     if is_family(kind):
         hebrew = is_hebrew_name(name)
         return RegistrationWelcomeTemplate(
             name=HEBREW_FAMILY_WELCOME_TEMPLATE_NAME if hebrew else FAMILY_WELCOME_TEMPLATE_NAME,
             language=HEBREW_FAMILY_WELCOME_TEMPLATE_LANGUAGE if hebrew else DEFAULT_REGISTRATION_WELCOME_TEMPLATE_LANGUAGE,
-            header_image_url=header_image_url,
+            header_image_url=f"{site}{FAMILY_WELCOME_HEADER_IMAGE_PATH}" if public else "",
         )
+    header_image_url = normalize_text(os.getenv("WHATSAPP_REGISTRATION_WELCOME_HEADER_IMAGE_URL"))
+    if not header_image_url:
+        header_image_url = f"{site}{DEFAULT_REGISTRATION_WELCOME_HEADER_IMAGE_PATH}" if public else ""
     return RegistrationWelcomeTemplate(
         name=(
             normalize_text(os.getenv("WHATSAPP_REGISTRATION_WELCOME_TEMPLATE_NAME"))
@@ -180,6 +182,7 @@ def registration_welcome_template_parameters(*, name: Any, kind: Any = "business
 
 
 __all__ = [
+    "FAMILY_WELCOME_HEADER_IMAGE_PATH",
     "FAMILY_WELCOME_LINE",
     "FAMILY_WELCOME_TEMPLATE_NAME",
     "HEBREW_FAMILY_WELCOME_LINE",
