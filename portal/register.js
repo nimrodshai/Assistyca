@@ -510,14 +510,13 @@ window.addEventListener("DOMContentLoaded", () => {
     form.hidden = true;
     done.hidden = false;
     document.documentElement.setAttribute("data-registered", "");
-    const ours = String(payload.assistycaNumber || "").trim();
     doneText.textContent = "";
     if (payload.whatsappSent) {
       doneTitle.textContent = "Check WhatsApp";
       const number = document.createElement("span");
       number.className = "number";
       number.textContent = shownNumber;
-      doneText.append("I've just sent a message to ", number, ours ? ` from +${ours}. ` : ". ", "Reply to it and we'll get started.");
+      doneText.append("I've just sent a message to ", number, ". Reply to it and we'll get started.");
     } else {
       doneTitle.textContent = "Almost there";
       doneText.textContent = payload.whatsappLink
