@@ -52,7 +52,7 @@ REGISTRATION_WELCOME_LINE = (
 # The family welcomes. {{2}} is word for word as Nimrod gave it; the greeting
 # and closing are copies of the approved bodies, kept in step by hand.
 FAMILY_WELCOME_TEMPLATE_NAME = "assistyca_welcome_family_1"
-FAMILY_WELCOME_GREETING = "Hi {name} 👋 I'm Assistyca and I'm here to take a few things off your plate."
+FAMILY_WELCOME_GREETING = "Hi {name} 👋 I'm your new assistant and I'm here to take a few things off your plate."
 FAMILY_WELCOME_CLOSING = (
     "But first, let's get to know the names in your family. Tell me, and we'll start working on "
     "your weekly schedule."
