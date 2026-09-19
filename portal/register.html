@@ -716,6 +716,17 @@
         margin-top: 0.9rem;
       }
 
+      /* Both buttons as wide as the longer label, not the whole column */
+      .done .actions {
+        width: fit-content;
+        max-width: 100%;
+        margin-inline: auto;
+      }
+
+      .done .actions .button {
+        padding-inline: 2.2rem;
+      }
+
       /* Once the message is out the page has done its job: the invitation to
          get started steps aside and the robot leads. */
       html[data-registered] .hero {
