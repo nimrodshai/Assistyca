@@ -730,6 +730,27 @@
         margin-bottom: 1.4rem;
       }
 
+      /* No card around the last screen: the robot and the buttons stand on
+         the photograph, in the middle of what is left under the wordmark. */
+      html[data-registered] .page {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        min-height: 100vh;
+        min-height: 100svh;
+      }
+
+      html[data-registered] .card {
+        width: 100%;
+        margin: auto 0;
+        padding: 0;
+        background: none;
+        border: 0;
+        box-shadow: none;
+        -webkit-backdrop-filter: none;
+        backdrop-filter: none;
+      }
+
       @media (max-width: 480px) {
         .card {
           padding: 1.7rem 1.25rem 1.4rem;
