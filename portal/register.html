@@ -633,14 +633,14 @@
         text-align: center;
       }
 
-      /* The robot holding up the message it just sent. The picture carries
-         its own soft green blob, so it sits straight on the card. */
+      /* The landing page's robot holding up the message it just sent. The
+         picture carries its own sage blob, so it sits straight on the card. */
       .done-art {
         display: block;
-        width: min(100%, 22rem);
+        width: min(100%, 17rem);
         height: auto;
-        aspect-ratio: 3 / 2;
-        margin: -0.6rem auto 0.9rem;
+        aspect-ratio: 720 / 649;
+        margin: -0.4rem auto 1.1rem;
         object-fit: contain;
       }
 
@@ -667,16 +667,17 @@
         font-variant-numeric: tabular-nums;
       }
 
-      /* WhatsApp's own green: this button leaves the page for their app */
+      /* The landing page's teal, not WhatsApp's green: the logo already says
+         where the button goes */
       .button-whatsapp {
-        background: linear-gradient(135deg, #22a45a, #3fc17a);
+        background: var(--accent);
         color: #fff;
-        box-shadow: 0 16px 32px rgba(34, 164, 90, 0.24);
+        box-shadow: 0 16px 34px rgba(98, 163, 155, 0.26);
       }
 
       .button-whatsapp:hover {
+        background: var(--accent-deep);
         transform: translateY(-1px);
-        box-shadow: 0 20px 40px rgba(34, 164, 90, 0.3);
       }
 
       .button-whatsapp svg {
@@ -982,7 +983,7 @@
         </form>
 
         <div class="done" data-register-done hidden>
-          <img class="done-art" src="/assets/robot-sent-message.webp" width="720" height="480" alt="" />
+          <img class="done-art" src="/assets/robot-sent-message.webp" width="720" height="649" alt="" />
           <h2 data-done-title>Check WhatsApp</h2>
           <p data-done-text></p>
           <div class="actions">
