@@ -81,7 +81,7 @@
       }
 
       /* iOS Safari ignores overflow-x on body alone; clip at the root so the
-         background and the note beside the phone can never widen the page */
+         background can never widen the page */
       html,
       body {
         overflow-x: hidden;
@@ -179,15 +179,6 @@
         z-index: 1;
         width: min(100%, 21rem);
         margin: 2rem auto 0;
-      }
-
-      .note {
-        position: absolute;
-        top: 22%;
-        left: calc(100% + 0.5rem);
-        width: 6.4rem;
-        height: auto;
-        transform: rotate(-4deg);
       }
 
       /* The bottom of the handset fades out, the way the mockup crops it */
@@ -678,8 +669,7 @@
 
       /* ---------- Narrow phones ---------- */
 
-      /* No room beside the handset: the note steps aside, and a tall
-         photograph puts the robot on the left of a smaller phone. */
+      /* A tall photograph puts the robot on the left of a smaller phone. */
       @media (max-width: 34rem) {
         .hero {
           background-image: url("/assets/landing-bg-mobile.webp");
@@ -699,10 +689,6 @@
           margin-left: auto;
           transform: rotate(6deg);
           transform-origin: 50% 0;
-        }
-
-        .note {
-          display: none;
         }
 
         .island {
@@ -728,11 +714,6 @@
 
         .stage {
           margin-top: 2.6rem;
-        }
-
-        .note {
-          width: 7.5rem;
-          left: calc(100% + 1.5rem);
         }
 
         .chat li {
@@ -820,7 +801,6 @@
               </div>
             </div>
           </div>
-          <img class="note" src="/assets/calm-note.svg" alt="More calm days" />
         </div>
       </div>
     </header>
