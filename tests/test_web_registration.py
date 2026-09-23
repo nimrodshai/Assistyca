@@ -253,8 +253,17 @@ class WebRegistrationTests(unittest.TestCase):
         profile = self.database.get_household_profile(user_id=user_id) or {}
         self.assertEqual(profile["accountKind"], "family")
         self.assertEqual(profile["gettingToKnow"], "in_progress")
+        # Everything said before the account existed comes with them, so the
+        # assistant reads what they already told it rather than asking again.
         transcript = self.database.list_recent_whatsapp_agent_messages(user_id=user_id)
-        self.assertEqual([entry["role"] for entry in transcript], ["assistant"])
+        self.assertEqual(
+            [entry["role"] for entry in transcript], ["assistant", "user", "assistant", "assistant"],
+        )
+        self.assertIn("Yes please", [entry["text"] for entry in transcript])
+        self.assertNotIn(
+            "dana@example.com", " ".join(entry["text"] for entry in transcript),
+            "the address they typed is not repeated back into the conversation",
+        )
 
     def test_a_family_that_types_its_name_in_hebrew_is_welcomed_in_hebrew(self) -> None:
         status, payload = self.register(family_registration(name="דנה לוי"))
@@ -457,8 +466,41 @@ class RegistrationWelcomeTextTests(unittest.TestCase):
             self.assertIn("Do not introduce yourself again", prompt)
             self.assertIn("do not offer examples again", prompt)
             self.assertNotIn("offer three or four concrete things", prompt)
-            self.assertIn("need an email address to set up their account", prompt)
-            self.assertIn("address them by first name", prompt)
+            # The email is asked for the way a person asks, not announced as
+            # a barrier: "Before I can begin, I just need ..." is the form.
+            self.assertIn("ask for their email in the same breath", prompt)
+            self.assertIn("never as a condition announced before you can begin", prompt)
+            self.assertNotIn("before you can start", prompt)
+            # A name at the head of every message is how a form addresses
+            # someone; a person drops it in where it fits.
+            self.assertIn("not as the first word of the message", prompt)
+            self.assertNotIn("address them by first name", prompt)
+
+    def test_what_they_volunteer_is_answered_not_repeated_back(self) -> None:
+        # He typed his wife and three children and got "got it - starting
+        # with your family setup (Stav, Lotan, Lahav, and Laor)" back: a
+        # receipt for his own words, then a field to fill in.
+        prompt = build_signup_concierge_prompt(
+            user_message="My wife is Stav, my kids are Lotan, Lahav and Laor",
+            transcript=[{"role": "assistant", "text": "Hi Nimrod ... we'll start on your weekly schedule."}],
+            attempt=1,
+            registration={"name": "Nimrod", "kind": "family"},
+        )
+        self.assertIn("let it land in your own words", prompt)
+        self.assertIn("rather than confirming that you received it", prompt)
+
+    def test_a_family_is_not_asked_what_it_has_already_said(self) -> None:
+        # The welcome opens the getting-to-know, but someone who named the
+        # whole household while signing up has answered its first question.
+        prompt = build_signup_concierge_prompt(
+            user_message="nimrod@example.com",
+            transcript=[{"role": "user", "text": "My wife is Stav, my kids are Lotan, Lahav and Laor"}],
+            attempt=2,
+            account_created=True,
+            registration={"name": "Nimrod", "kind": "family"},
+        )
+        self.assertIn("who is at home with them", prompt)
+        self.assertIn("that question is answered - do not put it to them again", prompt)
 
     def test_a_registrant_who_asks_a_question_gets_it_answered(self) -> None:
         prompt = build_signup_concierge_prompt(
