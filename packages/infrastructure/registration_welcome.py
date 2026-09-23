@@ -10,7 +10,9 @@ message may only go out as a template Meta has approved. A business gets
 
 A family gets a family welcome instead, and the one in their language: a name
 typed in Hebrew gets `assistyca_welcome_family_1_hebrew`, any other name
-`assistyca_welcome_family_1`. Same two variables, a family line in {{2}}.
+`assistyca_welcome_family_1`. Both take the same two variables, but the second
+one goes out empty: Nimrod does not want that line in the family welcome, and
+the count still has to match the template Meta approved.
 
 The greeting and the closing are repeated here as text so the conversation we
 keep says exactly what their phone showed. They are a copy of the approved
@@ -52,8 +54,9 @@ REGISTRATION_WELCOME_LINE = (
 )
 
 
-# The family welcomes. {{2}} is word for word as Nimrod gave it; the greeting
-# and closing are copies of the approved bodies, kept in step by hand.
+# The family welcomes. The greeting and closing are copies of the approved
+# bodies, kept in step by hand. The line below is no longer sent - {{2}} goes
+# out empty - and is kept only as the words that were there until 2026-09-23.
 FAMILY_WELCOME_TEMPLATE_NAME = "assistyca_welcome_family_1"
 FAMILY_WELCOME_GREETING = "Hi {name} 👋 I'm your new assistant and I'm here to take a few things off your plate."
 FAMILY_WELCOME_CLOSING = (
@@ -170,25 +173,29 @@ def build_registration_welcome_message(*, name: Any, kind: Any = "business") -> 
     greeting, line, closing = welcome_copy(kind=kind, name=name)
     greeting = greeting.format(name=greeted_name(kind=kind, name=name))
     if is_family(kind):
-        return f"{greeting}\n\n{line}\n\n{closing}"
+        # {{2}} goes out empty, so their phone shows the greeting and the
+        # closing with a gap between them, and so does the copy we keep.
+        return f"{greeting}\n\n{closing}"
     return f"{greeting}\n{line}\n{closing}"
 
 
 def registration_welcome_template_parameters(*, name: Any, kind: Any = "business") -> list[str]:
-    """{{1}} and {{2}}, in that order.
+    """{{1}} and {{2}}, in that order - two values for every welcome.
 
-    Every welcome takes both, the family ones included. A send that carries
-    only the name was tried on 2026-09-23 on the reading that the family line
-    is fixed text in the approved template; Meta refused it outright with
-    "(#132000) Number of parameters does not match the expected number of
-    params", and the family who had just registered got nothing. Two
-    parameters is what the family template delivered on with every send
-    before that. If this looks wrong again, read the template in WhatsApp
-    Manager before changing it - not the copies kept here.
+    A family's {{2}} is empty on purpose: Nimrod asked on 2026-09-23 for the
+    family line not to appear. Dropping the parameter instead is not the same
+    thing and was tried the same day - Meta answered "(#132000) Number of
+    parameters does not match the expected number of params" and the family
+    who had just registered got no welcome at all. So the slot stays and goes
+    out blank. Count and shape are settled by reading the template in
+    WhatsApp Manager, never by the copies kept in this file.
     """
 
+    greeted = greeted_name(kind=kind, name=name)
+    if is_family(kind):
+        return [greeted, ""]
     _, line, _ = welcome_copy(kind=kind, name=name)
-    return [greeted_name(kind=kind, name=name), flatten_for_template(line)]
+    return [greeted, flatten_for_template(line)]
 
 
 __all__ = [
