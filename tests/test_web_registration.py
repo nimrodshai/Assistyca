@@ -94,6 +94,12 @@ class WebRegistrationTests(unittest.TestCase):
 
     def _model(self, **kwargs):
         prompt = str(kwargs.get("prompt") or "")
+        if not prompt and kwargs.get("input"):
+            # The account exists, so this is the assistant answering a turn,
+            # not the concierge writing a line of the signup.
+            return SimpleNamespace(output_text=json.dumps(
+                {"outcome": "message", "reply": "Lovely - Stav, Lotan, Lahav and Laor. When are their birthdays?"},
+            ))
         if "account has just been created" in prompt:
             return SimpleNamespace(output_text=json.dumps({"reply": "You're in, Dana. Shall we start with that tile supplier?"}))
         return SimpleNamespace(output_text=json.dumps({"reply": "Glad you wrote, Dana. What email should I set the account up with?"}))
@@ -232,38 +238,84 @@ class WebRegistrationTests(unittest.TestCase):
         # template prints of its own accord.
         self.assertIn(FAMILY_WELCOME_LINE, (self.database.get_whatsapp_signup(PHONE) or {})["transcript"][0]["text"])
 
-        self.text("Yes please", message_id="wamid.f1")
-        concierge_prompt = self.model.call_args.kwargs["prompt"]
-        self.assertIn('"registeredFor":"their family"', concierge_prompt)
-        self.assertIn("fits their week at home", concierge_prompt)
+        # Their first reply opens the account on the spot - no address asked
+        # for, nothing standing between them and the assistant - and that same
+        # message is answered by the assistant itself, which is the one that
+        # can keep what it says about the family.
+        first = self.text("My wife is Stav, my kids are Lotan, Lahav and Laor", message_id="wamid.f1")
+        self.assertEqual(
+            [result["action"] for result in first["results"]],
+            ["signup_completed_without_email", "agent_chat_reply"],
+        )
+        self.assertNotIn("email", " ".join(self.replies()).lower())
 
-        self.text("dana@example.com", message_id="wamid.f2")
-        user = self.database.get_user("dana@example.com") or {}
-        facts = {fact["key"]: fact["fact"] for fact in self.database.list_account_facts(user_id=int(user["id"]))}
-        self.assertNotIn("what they do", facts, "a family was never asked what it does")
-        self.assertNotIn("their family", facts)
+        user = self.database.get_user("wa-972507322341@whatsapp.assistyca.com") or {}
+        self.assertTrue(user, "the account should exist now, keyed on the phone")
+        self.assertEqual(user["displayName"], "Dana Levi")
+        self.assertEqual(user["accountType"], "family")
+        self.assertEqual(user["trialDays"], 2)
+        self.assertEqual(self.database.get_user_id_for_whatsapp_number(PHONE), int(user["id"]))
+        self.assertEqual((self.database.get_whatsapp_signup(PHONE) or {}).get("status"), "completed")
 
-        # Who they are and that this is a family are pinned, the welcome asks
-        # the first getting-to-know question, and the reply will be read with
-        # that welcome in view.
+        # What the page asked is all a family was ever asked, and it is pinned.
         user_id = int(user["id"])
+        facts = {fact["key"]: fact["fact"] for fact in self.database.list_account_facts(user_id=user_id)}
+        self.assertEqual(facts, {"name": "Their name is Dana Levi."})
         pinned = {fact["key"] for fact in self.database.list_account_facts(user_id=user_id) if fact["pinned"]}
         self.assertEqual(pinned, {"name"})
-        self.assertIn("who is at home with them", self.model.call_args.kwargs["prompt"])
+
+        # The assistant read their message with the family's opening in front
+        # of it, so getting to know them is what it does with it.
+        turn = json.dumps(self.model.call_args.kwargs["input"])
+        self.assertIn("Getting to know this family", turn)
+        self.assertIn("My wife is Stav", turn)
         profile = self.database.get_household_profile(user_id=user_id) or {}
         self.assertEqual(profile["accountKind"], "family")
-        self.assertEqual(profile["gettingToKnow"], "in_progress")
-        # Everything said before the account existed comes with them, so the
-        # assistant reads what they already told it rather than asking again.
+        self.assertEqual(profile["gettingToKnow"], "not_started")
+        # The welcome that was sent before the account existed is the first
+        # thing in its conversation, so nothing it said is said again.
         transcript = self.database.list_recent_whatsapp_agent_messages(user_id=user_id)
-        self.assertEqual(
-            [entry["role"] for entry in transcript], ["assistant", "user", "assistant", "assistant"],
+        self.assertEqual([entry["role"] for entry in transcript], ["assistant", "user", "assistant"])
+        self.assertIn(FAMILY_WELCOME_LINE, transcript[0]["text"])
+
+    def test_a_family_is_never_asked_for_an_email_however_it_answers(self) -> None:
+        # Even "later" or a question opens the account: there is nothing to
+        # collect first, so nothing to keep asking for.
+        self.register(family_registration())
+        result = self.text("What can you actually do?", message_id="wamid.f1")
+
+        self.assertEqual(result["results"][0]["action"], "signup_completed_without_email")
+        self.assertNotIn("email", " ".join(self.replies()).lower())
+        self.assertTrue(self.database.get_user("wa-972507322341@whatsapp.assistyca.com"))
+
+    def test_the_handle_a_family_account_is_keyed_on_is_not_a_way_in(self) -> None:
+        # Nobody has that address, so a code sent to it would reach nobody.
+        self.register(family_registration())
+        self.text("Hi", message_id="wamid.f1")
+
+        request = urllib_request.Request(
+            f"{self.base_url}/api/auth/otp/request",
+            data=json.dumps({"email": "wa-972507322341@whatsapp.assistyca.com"}).encode("utf-8"),
+            method="POST",
+            headers={"Content-Type": "application/json"},
         )
-        self.assertIn("Yes please", [entry["text"] for entry in transcript])
-        self.assertNotIn(
-            "dana@example.com", " ".join(entry["text"] for entry in transcript),
-            "the address they typed is not repeated back into the conversation",
-        )
+        with self.assertRaises(urllib_error.HTTPError) as refused:
+            urllib_request.urlopen(request, timeout=10)
+
+        self.assertEqual(refused.exception.code, 403)
+        body = json.loads(refused.exception.read().decode("utf-8"))
+        self.assertEqual(body["error"], "whatsapp_account")
+        self.assertIn("WhatsApp", body["message"])
+
+    def test_a_business_is_still_asked_for_an_email(self) -> None:
+        # Nothing changes for a business: its mail is half of what it came for.
+        self.register(registration())
+        result = self.text("Yes! Let's do the tile supplier", message_id="wamid.r1")
+
+        self.assertEqual(result["results"][0]["action"], "signup_started")
+        self.assertIn("ask for their email in the same breath", self.model.call_args.kwargs["prompt"])
+        self.assertIsNone(self.database.get_user("wa-972507322341@whatsapp.assistyca.com"))
+        self.assertEqual(self.database.get_user_id_for_whatsapp_number(PHONE), 0)
 
     def test_a_family_that_types_its_name_in_hebrew_is_welcomed_in_hebrew(self) -> None:
         status, payload = self.register(family_registration(name="דנה לוי"))
