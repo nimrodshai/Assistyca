@@ -227,6 +227,15 @@ class LoopContext:
     # name, with the feature they belong to. The model sees them marked
     # unavailable, and a call to one is refused.
     blocked_tools: dict[str, str] = field(default_factory=dict)
+    # Set when the turn is a message in a group. A group is several people, only
+    # one of whom opened the account, so nothing belonging to an account is
+    # readable or writable there: the turn works from what the group itself
+    # said, and from the public web.
+    in_group: bool = False
+    # What the group is, for a turn that happens in one: its name, and who just
+    # spoke. Never anyone's number - the reply goes to a room, and a number read
+    # out in it is read out to everybody.
+    group: dict[str, Any] = field(default_factory=dict)
     # Set when a recurring task is running: its scheduled row id and where
     # its news window starts (the last delivered run). search_news then asks
     # only for that window and holds back anything the task already sent.
@@ -1422,6 +1431,110 @@ def _tool_cancel_scheduled(context: LoopContext, args: dict[str, Any]) -> dict[s
     if status != 200 or not response.get("ok"):
         return _error("internal", "Could not cancel that just now.", can_retry=True)
     return _ok({"cancelled": _describe_scheduled(context, target)})
+
+
+def _tool_create_group_chat(context: LoopContext, args: dict[str, Any]) -> dict[str, Any]:
+    """Open a group with Assistyca in it and hand back the link to share.
+
+    Nobody is added here, and nobody is messaged. WhatsApp has no way to put a
+    person into a group, so the group is opened empty and the person invites
+    whoever they want by passing the link on themselves - which is also the
+    only version of this that is theirs to control: they choose who sees it,
+    and they can stop sharing it.
+    """
+
+    from packages.infrastructure.notification_delivery import resolve_whatsapp_sender_access_token
+    from packages.infrastructure.notification_delivery import resolve_whatsapp_sender_phone_number_id
+    from packages.infrastructure.whatsapp_agent_chat import whatsapp_groups_enabled
+    from packages.infrastructure.whatsapp_api import WHATSAPP_GROUP_PARTICIPANT_LIMIT
+    from packages.infrastructure.whatsapp_api import WHATSAPP_GROUP_SUBJECT_LIMIT
+    from packages.infrastructure.whatsapp_api import WhatsAppConnectionError
+    from packages.infrastructure.whatsapp_api import create_whatsapp_group
+
+    if not whatsapp_groups_enabled():
+        return _error(
+            "unavailable",
+            "Group chats are not switched on for this number yet. Say plainly that this is not something "
+            "you can do yet rather than promising it for a date.",
+        )
+
+    name = str(args.get("name") or "").strip()[:WHATSAPP_GROUP_SUBJECT_LIMIT]
+    if not name:
+        return _error("missing_input", "A group needs a name. Ask them what to call it.")
+
+    access_token = resolve_whatsapp_sender_access_token()
+    phone_number_id = resolve_whatsapp_sender_phone_number_id()
+    if not access_token or not phone_number_id:
+        return _error("unavailable", "Group chats are not switched on for this number yet.")
+
+    try:
+        created = create_whatsapp_group(
+            access_token=access_token,
+            phone_number_id=phone_number_id,
+            subject=name,
+            description=str(args.get("description") or "").strip(),
+        )
+    except (WhatsAppConnectionError, ValueError) as exc:
+        print(f"agent.loop.create_group_chat_failed error={exc!r}", flush=True)
+        return _error(
+            "group_not_created",
+            "WhatsApp would not open the group just now. Say so plainly and offer to try again later.",
+            can_retry=True,
+        )
+
+    group_id = str((created or {}).get("id") or "").strip()
+    invite_link = str((created or {}).get("invite_link") or "").strip()
+    if not group_id or not invite_link:
+        return _error(
+            "group_not_created",
+            "WhatsApp did not return a group to share. Say so plainly and offer to try again later.",
+            can_retry=True,
+        )
+
+    _remember_group_chat(context, group_id=group_id, name=name, invite_link=invite_link)
+    context.links_offered.append(invite_link)
+    context.link_labels[invite_link] = f"Join {name}"
+    context.required_links.append(invite_link)
+    return _ok({
+        "name": name,
+        "inviteLink": invite_link,
+        # Eight seats, and Assistyca is sitting in one of them.
+        "peopleItHolds": WHATSAPP_GROUP_PARTICIPANT_LIMIT - 1,
+        "note": (
+            "The group is open and empty. Give them the link to pass on to whoever should be in it - anyone "
+            "with the link can join, so it is theirs to share and not yours to send on. Say how many people "
+            "it holds. You are in the group and will read what is said there, and you answer when you are "
+            "asked something rather than joining in."
+        ),
+    })
+
+
+def _remember_group_chat(context: LoopContext, *, group_id: str, name: str, invite_link: str) -> None:
+    """Keep the group against the account, so what is said in it has an owner.
+
+    A group message arrives from whoever spoke, not from the account, so the
+    group id is the only thing tying it back. A store that cannot keep it
+    leaves the group working and unowned rather than failing the person's
+    request, which has already happened by this point.
+    """
+
+    database = getattr(context, "database", None)
+    if database is None or not hasattr(database, "update_whatsapp_connection_metadata"):
+        return
+    try:
+        connection = database.get_whatsapp_connection_by_user_id(int(context.user_id or 0))
+        metadata = connection.get("metadata") if isinstance((connection or {}).get("metadata"), dict) else {}
+        kept = [entry for entry in (metadata.get("groups") or []) if isinstance(entry, dict)]
+        kept = [entry for entry in kept if str(entry.get("id") or "") != group_id]
+        kept.append({"id": group_id, "subject": name, "inviteLink": invite_link, "createdAt": datetime.now(timezone.utc).isoformat()})
+        database.update_whatsapp_connection_metadata(
+            user_id=int(context.user_id or 0),
+            metadata_updates={"groups": kept},
+        )
+    except Exception as exc:  # noqa: BLE001 - the group exists either way
+        print(f"agent.loop.create_group_chat_not_remembered error={exc!r}", flush=True)
+
+
 def _coverage_from_tool(raw: Any) -> dict[str, Any]:
     item = raw if isinstance(raw, dict) else {}
     return {
@@ -2748,6 +2861,26 @@ TOOLS: list[ToolSpec] = [
         run=_tool_schedule_task,
     ),
     ToolSpec(
+        name="create_group_chat",
+        description=(
+            "Open a WhatsApp group with you in it and hand the person the link to share. For 'can you make a "
+            "group for us', 'set up a group with the kids', 'I want my sister in on this', and whenever a "
+            "person is arranging something with other people and would plainly rather have them all in one "
+            "place - offer it then, and only create it if they say yes. name is what the group is called, in "
+            "their words. The group is created empty: nobody is added and nobody is messaged, and the link "
+            "goes to the person to pass on themselves. It holds seven people besides you. Not for adding "
+            "someone to a group that already exists, which WhatsApp does not allow in either direction."
+        ),
+        parameters=_params({
+            "name": {"type": "string"},
+            "description": {"type": ["string", "null"]},
+        }),
+        # Nobody is contacted and nothing of theirs is touched: a group with
+        # one member in it, and a link they decide what to do with.
+        side_effect=True,
+        run=_tool_create_group_chat,
+    ),
+    ToolSpec(
         name="show_scheduled",
         description=(
             "List what is set to happen: the person's pending reminders and their standing actions, with when "
@@ -3234,7 +3367,20 @@ _SOURCE_WORDS = {
 }
 
 
-def tool_definitions(tool_context: dict[str, Any] | None, blocked: dict[str, str] | None = None) -> list[dict[str, Any]]:
+# What is left to Assistyca in a group. A group holds several people and only
+# one of them opened the account, so a turn there reads nothing that belongs to
+# an account - no mail, no calendar, no receipts, no lists - and writes nothing
+# to one either. What is left is the conversation in front of it and the public
+# web, which is nobody's private business.
+GROUP_TOOLS = frozenset({"search_web", "search_news", "look_up_property", "exchange_rate"})
+
+
+def tool_definitions(
+    tool_context: dict[str, Any] | None,
+    blocked: dict[str, str] | None = None,
+    *,
+    in_group: bool = False,
+) -> list[dict[str, Any]]:
     """The tools as the model sees them, with what is unavailable marked and why."""
 
     have = connected_sources(tool_context)
@@ -3244,6 +3390,9 @@ def tool_definitions(tool_context: dict[str, Any] | None, blocked: dict[str, str
         why_not = ""
         if missing:
             why_not = f"{_SOURCE_WORDS.get(missing[0], 'a needed account is not connected')}; use connect_link first."
+        if in_group and tool.name not in GROUP_TOOLS:
+            definitions.append(tool.definition(False, GROUP_TOOL_WORDS))
+            continue
         if tool.name in (blocked or {}):
             definitions.append(tool.definition(False, _not_included_words(blocked[tool.name])))
             continue
@@ -3256,6 +3405,29 @@ def _not_included_words(feature: str) -> str:
         f"{feature} is not included in this account. Say so in one calm line and offer what you can do instead; "
         "never offer a sign-in link for it."
     )
+
+
+_GROUP_RULES = (
+    "This message was sent in a WhatsApp group, and your reply goes to everyone in it. CONTEXT.group says "
+    "which group and who just spoke. Write one short answer to the person who asked, in the room they asked "
+    "it in: no greeting, no summary of what everyone said, nothing addressed to the group as a whole unless "
+    "the question was. Do not name or repeat anyone's phone number. You have already decided that this "
+    "message was worth answering, so answer it - but if it turns out you have nothing to add, say nothing "
+    "worth saying in one line rather than filling the room.\n"
+)
+
+
+GROUP_TOOL_WORDS = (
+    "not here. This is a group, and nobody's mail, calendar, receipts or lists are open to it - not even the "
+    "person who set it up. Answer from what has been said in the group, say plainly that you cannot look that "
+    "up here, and leave it to them to ask you in your own chat."
+)
+
+
+def _blocked_words(context: "LoopContext", tool_name: str) -> str:
+    if context.in_group:
+        return GROUP_TOOL_WORDS
+    return _not_included_words(context.blocked_tools.get(tool_name, ""))
 
 
 # -- the loop ------------------------------------------------------------------
@@ -3535,6 +3707,7 @@ def build_loop_context_text(
     trial_ended: bool = False,
     household_block: dict[str, Any] | None = None,
     chat_flow: dict[str, Any] | None = None,
+    group: dict[str, Any] | None = None,
 ) -> str:
     normalized_channel = "whatsapp" if str(channel or "").lower() == "whatsapp" else "portal"
     safe_context = {k: v for k, v in (tool_context or {}).items() if k != "connectLinks"}
@@ -3568,8 +3741,11 @@ def build_loop_context_text(
         context["household"] = household_block
     if chat_flow:
         context["chatFlow"] = chat_flow
+    if group:
+        context["group"] = group
     return (
         f"{_CHANNEL_RULES[normalized_channel]}\n"
+        + (_GROUP_RULES if group else "")
         + (_PHOTO_RULES if attached_photo else "")
         + (_TRIAL_ENDED_RULES if trial_ended else "")
         + ("" if trial_ended else chat_flow_rules(chat_flow))
@@ -3614,7 +3790,7 @@ def run_agent_loop(
         # model's only job is to report what happened.
         confirmed_action = _execute_confirmed(context, confirmed_call, tool_calls, completed)
 
-    tools = tool_definitions(context.tool_context, context.blocked_tools)
+    tools = tool_definitions(context.tool_context, context.blocked_tools, in_group=context.in_group)
     if trial_ended:
         tools = [definition for definition in tools if definition["name"] in ACCOUNT_RIGHTS_TOOLS]
     # The lists page is in the context from the start, not only inside a
@@ -3640,6 +3816,7 @@ def run_agent_loop(
         trial_ended=trial_ended,
         household_block=household_block,
         chat_flow=None if trial_ended else chat_flow,
+        group=context.group if context.in_group else None,
     )
     input_items: list[dict[str, Any]] = build_agent_turn_input(context_text, photo) or [
         {"role": "user", "content": context_text},
@@ -3678,8 +3855,10 @@ def run_agent_loop(
                     "This turn has used all the lookups it may run. Write the reply from what you have and "
                     "offer to continue in the next message.",
                 )
+            elif context.in_group and tool.name not in GROUP_TOOLS:
+                outcome = _error("not_here", GROUP_TOOL_WORDS)
             elif tool.name in context.blocked_tools:
-                outcome = _error("not_included", _not_included_words(context.blocked_tools[tool.name]))
+                outcome = _error("not_included", _blocked_words(context, tool.name))
             elif tool.confirm:
                 problem = _run_preflight(tool, context, args)
                 if problem is not None:
@@ -3764,9 +3943,11 @@ def _execute(context: LoopContext, tool: ToolSpec, args: dict[str, Any], tool_ca
     started = time.monotonic()
     have = connected_sources(context.tool_context)
     missing = [source for source in tool.requires if source not in have]
-    if tool.name in context.blocked_tools:
+    if context.in_group and tool.name not in GROUP_TOOLS:
+        outcome = _error("not_here", GROUP_TOOL_WORDS)
+    elif tool.name in context.blocked_tools:
         # Switched off after the question was asked: the yes does not bring it back.
-        outcome = _error("not_included", _not_included_words(context.blocked_tools[tool.name]))
+        outcome = _error("not_included", _blocked_words(context, tool.name))
     elif missing:
         context.blocked_on_connection = context.blocked_on_connection or missing[0]
         outcome = _error(
