@@ -741,8 +741,16 @@
         margin-bottom: 1.4rem;
       }
 
+      /* The last screen brings its own robot, and two of them in one picture
+         is one too many: the stones and leaves crowd him and leave the words
+         sitting on a face. Plain paper here, and the photograph stays with
+         the questions. */
+      html[data-registered] body::before {
+        background: var(--bg);
+      }
+
       /* No card around the last screen: the robot and the buttons stand on
-         the photograph, in the middle of what is left under the wordmark. */
+         the paper, in the middle of what is left under the wordmark. */
       html[data-registered] .page {
         display: flex;
         flex-direction: column;

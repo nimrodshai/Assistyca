@@ -285,6 +285,8 @@ from packages.infrastructure.whatsapp_agent_chat import held_for_seconds
 from packages.infrastructure.whatsapp_agent_chat import build_whatsapp_claim_link
 from packages.infrastructure.whatsapp_agent_chat import extract_whatsapp_claim_code
 from packages.infrastructure.whatsapp_agent_chat import find_email_in_text
+from packages.infrastructure.whatsapp_agent_chat import is_whatsapp_account_email
+from packages.infrastructure.whatsapp_agent_chat import whatsapp_account_email
 from packages.infrastructure.whatsapp_agent_chat import generate_whatsapp_claim_code
 from packages.infrastructure.whatsapp_agent_chat import normalize_whatsapp_number
 from packages.infrastructure.whatsapp_agent_chat import resolve_assistyca_display_number
@@ -7031,6 +7033,17 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 "ok": False,
                 "error": "invalid_email",
                 "message": "Enter a valid email address.",
+            })
+            return
+
+        if is_whatsapp_account_email(email):
+            # Not an address anyone has: it is the handle an account opened on
+            # WhatsApp is keyed on, so no code could ever arrive. Say where
+            # that account is answered from instead of sending mail nowhere.
+            json_response(self, HTTPStatus.FORBIDDEN, {
+                "ok": False,
+                "error": "whatsapp_account",
+                "message": "This account is used from WhatsApp. Message Assistyca there and it will open what you need.",
             })
             return
 
@@ -14696,6 +14709,20 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         self.database.append_whatsapp_signup_message(wa_id=sender_wa_id, role="user", text=message_text)
 
         email = find_email_in_text(message_text)
+        if (
+            not is_valid_email(email)
+            and not erasure_pending
+            and not erased_at
+            and normalize_registration_kind(registration.get("kind")) == "family"
+        ):
+            # A family is never asked for an email address: their account
+            # opens on their number, here, on the first thing they say back.
+            return self._open_family_account_without_email(
+                sender_wa_id=sender_wa_id,
+                sender_name=sender_name,
+                registration=registration,
+                transcript=transcript,
+            )
         if not is_valid_email(email):
             # This is the conversation, not a form: answer what they said,
             # and steer to the email with a firmer hand each turn - unless
@@ -14757,39 +14784,9 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 links=sign_in_link_buttons(links),
             )
 
-        try:
-            registered_name = normalize_text(registration.get("name"))
-            registered_business = normalize_text(registration.get("business"))
-            registered_kind = normalize_registration_kind(registration.get("kind"))
-            self.database.register_user(
-                email,
-                display_name=registered_name or sender_name,
-                notes="Registered on the web, then signed up over WhatsApp." if registration else "Signed up over WhatsApp.",
-            )
-            self.database.set_user_trial(email, trial_days=resolve_default_trial_days(), start_now=True)
-            self.database.update_user_account_type(email, account_type=registered_kind)
-            user = self.database.get_user(email) or {}
-            self.database.link_user_whatsapp_number(
-                user_id=int(user.get("id") or 0),
-                wa_id=sender_wa_id,
-                label=sender_name,
-            )
-            self.database.complete_whatsapp_signup(wa_id=sender_wa_id, user_id=int(user.get("id") or 0))
-            if registration:
-                # What they typed on the page is what the agent knows from the
-                # first turn: the same facts it would otherwise have to be told.
-                # businessSummary is the profile field the agent reads for
-                # context whoever the person is; a family's line goes in the
-                # same place, under a name that predates families.
-                self.database.update_user_profile(email, profile={"businessSummary": registered_business})
-                for key, fact in registration_facts(
-                    name=registered_name, business=registered_business, kind=registered_kind,
-                ):
-                    # Who they are and what the account is for never give way
-                    # to newer facts.
-                    self.database.save_account_fact(user_id=int(user.get("id") or 0), key=key, fact=fact, pinned=True)
-        except (ValueError, KeyError, sqlite3.Error) as exc:
-            print(f"WhatsApp signup could not create the account: {exc}", flush=True)
+        if not self._open_whatsapp_account(
+            email=email, sender_wa_id=sender_wa_id, sender_name=sender_name, registration=registration,
+        ):
             return self._finish_whatsapp_signup_step(
                 sender_wa_id,
                 "signup_failed",
@@ -14938,6 +14935,135 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             flush=True,
         )
         return self._finish_whatsapp_signup_step(sender_wa_id, "signup_erased", SIGNUP_ERASED_TEXT)
+
+    def _open_whatsapp_account(
+        self,
+        *,
+        email: str,
+        sender_wa_id: str,
+        sender_name: str,
+        registration: dict[str, Any] | None = None,
+    ) -> int:
+        """Open the account, link the phone to it, and hand it what it knows.
+
+        The address is either the one they gave or the handle made from their
+        number; everything after that is the same either way. Returns the new
+        user id, or 0 when nothing could be created - the caller says so in
+        the conversation, since there is nobody to say it to anywhere else.
+        """
+
+        registration = registration if isinstance(registration, dict) else {}
+        try:
+            registered_name = normalize_text(registration.get("name"))
+            registered_business = normalize_text(registration.get("business"))
+            registered_kind = normalize_registration_kind(registration.get("kind"))
+            # A phone whose account is already here is coming back to it - it
+            # registered again, or its number was unlinked and is being linked
+            # afresh. That is the same account, so it keeps the trial it
+            # already had rather than starting another one.
+            returning = self.database.get_user(email) is not None
+            self.database.register_user(
+                email,
+                display_name=registered_name or sender_name,
+                notes="Registered on the web, then signed up over WhatsApp." if registration else "Signed up over WhatsApp.",
+            )
+            if not returning:
+                self.database.set_user_trial(email, trial_days=resolve_default_trial_days(), start_now=True)
+            self.database.update_user_account_type(email, account_type=registered_kind)
+            user = self.database.get_user(email) or {}
+            user_id = int(user.get("id") or 0)
+            self.database.link_user_whatsapp_number(
+                user_id=user_id,
+                wa_id=sender_wa_id,
+                label=sender_name,
+            )
+            self.database.complete_whatsapp_signup(wa_id=sender_wa_id, user_id=user_id)
+            if registration:
+                # What they typed on the page is what the agent knows from the
+                # first turn: the same facts it would otherwise have to be told.
+                # businessSummary is the profile field the agent reads for
+                # context whoever the person is; a family's line goes in the
+                # same place, under a name that predates families.
+                self.database.update_user_profile(email, profile={"businessSummary": registered_business})
+                for key, fact in registration_facts(
+                    name=registered_name, business=registered_business, kind=registered_kind,
+                ):
+                    # Who they are and what the account is for never give way
+                    # to newer facts.
+                    self.database.save_account_fact(user_id=user_id, key=key, fact=fact, pinned=True)
+        except (ValueError, KeyError, sqlite3.Error) as exc:
+            print(f"WhatsApp signup could not create the account: {exc}", flush=True)
+            return 0
+        return user_id
+
+    def _open_family_account_without_email(
+        self,
+        *,
+        sender_wa_id: str,
+        sender_name: str,
+        registration: dict[str, Any],
+        transcript: list[dict[str, str]] | None = None,
+    ) -> dict[str, Any]:
+        """Open a family's account on their first reply, and get out of the way.
+
+        A family registered on the page and was written to; this is them
+        answering. There is nothing to ask them for - their week is looked
+        after from their phone, not from a mailbox - so the account opens
+        here, quietly, and this same message is answered by the assistant
+        itself rather than by a concierge who can only collect an address.
+        That matters for the first message in particular: it is often already
+        the family ("my wife is Stav, my kids are..."), and the assistant is
+        the one that can keep what it says.
+        """
+
+        user_id = self._open_whatsapp_account(
+            email=whatsapp_account_email(sender_wa_id),
+            sender_wa_id=sender_wa_id,
+            sender_name=sender_name,
+            registration=registration,
+        )
+        if not user_id:
+            return self._finish_whatsapp_signup_step(
+                sender_wa_id,
+                "signup_failed",
+                "Something went wrong setting that up. Please try again in a moment.",
+            )
+        # Everything already said carries over: the welcome the registration
+        # sent is the first thing in this conversation, and the assistant has
+        # to read it to know what it has already told them.
+        try:
+            for earlier in list(transcript or [])[-8:]:
+                earlier_text = normalize_text(earlier.get("text") if isinstance(earlier, dict) else "")
+                if earlier_text:
+                    self.database.save_whatsapp_agent_message(
+                        user_id=user_id,
+                        role=str((earlier or {}).get("role") or "user"),
+                        text=earlier_text,
+                    )
+        except (ValueError, sqlite3.Error) as exc:
+            print(f"WhatsApp signup welcome could not be kept: {exc}", flush=True)
+        print(
+            json.dumps(
+                {
+                    "event": "whatsapp_signup_completed",
+                    "senderWaId": self._mask_whatsapp_log_identifier(sender_wa_id),
+                    "trialDays": resolve_default_trial_days(),
+                    "withoutEmail": True,
+                },
+                ensure_ascii=True,
+                sort_keys=True,
+            ),
+            flush=True,
+        )
+        # No reply from here: open_conversation tells the webhook to route this
+        # message on to the account that now exists, so what they wrote is
+        # answered once, by the assistant.
+        return {
+            "type": "signup",
+            "action": "signup_completed_without_email",
+            "open_conversation": True,
+            "user_id": user_id,
+        }
 
     def _finish_whatsapp_signup_step(
         self,
@@ -18172,19 +18298,32 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 signup_result = self._handle_whatsapp_signup(phone_number_id, event)
                 if signup_result is not None:
                     results.append(signup_result)
+                    if signup_result.get("open_conversation"):
+                        # The account opened without asking them for anything,
+                        # so this message is not a step in a signup: it is the
+                        # first thing said to the assistant, and it is answered
+                        # by the assistant, now, not by a welcome that talks
+                        # over it.
+                        connection, route_source = self._resolve_whatsapp_connection_for_webhook(
+                            phone_number_id,
+                            owner_wa_id=normalize_text(event.get("sender_wa_id")),
+                            group_id=normalize_text(event.get("group_id")),
+                        )
+                    if not connection:
+                        continue
+                else:
+                    self._log_whatsapp_route_failure(
+                        phone_number_id,
+                        normalize_text(event.get("sender_wa_id")),
+                    )
+                    results.append({
+                        "type": "error",
+                        "thread_id": event.get("thread_id", ""),
+                        "sender_wa_id": event.get("sender_wa_id", ""),
+                        "phone_number_id": phone_number_id,
+                        "error": "No portal workspace is connected to this phone number ID.",
+                    })
                     continue
-                self._log_whatsapp_route_failure(
-                    phone_number_id,
-                    normalize_text(event.get("sender_wa_id")),
-                )
-                results.append({
-                    "type": "error",
-                    "thread_id": event.get("thread_id", ""),
-                    "sender_wa_id": event.get("sender_wa_id", ""),
-                    "phone_number_id": phone_number_id,
-                    "error": "No portal workspace is connected to this phone number ID.",
-                })
-                continue
 
             service = self._build_whatsapp_service(connection)
             routed_user_ids.add(int(connection.get("userId") or 0))

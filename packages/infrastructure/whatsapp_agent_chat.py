@@ -387,6 +387,29 @@ def find_email_in_text(text: Any) -> str:
     return normalize_email(match.group(0).rstrip(".")) if match else ""
 
 
+# A family does not open an account with an email address. Nothing that makes
+# their week lighter lives in a mailbox, and asking for one in the middle of
+# getting to know them turns a conversation into a form. The account still
+# needs a handle to be keyed on, so it gets one made from the phone that is
+# already its identity. It is never shown to them, never written to, and never
+# signed in with; a real address only ever arrives later, and only if they
+# connect one themselves.
+WHATSAPP_ACCOUNT_EMAIL_DOMAIN = "whatsapp.assistyca.com"
+
+
+def whatsapp_account_email(wa_id: Any) -> str:
+    """The account handle for a phone that gave no address, or "" without one."""
+
+    digits = re.sub(r"\D", "", str(wa_id or ""))
+    return f"wa-{digits}@{WHATSAPP_ACCOUNT_EMAIL_DOMAIN}" if digits else ""
+
+
+def is_whatsapp_account_email(email: Any) -> bool:
+    """True for a handle this house made, which is not an address anyone has."""
+
+    return normalize_email(email).endswith(f"@{WHATSAPP_ACCOUNT_EMAIL_DOMAIN}")
+
+
 _GOOGLE_MAIL_DOMAINS = {"gmail.com", "googlemail.com"}
 _MICROSOFT_MAIL_PREFIXES = ("outlook.", "hotmail.", "live.", "msn.")
 
@@ -3111,6 +3134,9 @@ __all__ = [
     "build_calendar_choice_text",
     "color_dot",
     "looks_like_a_question",
+    "is_whatsapp_account_email",
+    "whatsapp_account_email",
+    "WHATSAPP_ACCOUNT_EMAIL_DOMAIN",
     "parse_calendar_choice",
     "parse_yes_no",
     "connections_for_disconnect",
