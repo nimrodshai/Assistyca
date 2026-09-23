@@ -1792,13 +1792,27 @@ def _household_today(context: LoopContext) -> date:
         return datetime.now(timezone.utc).date()
 
 
+def week_scope(context: LoopContext) -> str:
+    """Whose week this turn is about: the account's own, or the group's.
+
+    In a group the people talking are not all the account holder, so what
+    they tell the assistant there is the group's and is kept under the
+    group's id. Nothing of the account's own week is read into a group, and
+    nothing said in a group is read back into the account's.
+    """
+
+    return str((context.group or {}).get("id") or "") if context.in_group else ""
+
+
 def _household_payload(context: LoopContext) -> dict[str, Any]:
     database = context.database
+    scope = week_scope(context)
     return household.describe_household(
-        profile=database.get_household_profile(user_id=context.user_id),
-        members=database.list_household_members(user_id=context.user_id),
-        activities=database.list_household_activities(user_id=context.user_id),
+        profile=None if scope else database.get_household_profile(user_id=context.user_id),
+        members=database.list_household_members(user_id=context.user_id, group_id=scope),
+        activities=database.list_household_activities(user_id=context.user_id, group_id=scope),
         today=_household_today(context),
+        group_name=str((context.group or {}).get("name") or "this group") if scope else "",
     )
 
 
@@ -1823,6 +1837,7 @@ def _tool_save_family_member(context: LoopContext, args: dict[str, Any]) -> dict
             notes=_optional_text(args, "notes"),
             previous_name=_optional_text(args, "previous_name"),
             birthday=_optional_text(args, "birthday"),
+            group_id=week_scope(context),
         )
     except ValueError as exc:
         return _error("choice_required", str(exc))
@@ -1838,7 +1853,8 @@ def _tool_start_birthday_list(context: LoopContext, args: dict[str, Any]) -> dic
     name = str(args.get("name") or "").strip()
     key = household.name_key(name)
     member = next(
-        (entry for entry in context.database.list_household_members(user_id=context.user_id) if household.name_key(entry.get("name")) == key),
+        (entry for entry in context.database.list_household_members(user_id=context.user_id)
+         if household.name_key(entry.get("name")) == key),
         None,
     )
     if member is None:
@@ -1879,11 +1895,16 @@ def _tool_start_birthday_list(context: LoopContext, args: dict[str, Any]) -> dic
 def _tool_remove_family_member(context: LoopContext, args: dict[str, Any]) -> dict[str, Any]:
     name = str(args.get("name") or "").strip()
     try:
-        removed = context.database.remove_household_member(user_id=context.user_id, name=name)
+        removed = context.database.remove_household_member(
+            user_id=context.user_id, name=name, group_id=week_scope(context),
+        )
     except Exception as exc:  # noqa: BLE001
         return _error("internal", f"That could not be removed: {exc}", can_retry=True)
     if not removed:
-        names = [member["name"] for member in context.database.list_household_members(user_id=context.user_id)]
+        names = [
+            member["name"]
+            for member in context.database.list_household_members(user_id=context.user_id, group_id=week_scope(context))
+        ]
         return _error("not_found", f"Nobody called {name!r} is in the family.", family=names)
     return _ok({"removed": name})
 
@@ -1909,6 +1930,7 @@ def _tool_save_week_activity(context: LoopContext, args: dict[str, Any]) -> dict
             drop_off_by=_optional_text(args, "drop_off_by"),
             pick_up_by=_optional_text(args, "pick_up_by"),
             notes=_optional_text(args, "notes"),
+            group_id=week_scope(context),
         )
     except LookupError as exc:
         return _error("not_found", str(exc))
@@ -1929,7 +1951,9 @@ def _tool_remove_week_activity(context: LoopContext, args: dict[str, Any]) -> di
         activity_id = int(args.get("id"))
     except (TypeError, ValueError):
         return _error("choice_required", "id is the number of an activity from household.week.")
-    if not context.database.remove_household_activity(user_id=context.user_id, activity_id=activity_id):
+    if not context.database.remove_household_activity(
+        user_id=context.user_id, activity_id=activity_id, group_id=week_scope(context),
+    ):
         return _error("not_found", f"There is no activity {activity_id} in this week.")
     return _ok({"removed": activity_id})
 
@@ -3440,7 +3464,14 @@ _SOURCE_WORDS = {
 # an account - no mail, no calendar, no receipts, no lists - and writes nothing
 # to one either. What is left is the conversation in front of it and the public
 # web, which is nobody's private business.
-GROUP_TOOLS = frozenset({"search_web", "search_news", "look_up_property", "exchange_rate"})
+GROUP_TOOLS = frozenset({
+    "search_web", "search_news", "look_up_property", "exchange_rate",
+    # The group's own week: who the children are, what is on each day, and
+    # who is taking and collecting them. Kept under the group's id, from what
+    # the people in the group say - never the account holder's own week.
+    "save_family_member", "remove_family_member", "save_week_activity", "remove_week_activity",
+    "show_family_week",
+})
 
 
 def tool_availability(
@@ -3504,6 +3535,14 @@ _GROUP_RULES = (
     "the question was. Do not name or repeat anyone's phone number. Nobody's mail, calendar, receipts or lists are open to a group - not even the ones belonging to the person who set it up - so a question that would need them is answered from what has been said here, with one plain line that you cannot look it up in a group and that they can ask you in your own chat. You have already decided that this "
     "message was worth answering, so answer it - but if it turns out you have nothing to add, say nothing "
     "worth saying in one line rather than filling the room.\n"
+    "The one thing you do keep here is this group's own week, built from what the people in this group tell "
+    "you and belonging to them together: the children, what is on which day and at what time, and who is "
+    "taking and who is collecting. CONTEXT.household is that week and nobody else's - not the week of "
+    "whoever opened the group. Save what they say the moment they say it with save_family_member and "
+    "save_week_activity, and when somebody in the room says they will take a run, put their name down for "
+    "it there and then and say so in a line. What household.weekGaps lists is what is still open; raise one "
+    "at a time, when there is a reason to, and ask the room rather than any one person: a run with nobody "
+    "down for it is the thing this group is for. Never say a name is on a run unless it is saved.\n"
 )
 
 

@@ -117,7 +117,13 @@ def week_gaps(household_block: dict[str, Any] | None) -> list[dict[str, Any]]:
 
     if not isinstance(household_block, dict):
         return []
-    return week_setup_gaps(household_block.get("members"), household_block.get("week"))[:MAX_WEEK_GAPS_SHOWN]
+    if "weekReady" in household_block:
+        # The block worked them out already; reading them back keeps the two
+        # from ever disagreeing about whether the week is ready.
+        gaps = [gap for gap in (household_block.get("weekGaps") or []) if isinstance(gap, dict)]
+    else:
+        gaps = week_setup_gaps(household_block.get("members"), household_block.get("week"))
+    return gaps[:MAX_WEEK_GAPS_SHOWN]
 
 
 def _status(value: Any) -> str:

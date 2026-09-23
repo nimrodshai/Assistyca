@@ -494,6 +494,11 @@ ON household_profiles(share_token) WHERE share_token <> '';
 CREATE TABLE IF NOT EXISTS household_members (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER NOT NULL,
+    -- Empty for the account's own family. A group's id when the row belongs
+    -- to a group chat instead: what the people in a group told the assistant
+    -- there is the group's, kept apart from the account that opened it and
+    -- never read into the other's conversation.
+    group_id TEXT NOT NULL DEFAULT '',
     name TEXT NOT NULL,
     name_key TEXT NOT NULL,
     role TEXT NOT NULL DEFAULT 'other',
@@ -510,8 +515,8 @@ CREATE TABLE IF NOT EXISTS household_members (
     FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
-CREATE UNIQUE INDEX IF NOT EXISTS idx_household_members_name
-ON household_members(user_id, name_key);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_household_members_scope_name
+ON household_members(user_id, group_id, name_key);
 
 -- One row per thing that happens every week: kindergarten Sunday to
 -- Thursday, football on Tuesdays. who is the names it is for; days are
@@ -520,6 +525,9 @@ ON household_members(user_id, name_key);
 CREATE TABLE IF NOT EXISTS household_activities (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER NOT NULL,
+    -- As on household_members: empty for the account's own week, a group's
+    -- id for the week a group keeps between its parents.
+    group_id TEXT NOT NULL DEFAULT '',
     title TEXT NOT NULL,
     who_json TEXT NOT NULL DEFAULT '[]',
     days TEXT NOT NULL DEFAULT '',
@@ -535,7 +543,7 @@ CREATE TABLE IF NOT EXISTS household_activities (
 );
 
 CREATE INDEX IF NOT EXISTS idx_household_activities_user
-ON household_activities(user_id, start_time);
+ON household_activities(user_id, group_id, start_time);
 
 -- Each nudge about the week once: this morning's plan, tomorrow's gaps, a
 -- drive. The row is the claim, so two polls never send the same one.
@@ -1654,6 +1662,19 @@ class PortalDatabase:
         member_columns = {row["name"] for row in conn.execute("PRAGMA table_info(household_members)").fetchall()}
         if "birthday" not in member_columns:
             conn.execute("ALTER TABLE household_members ADD COLUMN birthday TEXT NOT NULL DEFAULT ''")
+        if "group_id" not in member_columns:
+            # Everything kept before groups existed is the account's own, so
+            # it keeps the empty scope. The old unique index was on the name
+            # alone, which would now stop two groups knowing a Dana each.
+            conn.execute("ALTER TABLE household_members ADD COLUMN group_id TEXT NOT NULL DEFAULT ''")
+            conn.execute("DROP INDEX IF EXISTS idx_household_members_name")
+            conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_household_members_scope_name "
+                "ON household_members(user_id, group_id, name_key)"
+            )
+        activity_columns = {row["name"] for row in conn.execute("PRAGMA table_info(household_activities)").fetchall()}
+        if "group_id" not in activity_columns:
+            conn.execute("ALTER TABLE household_activities ADD COLUMN group_id TEXT NOT NULL DEFAULT ''")
         profile_columns = {row["name"] for row in conn.execute("PRAGMA table_info(household_profiles)").fetchall()}
         if "connect_offer" not in profile_columns:
             conn.execute("ALTER TABLE household_profiles ADD COLUMN connect_offer TEXT NOT NULL DEFAULT 'not_started'")
@@ -9771,19 +9792,22 @@ class PortalDatabase:
             "updatedAt": str(row["updated_at"] or ""),
         }
 
-    def list_household_members(self, *, user_id: int) -> list[dict[str, Any]]:
+    def list_household_members(self, *, user_id: int, group_id: str = "") -> list[dict[str, Any]]:
         """Partner first, then the children, then anyone else, each in the
-        order they were first told about."""
+        order they were first told about.
+
+        group_id picks which week this is: the account's own by default, or a
+        group's when the asking happened in one."""
 
         if int(user_id or 0) <= 0:
             return []
         with self._connection() as conn:
             rows = conn.execute(
                 """
-                SELECT * FROM household_members WHERE user_id = ?
+                SELECT * FROM household_members WHERE user_id = ? AND group_id = ?
                 ORDER BY CASE role WHEN 'partner' THEN 0 WHEN 'child' THEN 1 ELSE 2 END, id
                 """,
-                (int(user_id),),
+                (int(user_id), normalize_text(group_id)),
             ).fetchall()
         return [member for member in (self._household_member_row(row) for row in rows) if member]
 
@@ -9800,6 +9824,7 @@ class PortalDatabase:
         notes: str | None = None,
         previous_name: str | None = None,
         birthday: str | None = None,
+        group_id: str = "",
     ) -> dict[str, Any]:
         """Add someone, or tell us more about someone already here.
 
@@ -9820,26 +9845,29 @@ class PortalDatabase:
         if birthday is not None and normalize_text(birthday) and not household.normalize_birthday(birthday):
             raise ValueError(f"{normalize_text(birthday)!r} is not a birthday; use YYYY-MM-DD, or MM-DD without the year.")
         now = now_iso()
+        scope = normalize_text(group_id)
         with self._connection() as conn:
             existing = conn.execute(
-                "SELECT * FROM household_members WHERE user_id = ? AND name_key = ?", (int(user_id), lookup)
+                "SELECT * FROM household_members WHERE user_id = ? AND group_id = ? AND name_key = ?",
+                (int(user_id), scope, lookup),
             ).fetchone()
             if existing is None:
                 if lookup != key:
                     raise ValueError(f"Nobody called {normalize_text(previous_name)!r} is in the family yet.")
                 count = int(conn.execute(
-                    "SELECT COUNT(*) FROM household_members WHERE user_id = ?", (int(user_id),)
+                    "SELECT COUNT(*) FROM household_members WHERE user_id = ? AND group_id = ?",
+                    (int(user_id), scope),
                 ).fetchone()[0] or 0)
                 if count >= household.MAX_MEMBERS:
                     raise ValueError("The family already has as many people as it can keep.")
                 conn.execute(
                     """
                     INSERT INTO household_members
-                        (user_id, name, name_key, role, age, age_noted_on, birthday, school, email, phone, notes, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        (user_id, group_id, name, name_key, role, age, age_noted_on, birthday, school, email, phone, notes, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
-                        int(user_id), display, key, household.normalize_role(role),
+                        int(user_id), scope, display, key, household.normalize_role(role),
                         int(age) if age is not None else None, now[:10] if age is not None else "",
                         household.normalize_birthday(birthday),
                         household.clean(school), household.normalize_email_address(email),
@@ -9849,8 +9877,8 @@ class PortalDatabase:
             else:
                 if lookup != key:
                     clash = conn.execute(
-                        "SELECT id FROM household_members WHERE user_id = ? AND name_key = ? AND id <> ?",
-                        (int(user_id), key, int(existing["id"])),
+                        "SELECT id FROM household_members WHERE user_id = ? AND group_id = ? AND name_key = ? AND id <> ?",
+                        (int(user_id), scope, key, int(existing["id"])),
                     ).fetchone()
                     if clash is not None:
                         raise ValueError(f"Someone called {display!r} is already in the family.")
@@ -9879,17 +9907,19 @@ class PortalDatabase:
                     (*values, now, int(existing["id"])),
                 )
             row = conn.execute(
-                "SELECT * FROM household_members WHERE user_id = ? AND name_key = ?", (int(user_id), key)
+                "SELECT * FROM household_members WHERE user_id = ? AND group_id = ? AND name_key = ?",
+                (int(user_id), scope, key),
             ).fetchone()
         return self._household_member_row(row) or {}
 
-    def remove_household_member(self, *, user_id: int, name: str) -> bool:
+    def remove_household_member(self, *, user_id: int, name: str, group_id: str = "") -> bool:
         key = household.name_key(name)
         if int(user_id or 0) <= 0 or not key:
             return False
         with self._connection() as conn:
             cursor = conn.execute(
-                "DELETE FROM household_members WHERE user_id = ? AND name_key = ?", (int(user_id), key)
+                "DELETE FROM household_members WHERE user_id = ? AND group_id = ? AND name_key = ?",
+                (int(user_id), normalize_text(group_id), key),
             )
         return cursor.rowcount > 0
 
@@ -9916,20 +9946,22 @@ class PortalDatabase:
             "updatedAt": str(row["updated_at"] or ""),
         }
 
-    def list_household_activities(self, *, user_id: int) -> list[dict[str, Any]]:
+    def list_household_activities(self, *, user_id: int, group_id: str = "") -> list[dict[str, Any]]:
         if int(user_id or 0) <= 0:
             return []
         with self._connection() as conn:
             rows = conn.execute(
-                "SELECT * FROM household_activities WHERE user_id = ? ORDER BY start_time = '', start_time, id",
-                (int(user_id),),
+                "SELECT * FROM household_activities WHERE user_id = ? AND group_id = ? "
+                "ORDER BY start_time = '', start_time, id",
+                (int(user_id), normalize_text(group_id)),
             ).fetchall()
         return [activity for activity in (self._household_activity_row(row) for row in rows) if activity]
 
-    def get_household_activity(self, *, user_id: int, activity_id: int) -> dict[str, Any] | None:
+    def get_household_activity(self, *, user_id: int, activity_id: int, group_id: str = "") -> dict[str, Any] | None:
         with self._connection() as conn:
             row = conn.execute(
-                "SELECT * FROM household_activities WHERE id = ? AND user_id = ?", (int(activity_id), int(user_id))
+                "SELECT * FROM household_activities WHERE id = ? AND user_id = ? AND group_id = ?",
+                (int(activity_id), int(user_id), normalize_text(group_id)),
             ).fetchone()
         return self._household_activity_row(row)
 
@@ -9947,6 +9979,7 @@ class PortalDatabase:
         drop_off_by: str | None = None,
         pick_up_by: str | None = None,
         notes: str | None = None,
+        group_id: str = "",
     ) -> dict[str, Any]:
         """Add a weekly activity, or change one by its id. None keeps a value;
         an empty string clears it. A new one needs a title and a day."""
@@ -9978,24 +10011,27 @@ class PortalDatabase:
             if value is not None:
                 fields[column] = household.clean(value)
         now = now_iso()
+        scope = normalize_text(group_id)
         with self._connection() as conn:
             if activity_id is None:
                 if not fields.get("title") or not fields.get("days"):
                     raise ValueError("A new activity needs a title and at least one day of the week.")
                 count = int(conn.execute(
-                    "SELECT COUNT(*) FROM household_activities WHERE user_id = ?", (int(user_id),)
+                    "SELECT COUNT(*) FROM household_activities WHERE user_id = ? AND group_id = ?",
+                    (int(user_id), scope),
                 ).fetchone()[0] or 0)
                 if count >= household.MAX_ACTIVITIES:
                     raise ValueError("The week already has as many activities as it can keep.")
-                columns = ["user_id", *fields.keys(), "created_at", "updated_at"]
+                columns = ["user_id", "group_id", *fields.keys(), "created_at", "updated_at"]
                 cursor = conn.execute(
                     f"INSERT INTO household_activities ({', '.join(columns)}) VALUES ({', '.join('?' for _ in columns)})",
-                    (int(user_id), *fields.values(), now, now),
+                    (int(user_id), scope, *fields.values(), now, now),
                 )
                 activity_id = int(cursor.lastrowid or 0)
             else:
                 exists = conn.execute(
-                    "SELECT id FROM household_activities WHERE id = ? AND user_id = ?", (int(activity_id), int(user_id))
+                    "SELECT id FROM household_activities WHERE id = ? AND user_id = ? AND group_id = ?",
+                    (int(activity_id), int(user_id), scope),
                 ).fetchone()
                 if exists is None:
                     raise LookupError(f"There is no activity {activity_id} in this week.")
@@ -10015,14 +10051,27 @@ class PortalDatabase:
         with self._connection() as conn:
             rows = conn.execute(
                 """
-                SELECT DISTINCT user_id FROM household_activities
+                SELECT DISTINCT user_id FROM household_activities WHERE group_id = ''
                 UNION
-                SELECT DISTINCT user_id FROM household_members WHERE birthday <> ''
+                SELECT DISTINCT user_id FROM household_members WHERE group_id = '' AND birthday <> ''
                 UNION
                 SELECT user_id FROM household_profiles WHERE getting_to_know = 'postponed' AND ask_again_on <> ''
                 """
             ).fetchall()
         return sorted(int(row["user_id"]) for row in rows)
+
+    def list_household_nudge_groups(self) -> list[tuple[int, str]]:
+        """The groups that keep a week, each with the account that owns it.
+
+        A group's week is nudged in the group, so the sweep has to find it by
+        its own id rather than by whoever opened it.
+        """
+
+        with self._connection() as conn:
+            rows = conn.execute(
+                "SELECT DISTINCT user_id, group_id FROM household_activities WHERE group_id <> ''"
+            ).fetchall()
+        return sorted((int(row["user_id"]), str(row["group_id"])) for row in rows)
 
     def claim_household_nudge(self, *, user_id: int, nudge_key: str) -> bool:
         """True the first time a nudge is claimed, False ever after. Claims
@@ -10039,12 +10088,13 @@ class PortalDatabase:
             )
         return cursor.rowcount > 0
 
-    def remove_household_activity(self, *, user_id: int, activity_id: int) -> bool:
+    def remove_household_activity(self, *, user_id: int, activity_id: int, group_id: str = "") -> bool:
         if int(user_id or 0) <= 0:
             return False
         with self._connection() as conn:
             cursor = conn.execute(
-                "DELETE FROM household_activities WHERE id = ? AND user_id = ?", (int(activity_id), int(user_id))
+                "DELETE FROM household_activities WHERE id = ? AND user_id = ? AND group_id = ?",
+                (int(activity_id), int(user_id), normalize_text(group_id)),
             )
         return cursor.rowcount > 0
 

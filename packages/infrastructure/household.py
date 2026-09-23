@@ -315,16 +315,27 @@ def describe_household(
     members: list[dict[str, Any]],
     activities: list[dict[str, Any]],
     today: date,
+    group_name: str = "",
 ) -> dict[str, Any]:
-    """The family as the assistant reads it on every turn."""
+    """The family as the assistant reads it on every turn.
+
+    group_name makes it a group's week rather than an account's: the same
+    people and the same days, with nothing of the account on it - no kind of
+    account and no getting to know, because a group is not an account and
+    what it keeps belongs to everyone in the room.
+    """
 
     profile = profile or {}
-    return {
+    described: dict[str, Any] = {} if group_name else {
         "accountKind": normalize_account_kind(profile.get("accountKind")),
         "gettingToKnow": {
             "status": clean(profile.get("gettingToKnow")) or "not_started",
             "askAgainOn": clean(profile.get("askAgainOn")) or None,
         },
+    }
+    if group_name:
+        described["forGroup"] = clean(group_name, MAX_NAME_LENGTH)
+    described.update({
         "members": [
             {
                 key: value
@@ -363,7 +374,12 @@ def describe_household(
             }
             for activity in activities
         ],
-    }
+    })
+    gaps = week_setup_gaps(members, activities)
+    described["weekReady"] = not gaps
+    if gaps:
+        described["weekGaps"] = gaps
+    return described
 
 
 def should_describe_household(profile: dict[str, Any] | None, members: list[Any], activities: list[Any]) -> bool:

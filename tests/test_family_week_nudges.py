@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from unittest import mock
 from datetime import datetime
 from datetime import timezone
 from pathlib import Path
@@ -13,6 +14,7 @@ from packages.infrastructure.family_week_nudges import FamilyWeekNudger
 from packages.infrastructure.family_week_nudges import describe_activity_line
 from packages.infrastructure.family_week_nudges import gap_lines
 from packages.infrastructure.family_week_nudges import rides_due
+from packages.infrastructure.family_week_nudges import rides_due_for_anyone
 from packages.infrastructure.portal_db import PortalDatabase
 
 UTC = timezone.utc
@@ -146,3 +148,85 @@ class NudgerTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class GroupNudgeTests(unittest.TestCase):
+    """A group's rota: ask the room the night before, remind the one who took it."""
+
+    GROUP = "120363@g.us"
+
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.database = PortalDatabase(Path(self.temp_dir.name) / "portal.db")
+        self.database.register_user("dana@example.com", display_name="Dana Levi")
+        self.database.update_user_account_type("dana@example.com", account_type="family")
+        self.user_id = int((self.database.get_user("dana@example.com") or {})["id"])
+        # The account's own week, which a group nudge must never speak about.
+        self.database.save_household_activity(
+            user_id=self.user_id, title="Kindergarten", who=["Tom"], days=["mon"],
+            start_time="07:30", end_time="16:00", drop_off_by="", pick_up_by="",
+        )
+        # The group's week, from what the room said.
+        self.database.save_household_activity(
+            user_id=self.user_id, group_id=self.GROUP, title="Football", who=["Noam"], days=["mon"],
+            start_time="16:00", end_time="17:30", drop_off_by="Yonatan", pick_up_by="",
+        )
+        self.nudger = FamilyWeekNudger(
+            self.database, config=FamilyWeekNudgeConfig(morning_hour=7, evening_hour=20, ride_lead_minutes=30),
+        )
+        self.groups_on = mock.patch(
+            "packages.infrastructure.whatsapp_agent_chat.whatsapp_groups_enabled", return_value=True,
+        )
+        self.groups_on.start()
+
+    def tearDown(self) -> None:
+        self.groups_on.stop()
+        self.temp_dir.cleanup()
+
+    def queued(self) -> list[dict]:
+        return [
+            action for action in self.database.list_scheduled_actions_for_user(self.user_id, limit=50)
+            if (action.get("payload") or {}).get("source") == "family_week"
+        ]
+
+    def test_the_room_is_asked_the_evening_before_about_a_run_nobody_took(self) -> None:
+        summary = self.nudger.run_pending_for_groups(now=at(SUNDAY, 20, 15))
+        self.assertEqual((summary["groups"], summary["groupEvening"]), (1, 1))
+        [action] = self.queued()
+        self.assertEqual(action["recipientRef"], f"group:{self.GROUP}")
+        self.assertEqual(action["payload"]["group"]["id"], self.GROUP)
+        self.assertIn("Football (Noam) at 17:30: nobody is down for the pickup", action["payload"]["instruction"])
+        self.assertIn("asking who can take it", action["payload"]["instruction"])
+        self.assertNotIn("Kindergarten", action["payload"]["instruction"], "the account's own week is not the group's")
+        # Once, not every poll.
+        self.assertEqual(self.nudger.run_pending_for_groups(now=at(SUNDAY, 20, 45))["groupEvening"], 0)
+
+    def test_whoever_took_the_run_is_reminded_in_the_room_by_name(self) -> None:
+        monday = SUNDAY.replace(day=21)
+        self.assertEqual(self.nudger.run_pending_for_groups(now=at(monday, 15, 10))["groupRides"], 0)
+        self.assertEqual(self.nudger.run_pending_for_groups(now=at(monday, 15, 40))["groupRides"], 1)
+        [action] = [a for a in self.queued() if a["payload"]["title"] == "Time to leave soon"]
+        self.assertIn("Yonatan takes Noam - Football at 16:00", action["payload"]["instruction"])
+        self.assertEqual(action["recipientRef"], f"group:{self.GROUP}")
+
+    def test_a_group_is_left_alone_while_groups_are_switched_off(self) -> None:
+        self.groups_on.stop()
+        with mock.patch(
+            "packages.infrastructure.whatsapp_agent_chat.whatsapp_groups_enabled", return_value=False,
+        ):
+            self.assertEqual(self.nudger.run_pending_for_groups(now=at(SUNDAY, 20, 15)), {
+                "ok": True, "groups": 0, "groupEvening": 0, "groupRides": 0,
+            })
+        self.assertEqual(self.queued(), [])
+        self.groups_on.start()
+
+    def test_a_run_nobody_took_reminds_nobody(self) -> None:
+        football = self.database.list_household_activities(user_id=self.user_id, group_id=self.GROUP)[0]
+        monday = SUNDAY.replace(day=21)
+        self.assertEqual(
+            [ride["driver"] for ride in rides_due_for_anyone(
+                [football], local_now=at(monday, 17, 10), lead_minutes=30,
+            )],
+            [],
+            "the pickup at 17:30 has nobody down for it, so there is nobody to remind",
+        )

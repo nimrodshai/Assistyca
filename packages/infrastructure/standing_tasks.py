@@ -303,7 +303,14 @@ class StandingTaskRunner:
         )
         timezone_name = normalize_text(action.get("timezone")) or chat.timezone_name
 
-        history = self.database.list_recent_whatsapp_agent_messages(user_id=user_id, limit=AGENT_CHAT_HISTORY_LIMIT)
+        # A nudge that belongs to a group is written in the group's own
+        # conversation and with a group's own turn: nothing of the account is
+        # readable there, and the room is what it is talking to.
+        group = payload.get("group") if isinstance(payload.get("group"), dict) else {}
+        group_id = normalize_text(group.get("id"))
+        history = self.database.list_recent_whatsapp_agent_messages(
+            user_id=user_id, limit=AGENT_CHAT_HISTORY_LIMIT, thread_id=group_id,
+        )
         conversation = [{"role": item["role"], "text": item["text"]} for item in history]
         request: dict[str, Any] = {
             "userMessage": build_task_run_message(
@@ -317,8 +324,10 @@ class StandingTaskRunner:
             "timezone": timezone_name,
             "channel": channel,
             "toolContext": chat._build_tool_context(),
-            "senderWaId": chat.owner_wa_id if channel == "whatsapp" else "",
+            "senderWaId": "" if group_id else (chat.owner_wa_id if channel == "whatsapp" else ""),
         }
+        if group_id:
+            request["group"] = {"id": group_id, "name": normalize_text(group.get("name")), "speaker": ""}
         if is_standing_task(action):
             request["standingTask"] = {
                 "actionId": int(action.get("id") or 0),
@@ -342,8 +351,11 @@ class StandingTaskRunner:
             raise RuntimeError("The assistant ran the action but wrote nothing to send.")
         if channel == "whatsapp":
             # The result joins the WhatsApp transcript so "which meeting was
-            # that?" the next morning has something to refer to.
-            self.database.save_whatsapp_agent_message(user_id=user_id, role="assistant", text=reply)
+            # that?" the next morning has something to refer to - the group's
+            # own transcript when the nudge was for a group.
+            self.database.save_whatsapp_agent_message(
+                user_id=user_id, role="assistant", text=reply, thread_id=group_id,
+            )
         pending = turn.get("pendingConfirmation") if isinstance(turn.get("pendingConfirmation"), dict) else None
         approval_id = normalize_text((pending or {}).get("id"))
         if may_offer and approval_id:

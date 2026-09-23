@@ -119,6 +119,67 @@ class ScheduledActionTests(unittest.TestCase):
         # The phone carried the message, so the feed stays quiet.
         self.assertEqual(self.database.list_notifications(user_id=int(self.user["id"])), [])
 
+    def test_a_message_for_a_group_goes_to_the_room_and_nowhere_else(self) -> None:
+        self.database.save_whatsapp_connection(
+            "owner@example.com", owner_wa_id="972507322341", connection_status="connected",
+        )
+        action = self.database.create_scheduled_action(
+            user_id=int(self.user["id"]),
+            action_type="send_message",
+            channel="whatsapp",
+            recipient_ref="group:120363@g.us",
+            run_at=datetime.now(timezone.utc) - timedelta(seconds=1),
+            timezone_name="Asia/Jerusalem",
+            payload={"messageText": "Tomorrow's pickup still needs someone."},
+        )
+        scheduler = ScheduledActionScheduler(
+            self.database,
+            config=ScheduledActionConfig(enabled=True, poll_seconds=1, batch_size=10),
+        )
+
+        with mock.patch(
+            "packages.infrastructure.whatsapp_agent_chat.send_assistyca_group_text",
+            return_value="wamid.group-1",
+        ) as send, mock.patch(
+            "packages.infrastructure.scheduled_actions.send_whatsapp_notification",
+        ) as to_a_person:
+            summary = scheduler.run_pending(now=datetime.now(timezone.utc))
+
+        saved = self.database.get_scheduled_action(int(action["id"])) or {}
+        self.assertEqual((summary["sent"], saved["status"]), (1, "sent"))
+        self.assertEqual(send.call_args.kwargs, {
+            "group_id": "120363@g.us", "text": "Tomorrow's pickup still needs someone.",
+        })
+        to_a_person.assert_not_called()
+        self.assertEqual(saved["payload"]["whatsappSendMode"], "group_text")
+
+    def test_a_group_message_that_cannot_be_sent_does_not_land_in_one_persons_feed(self) -> None:
+        self.database.save_whatsapp_connection(
+            "owner@example.com", owner_wa_id="972507322341", connection_status="connected",
+        )
+        self.database.create_scheduled_action(
+            user_id=int(self.user["id"]),
+            action_type="send_message",
+            channel="whatsapp",
+            recipient_ref="group:120363@g.us",
+            run_at=datetime.now(timezone.utc) - timedelta(seconds=1),
+            timezone_name="Asia/Jerusalem",
+            payload={"messageText": "Tomorrow's pickup still needs someone."},
+        )
+        scheduler = ScheduledActionScheduler(
+            self.database,
+            config=ScheduledActionConfig(enabled=True, poll_seconds=1, batch_size=10),
+        )
+
+        with mock.patch(
+            "packages.infrastructure.whatsapp_agent_chat.send_assistyca_group_text",
+            side_effect=RuntimeError("groups are not available on this number"),
+        ):
+            summary = scheduler.run_pending(now=datetime.now(timezone.utc))
+
+        self.assertEqual(summary["sent"], 0)
+        self.assertEqual(self.database.list_notifications(user_id=int(self.user["id"])), [])
+
     def _whatsapp_reminder(self, text: str = "You have a meeting with bisi") -> dict:
         self.database.save_whatsapp_connection(
             "owner@example.com",

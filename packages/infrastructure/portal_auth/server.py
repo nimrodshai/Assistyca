@@ -11524,7 +11524,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 open_question=open_question,
                 photo=photo_context,
                 trial_ended=trial_ended,
-                household_block=None if group else household_block,
+                household_block=self._group_week_block(user_id, timezone_name, group) if group else household_block,
                 chat_flow=None if group else chat_flow,
             )
         except OpenAIError as exc:
@@ -11616,11 +11616,38 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         activities = self.database.list_household_activities(user_id=user_id)
         if not household.should_describe_household(profile, members, activities):
             return None
+        return household.describe_household(
+            profile=profile, members=members, activities=activities, today=self._household_today(timezone_name),
+        )
+
+    def _group_week_block(self, user_id: int, timezone_name: str, group: dict[str, Any]) -> dict[str, Any] | None:
+        """The week this group keeps, which is the group's and nobody's account.
+
+        A group is several people and only one of them opened the account, so
+        nothing of that account is read here. What the people in the room have
+        told the assistant is kept under the group's id and read back the same
+        way - an empty week included, because the asking has to start
+        somewhere.
+        """
+
+        group_id = normalize_text((group or {}).get("id"))
+        if user_id <= 0 or not group_id:
+            return None
+        if not account_feature_allowed(self.database, user_id=user_id, feature_id="family_week"):
+            return None
+        return household.describe_household(
+            profile=None,
+            members=self.database.list_household_members(user_id=user_id, group_id=group_id),
+            activities=self.database.list_household_activities(user_id=user_id, group_id=group_id),
+            today=self._household_today(timezone_name),
+            group_name=normalize_text((group or {}).get("name")) or "this group",
+        )
+
+    def _household_today(self, timezone_name: str) -> date:
         try:
-            today = datetime.now(ZoneInfo(timezone_name or "UTC")).date()
+            return datetime.now(ZoneInfo(timezone_name or "UTC")).date()
         except (ZoneInfoNotFoundError, ValueError):
-            today = datetime.now(timezone.utc).date()
-        return household.describe_household(profile=profile, members=members, activities=activities, today=today)
+            return datetime.now(timezone.utc).date()
 
     def _chat_flow_block(
         self,
