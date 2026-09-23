@@ -234,6 +234,77 @@ def activity_gaps(activity: dict[str, Any]) -> list[str]:
     return gaps
 
 
+# What a week has to hold before it can be run for a family. The point of
+# the week is the afternoons: a child ends somewhere at a time, and somebody
+# has to be there. So a child nobody has told us anything about, an activity
+# with no day or no finishing time, and above all a pickup with nobody down
+# for it are each something still to ask about - in that order, because a
+# person answers the big thing before the small one.
+WEEK_GAP_KINDS = ("people", "week", "days", "times", "drop_off", "pick_up")
+
+
+def _activity_time(activity: dict[str, Any], *keys: str) -> str:
+    for key in keys:
+        value = clean(activity.get(key))
+        if value:
+            return value
+    return ""
+
+
+def week_setup_gaps(
+    members: Iterable[dict[str, Any]] | None,
+    activities: Iterable[dict[str, Any]] | None,
+) -> list[dict[str, Any]]:
+    """What the week still needs before it can be looked after, in ask order.
+
+    Each gap says what is missing and who or what it is about, so the
+    assistant asks the next real question instead of deciding for itself that
+    it knows enough. An empty list is a week that is ready: every child has
+    their days, and every one of those days has someone down for the pickup.
+    """
+
+    people = [member for member in (members or ()) if clean(member.get("name"), MAX_NAME_LENGTH)]
+    week = list(activities or ())
+    gaps: list[dict[str, Any]] = []
+    if not people:
+        return [{"missing": "people"}]
+
+    spoken_for = {name_key(name) for activity in week for name in (activity.get("who") or ())}
+    for member in people:
+        if normalize_role(member.get("role")) != "child":
+            continue
+        name = clean(member.get("name"), MAX_NAME_LENGTH)
+        if name_key(name) not in spoken_for:
+            gaps.append({"missing": "week", "who": name})
+
+    for activity in week:
+        title = clean(activity.get("title"), MAX_TITLE_LENGTH)
+        where = {"activity": title}
+        if activity.get("id"):
+            where["id"] = activity["id"]
+        if not list(activity.get("days") or ()):
+            gaps.append({"missing": "days", **where})
+        if not _activity_time(activity, "end", "endTime"):
+            gaps.append({"missing": "times", **where})
+        for missing in activity_gaps({
+            "dropOffBy": _activity_time(activity, "dropOffBy"),
+            "pickUpBy": _activity_time(activity, "pickUpBy"),
+        }):
+            gaps.append({"missing": missing, **where})
+
+    order = {kind: index for index, kind in enumerate(WEEK_GAP_KINDS)}
+    return sorted(gaps, key=lambda gap: order.get(str(gap.get("missing")), len(WEEK_GAP_KINDS)))
+
+
+def week_is_ready(
+    members: Iterable[dict[str, Any]] | None,
+    activities: Iterable[dict[str, Any]] | None,
+) -> bool:
+    """Whether the week can be run: everyone placed, and every pickup taken."""
+
+    return not week_setup_gaps(members, activities)
+
+
 def _iso(day: date | None) -> str | None:
     return day.isoformat() if day else None
 
@@ -329,4 +400,7 @@ __all__ = [
     "normalize_time",
     "should_describe_household",
     "weekday_code",
+    "week_is_ready",
+    "week_setup_gaps",
+    "WEEK_GAP_KINDS",
 ]

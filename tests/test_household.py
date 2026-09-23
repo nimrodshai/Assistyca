@@ -68,6 +68,36 @@ class RulesTests(unittest.TestCase):
         partner = household.birthday_list_items("partner", date(2026, 10, 12), date(2026, 9, 1))
         self.assertIn("Write the card", [i["text"] for i in partner])
 
+    def test_a_week_is_not_ready_until_every_child_is_placed_and_every_pickup_taken(self) -> None:
+        # Nobody known yet is one question, not a list of them.
+        self.assertEqual(household.week_setup_gaps([], []), [{"missing": "people"}])
+
+        members = [{"name": "Stav", "role": "partner"}, {"name": "Lotan", "role": "child"}, {"name": "Laor", "role": "child"}]
+        self.assertEqual(
+            household.week_setup_gaps(members, []),
+            [{"missing": "week", "who": "Lotan"}, {"missing": "week", "who": "Laor"}],
+            "a partner needs no week of their own; a child does",
+        )
+
+        week = [
+            {"id": 1, "title": "School", "who": ["Lotan"], "days": ["sun", "mon"], "endTime": "13:30", "dropOffBy": "me"},
+            {"id": 2, "title": "Ballet", "who": ["Laor"], "days": [], "endTime": "", "dropOffBy": "Stav", "pickUpBy": "Stav"},
+        ]
+        self.assertEqual(
+            household.week_setup_gaps(members, week),
+            [
+                {"missing": "days", "activity": "Ballet", "id": 2},
+                {"missing": "times", "activity": "Ballet", "id": 2},
+                {"missing": "pick_up", "activity": "School", "id": 1},
+            ],
+            "the bigger question comes first, and the pickup is never skipped",
+        )
+        self.assertFalse(household.week_is_ready(members, week))
+
+        week[1].update({"days": ["wed"], "endTime": "17:00"})
+        week[0]["pickUpBy"] = "Stav"
+        self.assertTrue(household.week_is_ready(members, week))
+
     def test_a_family_account_is_described_even_before_anyone_is_known(self) -> None:
         self.assertTrue(household.should_describe_household({"accountKind": "family"}, [], []))
         self.assertFalse(household.should_describe_household({"accountKind": "business"}, [], []))

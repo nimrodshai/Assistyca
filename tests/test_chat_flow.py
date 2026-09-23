@@ -52,6 +52,49 @@ class WhichOpeningTests(unittest.TestCase):
         started = self.flow(account_type="family", profile={"gettingToKnow": "in_progress"})
         self.assertEqual(started["goal"], "family")
 
+    def test_what_the_week_still_lacks_travels_with_the_opening(self) -> None:
+        # Code works out what is missing, so the asking ends when the week is
+        # ready rather than when the conversation runs out of steam.
+        flow = self.flow(
+            account_type="family",
+            profile={"gettingToKnow": "in_progress"},
+            household_block={
+                "members": [{"name": "Lotan", "role": "child"}],
+                "week": [{"id": 1, "title": "School", "who": ["Lotan"], "days": ["sun"], "end": "13:30"}],
+            },
+        )
+        self.assertFalse(flow["weekReady"])
+        self.assertEqual(
+            flow["weekGaps"],
+            [{"missing": "drop_off", "activity": "School", "id": 1}, {"missing": "pick_up", "activity": "School", "id": 1}],
+        )
+
+    def test_a_week_with_everybody_placed_and_every_pickup_taken_is_ready(self) -> None:
+        flow = self.flow(
+            account_type="family",
+            profile={"gettingToKnow": "in_progress"},
+            household_block={
+                "members": [{"name": "Lotan", "role": "child"}],
+                "week": [{
+                    "id": 1, "title": "School", "who": ["Lotan"], "days": ["sun"],
+                    "end": "13:30", "dropOffBy": "me", "pickUpBy": "Stav",
+                }],
+            },
+        )
+        self.assertTrue(flow["weekReady"])
+        self.assertNotIn("weekGaps", flow)
+
+    def test_a_week_they_have_called_finished_is_not_reopened_as_questions(self) -> None:
+        # Their "that's everything" stands: the goal moves on. What nobody is
+        # down for still travels, so it can be raised on the day it matters.
+        flow = self.flow(
+            account_type="family",
+            profile={"gettingToKnow": "done"},
+            household_block={"members": [{"name": "Lotan", "role": "child"}], "week": []},
+        )
+        self.assertEqual(flow["goal"], "connect")
+        self.assertEqual(flow["weekGaps"], [{"missing": "week", "who": "Lotan"}])
+
     def test_a_family_whose_week_is_in_is_then_offered_the_calendar_and_the_mail(self) -> None:
         flow = self.flow(account_type="family", profile={"gettingToKnow": "done"})
         self.assertEqual((flow["accountType"], flow["goal"]), ("family", "connect"))
@@ -99,6 +142,18 @@ class RulesTests(unittest.TestCase):
         then_connecting = chat_flow.chat_flow_rules({"accountType": "family", "goal": "connect"})
         self.assertIn("registered as a family", then_connecting)
         self.assertIn("Their family and their week are in", then_connecting)
+
+    def test_getting_to_know_a_family_is_about_the_week_and_never_about_an_email(self) -> None:
+        rules = chat_flow.chat_flow_rules({"accountType": "family", "goal": "family"})
+        self.assertIn("who takes them and who collects them", rules)
+        self.assertIn("weekGaps", rules)
+        self.assertIn("you never ask for either while you are learning it", rules)
+        self.assertIn("do not call done", rules)
+
+    def test_a_family_is_never_told_it_must_connect_anything(self) -> None:
+        rules = chat_flow.chat_flow_rules({"accountType": "family", "goal": "connect"})
+        self.assertIn("nothing about it waits on anything being connected", rules)
+        self.assertIn("Never say, or imply, that you cannot help them until they connect something", rules)
 
     def test_nothing_is_said_when_there_is_no_block(self) -> None:
         self.assertEqual(chat_flow.chat_flow_rules(None), "")

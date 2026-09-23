@@ -11646,6 +11646,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             connected=connected_sources(tool_context),
             today=today,
             family_flow_allowed=bool(household_block),
+            household_block=household_block,
         )
 
     def _open_agent_approval(self, user_id: int, pending: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -14702,6 +14703,16 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         transcript = list((signup or {}).get("transcript") or [])
         registration = (signup or {}).get("registration") if isinstance((signup or {}).get("registration"), dict) else {}
         erasure_pending = normalize_text((signup or {}).get("status")) == "confirming_erasure"
+        started_at = _parse_iso_moment((signup or {}).get("startedAt"))
+        # Someone who asked to be forgotten and then registered again is not
+        # someone coming back to a deleted account: they are starting over, on
+        # purpose, and the erasure a few hours ago has nothing left to say.
+        registered_since_erasure = bool(
+            registration and started_at and erased_at and started_at >= erased_at
+        )
+        # What the deletion still means for this conversation: nothing, once
+        # they have registered again since.
+        standing_erasure = erased_at if erased_at and not registered_since_erasure else None
         attempt = int((signup or {}).get("attempts") or 0) + 1
         if (now - last_touch).total_seconds() > SIGNUP_ESCALATION_WINDOW_SECONDS:
             # Coming back after an hour is a new conversation, not the fourth
@@ -14715,7 +14726,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         if (
             not is_valid_email(email)
             and not erasure_pending
-            and not erased_at
+            and (not erased_at or registered_since_erasure)
             and normalize_registration_kind(registration.get("kind")) == "family"
         ):
             # A family is never asked for an email address: their account
@@ -14736,13 +14747,13 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 transcript=transcript,
                 attempt=attempt,
                 fallback=(
-                    SIGNUP_AFTER_ERASURE_TEXT if erased_at
+                    SIGNUP_AFTER_ERASURE_TEXT if standing_erasure
                     else SIGNUP_ERASE_CONFIRM_TEXT if erasure_pending
                     else SIGNUP_ASK_EMAIL_TEXT if attempt <= 1 else SIGNUP_ASK_EMAIL_AGAIN_TEXT
                 ),
                 typing_for_message_id=normalize_text(event.get("source_message_id")),
                 registration=registration,
-                account_erased_at=erased_at,
+                account_erased_at=standing_erasure,
                 erasure_pending=erasure_pending,
             )
             if erasure_pending and erase == "yes":
@@ -14752,7 +14763,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 return self._finish_whatsapp_signup_step(
                     sender_wa_id, "signup_erase_declined", reply or SIGNUP_ERASE_KEPT_TEXT,
                 )
-            if erase == "ask" and not erased_at:
+            if erase == "ask" and not standing_erasure:
                 self.database.set_whatsapp_signup_status(wa_id=sender_wa_id, status="confirming_erasure")
                 return self._finish_whatsapp_signup_step(
                     sender_wa_id, "signup_erase_confirm", reply or SIGNUP_ERASE_CONFIRM_TEXT,
