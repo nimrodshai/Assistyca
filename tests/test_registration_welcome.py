@@ -6,6 +6,8 @@ from unittest import mock
 
 from packages.infrastructure.notification_delivery import send_whatsapp_notification
 from packages.infrastructure.registration_welcome import REGISTRATION_WELCOME_CLOSING
+from packages.infrastructure.registration_welcome import FAMILY_WELCOME_LINE
+from packages.infrastructure.registration_welcome import HEBREW_FAMILY_WELCOME_LINE
 from packages.infrastructure.registration_welcome import build_registration_welcome_message
 from packages.infrastructure.registration_welcome import REGISTRATION_WELCOME_LINE
 from packages.infrastructure.registration_welcome import registration_welcome_template_parameters
@@ -63,10 +65,11 @@ class FamilyWelcomeTemplateTests(unittest.TestCase):
             template = resolve_registration_welcome_template(kind="family", name="Dana Levi")
 
         self.assertEqual((template.name, template.language), ("assistyca_welcome_family_1", "en"))
+        # The family line is fixed text in the approved template, so the send
+        # carries the name and nothing else.
         self.assertEqual(
             registration_welcome_template_parameters(name="Dana Levi", kind="family"),
-            ["Dana", 'No more "Did you remember to take Noah to soccer?". I\'ll keep track of who\'s '
-             "taking who, and remind them in time."],
+            ["Dana"],
         )
 
     def test_a_family_with_a_hebrew_name_gets_the_hebrew_family_welcome(self) -> None:
@@ -76,9 +79,21 @@ class FamilyWelcomeTemplateTests(unittest.TestCase):
         self.assertEqual((template.name, template.language), ("assistyca_welcome_family_1_hebrew", "he"))
         self.assertEqual(
             registration_welcome_template_parameters(name="יוני כהן", kind="family"),
-            ["יוני", 'בואו נשים סוף להודעות כמו "זכרת לקחת את יוני לכדורגל?". אני אעקוב מי לוקח את מי, '
-             "ואזכיר להם בזמן."],
+            ["יוני"],
         )
+
+    def test_a_family_send_carries_the_name_and_no_line(self) -> None:
+        """One parameter too many is not trimmed by Meta; it refuses the message."""
+
+        for name in ("Dana Levi", "יוני כהן", ""):
+            with self.subTest(name=name):
+                parameters = registration_welcome_template_parameters(name=name, kind="family")
+                self.assertEqual(len(parameters), 1)
+                self.assertNotIn(FAMILY_WELCOME_LINE, parameters)
+                self.assertNotIn(HEBREW_FAMILY_WELCOME_LINE, parameters)
+
+    def test_a_business_send_still_carries_both(self) -> None:
+        self.assertEqual(len(registration_welcome_template_parameters(name="Dana Levi")), 2)
 
     def test_any_other_language_gets_english(self) -> None:
         for name in ("Мария", "محمد", "José", ""):

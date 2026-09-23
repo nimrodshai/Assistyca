@@ -222,7 +222,15 @@ class WebRegistrationTests(unittest.TestCase):
         sent = self.template_sent.call_args.kwargs["template"]
         self.assertEqual(sent["name"], "assistyca_welcome_family_1")
         self.assertEqual(sent["language"], {"code": "en"})
-        self.assertEqual(sent["components"][-1]["parameters"][1]["text"], FAMILY_WELCOME_LINE)
+        # The family line is fixed text in the approved template: the send
+        # carries the name and nothing else, or Meta refuses the message whole.
+        self.assertEqual(
+            [parameter["text"] for parameter in sent["components"][-1]["parameters"]],
+            ["Dana"],
+        )
+        # Not sent, still shown: the kept conversation carries the line the
+        # template prints of its own accord.
+        self.assertIn(FAMILY_WELCOME_LINE, (self.database.get_whatsapp_signup(PHONE) or {})["transcript"][0]["text"])
 
         self.text("Yes please", message_id="wamid.f1")
         concierge_prompt = self.model.call_args.kwargs["prompt"]
@@ -255,12 +263,16 @@ class WebRegistrationTests(unittest.TestCase):
         sent = self.template_sent.call_args.kwargs["template"]
         self.assertEqual(sent["name"], "assistyca_welcome_family_1_hebrew")
         self.assertEqual(sent["language"], {"code": "he"})
-        greeted, line = [parameter["text"] for parameter in sent["components"][-1]["parameters"]]
-        self.assertEqual(greeted, "דנה")
-        self.assertEqual(line, HEBREW_FAMILY_WELCOME_LINE)
-        # The conversation we keep says what their phone showed, in Hebrew.
+        self.assertEqual(
+            [parameter["text"] for parameter in sent["components"][-1]["parameters"]],
+            ["דנה"],
+        )
+        # The conversation we keep says what their phone showed, in Hebrew -
+        # the line included, because it is in the template whether or not it
+        # is sent as a variable.
         transcript = (self.database.get_whatsapp_signup(PHONE) or {})["transcript"]
         self.assertTrue(transcript[0]["text"].startswith("היי דנה 👋"))
+        self.assertIn(HEBREW_FAMILY_WELCOME_LINE, transcript[0]["text"])
 
     def test_a_family_is_never_asked_what_it_does(self) -> None:
         # Whatever arrives in the field, a family's registration keeps none of it.
