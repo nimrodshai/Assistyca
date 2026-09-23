@@ -10,7 +10,8 @@ message may only go out as a template Meta has approved. A business gets
 
 A family gets a family welcome instead, and the one in their language: a name
 typed in Hebrew gets `assistyca_welcome_family_1_hebrew`, any other name
-`assistyca_welcome_family_1`. Same two variables, a family line in {{2}}.
+`assistyca_welcome_family_1`. Those carry one variable, the first name: their
+line is fixed text in the template Meta approved, so it is not sent.
 
 The greeting and the closing are repeated here as text so the conversation we
 keep says exactly what their phone showed. They are a copy of the approved
@@ -52,8 +53,9 @@ REGISTRATION_WELCOME_LINE = (
 )
 
 
-# The family welcomes. {{2}} is word for word as Nimrod gave it; the greeting
-# and closing are copies of the approved bodies, kept in step by hand.
+# The family welcomes. All three lines are fixed text in the approved template
+# and none of them is sent; they are kept here as copies of the approved bodies,
+# in step by hand, so the conversation we keep says what their phone showed.
 FAMILY_WELCOME_TEMPLATE_NAME = "assistyca_welcome_family_1"
 FAMILY_WELCOME_GREETING = "Hi {name} 👋 I'm your new assistant and I'm here to take a few things off your plate."
 FAMILY_WELCOME_CLOSING = (
@@ -175,10 +177,20 @@ def build_registration_welcome_message(*, name: Any, kind: Any = "business") -> 
 
 
 def registration_welcome_template_parameters(*, name: Any, kind: Any = "business") -> list[str]:
-    """{{1}} and {{2}}, in that order."""
+    """The body variables the template takes, in order.
 
+    A family template takes one: the first name. Its line is fixed text there,
+    so sending it would be one parameter more than the template has - and a
+    payload that does not match a template variable for variable is not
+    trimmed by Meta, it is refused whole, which is a registrant who gets no
+    welcome at all. A business template still takes {{1}} and {{2}}.
+    """
+
+    greeted = greeted_name(kind=kind, name=name)
+    if is_family(kind):
+        return [greeted]
     _, line, _ = welcome_copy(kind=kind, name=name)
-    return [greeted_name(kind=kind, name=name), flatten_for_template(line)]
+    return [greeted, flatten_for_template(line)]
 
 
 __all__ = [
