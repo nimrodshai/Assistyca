@@ -143,6 +143,19 @@ def whatsapp_agent_chat_enabled() -> bool:
     return parse_bool(os.getenv("WHATSAPP_AGENT_CHAT_ENABLED"), True)
 
 
+def whatsapp_groups_enabled() -> bool:
+    """Whether Assistyca can open a group and answer in one.
+
+    Off by default, and not because the code is unfinished. Meta's Groups API
+    needs an Official Business Account, so until the business is verified every
+    call returns the same refusal, and a tool the model can see but never use
+    is a promise made to the person that cannot be kept. Set to 1 the day
+    verification lands.
+    """
+
+    return parse_bool(os.getenv("WHATSAPP_GROUPS_ENABLED"), False)
+
+
 CLAIM_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 CLAIM_CODE_LENGTH = 6
 CLAIM_CODE_TTL_SECONDS = 900

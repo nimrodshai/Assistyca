@@ -1724,13 +1724,22 @@ def extract_inbound_events(payload: dict[str, Any]) -> list[dict[str, Any]]:
                 contacts = value.get("contacts", [])
                 messages = value.get("messages", [])
                 metadata = value.get("metadata", {})
-                sender_name = ""
-                sender_wa_id = ""
-                if isinstance(contacts, list) and contacts:
-                    contact = contacts[0] if isinstance(contacts[0], dict) else {}
-                    sender_wa_id = normalize_text(contact.get("wa_id"))
-                    profile = contact.get("profile", {}) if isinstance(contact.get("profile", {}), dict) else {}
-                    sender_name = normalize_text(profile.get("name"))
+                # In a one-to-one chat the single contact is the sender. A group
+                # change carries one message per person who spoke, so the sender
+                # is read off each message and the contacts are only a way to put
+                # a name to it; taking the first contact for every message would
+                # file the whole group under whoever spoke first.
+                names_by_wa_id: dict[str, str] = {}
+                first_contact_wa_id = ""
+                if isinstance(contacts, list):
+                    for raw_contact in contacts:
+                        contact = raw_contact if isinstance(raw_contact, dict) else {}
+                        contact_wa_id = normalize_text(contact.get("wa_id"))
+                        if not contact_wa_id:
+                            continue
+                        profile = contact.get("profile", {}) if isinstance(contact.get("profile", {}), dict) else {}
+                        first_contact_wa_id = first_contact_wa_id or contact_wa_id
+                        names_by_wa_id[contact_wa_id] = normalize_text(profile.get("name"))
                 if isinstance(messages, list):
                     for message in messages:
                         if not isinstance(message, dict):
@@ -1741,13 +1750,17 @@ def extract_inbound_events(payload: dict[str, Any]) -> list[dict[str, Any]]:
                         message_text = extract_message_text(message)
                         reply_to_message_id = extract_message_context_id(message)
                         interactive_reply = extract_interactive_reply(message)
-                        sender_wa_id = sender_wa_id or normalize_text(message.get("from"))
-                        sender_name = sender_name or sender_wa_id
+                        sender_wa_id = normalize_text(message.get("from")) or first_contact_wa_id
+                        sender_name = names_by_wa_id.get(sender_wa_id) or sender_wa_id
+                        # A group is one conversation between several people, so
+                        # the thread is the group rather than whoever just spoke.
+                        group_id = normalize_text(message.get("group_id"))
                         events.append(
                             {
-                                "thread_id": sender_wa_id or normalize_text(message.get("from")),
+                                "thread_id": group_id or sender_wa_id,
+                                "group_id": group_id,
                                 "sender_name": sender_name,
-                                "sender_wa_id": sender_wa_id or normalize_text(message.get("from")),
+                                "sender_wa_id": sender_wa_id,
                                 "message_text": message_text,
                                 "message_type": message_type,
                                 "source_message_id": normalize_text(message.get("id")),
@@ -1762,9 +1775,11 @@ def extract_inbound_events(payload: dict[str, Any]) -> list[dict[str, Any]]:
                         )
     elif {"sender", "message"}.issubset(payload.keys()):
         sender = payload.get("sender", {}) if isinstance(payload.get("sender", {}), dict) else {}
+        group_id = normalize_text(payload.get("group_id"))
         events.append(
             {
-                "thread_id": normalize_text(sender.get("wa_id") or sender.get("phone") or sender.get("id") or "local-dev"),
+                "thread_id": group_id or normalize_text(sender.get("wa_id") or sender.get("phone") or sender.get("id") or "local-dev"),
+                "group_id": group_id,
                 "sender_name": normalize_text(sender.get("name")) or normalize_text(sender.get("wa_id") or sender.get("phone") or "Customer"),
                 "sender_wa_id": normalize_text(sender.get("wa_id") or sender.get("phone") or sender.get("id") or "local-dev"),
                 "message_text": normalize_text(payload.get("message")),

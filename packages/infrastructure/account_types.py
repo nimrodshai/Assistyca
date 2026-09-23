@@ -129,6 +129,12 @@ ACCOUNT_FEATURES: tuple[AccountFeature, ...] = (
         "Voice notes",
         "Turning a recorded message into text, in the portal and on WhatsApp.",
     ),
+    AccountFeature(
+        "group_chat",
+        "Group chat",
+        "Opening a WhatsApp group the assistant is in, and handing over the link to share with the others.",
+        ("create_group_chat",),
+    ),
 )
 ACCOUNT_FEATURES_BY_ID = {feature.feature_id: feature for feature in ACCOUNT_FEATURES}
 

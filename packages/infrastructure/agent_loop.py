@@ -1422,6 +1422,110 @@ def _tool_cancel_scheduled(context: LoopContext, args: dict[str, Any]) -> dict[s
     if status != 200 or not response.get("ok"):
         return _error("internal", "Could not cancel that just now.", can_retry=True)
     return _ok({"cancelled": _describe_scheduled(context, target)})
+
+
+def _tool_create_group_chat(context: LoopContext, args: dict[str, Any]) -> dict[str, Any]:
+    """Open a group with Assistyca in it and hand back the link to share.
+
+    Nobody is added here, and nobody is messaged. WhatsApp has no way to put a
+    person into a group, so the group is opened empty and the person invites
+    whoever they want by passing the link on themselves - which is also the
+    only version of this that is theirs to control: they choose who sees it,
+    and they can stop sharing it.
+    """
+
+    from packages.infrastructure.notification_delivery import resolve_whatsapp_sender_access_token
+    from packages.infrastructure.notification_delivery import resolve_whatsapp_sender_phone_number_id
+    from packages.infrastructure.whatsapp_agent_chat import whatsapp_groups_enabled
+    from packages.infrastructure.whatsapp_api import WHATSAPP_GROUP_PARTICIPANT_LIMIT
+    from packages.infrastructure.whatsapp_api import WHATSAPP_GROUP_SUBJECT_LIMIT
+    from packages.infrastructure.whatsapp_api import WhatsAppConnectionError
+    from packages.infrastructure.whatsapp_api import create_whatsapp_group
+
+    if not whatsapp_groups_enabled():
+        return _error(
+            "unavailable",
+            "Group chats are not switched on for this number yet. Say plainly that this is not something "
+            "you can do yet rather than promising it for a date.",
+        )
+
+    name = str(args.get("name") or "").strip()[:WHATSAPP_GROUP_SUBJECT_LIMIT]
+    if not name:
+        return _error("missing_input", "A group needs a name. Ask them what to call it.")
+
+    access_token = resolve_whatsapp_sender_access_token()
+    phone_number_id = resolve_whatsapp_sender_phone_number_id()
+    if not access_token or not phone_number_id:
+        return _error("unavailable", "Group chats are not switched on for this number yet.")
+
+    try:
+        created = create_whatsapp_group(
+            access_token=access_token,
+            phone_number_id=phone_number_id,
+            subject=name,
+            description=str(args.get("description") or "").strip(),
+        )
+    except (WhatsAppConnectionError, ValueError) as exc:
+        print(f"agent.loop.create_group_chat_failed error={exc!r}", flush=True)
+        return _error(
+            "group_not_created",
+            "WhatsApp would not open the group just now. Say so plainly and offer to try again later.",
+            can_retry=True,
+        )
+
+    group_id = str((created or {}).get("id") or "").strip()
+    invite_link = str((created or {}).get("invite_link") or "").strip()
+    if not group_id or not invite_link:
+        return _error(
+            "group_not_created",
+            "WhatsApp did not return a group to share. Say so plainly and offer to try again later.",
+            can_retry=True,
+        )
+
+    _remember_group_chat(context, group_id=group_id, name=name, invite_link=invite_link)
+    context.links_offered.append(invite_link)
+    context.link_labels[invite_link] = f"Join {name}"
+    context.required_links.append(invite_link)
+    return _ok({
+        "name": name,
+        "inviteLink": invite_link,
+        # Eight seats, and Assistyca is sitting in one of them.
+        "peopleItHolds": WHATSAPP_GROUP_PARTICIPANT_LIMIT - 1,
+        "note": (
+            "The group is open and empty. Give them the link to pass on to whoever should be in it - anyone "
+            "with the link can join, so it is theirs to share and not yours to send on. Say how many people "
+            "it holds. You are in the group and will read what is said there, and you answer when you are "
+            "asked something rather than joining in."
+        ),
+    })
+
+
+def _remember_group_chat(context: LoopContext, *, group_id: str, name: str, invite_link: str) -> None:
+    """Keep the group against the account, so what is said in it has an owner.
+
+    A group message arrives from whoever spoke, not from the account, so the
+    group id is the only thing tying it back. A store that cannot keep it
+    leaves the group working and unowned rather than failing the person's
+    request, which has already happened by this point.
+    """
+
+    database = getattr(context, "database", None)
+    if database is None or not hasattr(database, "update_whatsapp_connection_metadata"):
+        return
+    try:
+        connection = database.get_whatsapp_connection_by_user_id(int(context.user_id or 0))
+        metadata = connection.get("metadata") if isinstance((connection or {}).get("metadata"), dict) else {}
+        kept = [entry for entry in (metadata.get("groups") or []) if isinstance(entry, dict)]
+        kept = [entry for entry in kept if str(entry.get("id") or "") != group_id]
+        kept.append({"id": group_id, "subject": name, "inviteLink": invite_link, "createdAt": datetime.now(timezone.utc).isoformat()})
+        database.update_whatsapp_connection_metadata(
+            user_id=int(context.user_id or 0),
+            metadata_updates={"groups": kept},
+        )
+    except Exception as exc:  # noqa: BLE001 - the group exists either way
+        print(f"agent.loop.create_group_chat_not_remembered error={exc!r}", flush=True)
+
+
 def _coverage_from_tool(raw: Any) -> dict[str, Any]:
     item = raw if isinstance(raw, dict) else {}
     return {
@@ -2746,6 +2850,26 @@ TOOLS: list[ToolSpec] = [
         # with a sentence: it runs on the first call, like a reminder.
         side_effect=True,
         run=_tool_schedule_task,
+    ),
+    ToolSpec(
+        name="create_group_chat",
+        description=(
+            "Open a WhatsApp group with you in it and hand the person the link to share. For 'can you make a "
+            "group for us', 'set up a group with the kids', 'I want my sister in on this', and whenever a "
+            "person is arranging something with other people and would plainly rather have them all in one "
+            "place - offer it then, and only create it if they say yes. name is what the group is called, in "
+            "their words. The group is created empty: nobody is added and nobody is messaged, and the link "
+            "goes to the person to pass on themselves. It holds seven people besides you. Not for adding "
+            "someone to a group that already exists, which WhatsApp does not allow in either direction."
+        ),
+        parameters=_params({
+            "name": {"type": "string"},
+            "description": {"type": ["string", "null"]},
+        }),
+        # Nobody is contacted and nothing of theirs is touched: a group with
+        # one member in it, and a link they decide what to do with.
+        side_effect=True,
+        run=_tool_create_group_chat,
     ),
     ToolSpec(
         name="show_scheduled",
