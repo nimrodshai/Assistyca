@@ -14825,10 +14825,20 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             welcome = f"{welcome}\n\n{link_line}"
         new_user_id = int((self.database.get_user(email) or {}).get("id") or 0)
         if new_user_id > 0:
-            # The welcome is the first message of the account's conversation:
-            # the reply to it is read with it in view. For a family it asked
-            # the first getting-to-know question, so that has started.
+            # What they said before the account existed is theirs too. It
+            # used to be left behind in the signup row, so someone who named
+            # their whole family while signing up was asked who was at home
+            # the moment the account opened. The conversation carries over,
+            # and the welcome goes on the end of it.
             try:
+                for earlier in transcript[-8:]:
+                    earlier_text = normalize_text(earlier.get("text") if isinstance(earlier, dict) else "")
+                    if earlier_text:
+                        self.database.save_whatsapp_agent_message(
+                            user_id=new_user_id,
+                            role=str((earlier or {}).get("role") or "user"),
+                            text=earlier_text,
+                        )
                 self.database.save_whatsapp_agent_message(user_id=new_user_id, role="assistant", text=welcome)
                 if registration and normalize_registration_kind(registration.get("kind")) == "family":
                     self.database.save_household_profile(user_id=new_user_id, getting_to_know="in_progress")

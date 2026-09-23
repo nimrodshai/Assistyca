@@ -63,6 +63,13 @@ class AssistantVoiceTests(unittest.TestCase):
     def test_the_voice_picks_a_thread_up_instead_of_quoting_it(self) -> None:
         self.assertIn("quoting their message back at them", ASSISTANT_VOICE)
 
+    def test_the_voice_refuses_the_opening_that_only_confirms_receipt(self) -> None:
+        # "Nimrod, got it - starting with your family setup (Stav, Lotan,
+        # Lahav, and Laor)" is a receipt and a name badge, not a reply.
+        self.assertIn("Never open by confirming receipt", ASSISTANT_VOICE)
+        self.assertIn("turns a conversation into a form", ASSISTANT_VOICE)
+        self.assertIn("never at the head of every message", ASSISTANT_VOICE)
+
     def test_the_whatsapp_channel_no_longer_asks_for_playful(self) -> None:
         # Warmth stays; the cheerfulness that talked over the answer does not.
         self.assertNotIn("playful", _CHANNEL_RULES["whatsapp"])

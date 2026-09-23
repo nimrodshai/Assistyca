@@ -591,8 +591,11 @@ def build_signup_concierge_prompt(
             "They are replying to your welcome message, which already said what you do and offered examples "
             "that fit their work. Do not introduce yourself again, do not describe what you do again, and do "
             "not offer examples again. Respond to what they wrote in one sentence - if they picked one of the "
-            "examples, say that is what you will start with - then say that you need an email address to set "
-            "up their account before you can start, and ask for it."
+            "examples, say that is what you will start with. If they have told you something of their own - "
+            "who is at home, what their week looks like - let it land in your own words, the way a person "
+            "answers a person, rather than confirming that you received it. Then ask for their email in the "
+            "same breath, as the one thing you need to open their account - never as a condition announced "
+            "before you can begin."
         )
     elif attempt <= 1 or asked_a_question:
         # A real question always gets the real answer, however many times the
@@ -605,14 +608,14 @@ def build_signup_concierge_prompt(
             "today', 'Tell me if flights to Lisbon drop under 120', 'Every Sunday remind me to call mum', "
             "'What did I spend at Amazon last month?' - inventing fresh ones rather than repeating these, "
             "the ones quoted in whatAssistycaDoes, or any already used in recentConversation. "
-            "Then, in the same message, say that you need an email address to set up their account before "
-            "you can start, and ask for it."
+            "Then, in the same message, ask for their email as the one thing you need to open their account, "
+            "in your own words and not as a condition announced before you can begin."
         )
     elif attempt == 2:
         task = (
-            "They have not given an email yet. Respond to what they said in a sentence, then be clear that "
-            "you cannot do anything for them until they give an email address for their account, and ask "
-            "for it again."
+            "They have not given an email yet. Answer what they said first, without opening on a line that "
+            "only confirms you read it, then be clear that you cannot do anything for them until they give "
+            "an email address for their account, and ask for it again."
         )
     else:
         task = (
@@ -627,7 +630,10 @@ def build_signup_concierge_prompt(
         # the welcome is also the first question of getting to know them.
         task += (
             " Then, in the same message, say in a sentence that to look after their week you would like to "
-            "get to know the family first, and ask one question only: who is at home with them."
+            "get to know the family first, and ask one question only: who is at home with them. If "
+            "recentConversation shows they have already said who is at home, that question is answered - do "
+            "not put it to them again, and ask the next thing you would want to know about the people they "
+            "named instead, such as when their birthdays are."
         )
     if registered and erased_minutes_ago is None:
         task = (
@@ -637,7 +643,8 @@ def build_signup_concierge_prompt(
                 if not normalize_text(registered.get("business"))
                 else " and, in a line, what they registered about (see registeredOnTheWebsite)"
             )
-            + "; the first message in the conversation was yours. Use what they told you: address them by first name, and never repeat what your earlier "
+            + "; the first message in the conversation was yours. Use what they told you: their first name "
+            "belongs where it falls naturally in a sentence, not as the first word of the message, and never repeat what your earlier "
             "messages in recentConversation already said - if you give an example, make it a new one that "
             + ("fits their week at home. " if registered_kind == "family" else "fits their line of work. ")
         ) + task

@@ -180,7 +180,7 @@ class WhatsAppSignupTests(unittest.TestCase):
         prompt = self.model.call_args.kwargs["prompt"]
         self.assertIn("treat this as a fresh start", prompt)
         self.assertIn("do not mention the deletion", prompt)
-        self.assertIn("say that you need an email address", prompt)
+        self.assertIn("ask for their email as the one thing you need to open their account", prompt)
 
     def test_a_deletion_is_forgotten_after_a_day(self) -> None:
         self.database.mark_whatsapp_phones_erased([NEW_PHONE])
