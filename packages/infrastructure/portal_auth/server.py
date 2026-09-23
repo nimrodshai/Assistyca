@@ -11440,6 +11440,17 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             news_since = news_since if news_since.tzinfo else news_since.replace(tzinfo=timezone.utc)
         except ValueError:
             news_since = None
+        # A message sent in a group. The turn then reads nothing belonging to
+        # the account: the people in a group are not all the account holder,
+        # and only one of them agreed to anything. The pages and the phone go
+        # with it - a link to the owner's lists or receipts, handed to a room,
+        # is the same leak by another route.
+        group_block = payload.get("group") if isinstance(payload.get("group"), dict) else {}
+        group = {
+            "id": normalize_text(group_block.get("id")),
+            "name": normalize_text(group_block.get("name")),
+            "speaker": normalize_text(group_block.get("speaker")),
+        } if normalize_text(group_block.get("id")) else {}
         context = LoopContext(
             api=loopback,
             database=self.database,
@@ -11447,16 +11458,21 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             user_id=user_id,
             timezone_name=timezone_name,
             tool_context=tool_context,
-            connect_links=dict(tool_context.get("connectLinks") or {}),
+            connect_links={} if group else dict(tool_context.get("connectLinks") or {}),
             channel="whatsapp" if channel == "whatsapp" else "portal",
-            list_link=self._lists_link_builder(session.email, channel),
-            receipts_link=self._receipts_link_builder(session.email, channel),
-            week_link=self._page_link_builder(session.email, channel, page="/week", prefix=WEEK_HANDOFF_PREFIX) if household_block else None,
-            sender_wa_id=sender_wa_id,
+            list_link=None if group else self._lists_link_builder(session.email, channel),
+            receipts_link=None if group else self._receipts_link_builder(session.email, channel),
+            week_link=(
+                None if group or not household_block
+                else self._page_link_builder(session.email, channel, page="/week", prefix=WEEK_HANDOFF_PREFIX)
+            ),
+            sender_wa_id="" if group else sender_wa_id,
             attached_photo=photo_context,
             blocked_tools=blocked_tools(self.database.get_account_type_permissions(), account_type),
             standing_task_id=standing_task_id if news_since else 0,
             news_since=news_since if standing_task_id else None,
+            in_group=bool(group),
+            group=group,
         )
         model = resolve_task_model(AGENT_TURN_COMPLEXITY, "PORTAL_ASSISTANT_MODEL", "OPENAI_MODEL")
 
@@ -11488,14 +11504,14 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 conversation=conversation,
                 today=resolve_local_today(timezone_name),
                 now=resolve_local_clock(timezone_name),
-                facts=facts,
+                facts=[] if group else facts,
                 confirmed_call=confirmed_call,
                 declined_call=declined_call,
                 open_question=open_question,
                 photo=photo_context,
                 trial_ended=trial_ended,
-                household_block=household_block,
-                chat_flow=chat_flow,
+                household_block=None if group else household_block,
+                chat_flow=None if group else chat_flow,
             )
         except OpenAIError as exc:
             print(f"Agent loop failed: {exc.message}", flush=True)
@@ -14478,12 +14494,20 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         phone_number_id: str,
         *,
         owner_wa_id: str = "",
+        group_id: str = "",
     ) -> tuple[dict[str, Any] | None, str]:
         normalized_phone_number_id = normalize_text(phone_number_id)
         if not normalized_phone_number_id:
             return None, ""
 
         platform_sender_phone_number_id = resolve_whatsapp_sender_phone_number_id()
+        normalized_group_id = normalize_text(group_id)
+        if normalized_group_id:
+            # A group message comes from whoever spoke, and most of them will
+            # never have an account. The group is what ties it to one, and if
+            # the group is not one Assistyca opened there is nothing to tie.
+            group_connection = self.database.get_whatsapp_connection_by_group_id(normalized_group_id)
+            return (group_connection, "group") if group_connection else (None, "")
         if normalized_phone_number_id == platform_sender_phone_number_id:
             # A message to the Assistyca number itself is a person writing to
             # us, so it resolves by who sent it rather than by which client
@@ -16045,6 +16069,43 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 "action": "agent_chat_error",
                 "error": str(exc),
             }
+
+    def _handle_whatsapp_group_message(
+        self,
+        connection: dict[str, Any],
+        event: dict[str, Any],
+    ) -> dict[str, Any]:
+        """A message in a group Assistyca opened: answered, or let be."""
+
+        port = int(self.server.server_address[1])  # type: ignore[attr-defined]
+        chat = WhatsAppAgentChat(
+            database=self.database,
+            connection=connection,
+            base_url=f"http://127.0.0.1:{port}",
+            session_token_factory=self._mint_whatsapp_agent_session_token,
+        )
+        group_id = normalize_text(event.get("group_id"))
+        try:
+            return chat.handle_group_message(
+                event.get("message_text"),
+                group_id=group_id,
+                group_name=self._whatsapp_group_name(connection, group_id),
+                speaker_name=normalize_text(event.get("sender_name")),
+                reply_to_message_id=normalize_text(event.get("reply_to_message_id")),
+            )
+        except WhatsAppAgentChatError as exc:
+            print(f"WhatsApp group chat failed: {exc}", flush=True)
+            return {"type": "group", "action": "group_chat_error", "group_id": group_id, "error": str(exc)}
+
+    @staticmethod
+    def _whatsapp_group_name(connection: dict[str, Any], group_id: str) -> str:
+        """What the group was called when it was opened, if it is still known."""
+
+        metadata = connection.get("metadata") if isinstance(connection.get("metadata"), dict) else {}
+        for entry in metadata.get("groups") if isinstance(metadata.get("groups"), list) else []:
+            if isinstance(entry, dict) and normalize_text(entry.get("id")) == normalize_text(group_id):
+                return normalize_text(entry.get("subject"))
+        return ""
 
     def _serialize_whatsapp_connection(self, connection: dict[str, Any] | None) -> dict[str, Any] | None:
         if not connection:
@@ -18091,6 +18152,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             connection, route_source = self._resolve_whatsapp_connection_for_webhook(
                 phone_number_id,
                 owner_wa_id=normalize_text(event.get("sender_wa_id")),
+                group_id=normalize_text(event.get("group_id")),
             )
             if not connection:
                 claim_result = self._handle_whatsapp_number_claim(phone_number_id, event)
@@ -18116,6 +18178,12 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
 
             service = self._build_whatsapp_service(connection)
             routed_user_ids.add(int(connection.get("userId") or 0))
+            if route_source == "group":
+                group_result = self._handle_whatsapp_group_message(connection, event)
+                group_result["route"] = route_source
+                group_result["phone_number_id"] = phone_number_id
+                results.append(group_result)
+                continue
             try:
                 is_owner_sender = service.is_owner_sender(str(event.get("sender_wa_id", "")))
                 explicit_owner_approval = (

@@ -42,6 +42,14 @@ from packages.infrastructure.agent_proposals import ASSISTANT_CAPABILITIES_PITCH
 from packages.infrastructure.assistant_voice import ASSISTANT_VOICE
 from packages.infrastructure.agent_proposals import missing_sources_for_lookup
 from packages.infrastructure.agent_proposals import normalize_agent_photo_context
+from packages.infrastructure.group_chat_voice import GROUP_VOICE_INSTRUCTIONS
+from packages.infrastructure.group_chat_voice import GROUP_VOICE_MAX_OUTPUT_TOKENS
+from packages.infrastructure.group_chat_voice import decide_group_voice
+from packages.infrastructure.openai_api import call_openai_response
+from packages.infrastructure.openai_api import load_openai_config
+from packages.infrastructure.task_complexity import TaskComplexity
+from packages.infrastructure.task_complexity import resolve_task_model
+from packages.infrastructure.task_complexity import resolve_task_reasoning
 from packages.infrastructure.agent_turns import TURN_FOLLOW_UP_PATHS
 from packages.infrastructure.agent_turns import TURN_STARTING_PATHS
 from packages.infrastructure.recovery_reply import build_situation
@@ -215,6 +223,27 @@ def send_assistyca_text(*, recipient_wa_id: str, text: str, api_version: str = D
         return f"mock-{uuid.uuid4().hex}"
     raise WhatsAppAgentChatError(
         "Assistyca WhatsApp sending is not configured, so the agent cannot reply on this channel."
+    )
+
+
+def send_assistyca_group_text(*, group_id: str, text: str, api_version: str = DEFAULT_WHATSAPP_API_VERSION) -> str:
+    """Say one thing in a group, from the Assistyca number."""
+
+    access_token = resolve_whatsapp_sender_access_token()
+    phone_number_id = resolve_whatsapp_sender_phone_number_id()
+    if access_token and phone_number_id:
+        return send_whatsapp_message(
+            access_token=access_token,
+            phone_number_id=phone_number_id,
+            api_version=api_version,
+            recipient_wa_id=group_id,
+            message_text=text,
+            to_group=True,
+        )
+    if parse_bool(os.getenv("WHATSAPP_ALLOW_MOCK_SEND")):
+        return f"mock-{uuid.uuid4().hex}"
+    raise WhatsAppAgentChatError(
+        "Assistyca WhatsApp sending is not configured, so the agent cannot reply in this group."
     )
 
 
@@ -2578,6 +2607,155 @@ class WhatsAppAgentChat:
         )
 
     # -- the whole loop ----------------------------------------------------
+
+    # -- groups -----------------------------------------------------------
+
+    def handle_group_message(
+        self,
+        message_text: Any,
+        *,
+        group_id: str,
+        group_name: str = "",
+        speaker_name: str = "",
+        reply_to_message_id: str = "",
+    ) -> dict[str, Any]:
+        """One message in a group: decide whether to speak, and speak if so.
+
+        The group's conversation is kept apart from the owner's own chat, in
+        both directions. Nothing of the account is readable here - the turn runs
+        with GROUP_TOOLS and nothing else - so what the group gets is an answer
+        built from what the group itself said and from the public web.
+
+        Every message is written down whether it is answered or not: what makes
+        the next decision is the conversation, and a conversation with only the
+        answered half of it in is not the one these people are having.
+        """
+
+        text = normalize_text(message_text)
+        thread_id = normalize_text(group_id)
+        if self.user_id <= 0 or not self.email:
+            raise WhatsAppAgentChatError("The WhatsApp connection does not resolve to an active owner.")
+        if not thread_id:
+            raise WhatsAppAgentChatError("A group message needs the group it was sent in.")
+
+        history = self.database.list_recent_whatsapp_agent_messages(
+            user_id=self.user_id,
+            limit=AGENT_CHAT_HISTORY_LIMIT,
+            thread_id=thread_id,
+        )
+        decision = decide_group_voice(
+            text=text,
+            speaker=speaker_name,
+            history=[
+                {
+                    "speaker": normalize_text(item.get("speaker")) or normalize_text(item.get("text")).split(":")[0],
+                    "text": normalize_text(item.get("text")),
+                    "isAssistant": normalize_text(item.get("role")) == "assistant",
+                }
+                for item in history
+            ],
+            reply_to_message_id=reply_to_message_id,
+            assistant_message_ids=[
+                normalize_text(item.get("messageId"))
+                for item in history
+                if normalize_text(item.get("role")) == "assistant"
+            ],
+            ask=self._ask_group_voice,
+        )
+
+        if text:
+            self.database.save_whatsapp_agent_message(
+                user_id=self.user_id,
+                role="user",
+                text=f"{normalize_text(speaker_name) or 'someone'}: {text}" if speaker_name else text,
+                thread_id=thread_id,
+            )
+
+        if not decision.get("speak"):
+            return {
+                "type": "group",
+                "action": "stayed_quiet",
+                "group_id": thread_id,
+                "why": normalize_text(decision.get("reason")),
+                "decided_by": normalize_text(decision.get("source")),
+            }
+
+        turn, status = self._api(
+            "POST",
+            "/api/agent/loop",
+            {
+                "userMessage": text,
+                "conversation": [
+                    {"role": normalize_text(item.get("role")) or "user", "text": normalize_text(item.get("text"))}
+                    for item in history
+                ],
+                "timezone": self.timezone_name,
+                "channel": "whatsapp",
+                "toolContext": self._build_tool_context(),
+                "group": {
+                    "id": thread_id,
+                    "name": normalize_text(group_name),
+                    "speaker": normalize_text(speaker_name),
+                },
+            },
+            timeout=AGENT_RUN_TIMEOUT_SECONDS,
+        )
+        reply = normalize_text((turn or {}).get("reply")) if status == 200 and (turn or {}).get("ok") else ""
+        if not reply:
+            # Nothing to say beats saying something went wrong: the group did
+            # not ask for a status report on the assistant.
+            print(
+                f"whatsapp.group.turn_failed group={thread_id} status={status}",
+                flush=True,
+            )
+            return {
+                "type": "group",
+                "action": "stayed_quiet",
+                "group_id": thread_id,
+                "why": "the turn did not produce a reply",
+                "decided_by": "fallback",
+            }
+
+        sent_message_id = send_assistyca_group_text(group_id=thread_id, text=reply)
+        self.database.save_whatsapp_agent_message(
+            user_id=self.user_id,
+            role="assistant",
+            text=reply,
+            thread_id=thread_id,
+            message_id=sent_message_id,
+        )
+        return {
+            "type": "group",
+            "action": "group_reply",
+            "group_id": thread_id,
+            "why": normalize_text(decision.get("reason")),
+            "decided_by": normalize_text(decision.get("source")),
+            "sent_message_id": sent_message_id,
+            "reply": reply,
+        }
+
+    def _ask_group_voice(self, prompt: str) -> str:
+        """Run the speak-or-stay-quiet question. "" when it could not run."""
+
+        model = resolve_task_model(TaskComplexity.SMALL, "OPENAI_MODEL")
+        try:
+            result = call_openai_response(
+                tool_name="whatsapp_group_voice",
+                tool_id="whatsapp_group_voice",
+                billing_email=self.email,
+                prompt=prompt,
+                model=model,
+                instructions=GROUP_VOICE_INSTRUCTIONS,
+                reasoning=resolve_task_reasoning(TaskComplexity.SMALL),
+                max_output_tokens=GROUP_VOICE_MAX_OUTPUT_TOKENS,
+                usage_recorder=self.database,
+                price_resolver=getattr(self.database, "get_model_price", None),
+                config=load_openai_config(default_model=model, strict_tracking=False, include_prompt_in_metadata=False),
+            )
+        except Exception as exc:  # noqa: BLE001 - a judgement that cannot run leaves the group alone
+            print(f"whatsapp.group.voice_failed error={exc!r}", flush=True)
+            return ""
+        return normalize_text(getattr(result, "output_text", ""))
 
     def handle_message(
         self,

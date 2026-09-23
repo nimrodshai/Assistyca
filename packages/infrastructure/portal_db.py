@@ -945,6 +945,8 @@ CREATE TABLE IF NOT EXISTS whatsapp_agent_messages (
     role TEXT NOT NULL DEFAULT 'user',
     text TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL,
+    thread_id TEXT NOT NULL DEFAULT '',
+    message_id TEXT NOT NULL DEFAULT '',
     FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
@@ -1617,6 +1619,7 @@ class PortalDatabase:
                 self._ensure_usage_events_tool_indexes(conn)
                 self._ensure_contact_opportunities_indexes(conn)
                 self._ensure_agent_turns_table(conn)
+                self._migrate_whatsapp_agent_messages_table(conn)
                 self._ensure_account_lists_tables(conn)
                 conn.executescript(ACCOUNT_RECEIPTS_TABLE_SQL)
                 self._migrate_account_receipts_table(conn)
@@ -1675,6 +1678,29 @@ class PortalDatabase:
         """
 
         conn.executescript(AGENT_TURNS_TABLE_SQL)
+
+    @staticmethod
+    def _migrate_whatsapp_agent_messages_table(conn: sqlite3.Connection) -> None:
+        """Give the WhatsApp transcript a thread, so a group has its own.
+
+        Every row written before this belongs to the owner's own chat with the
+        assistant, which is what the empty thread means. A group's messages must
+        not land in it: the owner's private conversation is not the group's to
+        read, and the group's chatter is not the owner's to wade through.
+        """
+
+        columns = {str(row["name"]) for row in conn.execute("PRAGMA table_info(whatsapp_agent_messages)").fetchall()}
+        if "thread_id" not in columns:
+            conn.execute("ALTER TABLE whatsapp_agent_messages ADD COLUMN thread_id TEXT NOT NULL DEFAULT ''")
+        if "message_id" not in columns:
+            # What WhatsApp called the message it delivered. A person replying
+            # to one of Assistyca's messages in a group is addressing it, and
+            # the reply carries the id of the message it is under.
+            conn.execute("ALTER TABLE whatsapp_agent_messages ADD COLUMN message_id TEXT NOT NULL DEFAULT ''")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_whatsapp_agent_messages_thread "
+            "ON whatsapp_agent_messages(user_id, thread_id, id DESC)"
+        )
 
     @staticmethod
     def _migrate_account_receipts_table(conn: sqlite3.Connection) -> None:
@@ -5735,6 +5761,44 @@ class PortalDatabase:
                 return None
             return self._load_whatsapp_connection_row(conn, user_id=int(rows[0]["user_id"]))
 
+    def get_whatsapp_connection_by_group_id(self, group_id: str) -> dict[str, Any] | None:
+        """The account that opened a group, found by the group's id.
+
+        A message in a group comes from whoever spoke, and most of them will
+        never have an account, so the group itself is the only thing tying the
+        message to one. The ids live in the connection's metadata, which SQLite
+        cannot index into usefully; there are few enough connections with groups
+        for a scan to be the honest answer rather than a new table.
+        """
+
+        wanted = normalize_text(group_id)
+        if not wanted:
+            return None
+
+        with self._connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT w.user_id AS user_id, w.metadata_json AS metadata_json
+                FROM whatsapp_connections AS w
+                INNER JOIN users AS u
+                    ON u.id = w.user_id
+                WHERE u.is_active = 1
+                  AND w.metadata_json LIKE ?
+                ORDER BY w.updated_at DESC, w.user_id ASC
+                """,
+                (f'%{wanted}%',),
+            ).fetchall()
+            for row in rows:
+                try:
+                    metadata = json.loads(row["metadata_json"] or "{}")
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    continue
+                groups = metadata.get("groups") if isinstance(metadata, dict) else None
+                for entry in groups if isinstance(groups, list) else []:
+                    if isinstance(entry, dict) and normalize_text(entry.get("id")) == wanted:
+                        return self._load_whatsapp_connection_row(conn, user_id=int(row["user_id"]))
+            return None
+
     def get_whatsapp_connection_by_user_id(self, user_id: int) -> dict[str, Any] | None:
         if user_id <= 0:
             return None
@@ -6527,7 +6591,9 @@ class PortalDatabase:
             conn.commit()
             return int(cursor.rowcount or 0)
 
-    def save_whatsapp_agent_message(self, *, user_id: int, role: str, text: str) -> dict[str, Any]:
+    def save_whatsapp_agent_message(
+        self, *, user_id: int, role: str, text: str, thread_id: str = "", message_id: str = ""
+    ) -> dict[str, Any]:
         """One turn of the owner's WhatsApp conversation with the agent.
 
         This transcript is the WhatsApp counterpart of the browser's local
@@ -6538,6 +6604,8 @@ class PortalDatabase:
         resolved_user_id = int(user_id or 0)
         normalized_role = "assistant" if normalize_text(role).lower() == "assistant" else "user"
         normalized_text = normalize_text(text)
+        normalized_thread_id = normalize_text(thread_id)
+        normalized_message_id = normalize_text(message_id)
         if resolved_user_id <= 0 or not normalized_text:
             raise ValueError("A WhatsApp agent message needs an owner and text.")
 
@@ -6545,10 +6613,17 @@ class PortalDatabase:
         with self._connection() as conn:
             cursor = conn.execute(
                 """
-                INSERT INTO whatsapp_agent_messages (user_id, role, text, created_at)
-                VALUES (?, ?, ?, ?)
+                INSERT INTO whatsapp_agent_messages (user_id, role, text, created_at, thread_id, message_id)
+                VALUES (?, ?, ?, ?, ?, ?)
                 """,
-                (resolved_user_id, normalized_role, normalized_text, created_at),
+                (
+                    resolved_user_id,
+                    normalized_role,
+                    normalized_text,
+                    created_at,
+                    normalized_thread_id,
+                    normalized_message_id,
+                ),
             )
             conn.commit()
             return {
@@ -6556,33 +6631,44 @@ class PortalDatabase:
                 "userId": resolved_user_id,
                 "role": normalized_role,
                 "text": normalized_text,
+                "threadId": normalized_thread_id,
+                "messageId": normalized_message_id,
                 "createdAt": created_at,
             }
 
-    def list_recent_whatsapp_agent_messages(self, *, user_id: int, limit: int = 12) -> list[dict[str, Any]]:
-        """The newest turns of the WhatsApp agent conversation, oldest first."""
+    def list_recent_whatsapp_agent_messages(
+        self, *, user_id: int, limit: int = 12, thread_id: str = ""
+    ) -> list[dict[str, Any]]:
+        """The newest turns of one WhatsApp conversation, oldest first.
+
+        The empty thread is the owner's own chat. A group asks for its own id
+        and gets its own conversation and nothing else.
+        """
 
         resolved_user_id = int(user_id or 0)
         resolved_limit = max(1, min(int(limit or 12), 50))
+        normalized_thread_id = normalize_text(thread_id)
         if resolved_user_id <= 0:
             return []
 
         with self._connection() as conn:
             rows = conn.execute(
                 """
-                SELECT id, role, text, created_at
+                SELECT id, role, text, created_at, thread_id, message_id
                 FROM whatsapp_agent_messages
-                WHERE user_id = ?
+                WHERE user_id = ? AND thread_id = ?
                 ORDER BY id DESC
                 LIMIT ?
                 """,
-                (resolved_user_id, resolved_limit),
+                (resolved_user_id, normalized_thread_id, resolved_limit),
             ).fetchall()
         return [
             {
                 "id": int(row["id"]),
                 "role": str(row["role"] or "user"),
                 "text": str(row["text"] or ""),
+                "threadId": str(row["thread_id"] or ""),
+                "messageId": str(row["message_id"] or ""),
                 "createdAt": str(row["created_at"] or ""),
             }
             for row in reversed(rows)

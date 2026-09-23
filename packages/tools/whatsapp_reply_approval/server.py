@@ -1318,13 +1318,23 @@ def send_whatsapp_message(
     message_text: str | None = None,
     interactive: dict[str, Any] | None = None,
     template: dict[str, Any] | None = None,
+    to_group: bool = False,
 ) -> str:
+    """Send one message. With to_group, recipient_wa_id is a group id.
+
+    Groups take text, media and templates but not interactive messages: Meta
+    does not deliver buttons to a group, so a caller that offers them has to
+    write the choice out in words there.
+    """
+
     url = f"https://graph.facebook.com/{api_version}/{phone_number_id}/messages"
     payload: dict[str, Any] = {
         "messaging_product": "whatsapp",
-        "recipient_type": "individual",
+        "recipient_type": "group" if to_group else "individual",
         "to": recipient_wa_id,
     }
+    if to_group and interactive is not None:
+        raise RuntimeError("WhatsApp does not deliver buttons to a group.")
     if template is not None:
         payload["type"] = "template"
         payload["template"] = template
