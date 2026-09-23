@@ -18,6 +18,7 @@ from unittest import mock
 from packages.infrastructure.agent_loop import GROUP_TOOLS
 from packages.infrastructure.agent_loop import LoopContext
 from packages.infrastructure.agent_loop import run_agent_loop
+from packages.infrastructure.agent_loop import _GROUP_RULES
 from packages.infrastructure.agent_loop import tool_definitions
 from packages.infrastructure.portal_db import PortalDatabase
 from packages.infrastructure.whatsapp_agent_chat import WhatsAppAgentChat
@@ -156,9 +157,16 @@ class GroupTurnTests(unittest.TestCase):
 class GroupToolTests(unittest.TestCase):
     def test_the_model_is_shown_that_an_account_is_not_readable_here(self) -> None:
         in_group = {tool["name"]: tool for tool in tool_definitions({}, in_group=True)}
-        self.assertIn("This is a group", in_group["read_inbox"]["description"])
-        self.assertIn("This is a group", in_group["create_list"]["description"])
-        self.assertNotIn("This is a group", in_group["search_web"]["description"])
+        # A tool that cannot run here is named and explained, without the
+        # schema nobody can fill in: in a group that was most of the prompt.
+        self.assertIn("UNAVAILABLE RIGHT NOW: not in a group chat", in_group["read_inbox"]["description"])
+        self.assertIn("UNAVAILABLE RIGHT NOW: not in a group chat", in_group["create_list"]["description"])
+        self.assertEqual(in_group["read_inbox"]["parameters"]["properties"], {})
+        self.assertNotIn("UNAVAILABLE", in_group["search_web"]["description"])
+        self.assertIn("query", in_group["search_web"]["parameters"]["properties"])
+        # The reason itself is said once, in the rules a group turn carries,
+        # rather than repeated on all thirty-nine shut-off tools.
+        self.assertIn("Nobody's mail, calendar, receipts or lists are open to a group", _GROUP_RULES)
 
     def test_the_tools_left_in_a_group_read_nothing_of_anyone_s(self) -> None:
         self.assertEqual(GROUP_TOOLS, frozenset({"search_web", "search_news", "look_up_property", "exchange_rate"}))

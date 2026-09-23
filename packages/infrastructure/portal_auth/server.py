@@ -132,6 +132,7 @@ from packages.infrastructure.openai_api import OpenAIConfigurationError
 from packages.infrastructure.openai_api import OpenAIError
 from packages.infrastructure.openai_api import call_openai_response
 from packages.infrastructure.openai_api import load_openai_config
+from packages.infrastructure.openai_api import prompt_cache_key_for
 from packages.infrastructure.voice_notes import VOICE_NOTE_MAX_BYTES
 from packages.infrastructure.voice_notes import VoiceNoteError
 from packages.infrastructure.voice_notes import describe_voice_note_problem
@@ -11499,6 +11500,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 tools=tools,
                 model=model,
                 instructions=AGENT_LOOP_INSTRUCTIONS,
+                prompt_cache_key=prompt_cache_key_for(session.email),
                 reasoning=resolve_task_reasoning(AGENT_TURN_COMPLEXITY, "PORTAL_AGENT_REASONING_EFFORT"),
                 max_output_tokens=LOOP_MAX_OUTPUT_TOKENS,
                 temperature=AGENT_TURN_TEMPERATURE,
@@ -11570,6 +11572,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             "model": model,
             "rounds": result.rounds,
             "inputTokens": result.input_tokens,
+            "cachedInputTokens": result.cached_input_tokens,
             "outputTokens": result.output_tokens,
             "latencyMs": result.duration_ms,
             "toolCalls": result.tool_calls,

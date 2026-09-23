@@ -27,6 +27,7 @@ from urllib import request as urllib_request
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from packages.infrastructure.agent_loop import LoopContext
+from packages.infrastructure.agent_loop import _run_preflight
 from packages.infrastructure.agent_loop import TOOLS_BY_NAME
 from packages.infrastructure.agent_loop import run_agent_loop
 from packages.infrastructure.agent_loop import tool_definitions
@@ -347,6 +348,20 @@ class SendEmailToolTests(unittest.TestCase):
         tool = TOOLS_BY_NAME["send_email"]
         problem = tool.preflight(_context(api, gmail=True), {"to": ["dana"], "cc": [], "subject": "x", "body": "y", "reply_to_message_id": None, "mailbox": None})
         self.assertEqual(problem["error"]["code"], "choice_required")
+        self.assertEqual(api.calls, [])
+
+    def test_a_yes_is_never_asked_for_an_email_that_cannot_be_sent(self) -> None:
+        # The check before the question used to run the tool's own preflight
+        # first and only look at the connection inside it, so a tool with no
+        # preflight of its own could ask the person to confirm something that
+        # was never going to happen. Availability is decided first now, by the
+        # same rule that marked the tool UNAVAILABLE in the catalogue.
+        api = FakeApi()
+        problem = _run_preflight(TOOLS_BY_NAME["send_email"], _context(api, gmail=False), {"to": ["dana@example.com"], "cc": [], "subject": "x", "body": "y", "reply_to_message_id": None, "mailbox": None})
+
+        self.assertEqual(problem["error"]["code"], "source_not_connected")
+        self.assertEqual(problem["error"]["source"], "gmail_send")
+        self.assertIn("connect_link", problem["error"]["whatHappened"])
         self.assertEqual(api.calls, [])
 
     def test_two_mailboxes_that_can_send_become_a_question_not_a_guess(self) -> None:
