@@ -84,6 +84,29 @@ class WhichOpeningTests(unittest.TestCase):
         self.assertTrue(flow["weekReady"])
         self.assertNotIn("weekGaps", flow)
 
+    def test_the_afternoons_question_travels_without_holding_the_week_back(self) -> None:
+        # The block has already worked out that the week can be run; what it
+        # still carries is the question nobody has put yet.
+        from packages.infrastructure import household
+
+        block = household.describe_household(
+            profile={"accountKind": "family", "gettingToKnow": "in_progress"},
+            members=[{"name": "Lahav", "role": "child"}],
+            activities=[{
+                "id": 1, "title": "School", "who": ["Lahav"], "days": ["sun"],
+                "endTime": "13:45", "dropOffBy": "me", "pickUpBy": "Stav",
+            }],
+            today=date(2026, 9, 24),
+        )
+        flow = self.flow(
+            account_type="family",
+            profile={"gettingToKnow": "in_progress"},
+            household_block=block,
+        )
+        self.assertEqual(flow["goal"], "family")
+        self.assertTrue(flow["weekReady"], "the two never disagree about whether the week can be run")
+        self.assertEqual(flow["weekGaps"], [{"missing": "afternoons", "who": "Lahav", "after": "School"}])
+
     def test_a_week_they_have_called_finished_is_not_reopened_as_questions(self) -> None:
         # Their "that's everything" stands: the goal moves on. What nobody is
         # down for still travels, so it can be raised on the day it matters.
@@ -149,6 +172,11 @@ class RulesTests(unittest.TestCase):
         self.assertIn("weekGaps", rules)
         self.assertIn("you never ask for either while you are learning it", rules)
         self.assertIn("do not call done", rules)
+        # School hours are the easy half; the afternoon is the half that
+        # needs somebody in it, and it is asked for rather than assumed.
+        self.assertIn("what that one does after school", rules)
+        self.assertIn("never decide for yourself that there is nothing after them", rules)
+        self.assertIn("'afternoons' gap never makes a week unready", rules)
 
     def test_a_family_is_never_told_it_must_connect_anything(self) -> None:
         rules = chat_flow.chat_flow_rules({"accountType": "family", "goal": "connect"})

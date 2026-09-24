@@ -80,12 +80,13 @@ def describe_chat_flow(
     profile = profile or {}
     missing = [source for source in CONNECT_SOURCES if source not in set(connected or ())]
     gaps = week_gaps(household_block)
+    ready = week_ready(household_block, gaps)
 
     if kind == "family" and family_flow_allowed:
         status = _status(profile.get("gettingToKnow"))
         if status != "done":
             flow = _flow("family", kind, status, profile.get("askAgainOn"), today)
-            flow["weekReady"] = not gaps
+            flow["weekReady"] = ready
             if gaps:
                 flow["weekGaps"] = gaps
             return flow
@@ -98,14 +99,14 @@ def describe_chat_flow(
             # A week they have called finished is never reopened as a round of
             # questions, but what nobody is down for still travels, so it can
             # be raised on the day it matters.
-            flow["weekReady"] = not gaps
+            flow["weekReady"] = ready
             if gaps:
                 flow["weekGaps"] = gaps
         return flow
 
     flow = {"accountType": kind, "goal": "done"}
     if kind == "family" and family_flow_allowed:
-        flow["weekReady"] = not gaps
+        flow["weekReady"] = ready
         if gaps:
             flow["weekGaps"] = gaps
     return flow
@@ -124,6 +125,19 @@ def week_gaps(household_block: dict[str, Any] | None) -> list[dict[str, Any]]:
     else:
         gaps = week_setup_gaps(household_block.get("members"), household_block.get("week"))
     return gaps[:MAX_WEEK_GAPS_SHOWN]
+
+
+def week_ready(household_block: dict[str, Any] | None, gaps: list[dict[str, Any]]) -> bool:
+    """Whether the week can be run for them.
+
+    The block works this out from what is kept, and an "afternoons" gap - a
+    question still to put, not a hole in the week - is in the gaps without
+    being in this. Reading it back keeps the two from disagreeing.
+    """
+
+    if isinstance(household_block, dict) and "weekReady" in household_block:
+        return bool(household_block.get("weekReady"))
+    return not gaps
 
 
 def _status(value: Any) -> str:
@@ -171,13 +185,19 @@ _FAMILY_GETTING_TO_KNOW = (
     "CONTEXT.household is what you already hold. CONTEXT.chatFlow.weekGaps is what the week is still "
     "missing, worked out from what is kept and written in the order to ask: 'people' means you know nobody "
     "yet; 'week' names a child with nothing in their week; 'days', 'times', 'drop_off' and 'pick_up' name "
-    "an activity that has no days, no finishing time, or nobody down to take or to collect. Answer whatever "
+    "an activity that has no days, no finishing time, or nobody down to take or to collect; 'afternoons' "
+    "names a child whose week holds one thing and nothing after it, which nearly always means you have "
+    "their school or kindergarten and have not yet asked what they do once it ends. Answer whatever "
     "they wrote first, then ask about the first gap - one question in a message, warmly and briefly, never "
     "a list and never a form. Start with the people: whether there is a partner and their name, then each "
     "child's name, then each one's birthday, which is worth having for its own sake (an age is enough when "
     "they would rather not say). Then, child by child: school or kindergarten - which days, what time it "
-    "ends, who takes them in the morning and who collects them - and then each regular activity after "
-    "school, what it is, which days, what time, where, who drives there and who picks up. When they name a "
+    "ends, who takes them in the morning and who collects them - and then, before you move on to the next "
+    "child, what that one does after school: the clubs, the sport, the lesson, the afternoon care, or a "
+    "grandmother's on Tuesdays. Never take school hours as the whole of a child's week and never decide "
+    "for yourself that there is nothing after them; ask, in their words rather than yours, and for each "
+    "one they name take what it is, which days, what time, where, who drives there and who picks up. When "
+    "they name a "
     "person who is not in household, that is somebody new: save them too, so you know who the pickups "
     "belong to.\n"
     "Save every answer the moment it is given with save_family_member and save_week_activity; several "
@@ -189,9 +209,11 @@ _FAMILY_GETTING_TO_KNOW = (
     "up after putting it off. When they say not now, later, or that they are busy, call it with postponed, "
     "say in a few words that it can wait, and stop asking; while chatFlow.askNow is false do not raise it "
     "at all, and when it is true again ask once, lightly, whether now is a good time to carry on. While "
-    "chatFlow.weekGaps is not empty the week cannot be run for them, so do not call done - the one "
-    "exception is when they say that is everything, which is always theirs to say. When the last gap "
-    "closes, or they close it for you, call set_getting_to_know with done, show the week back in a few "
+    "chatFlow.weekReady is false the week cannot be run for them, so do not call done - the one "
+    "exception is when they say that is everything, which is always theirs to say. An 'afternoons' gap "
+    "never makes a week unready, because \"nothing, he comes straight home\" is a whole answer: put the "
+    "question once for that child, take whatever comes back, and let it go. When the week is ready and "
+    "nothing is left to put to them, or they close it for you, call set_getting_to_know with done, show the week back in a few "
     "short lines with anything nobody is down for named plainly, and say in one line what you will now do "
     "with it without being asked: each morning what the day holds and who is on what, the evening before "
     "when tomorrow still has nobody down for a pickup, and a word to whoever is driving before it is time "
