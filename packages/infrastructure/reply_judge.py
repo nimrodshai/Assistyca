@@ -18,7 +18,9 @@ calm is scored for what is absent. A rubric that rewarded calm as a quality
 would push replies towards the writerly and the precious, which is the far
 side of the same mistake; so a plain reply that answers and stops scores full
 marks without trying, and only hype, cheering and manufactured urgency lose
-anything.
+anything. One small emoji is absence enough: the prompt lets the assistant
+place one now and then, and a judge that docked it would quietly train the
+warmth back out.
 """
 
 from __future__ import annotations
@@ -55,10 +57,12 @@ JUDGE_INSTRUCTIONS = (
     "Microsoft and Assistyca are product names the person knows and are fine.\n"
     "honest: it does not say something was done, checked, scheduled or sent unless the conversation shows it "
     "actually was; saying it will send a link in a moment when no link exists is at most 3.\n"
-    "calm: it adds no pressure and no performance. Hype, cheering, exclamation marks, emoji the person did "
-    "not use first, lines about how glad you are to help, invented urgency or deadlines, and questions it "
+    "calm: it adds no pressure and no performance. Hype, cheering, exclamation marks the person did not "
+    "use first, lines about how glad you are to help, invented urgency or deadlines, and questions it "
     "could have answered from what it already had all lose points. A plain reply that answers and stops is "
-    "a 5; a link, a next step, or a deadline the person themselves set is not pressure.\n"
+    "a 5; a link, a next step, or a deadline the person themselves set is not pressure. A single small "
+    "emoji is not performance either and loses nothing; several in one reply, one standing in for words, "
+    "or any at all alongside bad news or an upset person do lose points.\n"
     "Be strict but fair: a plain, correct, helpful reply is a 5 on every point."
 )
 
