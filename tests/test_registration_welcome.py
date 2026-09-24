@@ -63,10 +63,10 @@ class FamilyWelcomeTemplateTests(unittest.TestCase):
             template = resolve_registration_welcome_template(kind="family", name="Dana Levi")
 
         self.assertEqual((template.name, template.language), ("assistyca_welcome_family_1", "en"))
-        # {{2}} is sent empty: the slot has to be there, the line does not.
         self.assertEqual(
             registration_welcome_template_parameters(name="Dana Levi", kind="family"),
-            ["Dana", ""],
+            ["Dana", 'No more "Did you remember to take Noah to soccer?". I\'ll keep track of who\'s '
+             "taking who, and remind them in time."],
         )
 
     def test_a_family_with_a_hebrew_name_gets_the_hebrew_family_welcome(self) -> None:
@@ -76,7 +76,8 @@ class FamilyWelcomeTemplateTests(unittest.TestCase):
         self.assertEqual((template.name, template.language), ("assistyca_welcome_family_1_hebrew", "he"))
         self.assertEqual(
             registration_welcome_template_parameters(name="יוני כהן", kind="family"),
-            ["יוני", ""],
+            ["יוני", 'בואו נשים סוף להודעות כמו "זכרת לקחת את יוני לכדורגל?". אני אעקוב מי לוקח את מי, '
+             "ואזכיר להם בזמן."],
         )
 
     def test_every_welcome_carries_both_variables(self) -> None:
@@ -85,8 +86,7 @@ class FamilyWelcomeTemplateTests(unittest.TestCase):
         Dropping the family line on 2026-09-23 - on the reading that the
         template carries it as fixed text - got "(#132000) Number of
         parameters does not match the expected number of params" and a family
-        with no welcome at all. A blank second variable is not the same thing
-        as a missing one: the slot is still sent.
+        with no welcome at all.
         """
 
         for kind in ("business", "family"):
@@ -95,13 +95,6 @@ class FamilyWelcomeTemplateTests(unittest.TestCase):
                     self.assertEqual(
                         len(registration_welcome_template_parameters(name=name, kind=kind)), 2
                     )
-
-    def test_a_family_second_variable_is_blank(self) -> None:
-        for name in ("Dana Levi", "יוני כהן", ""):
-            with self.subTest(name=name):
-                self.assertEqual(
-                    registration_welcome_template_parameters(name=name, kind="family")[1], ""
-                )
 
     def test_any_other_language_gets_english(self) -> None:
         for name in ("Мария", "محمد", "José", ""):
@@ -200,28 +193,19 @@ class RegistrationWelcomeSendTests(unittest.TestCase):
         self.assertEqual(len(template["components"]), 1)
         self.assertEqual(template["components"][0]["parameters"][0]["text"], "It's 12:40.")
 
-    def test_a_blank_variable_still_takes_its_place_in_the_send(self) -> None:
-        # The family welcome leaves {{2}} empty on purpose. Dropping the slot
-        # instead is what Meta refuses, so a blank one goes out as a blank one.
-        template = self.send(
-            message_text="anything",
-            template_name="assistyca_welcome_family_1",
-            template_language="en",
-            template_parameters=["Dana", "   "],
-        )
+    def test_an_empty_variable_is_refused_before_it_reaches_meta(self) -> None:
+        """Meta answers "(#131008) Required parameter is missing" to a blank.
 
-        self.assertEqual(
-            [parameter["text"] for parameter in template["components"][-1]["parameters"]],
-            ["Dana", ""],
-        )
+        Proven on production on 2026-09-24. Refusing it here costs a caller
+        one exception instead of a round trip and a registrant with nothing.
+        """
 
-    def test_a_send_with_no_variables_at_all_is_refused(self) -> None:
         with self.assertRaises(RuntimeError):
             self.send(
                 message_text="anything",
                 template_name="assistyca_welcome1",
                 template_language="en",
-                template_parameters=[],
+                template_parameters=["Dana", "   "],
             )
 
 

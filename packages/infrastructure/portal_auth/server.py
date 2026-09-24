@@ -323,7 +323,8 @@ from packages.infrastructure.whatsapp_agent_chat import send_with_link_buttons
 from packages.infrastructure.whatsapp_agent_chat import sign_in_link_buttons
 from packages.infrastructure.whatsapp_agent_chat import resolve_whatsapp_signup_daily_cap
 from packages.infrastructure.whatsapp_agent_chat import whatsapp_signup_enabled
-from packages.infrastructure.registration_welcome import registration_welcome_attempts
+from packages.infrastructure.registration_welcome import build_registration_welcome_message
+from packages.infrastructure.registration_welcome import registration_welcome_template_parameters
 from packages.infrastructure.registration_welcome import resolve_registration_welcome_template
 from packages.infrastructure.whatsapp_agent_chat import flatten_for_template
 from packages.infrastructure.whatsapp_portal_service import PortalWhatsAppService
@@ -15254,52 +15255,36 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             return
 
         # An approved template: the business welcome, or the family one in
-        # the language their name was typed in. A family is sent with {{2}}
-        # empty first and with the line only if Meta will not take an empty
-        # variable, so which words went out is known after the send, not
-        # before.
+        # the language their name was typed in.
+        welcome = build_registration_welcome_message(name=name, kind=kind)
+        # The signup conversation starts with the welcome, so the reply to it
+        # is answered as a reply and not as a first hello.
+        self.database.append_whatsapp_signup_message(wa_id=phone, role="assistant", text=welcome)
+
         template = resolve_registration_welcome_template(base_url=self._public_base_url(), kind=kind, name=name)
-        attempts = registration_welcome_attempts(name=name, kind=kind)
-        welcome = attempts[0].message
         sent_message_id = ""
         send_error = ""
-        blank_second_variable = False
-        for attempt in attempts:
-            for header_image_url in (template.header_image_url, ""):
-                try:
-                    sent_message_id = send_whatsapp_notification(
-                        recipient_wa_id=phone,
-                        message_text=flatten_for_template(attempt.message),
-                        template_name=template.name,
-                        template_language=template.language,
-                        template_parameters=attempt.parameters,
-                        template_header_image_url=header_image_url,
-                    )
-                    send_error = ""
-                    welcome = attempt.message
-                    blank_second_variable = attempt.blank_second_variable
-                    break
-                except Exception as exc:  # noqa: BLE001 - the registration stands; the page gets another way in
-                    send_error = str(exc)
-                    print(f"Web registration welcome could not be sent: {exc}", flush=True)
-                if not header_image_url:
-                    break
-                # Meta fetches the picture itself, and a picture it cannot fetch
-                # loses the whole message. The words are what the person needs, so
-                # the second attempt goes without it.
-                print("Web registration welcome retried without its header image.", flush=True)
-            if sent_message_id:
+        for header_image_url in (template.header_image_url, ""):
+            try:
+                sent_message_id = send_whatsapp_notification(
+                    recipient_wa_id=phone,
+                    message_text=flatten_for_template(welcome),
+                    template_name=template.name,
+                    template_language=template.language,
+                    template_parameters=registration_welcome_template_parameters(name=name, kind=kind),
+                    template_header_image_url=header_image_url,
+                )
+                send_error = ""
                 break
-            if attempt.blank_second_variable:
-                # An empty {{2}} is what we want to send and may be more than
-                # Meta allows. A family with no welcome is worse than a family
-                # with one line too many, so the line goes on the next attempt.
-                print("Web registration welcome retried with the line in {{2}}.", flush=True)
-
-        # The signup conversation starts with the welcome, so the reply to it
-        # is answered as a reply and not as a first hello. It is written down
-        # after the send, because the send decides what their phone showed.
-        self.database.append_whatsapp_signup_message(wa_id=phone, role="assistant", text=welcome)
+            except Exception as exc:  # noqa: BLE001 - the registration stands; the page gets another way in
+                send_error = str(exc)
+                print(f"Web registration welcome could not be sent: {exc}", flush=True)
+            if not header_image_url:
+                break
+            # Meta fetches the picture itself, and a picture it cannot fetch
+            # loses the whole message. The words are what the person needs, so
+            # the second attempt goes without it.
+            print("Web registration welcome retried without its header image.", flush=True)
 
         print(
             json.dumps(
@@ -15308,9 +15293,6 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                     "kind": kind,
                     "phone": self._mask_whatsapp_log_identifier(phone),
                     "welcomeSent": bool(sent_message_id),
-                    # Whether Meta took an empty body variable. This is the
-                    # only place that answer is written down.
-                    "blankSecondVariable": blank_second_variable,
                     "sendError": send_error[:200],
                 },
                 ensure_ascii=True,

@@ -17,6 +17,7 @@ from unittest import mock
 
 from packages.infrastructure.portal_auth.server import PortalConfig, create_server
 from packages.infrastructure.registration_welcome import FAMILY_WELCOME_LINE
+from packages.infrastructure.registration_welcome import HEBREW_FAMILY_WELCOME_LINE
 from packages.infrastructure.registration_welcome import REGISTRATION_WELCOME_LINE
 from packages.infrastructure.whatsapp_agent_chat import build_registration_welcome_prompt
 from packages.infrastructure.whatsapp_agent_chat import build_signup_concierge_prompt
@@ -227,8 +228,7 @@ class WebRegistrationTests(unittest.TestCase):
         sent = self.template_sent.call_args.kwargs["template"]
         self.assertEqual(sent["name"], "assistyca_welcome_family_1")
         self.assertEqual(sent["language"], {"code": "en"})
-        # {{2}} is sent, and sent empty: the family line is not in the message.
-        self.assertEqual(sent["components"][-1]["parameters"][1]["text"], "")
+        self.assertEqual(sent["components"][-1]["parameters"][1]["text"], FAMILY_WELCOME_LINE)
 
         # Their first reply opens the account on the spot - no address asked
         # for, nothing standing between them and the assistant - and that same
@@ -268,65 +268,7 @@ class WebRegistrationTests(unittest.TestCase):
         # thing in its conversation, so nothing it said is said again.
         transcript = self.database.list_recent_whatsapp_agent_messages(user_id=user_id)
         self.assertEqual([entry["role"] for entry in transcript], ["assistant", "user", "assistant"])
-        self.assertNotIn(FAMILY_WELCOME_LINE, transcript[0]["text"])
-        self.assertIn("let's get to know the names in your family", transcript[0]["text"])
-
-    def test_a_family_still_gets_a_welcome_when_meta_will_not_take_a_blank(self) -> None:
-        """An empty {{2}} is what we want, not what we are willing to bet on.
-
-        Meta lists an empty body variable beside the newline it refuses, and a
-        refused template send is refused whole. On 2026-09-23 that left a
-        family who had just registered with no welcome at all. So a refusal
-        puts the line back rather than saying nothing.
-        """
-
-        refusals = []
-
-        def refuse_a_blank_variable(**kwargs):
-            template = kwargs.get("template") or {}
-            texts = [
-                parameter.get("text")
-                for component in template.get("components", [])
-                if component.get("type") == "body"
-                for parameter in component.get("parameters", [])
-            ]
-            if "" in texts:
-                refusals.append(texts)
-                raise RuntimeError("(#132000) Number of parameters does not match the expected number of params")
-            return "wamid.welcome"
-
-        self.template_sent.side_effect = refuse_a_blank_variable
-
-        status, payload = self.register(family_registration())
-        self.assertEqual(status, 200, payload)
-        self.assertTrue(payload["whatsappSent"], "the family should still be welcomed")
-
-        # The blank was tried first, and only then the line.
-        self.assertTrue(refusals, "the empty variable should have been the first attempt")
-        sent = self.template_sent.call_args.kwargs["template"]
-        self.assertEqual(
-            [parameter["text"] for parameter in sent["components"][-1]["parameters"]],
-            ["Dana", FAMILY_WELCOME_LINE],
-        )
-
-        # And the conversation we keep says what their phone actually showed,
-        # which is the message with the line in it.
-        transcript = (self.database.get_whatsapp_signup(PHONE) or {})["transcript"]
         self.assertIn(FAMILY_WELCOME_LINE, transcript[0]["text"])
-
-    def test_a_business_welcome_is_never_retried_with_another_shape(self) -> None:
-        # Only a family has a second shape to fall back to; a business send
-        # that fails has nothing else to try, and must not loop.
-        self.template_sent.side_effect = RuntimeError("(#132000) parameters")
-
-        status, payload = self.register(registration())
-        self.assertEqual(status, 200, payload)
-        self.assertFalse(payload["whatsappSent"])
-        shapes = {
-            tuple(parameter["text"] for parameter in call.kwargs["template"]["components"][-1]["parameters"])
-            for call in self.template_sent.call_args_list
-        }
-        self.assertEqual(len(shapes), 1, shapes)
 
     def test_a_family_is_never_asked_for_an_email_however_it_answers(self) -> None:
         # Even "later" or a question opens the account: there is nothing to
@@ -420,7 +362,7 @@ class WebRegistrationTests(unittest.TestCase):
         self.assertEqual(sent["language"], {"code": "he"})
         greeted, line = [parameter["text"] for parameter in sent["components"][-1]["parameters"]]
         self.assertEqual(greeted, "דנה")
-        self.assertEqual(line, "")
+        self.assertEqual(line, HEBREW_FAMILY_WELCOME_LINE)
         # The conversation we keep says what their phone showed, in Hebrew.
         transcript = (self.database.get_whatsapp_signup(PHONE) or {})["transcript"]
         self.assertTrue(transcript[0]["text"].startswith("היי דנה 👋"))

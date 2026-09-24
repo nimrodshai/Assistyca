@@ -10,11 +10,7 @@ message may only go out as a template Meta has approved. A business gets
 
 A family gets a family welcome instead, and the one in their language: a name
 typed in Hebrew gets `assistyca_welcome_family_1_hebrew`, any other name
-`assistyca_welcome_family_1`. Both take the same two variables, and the second
-goes out empty: Nimrod does not want that line in the family welcome, and the
-count still has to match the template Meta approved. If Meta turns an empty
-variable away, the send falls back to carrying the line rather than leaving a
-family with no welcome - see `registration_welcome_attempts`.
+`assistyca_welcome_family_1`. Same two variables, a family line in {{2}}.
 
 The greeting and the closing are repeated here as text so the conversation we
 keep says exactly what their phone showed. They are a copy of the approved
@@ -56,10 +52,8 @@ REGISTRATION_WELCOME_LINE = (
 )
 
 
-# The family welcomes. The greeting and closing are copies of the approved
-# bodies, kept in step by hand. The line below is what {{2}} carried until
-# 2026-09-23; it is now only the fallback, for a Meta that will not take an
-# empty variable.
+# The family welcomes. {{2}} is word for word as Nimrod gave it; the greeting
+# and closing are copies of the approved bodies, kept in step by hand.
 FAMILY_WELCOME_TEMPLATE_NAME = "assistyca_welcome_family_1"
 FAMILY_WELCOME_GREETING = "Hi {name} 👋 I'm your new assistant and I'm here to take a few things off your plate."
 FAMILY_WELCOME_CLOSING = (
@@ -170,86 +164,37 @@ def resolve_registration_welcome_template(
     )
 
 
-def build_registration_welcome_message(
-    *, name: Any, kind: Any = "business", with_line: bool = True
-) -> str:
-    """The welcome as their phone will show it, for the conversation we keep.
-
-    `with_line` is whether {{2}} carried the line or went out empty, which for
-    a family is only known once Meta has accepted one shape or the other.
-    """
+def build_registration_welcome_message(*, name: Any, kind: Any = "business") -> str:
+    """The welcome as their phone will show it, for the conversation we keep."""
 
     greeting, line, closing = welcome_copy(kind=kind, name=name)
     greeting = greeting.format(name=greeted_name(kind=kind, name=name))
     if is_family(kind):
-        body = f"{line}\n\n" if with_line else ""
-        return f"{greeting}\n\n{body}{closing}"
+        return f"{greeting}\n\n{line}\n\n{closing}"
     return f"{greeting}\n{line}\n{closing}"
 
 
 def registration_welcome_template_parameters(*, name: Any, kind: Any = "business") -> list[str]:
-    """{{1}} and {{2}}, in that order - the shape we want to send.
+    """{{1}} and {{2}}, in that order.
 
-    A family's {{2}} is empty on purpose: Nimrod asked on 2026-09-23 for the
-    family line not to appear. Dropping the parameter instead is not the same
-    thing and was tried the same day - Meta answered "(#132000) Number of
-    parameters does not match the expected number of params" and the family
-    who had just registered got no welcome at all. So the slot stays and goes
-    out blank.
+    Every welcome takes both, the family ones included, and both carry text.
+    Two ways of dropping the family line have now been put to Meta and both
+    were refused, each time leaving a real registrant with no welcome:
 
-    Callers that can retry should use `registration_welcome_attempts`, which
-    has somewhere to fall back to if Meta will not take an empty variable.
-    Count and shape are settled by reading the template in WhatsApp Manager,
-    never by the copies kept in this file.
+    - sending one parameter instead of two (2026-09-23) - "(#132000) Number
+      of parameters does not match the expected number of params";
+    - sending two with the second an empty string (2026-09-24) - "(#131008)
+      Required parameter is missing", with the header image and without.
+
+    A line that is a variable of an approved template cannot be taken out
+    from this side at all. The way to change what a family reads is to edit
+    the template in WhatsApp Manager and let Meta approve it, and to change
+    this file only once it has. Read the template there before changing
+    anything here - not the copies kept in this file.
     """
 
-    greeted = greeted_name(kind=kind, name=name)
-    if is_family(kind):
-        return [greeted, ""]
     _, line, _ = welcome_copy(kind=kind, name=name)
-    return [greeted, flatten_for_template(line)]
-
-
-@dataclass(frozen=True)
-class RegistrationWelcomeAttempt:
-    """One shape of the send, and the message it puts on their phone."""
-
-    parameters: list[str]
-    message: str
-    blank_second_variable: bool
-
-
-def registration_welcome_attempts(*, name: Any, kind: Any = "business") -> list[RegistrationWelcomeAttempt]:
-    """The shapes to try, the wanted one first.
-
-    A family's {{2}} is meant to go out empty. Whether Meta accepts an empty
-    body variable at all is not something we have ever seen from here - its
-    published rule lists an empty parameter beside the newline and the tab it
-    refuses - and a refused template send is refused whole, which is a family
-    who registered and heard nothing. That happened on 2026-09-23 and it is
-    not worth risking twice on a reading of the documentation.
-
-    So the empty one is tried first and the line is what the second attempt
-    carries. A family always gets a welcome; it only keeps the line if Meta
-    leaves us no way to send it without. The log says which one went, and
-    that is the answer to the open question, paid for by nobody.
-    """
-
-    greeted = greeted_name(kind=kind, name=name)
-    _, line, _ = welcome_copy(kind=kind, name=name)
-    with_line = RegistrationWelcomeAttempt(
-        parameters=[greeted, flatten_for_template(line)],
-        message=build_registration_welcome_message(name=name, kind=kind, with_line=True),
-        blank_second_variable=False,
-    )
-    if not is_family(kind):
-        return [with_line]
-    blank = RegistrationWelcomeAttempt(
-        parameters=[greeted, ""],
-        message=build_registration_welcome_message(name=name, kind=kind, with_line=False),
-        blank_second_variable=True,
-    )
-    return [blank, with_line]
+    return [greeted_name(kind=kind, name=name), flatten_for_template(line)]
 
 
 __all__ = [
@@ -264,12 +209,10 @@ __all__ = [
     "REGISTRATION_WELCOME_CLOSING",
     "REGISTRATION_WELCOME_GREETING",
     "REGISTRATION_WELCOME_LINE",
-    "RegistrationWelcomeAttempt",
     "RegistrationWelcomeTemplate",
     "build_registration_welcome_message",
     "is_hebrew_name",
     "is_publicly_fetchable",
-    "registration_welcome_attempts",
     "registration_welcome_template_parameters",
     "resolve_registration_welcome_template",
 ]
