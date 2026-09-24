@@ -98,6 +98,51 @@ class RulesTests(unittest.TestCase):
         week[0]["pickUpBy"] = "Stav"
         self.assertTrue(household.week_is_ready(members, week))
 
+    def test_school_hours_alone_are_not_a_finished_week(self) -> None:
+        # The bug this is here for: a child's school went in, every pickup was
+        # taken, the week called itself ready, and nobody was ever asked what
+        # happens at four o'clock.
+        members = [{"name": "Lahav", "role": "child"}, {"name": "Laor", "role": "child"}]
+        week = [
+            {"id": 1, "title": "School", "who": ["Lahav"], "days": ["sun", "mon"], "endTime": "13:45", "dropOffBy": "me", "pickUpBy": "Stav"},
+            {"id": 2, "title": "Gan", "who": ["Laor"], "days": ["sun", "mon"], "endTime": "16:00", "dropOffBy": "me", "pickUpBy": "me"},
+        ]
+        self.assertEqual(household.week_setup_gaps(members, week), [], "nothing is missing from what was told")
+        self.assertEqual(
+            household.afternoon_gaps(members, week),
+            [{"missing": "afternoons", "who": "Lahav", "after": "School"},
+             {"missing": "afternoons", "who": "Laor", "after": "Gan"}],
+        )
+
+        block = household.describe_household(
+            profile={"accountKind": "family", "gettingToKnow": "in_progress"},
+            members=members, activities=week, today=date(2026, 9, 24),
+        )
+        self.assertTrue(block["weekReady"], "a week they can be run is ready; this is a question, not a hole")
+        self.assertEqual([gap["who"] for gap in block["weekGaps"]], ["Lahav", "Laor"])
+
+        # A club after school is the answer, and the question does not come back.
+        week.append({"id": 3, "title": "Football", "who": ["Lahav"], "days": ["tue"], "endTime": "17:30", "dropOffBy": "Stav", "pickUpBy": "Stav"})
+        self.assertEqual([gap["who"] for gap in household.afternoon_gaps(members, week)], ["Laor"])
+
+        # And once they have said that is everything, it is never asked again.
+        closed = household.describe_household(
+            profile={"accountKind": "family", "gettingToKnow": "done"},
+            members=members, activities=week, today=date(2026, 9, 24),
+        )
+        self.assertNotIn("weekGaps", closed)
+
+    def test_a_group_is_not_asked_the_afternoons_question(self) -> None:
+        # A room of parents is keeping a rota, not being got to know.
+        block = household.describe_household(
+            profile=None,
+            members=[{"name": "Noam", "role": "child"}],
+            activities=[{"id": 1, "title": "Football", "who": ["Noam"], "days": ["tue"], "endTime": "17:30", "dropOffBy": "Dana", "pickUpBy": "Yonatan"}],
+            today=date(2026, 9, 24),
+            group_name="School run",
+        )
+        self.assertNotIn("weekGaps", block)
+
     def test_a_family_account_is_described_even_before_anyone_is_known(self) -> None:
         self.assertTrue(household.should_describe_household({"accountKind": "family"}, [], []))
         self.assertFalse(household.should_describe_household({"accountKind": "business"}, [], []))

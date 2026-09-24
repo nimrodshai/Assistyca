@@ -239,8 +239,9 @@ def activity_gaps(activity: dict[str, Any]) -> list[str]:
 # has to be there. So a child nobody has told us anything about, an activity
 # with no day or no finishing time, and above all a pickup with nobody down
 # for it are each something still to ask about - in that order, because a
-# person answers the big thing before the small one.
-WEEK_GAP_KINDS = ("people", "week", "days", "times", "drop_off", "pick_up")
+# person answers the big thing before the small one. "afternoons" sits among
+# them without being one of them: see afternoon_gaps.
+WEEK_GAP_KINDS = ("people", "week", "days", "times", "afternoons", "drop_off", "pick_up")
 
 
 def _activity_time(activity: dict[str, Any], *keys: str) -> str:
@@ -292,8 +293,56 @@ def week_setup_gaps(
         }):
             gaps.append({"missing": missing, **where})
 
+    return in_ask_order(gaps)
+
+
+def in_ask_order(gaps: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The gaps sorted the way a person answers them: the big thing first."""
+
     order = {kind: index for index, kind in enumerate(WEEK_GAP_KINDS)}
     return sorted(gaps, key=lambda gap: order.get(str(gap.get("missing")), len(WEEK_GAP_KINDS)))
+
+
+def afternoon_gaps(
+    members: Iterable[dict[str, Any]] | None,
+    activities: Iterable[dict[str, Any]] | None,
+) -> list[dict[str, Any]]:
+    """The children whose week holds one thing and nothing after it.
+
+    School is the first answer a family gives and the easy half of the week:
+    it is the same every day and it ends early. The hard half is what comes
+    after it - the club on Tuesdays, the swimming on Thursdays, each in a
+    different place with a different person driving - and a family who has
+    just answered the school question has not been asked that one yet. So a
+    child with a single thing in their week is a question still to put,
+    rather than a week that is finished.
+
+    This is the one gap that can be answered with "nothing", which is why it
+    never makes a week unready: it is asked while the family is being got to
+    know, and it is closed by the asking rather than by what comes back.
+    """
+
+    week = list(activities or ())
+    gaps: list[dict[str, Any]] = []
+    for member in members or ():
+        if normalize_role(member.get("role")) != "child":
+            continue
+        name = clean(member.get("name"), MAX_NAME_LENGTH)
+        if not name:
+            continue
+        theirs = [
+            activity
+            for activity in week
+            if name_key(name) in {name_key(who) for who in (activity.get("who") or ())}
+        ]
+        if len(theirs) != 1:
+            continue
+        gap = {"missing": "afternoons", "who": name}
+        after = clean(theirs[0].get("title"), MAX_TITLE_LENGTH)
+        if after:
+            gap["after"] = after
+        gaps.append(gap)
+    return gaps
 
 
 def week_is_ready(
@@ -376,7 +425,16 @@ def describe_household(
         ],
     })
     gaps = week_setup_gaps(members, activities)
+    # weekReady is whether the week can be run, and the afternoons question
+    # does not bear on that: a family who says there is nothing after school
+    # has a whole week. It travels with the gaps only while they are still
+    # being got to know, so it is asked once and never becomes a nag - and
+    # never in a group, whose week is kept between adults who already know
+    # their own afternoons.
     described["weekReady"] = not gaps
+    still_asking = not group_name and clean(profile.get("gettingToKnow")).lower() != "done"
+    if still_asking:
+        gaps = in_ask_order(gaps + afternoon_gaps(members, activities))
     if gaps:
         described["weekGaps"] = gaps
     return described
@@ -399,12 +457,14 @@ __all__ = [
     "BIRTHDAY_LIST_TEMPLATES",
     "BIRTHDAY_REMINDER_DAYS",
     "activity_gaps",
+    "afternoon_gaps",
     "age_from_birthday",
     "birthday_list_items",
     "birthday_template_kind",
     "clean",
     "current_age",
     "describe_household",
+    "in_ask_order",
     "is_self",
     "name_key",
     "next_birthday",
