@@ -488,9 +488,6 @@ CREATE TABLE IF NOT EXISTS household_profiles (
     FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
-CREATE UNIQUE INDEX IF NOT EXISTS idx_household_profiles_share_token
-ON household_profiles(share_token) WHERE share_token <> '';
-
 CREATE TABLE IF NOT EXISTS household_members (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER NOT NULL,
@@ -514,9 +511,6 @@ CREATE TABLE IF NOT EXISTS household_members (
     updated_at TEXT NOT NULL,
     FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
 );
-
-CREATE UNIQUE INDEX IF NOT EXISTS idx_household_members_scope_name
-ON household_members(user_id, group_id, name_key);
 
 -- One row per thing that happens every week: kindergarten Sunday to
 -- Thursday, football on Tuesdays. who is the names it is for; days are
@@ -542,9 +536,6 @@ CREATE TABLE IF NOT EXISTS household_activities (
     FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
-CREATE INDEX IF NOT EXISTS idx_household_activities_user
-ON household_activities(user_id, group_id, start_time);
-
 -- Each nudge about the week once: this morning's plan, tomorrow's gaps, a
 -- drive. The row is the claim, so two polls never send the same one.
 CREATE TABLE IF NOT EXISTS household_nudges (
@@ -555,6 +546,26 @@ CREATE TABLE IF NOT EXISTS household_nudges (
     FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 """
+
+# Indexes live apart from the tables above, and run after them.
+#
+# A table is CREATE TABLE IF NOT EXISTS, so a database written by an older
+# build keeps the columns it was made with. An index over a column that
+# build never had cannot be created until the ALTER TABLE below has added
+# it - and the whole script is one statement batch, so it took production's
+# deploy down with "no such column: group_id" before the migration it needed
+# had a chance to run. Tables, then columns, then indexes.
+HOUSEHOLD_INDEXES_SQL = """
+CREATE UNIQUE INDEX IF NOT EXISTS idx_household_profiles_share_token
+ON household_profiles(share_token) WHERE share_token <> '';
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_household_members_scope_name
+ON household_members(user_id, group_id, name_key);
+
+CREATE INDEX IF NOT EXISTS idx_household_activities_user
+ON household_activities(user_id, group_id, start_time);
+"""
+
 
 INSURANCE_TABLES_SQL = """
 -- A policy is the stable thing the owner recognises. Its wording is never
@@ -1667,11 +1678,10 @@ class PortalDatabase:
             # it keeps the empty scope. The old unique index was on the name
             # alone, which would now stop two groups knowing a Dana each.
             conn.execute("ALTER TABLE household_members ADD COLUMN group_id TEXT NOT NULL DEFAULT ''")
+            # The old unique index was on the name alone, which would now stop
+            # two groups each knowing a Dana. The new one is in the index
+            # script that runs below, once every column it reads exists.
             conn.execute("DROP INDEX IF EXISTS idx_household_members_name")
-            conn.execute(
-                "CREATE UNIQUE INDEX IF NOT EXISTS idx_household_members_scope_name "
-                "ON household_members(user_id, group_id, name_key)"
-            )
         activity_columns = {row["name"] for row in conn.execute("PRAGMA table_info(household_activities)").fetchall()}
         if "group_id" not in activity_columns:
             conn.execute("ALTER TABLE household_activities ADD COLUMN group_id TEXT NOT NULL DEFAULT ''")
@@ -1685,6 +1695,7 @@ class PortalDatabase:
             # What a registration said was filed as ordinary facts before
             # facts could be pinned; those are the ones pinning exists for.
             conn.execute("UPDATE account_facts SET pinned = 1 WHERE fact_key IN ('name', 'their family', 'what they do')")
+        conn.executescript(HOUSEHOLD_INDEXES_SQL)
 
     def _ensure_insurance_tables(self, conn: sqlite3.Connection) -> None:
         """The versioned policy store, kept separate from short account facts."""
