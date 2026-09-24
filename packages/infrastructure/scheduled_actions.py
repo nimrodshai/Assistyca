@@ -31,6 +31,11 @@ DEFAULT_SCHEDULED_WHATSAPP_TEMPLATE_LANGUAGE = "en"
 # 12:40" a promise about the phone, not the portal.
 SUPPORTED_SEND_CHANNELS = {"portal", "whatsapp"}
 OWNER_RECIPIENT_REFS = {"", "me", "owner", "you", "connected_owner", "account_owner"}
+# A recipient that is a room rather than a person: "group:<the group's id>".
+# A group takes plain text and nothing else - no template, no buttons - and a
+# group message that cannot be sent is not put in the owner's own feed
+# instead, because the message was for everybody or for nobody.
+GROUP_RECIPIENT_PREFIX = "group:"
 # Meta answers a person's message with plain text for 24 hours after it; past
 # that only an approved template gets through. "Remind me in ten minutes" is
 # well inside the window, so it goes out the same way the chat's own replies
@@ -307,6 +312,10 @@ class ScheduledActionScheduler:
                 payload["deliveredVia"] = "whatsapp"
                 return provider_message_id
             except Exception as exc:  # noqa: BLE001 - the message still has to arrive somewhere
+                if normalize_text(action.get("recipientRef")).startswith(GROUP_RECIPIENT_PREFIX):
+                    # A message for a room has no second address: the owner's
+                    # own feed is not where the other parents would read it.
+                    raise
                 # A configured send that fails should still reach the owner.
                 # The feed is durable and always available, and the payload
                 # says openly which channel actually carried the message.
@@ -379,6 +388,15 @@ class ScheduledActionScheduler:
         payload = action.get("payload") if isinstance(action.get("payload"), dict) else {}
         user_id = int(action.get("userId") or 0)
         recipient_ref = normalize_text(payload.get("recipientWaId") or action.get("recipientRef"))
+        if recipient_ref.startswith(GROUP_RECIPIENT_PREFIX):
+            from packages.infrastructure.whatsapp_agent_chat import send_assistyca_group_text
+
+            group_id = recipient_ref[len(GROUP_RECIPIENT_PREFIX):]
+            if not group_id:
+                raise RuntimeError("Scheduled group message is missing the group.")
+            provider_message_id = send_assistyca_group_text(group_id=group_id, text=message_text)
+            payload["whatsappSendMode"] = "group_text"
+            return provider_message_id
         if recipient_ref.lower() in OWNER_RECIPIENT_REFS:
             if user_id <= 0:
                 raise RuntimeError("Scheduled WhatsApp message is missing a user id.")

@@ -201,7 +201,8 @@ class ListToolTests(unittest.TestCase):
         self.assertNotIn("folder", ASSISTANT_CAPABILITIES_PITCH)
         self.assertEqual(AGENT_LOOP_INSTRUCTIONS.count("what you can do here at all"), 2)
         self.assertIn("Lists and receipts are each a page of the person's own", AGENT_LOOP_INSTRUCTIONS)
-        self.assertIn("CONTEXT.listsPage and CONTEXT.receiptsPage each on its own line", AGENT_LOOP_INSTRUCTIONS)
+        self.assertIn("CONTEXT.listsPage for their lists, CONTEXT.receiptsPage for their receipts", AGENT_LOOP_INSTRUCTIONS)
+        self.assertIn("names both, each link on its own line", AGENT_LOOP_INSTRUCTIONS)
         # The business typed on the register page is the fact keyed 'what
         # they do'; the answer and its example prompts are told to fit it.
         self.assertIn("by what knownFacts says they do", AGENT_LOOP_INSTRUCTIONS)

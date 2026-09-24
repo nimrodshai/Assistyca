@@ -132,6 +132,7 @@ from packages.infrastructure.openai_api import OpenAIConfigurationError
 from packages.infrastructure.openai_api import OpenAIError
 from packages.infrastructure.openai_api import call_openai_response
 from packages.infrastructure.openai_api import load_openai_config
+from packages.infrastructure.openai_api import prompt_cache_key_for
 from packages.infrastructure.voice_notes import VOICE_NOTE_MAX_BYTES
 from packages.infrastructure.voice_notes import VoiceNoteError
 from packages.infrastructure.voice_notes import describe_voice_note_problem
@@ -11498,6 +11499,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 tools=tools,
                 model=model,
                 instructions=AGENT_LOOP_INSTRUCTIONS,
+                prompt_cache_key=prompt_cache_key_for(session.email),
                 reasoning=resolve_task_reasoning(AGENT_TURN_COMPLEXITY, "PORTAL_AGENT_REASONING_EFFORT"),
                 max_output_tokens=LOOP_MAX_OUTPUT_TOKENS,
                 temperature=AGENT_TURN_TEMPERATURE,
@@ -11522,7 +11524,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 open_question=open_question,
                 photo=photo_context,
                 trial_ended=trial_ended,
-                household_block=None if group else household_block,
+                household_block=self._group_week_block(user_id, timezone_name, group) if group else household_block,
                 chat_flow=None if group else chat_flow,
             )
         except OpenAIError as exc:
@@ -11569,6 +11571,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             "model": model,
             "rounds": result.rounds,
             "inputTokens": result.input_tokens,
+            "cachedInputTokens": result.cached_input_tokens,
             "outputTokens": result.output_tokens,
             "latencyMs": result.duration_ms,
             "toolCalls": result.tool_calls,
@@ -11613,11 +11616,38 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         activities = self.database.list_household_activities(user_id=user_id)
         if not household.should_describe_household(profile, members, activities):
             return None
+        return household.describe_household(
+            profile=profile, members=members, activities=activities, today=self._household_today(timezone_name),
+        )
+
+    def _group_week_block(self, user_id: int, timezone_name: str, group: dict[str, Any]) -> dict[str, Any] | None:
+        """The week this group keeps, which is the group's and nobody's account.
+
+        A group is several people and only one of them opened the account, so
+        nothing of that account is read here. What the people in the room have
+        told the assistant is kept under the group's id and read back the same
+        way - an empty week included, because the asking has to start
+        somewhere.
+        """
+
+        group_id = normalize_text((group or {}).get("id"))
+        if user_id <= 0 or not group_id:
+            return None
+        if not account_feature_allowed(self.database, user_id=user_id, feature_id="family_week"):
+            return None
+        return household.describe_household(
+            profile=None,
+            members=self.database.list_household_members(user_id=user_id, group_id=group_id),
+            activities=self.database.list_household_activities(user_id=user_id, group_id=group_id),
+            today=self._household_today(timezone_name),
+            group_name=normalize_text((group or {}).get("name")) or "this group",
+        )
+
+    def _household_today(self, timezone_name: str) -> date:
         try:
-            today = datetime.now(ZoneInfo(timezone_name or "UTC")).date()
+            return datetime.now(ZoneInfo(timezone_name or "UTC")).date()
         except (ZoneInfoNotFoundError, ValueError):
-            today = datetime.now(timezone.utc).date()
-        return household.describe_household(profile=profile, members=members, activities=activities, today=today)
+            return datetime.now(timezone.utc).date()
 
     def _chat_flow_block(
         self,
@@ -11642,6 +11672,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             connected=connected_sources(tool_context),
             today=today,
             family_flow_allowed=bool(household_block),
+            household_block=household_block,
         )
 
     def _open_agent_approval(self, user_id: int, pending: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -14698,6 +14729,16 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         transcript = list((signup or {}).get("transcript") or [])
         registration = (signup or {}).get("registration") if isinstance((signup or {}).get("registration"), dict) else {}
         erasure_pending = normalize_text((signup or {}).get("status")) == "confirming_erasure"
+        started_at = _parse_iso_moment((signup or {}).get("startedAt"))
+        # Someone who asked to be forgotten and then registered again is not
+        # someone coming back to a deleted account: they are starting over, on
+        # purpose, and the erasure a few hours ago has nothing left to say.
+        registered_since_erasure = bool(
+            registration and started_at and erased_at and started_at >= erased_at
+        )
+        # What the deletion still means for this conversation: nothing, once
+        # they have registered again since.
+        standing_erasure = erased_at if erased_at and not registered_since_erasure else None
         attempt = int((signup or {}).get("attempts") or 0) + 1
         if (now - last_touch).total_seconds() > SIGNUP_ESCALATION_WINDOW_SECONDS:
             # Coming back after an hour is a new conversation, not the fourth
@@ -14711,7 +14752,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         if (
             not is_valid_email(email)
             and not erasure_pending
-            and not erased_at
+            and (not erased_at or registered_since_erasure)
             and normalize_registration_kind(registration.get("kind")) == "family"
         ):
             # A family is never asked for an email address: their account
@@ -14732,13 +14773,13 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 transcript=transcript,
                 attempt=attempt,
                 fallback=(
-                    SIGNUP_AFTER_ERASURE_TEXT if erased_at
+                    SIGNUP_AFTER_ERASURE_TEXT if standing_erasure
                     else SIGNUP_ERASE_CONFIRM_TEXT if erasure_pending
                     else SIGNUP_ASK_EMAIL_TEXT if attempt <= 1 else SIGNUP_ASK_EMAIL_AGAIN_TEXT
                 ),
                 typing_for_message_id=normalize_text(event.get("source_message_id")),
                 registration=registration,
-                account_erased_at=erased_at,
+                account_erased_at=standing_erasure,
                 erasure_pending=erasure_pending,
             )
             if erasure_pending and erase == "yes":
@@ -14748,7 +14789,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 return self._finish_whatsapp_signup_step(
                     sender_wa_id, "signup_erase_declined", reply or SIGNUP_ERASE_KEPT_TEXT,
                 )
-            if erase == "ask" and not erased_at:
+            if erase == "ask" and not standing_erasure:
                 self.database.set_whatsapp_signup_status(wa_id=sender_wa_id, status="confirming_erasure")
                 return self._finish_whatsapp_signup_step(
                     sender_wa_id, "signup_erase_confirm", reply or SIGNUP_ERASE_CONFIRM_TEXT,

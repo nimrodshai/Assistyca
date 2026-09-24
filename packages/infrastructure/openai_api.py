@@ -7,6 +7,7 @@ It is intentionally dependency-light and uses the standard library only.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -182,6 +183,13 @@ class OpenAIRequest:
     max_output_tokens: int | None = None
     temperature: float | None = None
     top_p: float | None = None
+    # Names the cache this call's prefix belongs to. Instructions and tool
+    # definitions are the same on every turn of an account, and OpenAI serves
+    # the repeated part from its cache when it recognises the prefix; the key
+    # is what keeps an account's turns landing on the same cache. It must
+    # carry nothing about who the person is - a digest of the account, never
+    # the address itself.
+    prompt_cache_key: str = ""
     input_price_cents_per_1k_tokens: float | None = None
     output_price_cents_per_1k_tokens: float | None = None
     input_token_price_multiplier: float | None = None
@@ -204,6 +212,10 @@ class OpenAIResult:
     usage: dict[str, Any]
     input_tokens: int
     output_tokens: int
+    # How many of those input tokens OpenAI served from its cache. Billing
+    # still charges them at the full rate here; this is what makes the gap
+    # visible, and what says whether a prompt change actually helped.
+    cached_input_tokens: int
     counted_input_tokens: int | None
     raw_response: dict[str, Any]
     request_payload: dict[str, Any]
@@ -256,6 +268,23 @@ class OpenAITranscriptionResult:
     duration_ms: int
     billing_snapshot: dict[str, Any] | None = None
     usage_record: dict[str, Any] | None = None
+
+
+def prompt_cache_key_for(account: str) -> str:
+    """The cache an account's calls belong to.
+
+    The fixed half of a turn - the instructions and the tool definitions - is
+    identical from one message to the next, and OpenAI serves a repeated
+    prefix from its cache when it recognises one. The key is what keeps an
+    account's turns landing on the same cache instead of scattering. It is a
+    digest, not the address: nothing about who the person is needs to leave
+    here for a cache to work.
+    """
+
+    normalized = normalize_text(account).lower()
+    if not normalized:
+        return ""
+    return "acct-" + hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:24]
 
 
 def normalize_text(value: Any) -> str:
@@ -386,10 +415,13 @@ def extract_openai_usage(payload: dict[str, Any]) -> dict[str, Any]:
     input_tokens = safe_int(usage_payload.get("input_tokens") or usage_payload.get("prompt_tokens"))
     output_tokens = safe_int(usage_payload.get("output_tokens") or usage_payload.get("completion_tokens"))
     total_tokens = safe_int(usage_payload.get("total_tokens")) or (input_tokens + output_tokens)
+    details = usage_payload.get("input_tokens_details") or usage_payload.get("prompt_tokens_details") or {}
+    cached_input_tokens = safe_int(details.get("cached_tokens")) if isinstance(details, dict) else 0
 
     return {
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
+        "cached_input_tokens": cached_input_tokens,
         "total_tokens": total_tokens,
         "raw": make_json_safe(usage_payload),
         "input_tokens_details": make_json_safe(
@@ -759,6 +791,10 @@ class OpenAIGateway:
 
         if request.reasoning is not None:
             payload["reasoning"] = request.reasoning
+
+        cache_key = normalize_text(request.prompt_cache_key)
+        if cache_key:
+            payload["prompt_cache_key"] = cache_key
 
         if request.max_output_tokens is not None:
             payload["max_output_tokens"] = int(request.max_output_tokens)
@@ -1196,6 +1232,7 @@ class OpenAIGateway:
             usage=usage,
             input_tokens=usage["input_tokens"],
             output_tokens=usage["output_tokens"],
+            cached_input_tokens=usage.get("cached_input_tokens", 0),
             counted_input_tokens=counted_input_tokens,
             raw_response=make_json_safe(response_body),
             request_payload=make_json_safe(request_payload),
@@ -1487,6 +1524,7 @@ def call_openai_response(
     max_output_tokens: int | None = None,
     temperature: float | None = None,
     top_p: float | None = None,
+    prompt_cache_key: str = "",
     input_price_cents_per_1k_tokens: float | None = None,
     output_price_cents_per_1k_tokens: float | None = None,
     input_token_price_multiplier: float | None = None,
@@ -1525,6 +1563,7 @@ def call_openai_response(
             max_output_tokens=max_output_tokens,
             temperature=temperature,
             top_p=top_p,
+            prompt_cache_key=prompt_cache_key,
             input_price_cents_per_1k_tokens=input_price_cents_per_1k_tokens,
             output_price_cents_per_1k_tokens=output_price_cents_per_1k_tokens,
             input_token_price_multiplier=input_token_price_multiplier,

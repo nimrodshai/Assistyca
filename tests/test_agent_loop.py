@@ -16,9 +16,20 @@ from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from packages.infrastructure.agent_loop import AGENT_LOOP_INSTRUCTIONS
 from packages.infrastructure.agent_loop import LoopContext
+from packages.infrastructure.agent_loop import _CONFIRMATION
+from packages.infrastructure.agent_loop import _LINKS
+from packages.infrastructure.agent_loop import _LISTS
+from packages.infrastructure.agent_loop import _NEWS
+from packages.infrastructure.agent_loop import _RECEIPTS
+from packages.infrastructure.agent_loop import _ROLE
+from packages.infrastructure.agent_loop import _TOOLS
+from packages.infrastructure.agent_loop import _WEB
+from packages.infrastructure.agent_loop import TOOLS
 from packages.infrastructure.agent_loop import MAX_TOOL_CALLS_PER_TURN
 from packages.infrastructure.agent_loop import run_agent_loop
+from packages.infrastructure.agent_loop import tool_availability
 from packages.infrastructure.agent_loop import tool_definitions
 
 GOOGLE = "https://accounts.google.com/o/oauth2/v2/auth?client_id=x&state=y"
@@ -86,6 +97,33 @@ def _context(api: FakeApi | None = None, *, connected: dict | None = None, links
     )
 
 
+class InstructionShapeTests(unittest.TestCase):
+    """The prompt goes out whole on every round of every turn, so a rule
+    written twice is paid for twice and will one day say two things."""
+
+    def test_how_a_link_is_written_is_said_in_one_place(self) -> None:
+        for phrase in ("on its own line", "exactly as given", "tap the button"):
+            self.assertEqual(AGENT_LOOP_INSTRUCTIONS.count(phrase), _LINKS.count(phrase), phrase)
+
+    def test_how_a_yes_is_asked_for_is_said_in_one_place(self) -> None:
+        self.assertEqual(
+            AGENT_LOOP_INSTRUCTIONS.count("confirmation_required"),
+            _CONFIRMATION.count("confirmation_required"),
+        )
+
+    def test_the_list_rules_are_whole(self) -> None:
+        # The receipts paragraph was once pasted into the middle of a
+        # sentence about lists: the model read a stray "A" and found the
+        # reminder rule filed under receipts.
+        self.assertIn("A reminder about a list is schedule_message with list_name set", _LISTS)
+        self.assertNotIn("A Receipts", AGENT_LOOP_INSTRUCTIONS)
+
+    def test_every_section_reaches_the_model_once(self) -> None:
+        sections = (_ROLE, _TOOLS, _LINKS, _CONFIRMATION, _LISTS, _RECEIPTS, _WEB, _NEWS)
+        for section in sections:
+            self.assertEqual(AGENT_LOOP_INSTRUCTIONS.count(section), 1)
+
+
 class ToolDefinitionTests(unittest.TestCase):
     def test_a_tool_missing_its_source_is_marked_unavailable(self) -> None:
         by_name = {tool["name"]: tool for tool in tool_definitions({})}
@@ -96,6 +134,36 @@ class ToolDefinitionTests(unittest.TestCase):
     def test_a_connected_source_lifts_the_mark(self) -> None:
         by_name = {tool["name"]: tool for tool in tool_definitions({"gmail": {"platformConnected": True}})}
         self.assertNotIn("UNAVAILABLE", by_name["read_inbox"]["description"])
+        self.assertIn("time_window", by_name["read_inbox"]["parameters"]["properties"])
+
+    def test_a_tool_that_cannot_run_is_named_and_explained_but_carries_no_schema(self) -> None:
+        # The model still needs to know the tool exists, so it can say what it
+        # would have done and offer the way to it. What it cannot use is the
+        # argument list: an account with nothing connected was being sent
+        # thousands of tokens of schema for tools that could not be called.
+        shut = {tool["name"]: tool for tool in tool_definitions({})}["read_inbox"]
+
+        self.assertTrue(shut["description"].startswith("Read the person's connected mailboxes"))
+        self.assertIn("no mailbox is connected", shut["description"])
+        self.assertEqual(shut["parameters"]["properties"], {})
+        self.assertEqual(shut["parameters"]["required"], [])
+
+    def test_the_catalogue_and_the_runtime_give_the_same_answer(self) -> None:
+        # One rule decides both, so a tool cannot be advertised as usable and
+        # then refused, or refused for a reason the model was never shown.
+        context = _context()
+        for tool in TOOLS:
+            shown = "UNAVAILABLE RIGHT NOW" not in tool.definition(
+                tool_availability(tool, context.tool_context, context.blocked_tools)
+            )["description"]
+            allowed = tool_availability(tool, context.tool_context, context.blocked_tools).usable
+            self.assertEqual(shown, allowed, tool.name)
+
+    def test_a_feature_the_account_does_not_have_is_named_without_its_schema(self) -> None:
+        blocked = {tool["name"]: tool for tool in tool_definitions({}, {"create_list": "Lists"})}["create_list"]
+
+        self.assertIn("Lists is not included in this account", blocked["description"])
+        self.assertEqual(blocked["parameters"]["properties"], {})
 
 
 class LoopMechanicsTests(unittest.TestCase):

@@ -127,6 +127,32 @@ def gap_lines(activities: list[dict[str, Any]]) -> list[str]:
     return lines
 
 
+def rides_due_for_anyone(
+    activities: list[dict[str, Any]],
+    *,
+    local_now: datetime,
+    lead_minutes: int,
+) -> list[dict[str, Any]]:
+    """The drives today that somebody is down for, whose leaving time has
+    come. Unlike the account's own week, a group's runs belong to whoever
+    said they would take them, so each one carries that name: the reminder
+    goes into the room and is addressed to them.
+    """
+
+    due = []
+    for activity in activities_on(activities, local_now.date()):
+        for leg, who_key, time_key in (("drop_off", "dropOffBy", "startTime"), ("pick_up", "pickUpBy", "endTime")):
+            driver = normalize_text(activity.get(who_key))
+            clock = household.normalize_time(activity.get(time_key))
+            if not driver or not clock:
+                continue
+            hour, minute = (int(part) for part in clock.split(":"))
+            moment = local_now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+            if moment - timedelta(minutes=lead_minutes) <= local_now < moment:
+                due.append({"activity": activity, "leg": leg, "at": clock, "driver": driver})
+    return due
+
+
 def rides_due(
     activities: list[dict[str, Any]],
     *,
@@ -204,6 +230,120 @@ class FamilyWeekNudger:
             timezone_name=timezone_name,
             payload=payload,
         )
+
+    def _group_name(self, user_id: int, group_id: str) -> str:
+        try:
+            connection = self.database.get_whatsapp_connection_by_user_id(user_id) or {}
+        except Exception:  # noqa: BLE001
+            connection = {}
+        metadata = connection.get("metadata") if isinstance(connection.get("metadata"), dict) else {}
+        for entry in metadata.get("groups") or []:
+            if isinstance(entry, dict) and normalize_text(entry.get("id")) == group_id:
+                return normalize_text(entry.get("subject"))
+        return ""
+
+    def _queue_group(
+        self, *, user_id: int, group_id: str, group_name: str, now: datetime, timezone_name: str,
+        title: str, instruction: str, fallback: str,
+    ) -> None:
+        """A nudge addressed to the room. It is written by a group turn - which
+        can read the group's week and nothing of the account - and delivered
+        into the group itself."""
+
+        self.database.create_scheduled_action(
+            user_id=user_id,
+            action_type=STANDING_TASK_ACTION_TYPE,
+            channel="whatsapp",
+            recipient_ref=f"group:{group_id}",
+            run_at=now,
+            timezone_name=timezone_name,
+            payload={
+                "title": title,
+                "instruction": instruction,
+                "fallbackText": fallback,
+                "oneOff": True,
+                "source": NUDGE_SOURCE,
+                "group": {"id": group_id, "name": group_name},
+            },
+        )
+
+    def run_pending_for_groups(self, *, now: datetime | None = None) -> dict[str, Any]:
+        """The nudges a group gets, which are the ones a rota needs: ask the
+        room the evening before about a run nobody has taken, and remind the
+        person who took one shortly before they have to leave.
+
+        Everything here is the group's own week. Nothing of the account that
+        opened the group is read, and nothing said here reaches it.
+        """
+
+        from packages.infrastructure.whatsapp_agent_chat import whatsapp_groups_enabled
+
+        reference = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+        counts = {"groups": 0, "groupEvening": 0, "groupRides": 0}
+        if not whatsapp_groups_enabled():
+            return {"ok": True, **counts}
+        for user_id, group_id in self.database.list_household_nudge_groups():
+            if not account_feature_allowed(self.database, user_id=user_id, feature_id="family_week"):
+                continue
+            counts["groups"] += 1
+            timezone_name = self._timezone_for_user(user_id)
+            try:
+                zone = ZoneInfo(timezone_name)
+            except (ZoneInfoNotFoundError, ValueError):
+                zone, timezone_name = ZoneInfo("UTC"), "UTC"
+            local_now = reference.astimezone(zone)
+            today = local_now.date()
+            group_name = self._group_name(user_id, group_id)
+            activities = self.database.list_household_activities(user_id=user_id, group_id=group_id)
+            claim = lambda key: self.database.claim_household_nudge(  # noqa: E731
+                user_id=user_id, nudge_key=f"group:{group_id}:{key}",
+            )
+
+            tomorrow = today + timedelta(days=1)
+            tomorrow_gaps = gap_lines(activities_on(activities, tomorrow))
+            if tomorrow_gaps and self.config.evening_hour <= local_now.hour < self.config.evening_hour + EVENING_WINDOW_HOURS:
+                if claim(f"evening:{tomorrow.isoformat()}"):
+                    self._queue_group(
+                        user_id=user_id, group_id=group_id, group_name=group_name,
+                        now=reference, timezone_name=timezone_name,
+                        title="Tomorrow still needs someone",
+                        instruction=(
+                            "It is the evening before. Write one short message to this group, in the language the "
+                            "group writes in, saying what tomorrow still has nobody down for and asking who can take "
+                            "it. Ask the room, not any one person, and leave it easy to answer with a name. The facts "
+                            "are exact; add none, and use no tool.\nTOMORROW:\n" + "\n".join(tomorrow_gaps)
+                        ),
+                        fallback="Tomorrow still needs someone - who can take it?\n"
+                                 + "\n".join(f"• {line}" for line in tomorrow_gaps),
+                    )
+                    counts["groupEvening"] += 1
+
+            for ride in rides_due_for_anyone(
+                activities, local_now=local_now, lead_minutes=self.config.ride_lead_minutes,
+            ):
+                activity = ride["activity"]
+                if not claim(f"ride:{today.isoformat()}:{activity['id']}:{ride['leg']}"):
+                    continue
+                verb = "takes" if ride["leg"] == "drop_off" else "collects"
+                who = _who(activity) or "them"
+                place = normalize_text(activity.get("place"))
+                fact = (
+                    f"{ride['driver']} {verb} {who} - {activity.get('title')} at {ride['at']}"
+                    + (f", {place}" if place else "")
+                )
+                self._queue_group(
+                    user_id=user_id, group_id=group_id, group_name=group_name,
+                    now=reference, timezone_name=timezone_name,
+                    title="Time to leave soon",
+                    instruction=(
+                        "Somebody in this group is down for a run shortly. Write one short line to the group, in the "
+                        "language it writes in, naming them and what it is, so they have time to leave. The fact is "
+                        f"exact; add nothing, and use no tool.\nDRIVE: {fact}"
+                    ),
+                    fallback=f"Soon: {fact}.",
+                )
+                counts["groupRides"] += 1
+        return {"ok": True, **counts}
 
     def run_pending(self, *, now: datetime | None = None) -> dict[str, Any]:
         reference = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
@@ -344,8 +484,10 @@ class FamilyWeekNudger:
         logger = log or (lambda _message: None)
         while not stop_event.is_set():
             try:
-                summary = self.run_pending()
-                sent = sum(int(summary.get(key) or 0) for key in ("morning", "evening", "rides", "birthdays", "askedAgain"))
+                summary = {**self.run_pending(), **self.run_pending_for_groups()}
+                sent = sum(int(summary.get(key) or 0) for key in (
+                    "morning", "evening", "rides", "birthdays", "askedAgain", "groupEvening", "groupRides",
+                ))
                 if sent:
                     logger(f"[family-week] queued={sent} {summary}")
             except Exception as exc:  # noqa: BLE001 - keep the nudger alive
@@ -361,4 +503,5 @@ __all__ = [
     "gap_lines",
     "load_family_week_nudge_config",
     "rides_due",
+    "rides_due_for_anyone",
 ]

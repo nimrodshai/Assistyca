@@ -82,8 +82,14 @@ class AgentWebSearchTests(unittest.TestCase):
         self.assertEqual(tool_output["error"]["code"], "timed_out")
 
     def test_rules_link_each_result_and_keep_news_apart(self) -> None:
-        self.assertIn("with its url on its own line", AGENT_LOOP_INSTRUCTIONS)
-        self.assertIn("call search_news for the latest news", AGENT_LOOP_INSTRUCTIONS)
+        # How a link is written is said once, in the Links section, instead of
+        # in every paragraph that returns one; which search to use is in the
+        # tools themselves, where the model reads it while choosing.
+        self.assertIn("with its url so they can open it", AGENT_LOOP_INSTRUCTIONS)
+        self.assertIn("it goes in the reply on its own line, exactly as given, once", AGENT_LOOP_INSTRUCTIONS)
+        by_name = {tool["name"]: tool for tool in tool_definitions({})}
+        self.assertIn("Only for news", by_name["search_news"]["description"])
+        self.assertIn("a hotel, a concert or a price is search_web", by_name["search_news"]["description"])
 
     def test_news_and_web_search_switch_off_separately(self) -> None:
         blocked = blocked_tools({"family": {"news_search": False}}, "family")

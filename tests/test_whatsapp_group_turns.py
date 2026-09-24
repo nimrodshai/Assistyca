@@ -18,7 +18,10 @@ from unittest import mock
 from packages.infrastructure.agent_loop import GROUP_TOOLS
 from packages.infrastructure.agent_loop import LoopContext
 from packages.infrastructure.agent_loop import run_agent_loop
+from packages.infrastructure.agent_loop import _GROUP_RULES
 from packages.infrastructure.agent_loop import tool_definitions
+from packages.infrastructure.agent_loop import TOOLS_BY_NAME
+from packages.infrastructure.agent_loop import week_scope
 from packages.infrastructure.portal_db import PortalDatabase
 from packages.infrastructure.whatsapp_agent_chat import WhatsAppAgentChat
 
@@ -153,15 +156,98 @@ class GroupTurnTests(unittest.TestCase):
             self.chat.handle_group_message("hello", group_id="")
 
 
+class GroupWeekTests(unittest.TestCase):
+    """The one thing a group keeps: its own week, from what the room says."""
+
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.database = PortalDatabase(Path(self.temp_dir.name) / "portal.db")
+        self.database.register_user("owner@example.com")
+        self.user_id = int((self.database.get_user("owner@example.com") or {})["id"])
+
+    def tearDown(self) -> None:
+        self.temp_dir.cleanup()
+
+    def context(self, *, group: dict | None = None) -> LoopContext:
+        return LoopContext(
+            api=lambda *a, **k: ({}, 200), database=self.database, email="owner@example.com",
+            user_id=self.user_id, timezone_name="Asia/Jerusalem", channel="whatsapp",
+            in_group=bool(group), group=group or {},
+        )
+
+    def test_a_group_keeps_its_week_apart_from_the_week_of_whoever_opened_it(self) -> None:
+        at_home = self.context()
+        in_group = self.context(group={"id": "120363@g.us", "name": "School run", "speaker": "Dana"})
+        self.assertEqual((week_scope(at_home), week_scope(in_group)), ("", "120363@g.us"))
+
+        TOOLS_BY_NAME["save_family_member"].run(at_home, {"name": "Laor", "role": "child"})
+        TOOLS_BY_NAME["save_family_member"].run(in_group, {"name": "Noam", "role": "child"})
+        TOOLS_BY_NAME["save_week_activity"].run(in_group, {
+            "id": None, "title": "Football", "who": ["Noam"], "days": ["tue"],
+            "start_time": "16:00", "end_time": "17:30", "place": "the pitch",
+            "drop_off_by": "Dana", "pick_up_by": None, "notes": None,
+        })
+
+        home_week = TOOLS_BY_NAME["show_family_week"].run(at_home, {})
+        group_week = TOOLS_BY_NAME["show_family_week"].run(in_group, {})
+        self.assertEqual([member["name"] for member in home_week["members"]], ["Laor"])
+        self.assertEqual([member["name"] for member in group_week["members"]], ["Noam"])
+        self.assertEqual(home_week["byDay"], {})
+        self.assertEqual([item["title"] for item in group_week["byDay"]["tue"]], ["Football"])
+        self.assertNotIn("weekPage", group_week, "a page of the account is not handed to a room")
+
+    def test_the_room_is_told_what_the_week_still_has_nobody_down_for(self) -> None:
+        in_group = self.context(group={"id": "120363@g.us", "name": "School run", "speaker": "Dana"})
+        TOOLS_BY_NAME["save_family_member"].run(in_group, {"name": "Noam", "role": "child"})
+        saved = TOOLS_BY_NAME["save_week_activity"].run(in_group, {
+            "id": None, "title": "Football", "who": ["Noam"], "days": ["tue"],
+            "start_time": "16:00", "end_time": "17:30", "place": None,
+            "drop_off_by": "Dana", "pick_up_by": None, "notes": None,
+        })
+        self.assertEqual(saved["saved"]["nobodyDownFor"], ["pick_up"])
+
+        from packages.infrastructure.agent_loop import _household_payload
+        block = _household_payload(in_group)
+        self.assertEqual(block["forGroup"], "School run")
+        self.assertNotIn("accountKind", block)
+        self.assertNotIn("gettingToKnow", block)
+        self.assertEqual(block["weekGaps"], [{"missing": "pick_up", "activity": "Football", "id": saved["saved"]["id"]}])
+
+        # And once somebody in the room takes it, the week is ready.
+        TOOLS_BY_NAME["save_week_activity"].run(in_group, {
+            "id": saved["saved"]["id"], "title": None, "who": [], "days": [],
+            "start_time": None, "end_time": None, "place": None,
+            "drop_off_by": None, "pick_up_by": "Yonatan", "notes": None,
+        })
+        self.assertTrue(_household_payload(in_group)["weekReady"])
+
+    def test_the_rules_a_group_carries_say_the_week_is_the_rooms_own(self) -> None:
+        self.assertIn("this group's own week", _GROUP_RULES)
+        self.assertIn("not the week of whoever opened the group", _GROUP_RULES)
+
+
 class GroupToolTests(unittest.TestCase):
     def test_the_model_is_shown_that_an_account_is_not_readable_here(self) -> None:
         in_group = {tool["name"]: tool for tool in tool_definitions({}, in_group=True)}
-        self.assertIn("This is a group", in_group["read_inbox"]["description"])
-        self.assertIn("This is a group", in_group["create_list"]["description"])
-        self.assertNotIn("This is a group", in_group["search_web"]["description"])
+        # A tool that cannot run here is named and explained, without the
+        # schema nobody can fill in: in a group that was most of the prompt.
+        self.assertIn("UNAVAILABLE RIGHT NOW: not in a group chat", in_group["read_inbox"]["description"])
+        self.assertIn("UNAVAILABLE RIGHT NOW: not in a group chat", in_group["create_list"]["description"])
+        self.assertEqual(in_group["read_inbox"]["parameters"]["properties"], {})
+        self.assertNotIn("UNAVAILABLE", in_group["search_web"]["description"])
+        self.assertIn("query", in_group["search_web"]["parameters"]["properties"])
+        # The reason itself is said once, in the rules a group turn carries,
+        # rather than repeated on all thirty-nine shut-off tools.
+        self.assertIn("Nobody's mail, calendar, receipts or lists are open to a group", _GROUP_RULES)
 
     def test_the_tools_left_in_a_group_read_nothing_of_anyone_s(self) -> None:
-        self.assertEqual(GROUP_TOOLS, frozenset({"search_web", "search_news", "look_up_property", "exchange_rate"}))
+        # The web, and the week the group itself keeps. Nothing that would
+        # read an account: no mail, no calendar, no receipts, no lists.
+        self.assertEqual(GROUP_TOOLS, frozenset({
+            "search_web", "search_news", "look_up_property", "exchange_rate",
+            "save_family_member", "remove_family_member", "save_week_activity", "remove_week_activity",
+            "show_family_week",
+        }))
 
     def test_a_call_to_a_shut_off_tool_is_refused_and_not_run(self) -> None:
         calls: list[str] = []
