@@ -53,6 +53,16 @@ class AssistantVoiceTests(unittest.TestCase):
         self.assertIn("holding less", ASSISTANT_VOICE)
         self.assertIn("no hype", ASSISTANT_VOICE)
 
+    def test_the_voice_leaves_room_for_the_occasional_emoji(self) -> None:
+        # Calm is not cold. One emoji now and then is allowed, and the rule
+        # spends most of its words keeping it rare rather than forbidding it.
+        self.assertIn("An emoji now and then is welcome", ASSISTANT_VOICE)
+        self.assertIn("at most one in a message", ASSISTANT_VOICE)
+        self.assertIn("Most replies carry none", ASSISTANT_VOICE)
+        self.assertIn("never a row of them", ASSISTANT_VOICE)
+        # Exclamation marks did not come along for the ride.
+        self.assertIn("exclamation marks only where the person used them first", ASSISTANT_VOICE)
+
     def test_the_voice_keeps_the_reading_to_itself(self) -> None:
         # Being told your mail is being gone through is unsettling however
         # kindly it is put; what comes back to the person is the part that is
@@ -93,6 +103,13 @@ class JudgedForCalmTests(unittest.TestCase):
         # the precious. The criterion has to hand a plain answer full marks.
         self.assertIn("A plain reply that answers and stops is a 5", JUDGE_INSTRUCTIONS)
         self.assertIn("is not pressure", JUDGE_INSTRUCTIONS)
+
+    def test_the_judge_does_not_dock_the_emoji_the_prompt_allows(self) -> None:
+        # The prompt lets one small emoji through; a judge still scoring it as
+        # performance would train the warmth back out within a sample or two.
+        self.assertIn("A single small emoji is not performance either", JUDGE_INSTRUCTIONS)
+        self.assertIn("several in one reply", JUDGE_INSTRUCTIONS)
+        self.assertNotIn("emoji the person did not use first", JUDGE_INSTRUCTIONS)
 
     def test_a_reply_that_fails_only_on_calm_is_caught(self) -> None:
         scores = {key: 5 for key in RUBRIC}
