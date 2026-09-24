@@ -116,6 +116,30 @@ class StoreTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.temp_dir.cleanup()
 
+    def test_a_database_from_before_groups_opens_and_catches_up(self) -> None:
+        # What a deploy meets: a database written by the previous build. On
+        # 2026-09-24 production would not start on one - the schema script
+        # created an index over group_id in the same batch that was supposed
+        # to add the column, so the deploy died with "no such column:
+        # group_id" and the old instance stayed up instead.
+        with self.database._connection() as conn:
+            conn.execute("DROP INDEX IF EXISTS idx_household_members_scope_name")
+            conn.execute("DROP INDEX IF EXISTS idx_household_activities_user")
+            conn.execute("ALTER TABLE household_members DROP COLUMN group_id")
+            conn.execute("ALTER TABLE household_activities DROP COLUMN group_id")
+            conn.execute("CREATE UNIQUE INDEX idx_household_members_name ON household_members(user_id, name_key)")
+
+        reopened = PortalDatabase(self.path)
+
+        with reopened._connection() as conn:
+            members = {row["name"] for row in conn.execute("PRAGMA table_info(household_members)")}
+            activities = {row["name"] for row in conn.execute("PRAGMA table_info(household_activities)")}
+            indexes = {row[1] for row in conn.execute("PRAGMA index_list(household_members)")}
+        self.assertIn("group_id", members)
+        self.assertIn("group_id", activities)
+        self.assertIn("idx_household_members_scope_name", indexes)
+        self.assertNotIn("idx_household_members_name", indexes)
+
     def test_pinned_facts_never_give_way_to_newer_ones(self) -> None:
         self.database.save_account_fact(user_id=self.user_id, key="name", fact="Their name is Dana.", pinned=True)
         for index in range(ACCOUNT_FACT_LIMIT + 10):
