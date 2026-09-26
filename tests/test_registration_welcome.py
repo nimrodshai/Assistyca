@@ -8,6 +8,7 @@ from packages.infrastructure.notification_delivery import send_whatsapp_notifica
 from packages.infrastructure.registration_welcome import REGISTRATION_WELCOME_CLOSING
 from packages.infrastructure.registration_welcome import build_registration_welcome_message
 from packages.infrastructure.registration_welcome import REGISTRATION_WELCOME_LINE
+from packages.infrastructure.registration_welcome import registration_welcome_attempts
 from packages.infrastructure.registration_welcome import registration_welcome_template_parameters
 from packages.infrastructure.registration_welcome import resolve_registration_welcome_template
 
@@ -62,46 +63,60 @@ class FamilyWelcomeTemplateTests(unittest.TestCase):
         with mock.patch.dict(os.environ, {}, clear=True):
             template = resolve_registration_welcome_template(kind="family", name="Dana Levi")
 
-        self.assertEqual((template.name, template.language), ("assistyca_welcome_family_1", "en"))
+        self.assertEqual((template.name, template.language), ("assistyca_welcome_family_english_short", "en"))
         self.assertEqual(
-            registration_welcome_template_parameters(name="Dana Levi", kind="family"),
-            ["Dana", 'No more "Did you remember to take Noah to soccer?". I\'ll keep track of who\'s '
-             "taking who, and remind them in time."],
+            [attempt.parameters for attempt in registration_welcome_attempts(name="Dana Levi", kind="family")],
+            [
+                ["Dana"],
+                ["Dana", 'No more "Did you remember to take Noah to soccer?". I\'ll keep track of who\'s '
+                 "taking who, and remind them in time."],
+            ],
         )
 
     def test_a_family_with_a_hebrew_name_gets_the_hebrew_family_welcome(self) -> None:
         with mock.patch.dict(os.environ, {}, clear=True):
             template = resolve_registration_welcome_template(kind="family", name="יוני כהן")
 
-        self.assertEqual((template.name, template.language), ("assistyca_welcome_family_1_hebrew", "he"))
+        self.assertEqual((template.name, template.language), ("assistyca_welcome_family_hebrew_short", "he"))
         self.assertEqual(
-            registration_welcome_template_parameters(name="יוני כהן", kind="family"),
-            ["יוני", 'בואו נשים סוף להודעות כמו "זכרת לקחת את יוני לכדורגל?". אני אעקוב מי לוקח את מי, '
-             "ואזכיר להם בזמן."],
+            [attempt.parameters for attempt in registration_welcome_attempts(name="יוני כהן", kind="family")],
+            [
+                ["יוני"],
+                ["יוני", 'בואו נשים סוף להודעות כמו "זכרת לקחת את יוני לכדורגל?". אני אעקוב מי לוקח את מי, '
+                 "ואזכיר להם בזמן."],
+            ],
         )
 
-    def test_every_welcome_carries_both_variables(self) -> None:
-        """Meta refuses a send that is one parameter short, family included.
+    def test_a_business_is_sent_one_shape_with_both_variables(self) -> None:
+        for name in ("Dana Levi", "יוני כהן", ""):
+            with self.subTest(name=name):
+                attempts = registration_welcome_attempts(name=name, kind="business")
+                self.assertEqual([len(attempt.parameters) for attempt in attempts], [2])
 
-        Dropping the family line on 2026-09-23 - on the reading that the
-        template carries it as fixed text - got "(#132000) Number of
-        parameters does not match the expected number of params" and a family
-        with no welcome at all.
+    def test_a_family_always_has_the_two_variable_shape_to_fall_back_on(self) -> None:
+        """Meta refuses a send whose count does not match, and refuses it whole.
+
+        Dropping a variable the template has got "(#132000) Number of
+        parameters does not match the expected number of params" on
+        2026-09-23 and a family with no welcome at all. The short templates
+        were not read before they were wired in, so the old shape stays
+        behind the new one.
         """
 
-        for kind in ("business", "family"):
-            for name in ("Dana Levi", "יוני כהן", ""):
-                with self.subTest(kind=kind, name=name):
-                    self.assertEqual(
-                        len(registration_welcome_template_parameters(name=name, kind=kind)), 2
-                    )
+        for name in ("Dana Levi", "יוני כהן", ""):
+            with self.subTest(name=name):
+                attempts = registration_welcome_attempts(name=name, kind="family")
+                self.assertEqual([len(attempt.parameters) for attempt in attempts], [1, 2])
+                short, with_line = attempts
+                self.assertNotIn(with_line.parameters[1], short.message)
+                self.assertIn(with_line.parameters[1], with_line.message)
 
     def test_any_other_language_gets_english(self) -> None:
         for name in ("Мария", "محمد", "José", ""):
             with self.subTest(name=name):
                 self.assertEqual(
                     resolve_registration_welcome_template(kind="family", name=name).name,
-                    "assistyca_welcome_family_1",
+                    "assistyca_welcome_family_english_short",
                 )
 
     def test_a_family_welcome_carries_the_waving_robot(self) -> None:
