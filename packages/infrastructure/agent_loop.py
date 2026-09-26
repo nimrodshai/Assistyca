@@ -134,6 +134,36 @@ REPLY_TEXT_FORMAT: dict[str, Any] = {
     "format": {"type": "json_schema", "name": "assistyca_reply", "strict": True, "schema": REPLY_SCHEMA},
 }
 
+# A scheduled run is the one turn nobody asked for today, so it is the one
+# turn that may decide to say nothing: a morning with no school is left
+# quiet rather than told that there is nothing to tell.
+STANDING_REPLY_SCHEMA: dict[str, Any] = {
+    **REPLY_SCHEMA,
+    "properties": {
+        **REPLY_SCHEMA["properties"],
+        "nothingToSend": {
+            "type": "boolean",
+            "description": (
+                "true when this scheduled run found nothing the person needs this time - nothing on, nothing new, "
+                "nothing to do - and its instruction does not ask to hear from you even then. No message is sent. "
+                "false whenever there is something worth their attention."
+            ),
+        },
+    },
+    "required": [*REPLY_SCHEMA["required"], "nothingToSend"],
+}
+
+STANDING_REPLY_TEXT_FORMAT: dict[str, Any] = {
+    "format": {"type": "json_schema", "name": "assistyca_scheduled_reply", "strict": True, "schema": STANDING_REPLY_SCHEMA},
+}
+
+
+def reply_text_format(*, standing: bool) -> dict[str, Any]:
+    """The reply shape the model must return: a scheduled run's also says
+    whether there is anything to send at all."""
+
+    return STANDING_REPLY_TEXT_FORMAT if standing else REPLY_TEXT_FORMAT
+
 
 NO_PARAMETERS: dict[str, Any] = {"type": "object", "additionalProperties": False, "properties": {}, "required": []}
 
@@ -3781,7 +3811,11 @@ _FAMILY = (
     "answers. A family's week is never read out of a calendar or a mailbox - it is what they have told "
     "you, kept here, and what you do with it is see that everybody ends up where they need to be: say "
     "who is on what before the day starts, raise a pickup nobody has taken while there is still time to "
-    "sort it out, and tell whoever is driving when it is time to leave.\n"
+    "sort it out, and tell whoever is driving when it is time to leave. The week is their usual week; "
+    "household.calendar, when it is there, is what the school calendar where they live says about today or "
+    "tomorrow, looked up online. What it closes is off that day, and so is taking and collecting for it: never "
+    "list it as the day's plan or remind anyone about it, and if that leaves the day with nothing on, say so "
+    "only when asked.\n"
     "Getting to know a family, and connecting a business to its mail and calendar, are each an opening "
     "the conversation works through in its own way: CONTEXT.chatFlow says which one this account is on "
     "and the rules above it say how to carry it.\n"
@@ -4113,6 +4147,15 @@ def run_agent_loop(
         and all(call.get("ok") for call in news_calls)
         and not context.news_found
     )
+    # Or the run itself found nothing worth a message. Never when it did
+    # something or is asking something: that always has to be told.
+    nothing_new = nothing_new or bool(
+        context.standing_task_id
+        and not fallback_used
+        and reply_payload.get("nothingToSend") is True
+        and not completed
+        and pending is None
+    )
     return LoopResult(
         reply=reply,
         tool_calls=tool_calls,
@@ -4330,12 +4373,15 @@ __all__ = [
     "LOOP_MAX_OUTPUT_TOKENS",
     "MAX_TOOL_CALLS_PER_TURN",
     "REPLY_TEXT_FORMAT",
+    "STANDING_REPLY_SCHEMA",
+    "STANDING_REPLY_TEXT_FORMAT",
     "LoopContext",
     "LoopResult",
     "TOOLS",
     "TOOLS_BY_NAME",
     "ToolSpec",
     "build_loop_context_text",
+    "reply_text_format",
     "run_agent_loop",
     "tool_definitions",
 ]

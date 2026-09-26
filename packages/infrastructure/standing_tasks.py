@@ -220,17 +220,24 @@ def build_task_run_message(
             "instruction allows, and nothing set up or scheduled. Do this now: "
             f"{normalize_text(instruction)}"
         )
+    quiet = (
+        " If the work turns up nothing they need this time - nothing on today, nothing new, nothing to do - "
+        "and the instruction does not ask to hear from you even then, set nothingToSend and no message goes: "
+        "a message saying there is nothing is one they did not need."
+        if standing else ""
+    )
     return (
         f"{opening} The person is not writing; "
         "they will read your reply as a message on its own, so write it as the finished result and "
-        "nothing else: no questions, no offers, nothing set up or scheduled. Do this now: "
+        f"nothing else: no questions, no offers, nothing set up or scheduled.{quiet} Do this now: "
         f"{normalize_text(instruction)}"
     )
 
 
 class NothingNewToSend(Exception):
-    """A recurring news run found nothing it has not already sent. The
-    scheduler moves the task on without sending anything."""
+    """A recurring run found nothing to send - no news it has not already
+    sent, or nothing the person needs today. The scheduler moves the task on
+    without sending anything."""
 
 
 class StandingTaskRunner:
@@ -339,7 +346,7 @@ class StandingTaskRunner:
             detail = normalize_text(turn.get("message"))
             raise RuntimeError(f"The assistant could not run the action ({code}{': ' + detail if detail else ''}).")
         if is_standing_task(action) and turn.get("nothingNew"):
-            raise NothingNewToSend("No news since the last message.")
+            raise NothingNewToSend("Nothing to send this time.")
         news_found = [item for item in turn.get("newsFound") or [] if isinstance(item, dict)]
         if news_found and isinstance(action.get("payload"), dict):
             # Carried to the scheduler, which writes them down once delivered.

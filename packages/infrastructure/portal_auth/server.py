@@ -234,6 +234,8 @@ from packages.infrastructure.mailbox_finding_scans import account_timezone
 from packages.infrastructure.mailbox_finding_scans import load_finding_scan_config
 from packages.infrastructure.family_week_nudges import FamilyWeekNudger
 from packages.infrastructure.family_week_nudges import load_family_week_nudge_config
+from packages.infrastructure.school_days import SchoolCalendar
+from packages.infrastructure.school_days import normalize_day_status
 from packages.infrastructure.list_due_nudges import ListDueNudger
 from packages.infrastructure.list_due_nudges import load_list_due_nudge_config
 from packages.infrastructure.scheduled_actions import ScheduledActionScheduler
@@ -264,7 +266,7 @@ from packages.infrastructure.agent_loop import AGENT_LOOP_INSTRUCTIONS
 from packages.infrastructure.agent_loop import LOOP_MAX_OUTPUT_TOKENS
 from packages.infrastructure.agent_loop import LoopContext
 from packages.infrastructure.agent_loop import TOOLS_BY_NAME
-from packages.infrastructure.agent_loop import REPLY_TEXT_FORMAT
+from packages.infrastructure.agent_loop import reply_text_format
 from packages.infrastructure.agent_loop import run_agent_loop
 from packages.infrastructure.agent_turns import AgentTurnSamplingScheduler
 from packages.infrastructure.agent_turns import TURN_PATHS
@@ -11504,7 +11506,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 reasoning=resolve_task_reasoning(AGENT_TURN_COMPLEXITY, "PORTAL_AGENT_REASONING_EFFORT"),
                 max_output_tokens=LOOP_MAX_OUTPUT_TOKENS,
                 temperature=AGENT_TURN_TEMPERATURE,
-                extra_payload={"text": REPLY_TEXT_FORMAT, "parallel_tool_calls": True},
+                extra_payload={"text": reply_text_format(standing=bool(context.standing_task_id)), "parallel_tool_calls": True},
                 usage_recorder=self.database,
                 price_resolver=self.database.get_model_price,
                 config=load_openai_config(default_model=model, strict_tracking=False, include_prompt_in_metadata=False),
@@ -11619,6 +11621,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             return None
         return household.describe_household(
             profile=profile, members=members, activities=activities, today=self._household_today(timezone_name),
+            calendar=self._school_calendar_days(timezone_name),
         )
 
     def _group_week_block(self, user_id: int, timezone_name: str, group: dict[str, Any]) -> dict[str, Any] | None:
@@ -11642,7 +11645,30 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             activities=self.database.list_household_activities(user_id=user_id, group_id=group_id),
             today=self._household_today(timezone_name),
             group_name=normalize_text((group or {}).get("name")) or "this group",
+            calendar=self._school_calendar_days(timezone_name),
         )
+
+    def _school_calendar_days(self, timezone_name: str) -> list[dict[str, Any]]:
+        """What the school calendar was found to say about today and tomorrow
+        where the person lives, for the days that are not ordinary ones.
+
+        Only read here, never looked up: a turn does not wait on a web
+        search. The week nudger looks each day with something on it up.
+        """
+
+        today = self._household_today(timezone_name)
+        days = []
+        for day in (today, today + timedelta(days=1)):
+            status = normalize_day_status(
+                self.database.get_school_day_check(place=timezone_name or "UTC", day=day.isoformat())
+            )
+            if status and not status["ordinary"]:
+                days.append({
+                    "date": day.isoformat(),
+                    "weekday": day.strftime("%A"),
+                    **{key: status[key] for key in ("occasion", "schools", "kindergartens", "note") if status[key]},
+                })
+        return days
 
     def _household_today(self, timezone_name: str) -> date:
         try:
@@ -19057,7 +19083,11 @@ def main() -> int:
     family_nudge_stop_event = threading.Event()
     family_nudge_thread: threading.Thread | None = None
     if family_nudge_config.enabled and scheduled_action_config.enabled:
-        family_nudger = FamilyWeekNudger(server.database, config=family_nudge_config)  # type: ignore[attr-defined]
+        family_nudger = FamilyWeekNudger(
+            server.database,  # type: ignore[attr-defined]
+            config=family_nudge_config,
+            school_calendar=SchoolCalendar(server.database) if family_nudge_config.school_calendar else None,  # type: ignore[attr-defined]
+        )
         family_nudge_thread = threading.Thread(
             target=family_nudger.serve_forever,
             args=(family_nudge_stop_event,),

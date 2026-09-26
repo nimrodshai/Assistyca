@@ -13,9 +13,12 @@ Three moments, each once, on the person's own clock:
 
 Code decides what is due and says it plainly in the fallback sentence; the
 message itself is written by the assistant from those facts, the way the
-mailbox alerts are. Each is claimed in the database before it is queued, so
-two polls cannot send it twice, and a moment the poll missed is skipped
-rather than sent late. A family that put off getting to know them is asked
+mailbox alerts are. The week is the usual week, so each day is first held up
+against the school calendar where the family lives (school_days): on a
+holiday or a school break, what is off that day is not mentioned at all, and
+a day with nothing left on it sends nothing. Each is claimed in the database
+before it is queued, so two polls cannot send it twice, and a moment the
+poll missed is skipped rather than sent late. A family that put off getting to know them is asked
 once, lightly, on the day they were told it would come back.
 """
 
@@ -36,6 +39,8 @@ from zoneinfo import ZoneInfoNotFoundError
 from packages.infrastructure import household
 from packages.infrastructure.account_types import account_feature_allowed
 from packages.infrastructure.portal_db import normalize_text
+from packages.infrastructure.school_days import SchoolCalendar
+from packages.infrastructure.school_days import describe_day
 from packages.infrastructure.standing_tasks import STANDING_TASK_ACTION_TYPE
 from packages.infrastructure.whatsapp_agent_chat import infer_timezone_from_wa_id
 
@@ -60,6 +65,9 @@ class FamilyWeekNudgeConfig:
     evening_hour: int = DEFAULT_EVENING_HOUR
     ride_lead_minutes: int = DEFAULT_RIDE_LEAD_MINUTES
     poll_seconds: int = DEFAULT_POLL_SECONDS
+    # Whether each day is checked against the school calendar online. Off
+    # only for an incident: without it a holiday is nudged like any day.
+    school_calendar: bool = True
 
 
 def _parse_int(value: str | None, default: int) -> int:
@@ -77,6 +85,8 @@ def load_family_week_nudge_config() -> FamilyWeekNudgeConfig:
         evening_hour=min(23, max(0, _parse_int(os.getenv("PORTAL_FAMILY_EVENING_HOUR"), DEFAULT_EVENING_HOUR))),
         ride_lead_minutes=min(180, max(5, _parse_int(os.getenv("PORTAL_FAMILY_RIDE_LEAD_MINUTES"), DEFAULT_RIDE_LEAD_MINUTES))),
         poll_seconds=max(30, _parse_int(os.getenv("PORTAL_FAMILY_NUDGE_POLL_SECONDS"), DEFAULT_POLL_SECONDS)),
+        school_calendar=normalize_text(os.getenv("PORTAL_FAMILY_SCHOOL_CALENDAR")).lower()
+        not in {"0", "false", "no", "off", "disabled"},
     )
 
 
@@ -182,9 +192,35 @@ def rides_due(
 
 
 class FamilyWeekNudger:
-    def __init__(self, database: Any, *, config: FamilyWeekNudgeConfig | None = None) -> None:
+    def __init__(
+        self,
+        database: Any,
+        *,
+        config: FamilyWeekNudgeConfig | None = None,
+        school_calendar: SchoolCalendar | None = None,
+    ) -> None:
+        """school_calendar is what says whether a day is really on. Without
+        one every day is the usual week, which is what a test wants."""
+
         self.database = database
         self.config = config or load_family_week_nudge_config()
+        self.school_calendar = school_calendar
+
+    def _on_day(
+        self, *, user_id: int, group_id: str = "", timezone_name: str, day: date, activities: list[dict[str, Any]],
+    ) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
+        """What of the usual week is really on that day, and what the school
+        calendar said about the day when it is not an ordinary one."""
+
+        usual = activities_on(activities, day)
+        if not usual or self.school_calendar is None:
+            return usual, None
+        user = self.database.get_user_by_id(user_id) or {}
+        still_on, status = self.school_calendar.activities_still_on(
+            user_id=user_id, scope=group_id, place=timezone_name, day=day, activities=usual,
+            billing_email=normalize_text(user.get("email")),
+        )
+        return still_on, (status if status and not status.get("ordinary") else None)
 
     def _timezone_for_user(self, user_id: int) -> str:
         try:
@@ -300,8 +336,14 @@ class FamilyWeekNudger:
             )
 
             tomorrow = today + timedelta(days=1)
-            tomorrow_gaps = gap_lines(activities_on(activities, tomorrow))
-            if tomorrow_gaps and self.config.evening_hour <= local_now.hour < self.config.evening_hour + EVENING_WINDOW_HOURS:
+            in_evening = self.config.evening_hour <= local_now.hour < self.config.evening_hour + EVENING_WINDOW_HOURS
+            tomorrow_gaps = []
+            if in_evening and gap_lines(activities_on(activities, tomorrow)):
+                tomorrow_on, _ = self._on_day(
+                    user_id=user_id, group_id=group_id, timezone_name=timezone_name, day=tomorrow, activities=activities,
+                )
+                tomorrow_gaps = gap_lines(tomorrow_on)
+            if tomorrow_gaps:
                 if claim(f"evening:{tomorrow.isoformat()}"):
                     self._queue_group(
                         user_id=user_id, group_id=group_id, group_name=group_name,
@@ -318,8 +360,11 @@ class FamilyWeekNudger:
                     )
                     counts["groupEvening"] += 1
 
+            todays, _ = self._on_day(
+                user_id=user_id, group_id=group_id, timezone_name=timezone_name, day=today, activities=activities,
+            )
             for ride in rides_due_for_anyone(
-                activities, local_now=local_now, lead_minutes=self.config.ride_lead_minutes,
+                todays, local_now=local_now, lead_minutes=self.config.ride_lead_minutes,
             ):
                 activity = ride["activity"]
                 if not claim(f"ride:{today.isoformat()}:{activity['id']}:{ride['leg']}"):
@@ -363,7 +408,11 @@ class FamilyWeekNudger:
             owner_names = self._owner_names(user_id)
             claim = lambda key: self.database.claim_household_nudge(user_id=user_id, nudge_key=key)  # noqa: E731
 
-            todays = activities_on(activities, today)
+            # Held up against the school calendar every poll: the day is looked
+            # up once and kept, so this is the first poll of the day's cost.
+            todays, today_calendar = self._on_day(
+                user_id=user_id, timezone_name=timezone_name, day=today, activities=activities,
+            )
             if todays and self.config.morning_hour <= local_now.hour < self.config.morning_hour + MORNING_WINDOW_HOURS:
                 if claim(f"morning:{today.isoformat()}"):
                     lines = [describe_activity_line(activity, owner_names) for activity in todays]
@@ -375,16 +424,27 @@ class FamilyWeekNudger:
                             "It is the morning. Write the person one short WhatsApp message with what today holds for "
                             "their family, in the language they write to you in: each thing with its time and who takes "
                             "and collects, and, plainly and last, anything nobody is down for yet. 'you' is the person. "
-                            "The facts are exact; add none, and use no tool.\nTODAY:\n" + "\n".join(lines)
+                            + (
+                                "CALENDAR is what the school calendar says about today: mention it in a few words only "
+                                "where it bears on what is listed, such as an earlier finish. " if today_calendar else ""
+                            )
+                            + "The facts are exact; add none, and use no tool.\nTODAY:\n" + "\n".join(lines)
                             + ("\nNOBODY DOWN FOR:\n" + "\n".join(gaps) if gaps else "")
+                            + (f"\nCALENDAR: {describe_day(today, today_calendar)}" if today_calendar else "")
                         ),
                         fallback="Today:\n" + "\n".join(f"• {line}" for line in lines),
                     )
                     counts["morning"] += 1
 
             tomorrow = today + timedelta(days=1)
-            tomorrow_gaps = gap_lines(activities_on(activities, tomorrow))
-            if tomorrow_gaps and self.config.evening_hour <= local_now.hour < self.config.evening_hour + EVENING_WINDOW_HOURS:
+            in_evening = self.config.evening_hour <= local_now.hour < self.config.evening_hour + EVENING_WINDOW_HOURS
+            tomorrow_gaps = []
+            if in_evening and gap_lines(activities_on(activities, tomorrow)):
+                tomorrow_on, _ = self._on_day(
+                    user_id=user_id, timezone_name=timezone_name, day=tomorrow, activities=activities,
+                )
+                tomorrow_gaps = gap_lines(tomorrow_on)
+            if tomorrow_gaps:
                 if claim(f"evening:{tomorrow.isoformat()}"):
                     self._queue(
                         user_id=user_id, now=reference, timezone_name=timezone_name,
@@ -398,7 +458,7 @@ class FamilyWeekNudger:
                     )
                     counts["evening"] += 1
 
-            for ride in rides_due(activities, owner_names=owner_names, local_now=local_now, lead_minutes=self.config.ride_lead_minutes):
+            for ride in rides_due(todays, owner_names=owner_names, local_now=local_now, lead_minutes=self.config.ride_lead_minutes):
                 activity = ride["activity"]
                 if not claim(f"ride:{today.isoformat()}:{activity['id']}:{ride['leg']}"):
                     continue

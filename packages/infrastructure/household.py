@@ -365,6 +365,7 @@ def describe_household(
     activities: list[dict[str, Any]],
     today: date,
     group_name: str = "",
+    calendar: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """The family as the assistant reads it on every turn.
 
@@ -372,6 +373,10 @@ def describe_household(
     people and the same days, with nothing of the account on it - no kind of
     account and no getting to know, because a group is not an account and
     what it keeps belongs to everyone in the room.
+
+    calendar is what the school calendar says about today or tomorrow where
+    they live, for a day that is not an ordinary one: the week is the usual
+    week, and this is what says a holiday has closed the school.
     """
 
     profile = profile or {}
@@ -437,6 +442,8 @@ def describe_household(
         gaps = in_ask_order(gaps + afternoon_gaps(members, activities))
     if gaps:
         described["weekGaps"] = gaps
+    if calendar:
+        described["calendar"] = list(calendar)
     return described
 
 
