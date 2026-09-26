@@ -14,9 +14,10 @@ Three moments, each once, on the person's own clock:
 Code decides what is due and says it plainly in the fallback sentence; the
 message itself is written by the assistant from those facts, the way the
 mailbox alerts are. The week is the usual week, so each day is first held up
-against the school calendar where the family lives (school_days): on a
-holiday or a school break, what is off that day is not mentioned at all, and
-a day with nothing left on it sends nothing. Each is claimed in the database
+against what the family said is not happening (schedule_exceptions) and
+the school calendar where they live (school_days): on a holiday, a trip or
+a sick day, what is off is not mentioned at all, and a day with nothing left
+on it sends nothing. Each is claimed in the database
 before it is queued, so two polls cannot send it twice, and a moment the
 poll missed is skipped rather than sent late. A family that put off getting to know them is asked
 once, lightly, on the day they were told it would come back.
@@ -39,6 +40,8 @@ from zoneinfo import ZoneInfoNotFoundError
 from packages.infrastructure import household
 from packages.infrastructure.account_types import account_feature_allowed
 from packages.infrastructure.portal_db import normalize_text
+from packages.infrastructure.schedule_exceptions import activities_not_excepted
+from packages.infrastructure.schedule_exceptions import family_week_paused
 from packages.infrastructure.school_days import SchoolCalendar
 from packages.infrastructure.school_days import describe_day
 from packages.infrastructure.standing_tasks import STANDING_TASK_ACTION_TYPE
@@ -207,12 +210,22 @@ class FamilyWeekNudger:
         self.school_calendar = school_calendar
 
     def _on_day(
-        self, *, user_id: int, group_id: str = "", timezone_name: str, day: date, activities: list[dict[str, Any]],
+        self,
+        *,
+        user_id: int,
+        group_id: str = "",
+        timezone_name: str,
+        day: date,
+        activities: list[dict[str, Any]],
+        exceptions: list[dict[str, Any]],
     ) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
         """What of the usual week is really on that day, and what the school
-        calendar said about the day when it is not an ordinary one."""
+        calendar said about the day when it is not an ordinary one.
 
-        usual = activities_on(activities, day)
+        What the family said is off goes first and costs nothing; the
+        calendar is only asked about what is left."""
+
+        usual = activities_not_excepted(activities_on(activities, day), exceptions, day)
         if not usual or self.school_calendar is None:
             return usual, None
         user = self.database.get_user_by_id(user_id) or {}
@@ -331,6 +344,9 @@ class FamilyWeekNudger:
             today = local_now.date()
             group_name = self._group_name(user_id, group_id)
             activities = self.database.list_household_activities(user_id=user_id, group_id=group_id)
+            exceptions = self.database.list_schedule_exceptions(
+                user_id=user_id, group_id=group_id, ending_on_or_after=today.isoformat(),
+            )
             claim = lambda key: self.database.claim_household_nudge(  # noqa: E731
                 user_id=user_id, nudge_key=f"group:{group_id}:{key}",
             )
@@ -340,7 +356,8 @@ class FamilyWeekNudger:
             tomorrow_gaps = []
             if in_evening and gap_lines(activities_on(activities, tomorrow)):
                 tomorrow_on, _ = self._on_day(
-                    user_id=user_id, group_id=group_id, timezone_name=timezone_name, day=tomorrow, activities=activities,
+                    user_id=user_id, group_id=group_id, timezone_name=timezone_name, day=tomorrow,
+                    activities=activities, exceptions=exceptions,
                 )
                 tomorrow_gaps = gap_lines(tomorrow_on)
             if tomorrow_gaps:
@@ -361,7 +378,8 @@ class FamilyWeekNudger:
                     counts["groupEvening"] += 1
 
             todays, _ = self._on_day(
-                user_id=user_id, group_id=group_id, timezone_name=timezone_name, day=today, activities=activities,
+                user_id=user_id, group_id=group_id, timezone_name=timezone_name, day=today,
+                activities=activities, exceptions=exceptions,
             )
             for ride in rides_due_for_anyone(
                 todays, local_now=local_now, lead_minutes=self.config.ride_lead_minutes,
@@ -405,13 +423,18 @@ class FamilyWeekNudger:
             local_now = reference.astimezone(zone)
             today = local_now.date()
             activities = self.database.list_household_activities(user_id=user_id)
+            exceptions = self.database.list_schedule_exceptions(user_id=user_id, ending_on_or_after=today.isoformat())
+            # The whole week on hold - a trip, a holiday at home - is quiet
+            # about the family altogether, birthdays and all; they come back
+            # when it ends, while there is still time.
+            week_paused = family_week_paused(exceptions, today)
             owner_names = self._owner_names(user_id)
             claim = lambda key: self.database.claim_household_nudge(user_id=user_id, nudge_key=key)  # noqa: E731
 
             # Held up against the school calendar every poll: the day is looked
             # up once and kept, so this is the first poll of the day's cost.
             todays, today_calendar = self._on_day(
-                user_id=user_id, timezone_name=timezone_name, day=today, activities=activities,
+                user_id=user_id, timezone_name=timezone_name, day=today, activities=activities, exceptions=exceptions,
             )
             if todays and self.config.morning_hour <= local_now.hour < self.config.morning_hour + MORNING_WINDOW_HOURS:
                 if claim(f"morning:{today.isoformat()}"):
@@ -442,6 +465,7 @@ class FamilyWeekNudger:
             if in_evening and gap_lines(activities_on(activities, tomorrow)):
                 tomorrow_on, _ = self._on_day(
                     user_id=user_id, timezone_name=timezone_name, day=tomorrow, activities=activities,
+                    exceptions=exceptions,
                 )
                 tomorrow_gaps = gap_lines(tomorrow_on)
             if tomorrow_gaps:
@@ -478,7 +502,7 @@ class FamilyWeekNudger:
                 )
                 counts["rides"] += 1
 
-            if 10 <= local_now.hour < 19:
+            if 10 <= local_now.hour < 19 and not week_paused:
                 for member in self.database.list_household_members(user_id=user_id):
                     upcoming = household.next_birthday(member.get("birthday"), today)
                     if upcoming is None:
@@ -522,6 +546,7 @@ class FamilyWeekNudger:
                 and ask_on
                 and ask_on <= today.isoformat()
                 and 10 <= local_now.hour < 19
+                and not week_paused
                 and claim(f"ask_again:{ask_on}")
             ):
                 self._queue(

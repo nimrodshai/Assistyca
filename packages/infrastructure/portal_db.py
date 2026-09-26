@@ -578,6 +578,29 @@ ON household_activities(user_id, group_id, start_time);
 """
 
 
+# What the person says is not happening for some days: an activity, a whole
+# week, a recurring action. One row per thing they said, holding each target
+# it covers, so "we're back, put it all back" removes it in one go.
+SCHEDULE_EXCEPTIONS_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS schedule_exceptions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    group_id TEXT NOT NULL DEFAULT '',
+    starts_on TEXT NOT NULL,
+    ends_on TEXT NOT NULL,
+    reason TEXT NOT NULL DEFAULT '',
+    targets_json TEXT NOT NULL DEFAULT '[]',
+    created_at TEXT NOT NULL,
+    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+"""
+
+SCHEDULE_EXCEPTIONS_INDEXES_SQL = """
+CREATE INDEX IF NOT EXISTS idx_schedule_exceptions_scope
+ON schedule_exceptions(user_id, group_id, ends_on);
+"""
+
+
 INSURANCE_TABLES_SQL = """
 -- A policy is the stable thing the owner recognises. Its wording is never
 -- overwritten: every renewal or endorsement is a new immutable version.
@@ -1660,6 +1683,8 @@ class PortalDatabase:
                 conn.executescript(FOLLOWED_THREADS_TABLE_SQL)
                 self._ensure_insurance_tables(conn)
                 self._ensure_household_tables(conn)
+                conn.executescript(SCHEDULE_EXCEPTIONS_TABLE_SQL)
+                conn.executescript(SCHEDULE_EXCEPTIONS_INDEXES_SQL)
                 self._seed_default_model_prices(conn)
                 if self.bootstrap_registered_emails and self.count_registered_users(conn) == 0:
                     self._seed_registered_emails(conn, self.bootstrap_registered_emails)
@@ -10107,6 +10132,87 @@ class PortalDatabase:
             cursor = conn.execute(
                 "INSERT OR IGNORE INTO household_nudges (user_id, nudge_key, created_at) VALUES (?, ?, ?)",
                 (int(user_id), normalize_text(nudge_key)[:160], now.isoformat()),
+            )
+        return cursor.rowcount > 0
+
+    @staticmethod
+    def _schedule_exception_row(row: sqlite3.Row | None) -> dict[str, Any] | None:
+        if row is None:
+            return None
+        try:
+            targets = json.loads(row["targets_json"] or "[]")
+        except (TypeError, ValueError):
+            targets = []
+        return {
+            "id": int(row["id"]),
+            "groupId": str(row["group_id"] or ""),
+            "startsOn": str(row["starts_on"]),
+            "endsOn": str(row["ends_on"]),
+            "reason": str(row["reason"] or ""),
+            "targets": targets if isinstance(targets, list) else [],
+            "createdAt": str(row["created_at"]),
+        }
+
+    def save_schedule_exception(
+        self,
+        *,
+        user_id: int,
+        starts_on: str,
+        ends_on: str,
+        targets: list[dict[str, str]],
+        reason: str = "",
+        group_id: str = "",
+    ) -> dict[str, Any]:
+        """Keep one exception. Ones that ended a month ago are cleared: they
+        hold nothing any more and nobody asks about them."""
+
+        if int(user_id or 0) <= 0:
+            raise ValueError("An exception belongs to an account.")
+        now = datetime.now(timezone.utc)
+        with self._connection() as conn:
+            conn.execute(
+                "DELETE FROM schedule_exceptions WHERE user_id = ? AND ends_on < ?",
+                (int(user_id), (now - timedelta(days=30)).date().isoformat()),
+            )
+            cursor = conn.execute(
+                """
+                INSERT INTO schedule_exceptions (user_id, group_id, starts_on, ends_on, reason, targets_json, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    int(user_id), normalize_text(group_id), normalize_text(starts_on), normalize_text(ends_on),
+                    normalize_text(reason)[:160], json.dumps(targets, ensure_ascii=False), now.isoformat(),
+                ),
+            )
+            row = conn.execute("SELECT * FROM schedule_exceptions WHERE id = ?", (int(cursor.lastrowid),)).fetchone()
+        return self._schedule_exception_row(row) or {}
+
+    def list_schedule_exceptions(
+        self, *, user_id: int, group_id: str = "", ending_on_or_after: str = "",
+    ) -> list[dict[str, Any]]:
+        """The exceptions of one scope (the account's own, or a group's) that
+        have not ended before the given day, soonest first."""
+
+        if int(user_id or 0) <= 0:
+            return []
+        with self._connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM schedule_exceptions
+                WHERE user_id = ? AND group_id = ? AND ends_on >= ?
+                ORDER BY starts_on ASC, id ASC
+                """,
+                (int(user_id), normalize_text(group_id), normalize_text(ending_on_or_after)),
+            ).fetchall()
+        return [exception for exception in (self._schedule_exception_row(row) for row in rows) if exception]
+
+    def remove_schedule_exception(self, *, user_id: int, exception_id: int, group_id: str = "") -> bool:
+        if int(user_id or 0) <= 0:
+            return False
+        with self._connection() as conn:
+            cursor = conn.execute(
+                "DELETE FROM schedule_exceptions WHERE id = ? AND user_id = ? AND group_id = ?",
+                (int(exception_id), int(user_id), normalize_text(group_id)),
             )
         return cursor.rowcount > 0
 
