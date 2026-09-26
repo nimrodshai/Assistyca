@@ -15280,16 +15280,15 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             return
 
         # An approved template: the business welcome, or the family one in
-        # the language their name was typed in. A family is sent with {{2}}
-        # empty first and with the line only if Meta will not take an empty
-        # variable, so which words went out is known after the send, not
-        # before.
+        # the language their name was typed in. A family's is sent with the
+        # name alone first and with the family line only if Meta will not take
+        # that, so which words went out is known after the send, not before.
         template = resolve_registration_welcome_template(base_url=self._public_base_url(), kind=kind, name=name)
         attempts = registration_welcome_attempts(name=name, kind=kind)
         welcome = attempts[0].message
+        variables_sent = 0
         sent_message_id = ""
         send_error = ""
-        blank_second_variable = False
         for attempt in attempts:
             for header_image_url in (template.header_image_url, ""):
                 try:
@@ -15303,7 +15302,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                     )
                     send_error = ""
                     welcome = attempt.message
-                    blank_second_variable = attempt.blank_second_variable
+                    variables_sent = len(attempt.parameters)
                     break
                 except Exception as exc:  # noqa: BLE001 - the registration stands; the page gets another way in
                     send_error = str(exc)
@@ -15316,10 +15315,9 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 print("Web registration welcome retried without its header image.", flush=True)
             if sent_message_id:
                 break
-            if attempt.blank_second_variable:
-                # An empty {{2}} is what we want to send and may be more than
-                # Meta allows. A family with no welcome is worse than a family
-                # with one line too many, so the line goes on the next attempt.
+            if attempt is not attempts[-1]:
+                # A count Meta does not expect is refused whole. A family with
+                # one line too many is better than a family with no welcome.
                 print("Web registration welcome retried with the line in {{2}}.", flush=True)
 
         # The signup conversation starts with the welcome, so the reply to it
@@ -15334,9 +15332,10 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                     "kind": kind,
                     "phone": self._mask_whatsapp_log_identifier(phone),
                     "welcomeSent": bool(sent_message_id),
-                    # Whether Meta took an empty body variable. This is the
-                    # only place that answer is written down.
-                    "blankSecondVariable": blank_second_variable,
+                    # How many variables the template Meta took has. For the
+                    # short family templates this is the only place it is
+                    # written down.
+                    "welcomeVariables": variables_sent,
                     "sendError": send_error[:200],
                 },
                 ensure_ascii=True,

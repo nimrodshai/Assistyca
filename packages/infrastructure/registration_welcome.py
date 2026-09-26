@@ -9,12 +9,11 @@ message may only go out as a template Meta has approved. A business gets
     Tap the action below, or just tell me what you need first.
 
 A family gets a family welcome instead, and the one in their language: a name
-typed in Hebrew gets `assistyca_welcome_family_1_hebrew`, any other name
-`assistyca_welcome_family_1`. Both take the same two variables, and the second
-goes out empty: Nimrod does not want that line in the family welcome, and the
-count still has to match the template Meta approved. If Meta turns an empty
-variable away, the send falls back to carrying the line rather than leaving a
-family with no welcome - see `registration_welcome_attempts`.
+typed in Hebrew gets `assistyca_welcome_family_hebrew_short`, any other name
+`assistyca_welcome_family_english_short`. These replaced the `_1` family
+templates on 2026-09-26 and are meant to go without the family line, so they
+are sent with {{1}} alone first and with the line in {{2}} only if Meta
+refuses that - see `registration_welcome_attempts`.
 
 The greeting and the closing are repeated here as text so the conversation we
 keep says exactly what their phone showed. They are a copy of the approved
@@ -56,11 +55,11 @@ REGISTRATION_WELCOME_LINE = (
 )
 
 
-# The family welcomes. The greeting and closing are copies of the approved
-# bodies, kept in step by hand. The line below is what {{2}} carried until
-# 2026-09-23; it is now only the fallback, for a Meta that will not take an
-# empty variable.
-FAMILY_WELCOME_TEMPLATE_NAME = "assistyca_welcome_family_1"
+# The family welcomes. The greeting and closing are copies of the bodies of
+# the `_1` templates these replaced, kept in step by hand; the new ones were
+# not read before they were wired in. The line is word for word as Nimrod gave
+# it, and now goes out only if the new template turns out to still take {{2}}.
+FAMILY_WELCOME_TEMPLATE_NAME = "assistyca_welcome_family_english_short"
 FAMILY_WELCOME_GREETING = "Hi {name} 👋 I'm your new assistant and I'm here to take a few things off your plate."
 FAMILY_WELCOME_CLOSING = (
     "But first, let's get to know the names in your family. Tell me, and we'll start working on "
@@ -71,7 +70,7 @@ FAMILY_WELCOME_LINE = (
     "taking who, and remind them in time."
 )
 
-HEBREW_FAMILY_WELCOME_TEMPLATE_NAME = "assistyca_welcome_family_1_hebrew"
+HEBREW_FAMILY_WELCOME_TEMPLATE_NAME = "assistyca_welcome_family_hebrew_short"
 HEBREW_FAMILY_WELCOME_TEMPLATE_LANGUAGE = "he"
 HEBREW_FAMILY_WELCOME_GREETING = "היי {name} 👋 אני אסיסטיקה, ואני כאן כדי להקל על השבוע שלך."
 HEBREW_FAMILY_WELCOME_CLOSING = "אבל קודם, נכיר את המשפחה: מה השמות של כולם? ספרו לי ונתחיל לעבוד על הלו״ז השבועי."
@@ -175,8 +174,8 @@ def build_registration_welcome_message(
 ) -> str:
     """The welcome as their phone will show it, for the conversation we keep.
 
-    `with_line` is whether {{2}} carried the line or went out empty, which for
-    a family is only known once Meta has accepted one shape or the other.
+    `with_line` is whether {{2}} was sent at all, which for a family is only
+    known once Meta has accepted one shape or the other.
     """
 
     greeting, line, closing = welcome_copy(kind=kind, name=name)
@@ -188,26 +187,28 @@ def build_registration_welcome_message(
 
 
 def registration_welcome_template_parameters(*, name: Any, kind: Any = "business") -> list[str]:
-    """{{1}} and {{2}}, in that order - the shape we want to send.
+    """{{1}} and {{2}}, in that order.
 
-    A family's {{2}} is empty on purpose: Nimrod asked on 2026-09-23 for the
-    family line not to appear. Dropping the parameter instead is not the same
-    thing and was tried the same day - Meta answered "(#132000) Number of
-    parameters does not match the expected number of params" and the family
-    who had just registered got no welcome at all. So the slot stays and goes
-    out blank.
+    The business welcome takes both, and so did the `_1` family templates,
+    both with text. Two ways of dropping the family line from those were put
+    to Meta and both were refused, each time leaving a real registrant with
+    no welcome:
 
-    Callers that can retry should use `registration_welcome_attempts`, which
-    has somewhere to fall back to if Meta will not take an empty variable.
-    Count and shape are settled by reading the template in WhatsApp Manager,
-    never by the copies kept in this file.
+    - sending one parameter instead of two (2026-09-23) - "(#132000) Number
+      of parameters does not match the expected number of params";
+    - sending two with the second an empty string (2026-09-24) - "(#131008)
+      Required parameter is missing", with the header image and without.
+
+    A line that is a variable of an approved template cannot be taken out
+    from this side at all. The way to change what a family reads is a new
+    template in WhatsApp Manager, approved by Meta - which is what the short
+    family templates are - and this file changes only once it has. Read the
+    template there before changing anything here - not the copies kept in
+    this file.
     """
 
-    greeted = greeted_name(kind=kind, name=name)
-    if is_family(kind):
-        return [greeted, ""]
     _, line, _ = welcome_copy(kind=kind, name=name)
-    return [greeted, flatten_for_template(line)]
+    return [greeted_name(kind=kind, name=name), flatten_for_template(line)]
 
 
 @dataclass(frozen=True)
@@ -216,40 +217,31 @@ class RegistrationWelcomeAttempt:
 
     parameters: list[str]
     message: str
-    blank_second_variable: bool
 
 
 def registration_welcome_attempts(*, name: Any, kind: Any = "business") -> list[RegistrationWelcomeAttempt]:
-    """The shapes to try, the wanted one first.
+    """The shapes to send, the wanted one first.
 
-    A family's {{2}} is meant to go out empty. Whether Meta accepts an empty
-    body variable at all is not something we have ever seen from here - its
-    published rule lists an empty parameter beside the newline and the tab it
-    refuses - and a refused template send is refused whole, which is a family
-    who registered and heard nothing. That happened on 2026-09-23 and it is
-    not worth risking twice on a reading of the documentation.
-
-    So the empty one is tried first and the line is what the second attempt
-    carries. A family always gets a welcome; it only keeps the line if Meta
-    leaves us no way to send it without. The log says which one went, and
-    that is the answer to the open question, paid for by nobody.
+    The short family templates are meant to take the first name and nothing
+    else - they are how the family line comes out of the welcome, since it
+    cannot be emptied from this side. Nobody here has read them in WhatsApp
+    Manager, though, and a count that is wrong is refused whole, leaving a
+    family who registered with no welcome at all. So {{1}} alone goes first
+    and {{1}} with the line is the second attempt. The log says which one
+    Meta took; once it has said so, the other can go.
     """
 
-    greeted = greeted_name(kind=kind, name=name)
-    _, line, _ = welcome_copy(kind=kind, name=name)
     with_line = RegistrationWelcomeAttempt(
-        parameters=[greeted, flatten_for_template(line)],
-        message=build_registration_welcome_message(name=name, kind=kind, with_line=True),
-        blank_second_variable=False,
+        parameters=registration_welcome_template_parameters(name=name, kind=kind),
+        message=build_registration_welcome_message(name=name, kind=kind),
     )
     if not is_family(kind):
         return [with_line]
-    blank = RegistrationWelcomeAttempt(
-        parameters=[greeted, ""],
+    short = RegistrationWelcomeAttempt(
+        parameters=[greeted_name(kind=kind, name=name)],
         message=build_registration_welcome_message(name=name, kind=kind, with_line=False),
-        blank_second_variable=True,
     )
-    return [blank, with_line]
+    return [short, with_line]
 
 
 __all__ = [

@@ -209,15 +209,15 @@ def send_whatsapp_notification(
         if not resolved_template_language:
             raise RuntimeError("WhatsApp template delivery requires a language code.")
         raw_parameters = list(template_parameters) if template_parameters is not None else [message_text]
-        # A variable carrying a newline or a tab is rejected by Meta and the
-        # message never reaches the phone, so every value goes out on one line.
-        # An empty value is allowed through on purpose: the family welcome
-        # leaves {{2}} blank, and a template send is refused whole when the
-        # number of variables does not match the approved template, so the
-        # blank slot still has to be sent.
+        # A variable carrying a newline, a tab or nothing at all is rejected by
+        # Meta, and the message never reaches the phone. The empty one was put
+        # to Meta on 2026-09-24 and came back "(#131008) Required parameter is
+        # missing", with the header image and without it: an empty variable is
+        # a missing variable, so a line cannot be dropped from an approved
+        # template by sending "" in its place.
         body_parameters = [flatten_template_parameter(value) for value in raw_parameters]
-        if not body_parameters:
-            raise RuntimeError("WhatsApp template delivery requires the template's body variables.")
+        if not body_parameters or not all(body_parameters):
+            raise RuntimeError("WhatsApp template delivery requires every body variable to have text.")
         components: list[dict[str, Any]] = []
         header_image_url = normalize_text(template_header_image_url)
         if header_image_url:
