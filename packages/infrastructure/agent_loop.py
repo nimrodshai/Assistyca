@@ -52,6 +52,7 @@ from packages.infrastructure.recovery_reply import ALLOWED_LINK_HOSTS
 from packages.infrastructure.recovery_reply import build_situation
 from packages.infrastructure.recovery_reply import computed_recovery_sentence
 from packages.infrastructure.recovery_reply import make_option
+from packages.infrastructure import schedule_exceptions
 from packages.infrastructure.standing_tasks import STANDING_TASK_ACTION_TYPE
 from packages.infrastructure.standing_tasks import WEEKDAY_NAMES
 from packages.infrastructure.standing_tasks import describe_task_schedule
@@ -2004,6 +2005,153 @@ def _tool_show_family_week(context: LoopContext, args: dict[str, Any]) -> dict[s
     return _ok(data)
 
 
+def _own_scheduled_action(context: LoopContext, action_id: int) -> dict[str, Any] | None:
+    """One of this account's own actions that is still set, or None."""
+
+    getter = getattr(context.database, "get_scheduled_action", None)
+    action = getter(int(action_id)) if callable(getter) and int(action_id or 0) > 0 else None
+    if not isinstance(action, dict) or int(action.get("userId") or 0) != int(context.user_id):
+        return None
+    return action if str(action.get("status") or "").lower() in {"pending", "running"} else None
+
+
+def _exception_names(context: LoopContext, activities: list[dict[str, Any]]) -> dict[str, str]:
+    """Everyone an exception can be about, by name key: the family, and
+    anyone named on an activity who was never added as a member."""
+
+    names = {
+        household.name_key(member.get("name")): str(member.get("name"))
+        for member in context.database.list_household_members(user_id=context.user_id, group_id=week_scope(context))
+    }
+    for activity in activities:
+        for who in activity.get("who") or []:
+            names.setdefault(household.name_key(who), str(who))
+    return names
+
+
+def _describe_exceptions(context: LoopContext, exceptions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    activities = {
+        str(activity["id"]): activity
+        for activity in context.database.list_household_activities(user_id=context.user_id, group_id=week_scope(context))
+    }
+    action_ids = {
+        target.get("ref")
+        for exception in exceptions
+        for target in schedule_exceptions.normalize_targets(exception.get("targets"))
+        if target["kind"] == "action"
+    }
+    actions = {ref: action for ref in action_ids if (action := _own_scheduled_action(context, int(ref))) is not None}
+    return [
+        schedule_exceptions.describe_exception(exception, activities=activities, actions=actions)
+        for exception in exceptions
+    ]
+
+
+def exceptions_payload(context: LoopContext) -> list[dict[str, Any]]:
+    """What is on hold now or later, as CONTEXT.exceptions carries it. A
+    store that keeps no exceptions (an older one, a test double) has none."""
+
+    lister = getattr(context.database, "list_schedule_exceptions", None)
+    if not callable(lister) or context.user_id <= 0:
+        return []
+    try:
+        exceptions = lister(
+            user_id=context.user_id, group_id=week_scope(context),
+            ending_on_or_after=_household_today(context).isoformat(),
+        )[: schedule_exceptions.MAX_LISTED_EXCEPTIONS]
+        return _describe_exceptions(context, exceptions) if exceptions else []
+    except Exception as exc:  # noqa: BLE001 - the turn goes on without them
+        print(f"agent.loop.exceptions_unreadable user={context.user_id} error={exc!r}", flush=True)
+        return []
+
+
+def _tool_add_exception(context: LoopContext, args: dict[str, Any]) -> dict[str, Any]:
+    starts = schedule_exceptions.parse_day(args.get("from"))
+    ends = schedule_exceptions.parse_day(args.get("until"))
+    if starts is None or ends is None:
+        return _error("choice_required", "from and until are the first and last day, as YYYY-MM-DD.")
+    if ends < starts:
+        return _error("choice_required", "until is the last day, on or after from.")
+    today = _household_today(context)
+    if ends < today:
+        return _error("choice_required", f"Those days are over: today is {today.isoformat()}.")
+    if (ends - starts).days + 1 > schedule_exceptions.MAX_EXCEPTION_DAYS:
+        return _error(
+            "choice_required",
+            "That is longer than a pause. Something that has stopped is removed from the week or cancelled instead.",
+        )
+    scope = week_scope(context)
+    activities = context.database.list_household_activities(user_id=context.user_id, group_id=scope)
+    by_id = {str(activity["id"]): activity for activity in activities}
+    targets: list[dict[str, str]] = []
+
+    for raw in args.get("activities") or []:
+        ref = str(raw)
+        if ref not in by_id:
+            return _error(
+                "not_found", f"There is no activity {ref} in the week.",
+                week=[{"id": activity["id"], "title": activity.get("title"), "who": activity.get("who")} for activity in activities],
+            )
+        targets.append({"kind": "activity", "ref": ref})
+
+    names = _exception_names(context, activities) if args.get("people") else {}
+    for raw in args.get("people") or []:
+        name = names.get(household.name_key(raw))
+        if not name:
+            return _error("not_found", f"Nobody called {raw!r} is in the family's week.", family=sorted(names.values()))
+        targets.append({"kind": "person", "ref": name})
+
+    if args.get("wholeWeek"):
+        targets.append({"kind": "family_week", "ref": ""})
+
+    wants_actions = bool(args.get("actions")) or bool(args.get("allActions"))
+    if wants_actions and context.in_group:
+        return _error("not_supported", "Only the group's own week can be put on hold here; nobody's actions are open to a group.")
+    actions: dict[str, dict[str, Any]] = {}
+    for raw in args.get("actions") or []:
+        action = _own_scheduled_action(context, int(raw or 0))
+        if action is None:
+            return _error("not_found", f"Nothing scheduled has the number {raw}; show_scheduled lists what is set.")
+        actions[str(action["id"])] = action
+        targets.append({"kind": "action", "ref": str(action["id"])})
+    if args.get("allActions"):
+        targets.append({"kind": "all_actions", "ref": ""})
+
+    targets = schedule_exceptions.normalize_targets(targets)
+    if not targets:
+        return _error(
+            "choice_required",
+            "Say what is on hold: activities, people, wholeWeek, actions or allActions.",
+        )
+    try:
+        saved = context.database.save_schedule_exception(
+            user_id=context.user_id, group_id=scope, starts_on=starts.isoformat(), ends_on=ends.isoformat(),
+            reason=str(args.get("reason") or ""), targets=targets,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return _error("internal", f"That could not be saved: {exc}", can_retry=True)
+    back_on = (ends + timedelta(days=1)).isoformat()
+    note = f"Nothing it covers is nudged, reminded or run from {starts.isoformat()} to {ends.isoformat()}; it is all back on {back_on} by itself."
+    if wants_actions:
+        note += f" A reminder due in those days is not lost: it goes at the same time on {back_on}."
+    return _ok({
+        "saved": schedule_exceptions.describe_exception(saved, activities=by_id, actions=actions),
+        "note": note,
+    })
+
+
+def _tool_remove_exception(context: LoopContext, args: dict[str, Any]) -> dict[str, Any]:
+    try:
+        exception_id = int(args.get("id"))
+    except (TypeError, ValueError):
+        return _error("choice_required", "id is the number of an exception from CONTEXT.exceptions.")
+    if not context.database.remove_schedule_exception(
+        user_id=context.user_id, exception_id=exception_id, group_id=week_scope(context),
+    ):
+        return _error("not_found", f"There is no exception {exception_id}.", exceptions=exceptions_payload(context))
+    return _ok({"removed": exception_id, "note": "Everything it held is back on as usual."})
+
+
 def _tool_set_getting_to_know(context: LoopContext, args: dict[str, Any]) -> dict[str, Any]:
     status = str(args.get("status") or "").strip().lower()
     if status not in {"in_progress", "postponed", "done"}:
@@ -3411,6 +3559,45 @@ TOOLS: list[ToolSpec] = [
         run=_tool_remove_week_activity,
     ),
     ToolSpec(
+        name="add_exception",
+        description=(
+            "Put something on hold for some days because the person says it is not happening then: football "
+            "is off this week, a child is sick tomorrow, the family is away over the holiday, the gan is closed "
+            "on the bridge day, skip the morning summary while they travel, no reminders while they are "
+            "abroad. Nothing it covers is nudged, reminded or run on those days, and all of it comes back by "
+            "itself afterwards - so it is never a change to the week or a cancellation: something that has "
+            "stopped for good is removed or cancelled instead. from and until are the first and last day, "
+            "YYYY-MM-DD, the same day for one day. reason is a few words in their language. Say what it covers "
+            "with any of: activities (ids from household.week), people (names from household - everything that "
+            "person does), wholeWeek (the family's whole routine: every plan, pickup, drive and birthday "
+            "nudge), actions (ids from show_scheduled - a standing action skips those days, a reminder due in "
+            "them waits until the day after) and allActions (every standing action and reminder they have). "
+            "Empty arrays and false for what it does not cover."
+        ),
+        parameters=_params({
+            "from": {"type": "string"},
+            "until": {"type": "string"},
+            "reason": {"type": "string"},
+            "activities": {"type": "array", "items": {"type": "integer"}},
+            "people": {"type": "array", "items": {"type": "string"}},
+            "wholeWeek": {"type": "boolean"},
+            "actions": {"type": "array", "items": {"type": "integer"}},
+            "allActions": {"type": "boolean"},
+        }),
+        side_effect=True,
+        run=_tool_add_exception,
+    ),
+    ToolSpec(
+        name="remove_exception",
+        description=(
+            "Take something off hold because it is on after all, or was put on hold by mistake: 'football is "
+            "back on', 'we came home early', 'send the summary again'. id is from CONTEXT.exceptions."
+        ),
+        parameters=_params({"id": {"type": "integer"}}),
+        side_effect=True,
+        run=_tool_remove_exception,
+    ),
+    ToolSpec(
         name="show_family_week",
         description=(
             "The family and their week laid out day by day, with what has nobody down for the drop-off or "
@@ -3501,6 +3688,9 @@ GROUP_TOOLS = frozenset({
     # the people in the group say - never the account holder's own week.
     "save_family_member", "remove_family_member", "save_week_activity", "remove_week_activity",
     "show_family_week",
+    # And what the room says is off for a few days - a run, a child, the
+    # whole week - on the group's own week only.
+    "add_exception", "remove_exception",
 })
 
 
@@ -3570,7 +3760,8 @@ _GROUP_RULES = (
     "taking and who is collecting. CONTEXT.household is that week and nobody else's - not the week of "
     "whoever opened the group. Save what they say the moment they say it with save_family_member and "
     "save_week_activity, and when somebody in the room says they will take a run, put their name down for "
-    "it there and then and say so in a line. What household.weekGaps lists is what is still open; raise one "
+    "it there and then and say so in a line. When the room says a run is off for some days, put it on hold "
+    "with add_exception rather than changing the week. What household.weekGaps lists is what is still open; raise one "
     "at a time, when there is a reason to, and ask the room rather than any one person: a run with nobody "
     "down for it is the thing this group is for. Never say a name is on a run unless it is saved.\n"
 )
@@ -3720,7 +3911,9 @@ _SCHEDULING = (
     "'automatically', 'as a scheduled task', 'on a regular basis': schedule_task sets it up on the first "
     "call, no yes needed, and it can do anything you can do in this chat. Never say a scheduled or automatic "
     "action cannot be set up here. A reminder, by contrast, is one message at one time. show_scheduled lists "
-    "what is set and cancel_scheduled ends one; a person who says stop is not asking for a yes."
+    "what is set and cancel_scheduled ends one; a person who says stop is not asking for a yes. Skipping "
+    "one for some days - 'no summary while I'm away', 'hold the reminders until Sunday' - is add_exception, "
+    "not cancel_scheduled: it comes back by itself."
 )
 
 _CONFIRMATION = (
@@ -3815,7 +4008,10 @@ _FAMILY = (
     "household.calendar, when it is there, is what the school calendar where they live says about today or "
     "tomorrow, looked up online. What it closes is off that day, and so is taking and collecting for it: never "
     "list it as the day's plan or remind anyone about it, and if that leaves the day with nothing on, say so "
-    "only when asked.\n"
+    "only when asked. The same goes for CONTEXT.exceptions, which is what they told you is off for some days. "
+    "Something not happening for a while - a sick day, a trip, a holiday, football off this week - is an "
+    "exception: add_exception, never save_week_activity or remove_week_activity, and say in a line when it "
+    "is all back on.\n"
     "Getting to know a family, and connecting a business to its mail and calendar, are each an opening "
     "the conversation works through in its own way: CONTEXT.chatFlow says which one this account is on "
     "and the rules above it say how to carry it.\n"
@@ -3943,6 +4139,7 @@ def build_loop_context_text(
     household_block: dict[str, Any] | None = None,
     chat_flow: dict[str, Any] | None = None,
     group: dict[str, Any] | None = None,
+    exceptions: list[dict[str, Any]] | None = None,
 ) -> str:
     normalized_channel = "whatsapp" if str(channel or "").lower() == "whatsapp" else "portal"
     safe_context = {k: v for k, v in (tool_context or {}).items() if k != "connectLinks"}
@@ -3974,6 +4171,8 @@ def build_loop_context_text(
         context["trialEnded"] = True
     if household_block:
         context["household"] = household_block
+    if exceptions:
+        context["exceptions"] = exceptions
     if chat_flow:
         context["chatFlow"] = chat_flow
     if group:
@@ -4052,6 +4251,7 @@ def run_agent_loop(
         household_block=household_block,
         chat_flow=None if trial_ended else chat_flow,
         group=context.group if context.in_group else None,
+        exceptions=None if trial_ended else exceptions_payload(context),
     )
     input_items: list[dict[str, Any]] = build_agent_turn_input(context_text, photo) or [
         {"role": "user", "content": context_text},

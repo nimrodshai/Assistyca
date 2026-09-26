@@ -247,6 +247,8 @@ class GroupToolTests(unittest.TestCase):
             "search_web", "search_news", "look_up_property", "exchange_rate",
             "save_family_member", "remove_family_member", "save_week_activity", "remove_week_activity",
             "show_family_week",
+            # Holds on the group's own week only; actions are refused in a group.
+            "add_exception", "remove_exception",
         }))
 
     def test_a_call_to_a_shut_off_tool_is_refused_and_not_run(self) -> None:

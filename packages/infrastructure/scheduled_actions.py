@@ -9,12 +9,16 @@ import os
 import threading
 from typing import Any
 from typing import Callable
+from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfoNotFoundError
 
 from packages.infrastructure.list_due_nudges import describe_due
 from packages.infrastructure.notification_delivery import deliver_portal_notification
 from packages.infrastructure.notification_delivery import send_whatsapp_notification
 from packages.infrastructure.portal_db import PortalDatabase
 from packages.infrastructure.portal_db import normalize_text
+from packages.infrastructure.schedule_exceptions import action_exception
+from packages.infrastructure.schedule_exceptions import held_until
 from packages.infrastructure.standing_tasks import STANDING_TASK_ACTION_TYPE
 from packages.infrastructure.standing_tasks import NothingNewToSend
 from packages.infrastructure.standing_tasks import is_standing_task
@@ -155,6 +159,21 @@ class ScheduledActionScheduler:
 
             processed += 1
             standing = is_standing_task(claimed)
+            pause = self._pause_for(claimed)
+            if pause is not None:
+                # The person said this is off for now. A standing action
+                # skips the day and comes back on its own; a reminder is
+                # never dropped, only held until the pause is over.
+                print(
+                    f"[scheduled-actions] action={claimed.get('id')} on hold until {pause.get('endsOn')} "
+                    f"(exception {pause.get('id')}), not sent",
+                    flush=True,
+                )
+                if standing:
+                    self._reschedule(claimed, now=reference, paused=True)
+                else:
+                    self._hold(claimed, pause)
+                continue
             try:
                 provider_message_id = self._dispatch(claimed)
             except NothingNewToSend:
@@ -209,6 +228,55 @@ class ScheduledActionScheduler:
             "recovered": recovered,
         }
 
+    def _pause_for(self, action: dict[str, Any]) -> dict[str, Any] | None:
+        """The exception holding this action today, on the person's clock,
+        or None. Only what the person set up is paused: their standing
+        actions and their reminders. What the server queues on its own - an
+        alert about mail, the week's nudges - has its own rules, and a
+        message for a group belongs to the room."""
+
+        payload = action.get("payload") if isinstance(action.get("payload"), dict) else {}
+        action_type = normalize_text(action.get("actionType")).lower()
+        if normalize_text(action.get("recipientRef")).startswith(GROUP_RECIPIENT_PREFIX):
+            return None
+        if not (is_standing_task(action) or (action_type == "send_message" and not payload.get("oneOff"))):
+            return None
+        user_id = int(action.get("userId") or 0)
+        local_day = self._local_run_at(action).date()
+        try:
+            exceptions = self.database.list_schedule_exceptions(
+                user_id=user_id, ending_on_or_after=local_day.isoformat(),
+            )
+        except Exception as exc:  # noqa: BLE001 - an unreadable pause never stops a message
+            print(f"[scheduled-actions] action={action.get('id')} could not read exceptions: {exc}", flush=True)
+            return None
+        return action_exception(int(action.get("id") or 0), exceptions, local_day)
+
+    @staticmethod
+    def _local_run_at(action: dict[str, Any]) -> datetime:
+        try:
+            zone = ZoneInfo(normalize_text(action.get("timezone")) or "UTC")
+        except (ZoneInfoNotFoundError, ValueError):
+            zone = ZoneInfo("UTC")
+        try:
+            run_at = datetime.fromisoformat(normalize_text(action.get("runAt")).replace("Z", "+00:00"))
+        except ValueError:
+            run_at = datetime.now(timezone.utc)
+        if run_at.tzinfo is None:
+            run_at = run_at.replace(tzinfo=timezone.utc)
+        return run_at.astimezone(zone)
+
+    def _hold(self, action: dict[str, Any], pause: dict[str, Any]) -> None:
+        """Move a reminder to the same time on the day after the pause."""
+
+        payload = dict(action.get("payload") if isinstance(action.get("payload"), dict) else {})
+        payload["heldBy"] = {"exceptionId": int(pause.get("id") or 0), "until": normalize_text(pause.get("endsOn"))}
+        self.database.reschedule_scheduled_action(
+            action_id=int(action.get("id") or 0),
+            run_at=held_until(self._local_run_at(action), pause),
+            payload=payload,
+        )
+
     def _reschedule(
         self,
         action: dict[str, Any],
@@ -216,6 +284,7 @@ class ScheduledActionScheduler:
         provider_message_id: str = "",
         error: str = "",
         nothing_new: bool = False,
+        paused: bool = False,
         now: datetime,
     ) -> None:
         """Move a standing action on to its next occurrence.
@@ -244,9 +313,10 @@ class ScheduledActionScheduler:
         payload.pop("sentAt", None)
         payload.pop("failedAt", None)
         news_found = payload.pop("newsFound", None)
-        if not error:
+        if not error and not paused:
             # The next run's news starts here. What this run sent is written
-            # down now that it has been delivered, never before.
+            # down now that it has been delivered, never before. A paused run
+            # sent nothing, so the next one picks up from the last that did.
             payload["newsCoveredUntil"] = now.isoformat()
             if isinstance(news_found, list) and news_found and not nothing_new:
                 try:
@@ -259,7 +329,9 @@ class ScheduledActionScheduler:
                     print(f"[scheduled-actions] action={action_id} could not record the news it sent: {exc}", flush=True)
         payload.update({
             "lastRunAt": now.isoformat(),
-            "lastRunStatus": "failed" if error else ("nothing_new" if nothing_new else "success"),
+            "lastRunStatus": (
+                "failed" if error else "paused" if paused else "nothing_new" if nothing_new else "success"
+            ),
             "runCount": int(payload.get("runCount") or 0) + 1,
             "nextRunAt": next_run.isoformat(),
         })
