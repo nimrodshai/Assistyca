@@ -26,6 +26,7 @@ from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from packages.infrastructure import household
 from packages.infrastructure.agent_loop import LoopContext
 from packages.infrastructure.agent_loop import run_agent_loop
 from packages.infrastructure.portal_auth.server import PortalConfig
@@ -102,6 +103,12 @@ class ScheduleMathTests(unittest.TestCase):
         self.assertIn('"Morning meetings" (every day at 08:00) is running now', text)
         self.assertIn("The person is not writing", text)
         self.assertTrue(text.endswith("Do this now: read today's calendar"))
+
+    def test_only_a_scheduled_run_may_decide_there_is_nothing_to_send(self) -> None:
+        standing = build_task_run_message(title="Pickups", instruction="check today's pickups", schedule_text="every day at 08:00")
+        self.assertIn("set nothingToSend and no message goes", standing)
+        one_off = build_task_run_message(title="Today", instruction="write the plan", schedule_text="", standing=False)
+        self.assertNotIn("nothingToSend", one_off)
 
     def test_a_run_that_may_offer_allows_only_the_offer_its_instruction_names(self) -> None:
         text = build_task_run_message(title="Inbox", instruction="offer the event", schedule_text="", standing=False, may_offer=True)
@@ -380,6 +387,59 @@ class StandingTaskApiTests(unittest.TestCase):
         self.assertEqual(saved["payload"]["runCount"], 1)
         self.assertEqual(saved["payload"]["lastRunStatus"], "success")
 
+    def test_a_morning_with_nothing_on_sends_nothing(self) -> None:
+        """Saturday, or a holiday the school calendar says closes the gan: the
+        run sees the day, decides there is nothing to tell, and stays quiet."""
+
+        user_id = int(self.user["id"])
+        self.database.update_user_account_type("owner@example.com", account_type="family")
+        today = datetime.now(ZONE).date()
+        self.database.save_household_activity(
+            user_id=user_id, title="gan", who=["Laor"], days=[household.weekday_code(today)],
+            start_time="08:00", end_time="12:00", drop_off_by="me", pick_up_by="",
+        )
+        self.database.save_school_day_check(place=JERUSALEM, day=today.isoformat(), status={
+            "country": "Israel", "schools": "closed", "kindergartens": "closed", "occasion": "Erev Sukkot",
+            "note": "", "ordinary": False, "sourceUrl": "",
+        })
+        _, created = self._create(instruction="tell me who is picking up the kids today", title="Pickups")
+        action_id = int(created["action"]["id"])
+        row = self.database.get_scheduled_action(action_id) or {}
+        self.database.reschedule_scheduled_action(
+            action_id=action_id, run_at=datetime.now(timezone.utc) - timedelta(seconds=1), payload=row["payload"],
+        )
+        runner = StandingTaskRunner(
+            database=self.database,
+            base_url=self.base_url,
+            session_token_factory=lambda email: mint_agent_session_token(self.server.store, email),
+        )
+        scheduler = ScheduledActionScheduler(
+            self.database, config=ScheduledActionConfig(enabled=True, poll_seconds=1, batch_size=10), task_runner=runner.run,
+        )
+        reply = {**_reply("No gan today - Erev Sukkot."), "nothingToSend": True}
+        model_result = SimpleNamespace(
+            output_text=json.dumps(reply),
+            raw_response={"output": [{"type": "message", "content": [{"type": "output_text", "text": json.dumps(reply)}]}]},
+            input_tokens=10, output_tokens=5,
+        )
+
+        with mock.patch("packages.infrastructure.portal_auth.server.call_openai_response", return_value=model_result) as model, mock.patch(
+            "packages.infrastructure.scheduled_actions.send_whatsapp_notification", return_value="wamid.quiet",
+        ) as send:
+            summary = scheduler.run_pending(now=datetime.now(timezone.utc))
+
+        send.assert_not_called()
+        self.assertEqual(summary["sent"], 0, summary)
+        text_format = model.call_args.kwargs["extra_payload"]["text"]["format"]
+        self.assertIn("nothingToSend", text_format["schema"]["required"])
+        prompt = str(model.call_args.kwargs["input"][0]["content"])
+        self.assertIn('"calendar":[{"date":"' + today.isoformat(), prompt)
+        self.assertIn('"occasion":"Erev Sukkot"', prompt)
+        saved = self.database.get_scheduled_action(action_id) or {}
+        self.assertEqual(saved["status"], "pending")
+        self.assertEqual(saved["payload"]["lastRunStatus"], "nothing_new")
+        self.assertEqual(self.database.list_recent_whatsapp_agent_messages(user_id=user_id), [])
+
     def _alert_action(self) -> dict:
         user_id = int(self.user["id"])
         action = self.database.create_scheduled_action(
@@ -509,6 +569,30 @@ PLUMBER = {
     "id": 9, "actionType": "send_message", "status": "pending", "runAt": "2026-09-06T13:00:00+00:00",
     "payload": {"messageText": "Call the plumber"},
 }
+
+
+class QuietRunTests(unittest.TestCase):
+    def _run(self, reply: dict, *, standing: bool):
+        context = _context(FakeApi())
+        if standing:
+            context.standing_task_id = 7
+            context.news_since = datetime(2026, 9, 25, 5, 0, tzinfo=timezone.utc)
+        return run_agent_loop(
+            context=context, call_model=ScriptedModel([_model_round(reply=reply)]),
+            user_message="Do this now: pickups", conversation=[], today="2026-09-26", now="08:00",
+        )
+
+    def test_a_scheduled_run_with_nothing_to_tell_sends_nothing(self) -> None:
+        result = self._run({**_reply("Saturday - nothing on."), "nothingToSend": True}, standing=True)
+        self.assertTrue(result.nothing_new)
+
+    def test_a_scheduled_run_with_something_to_tell_sends_it(self) -> None:
+        result = self._run({**_reply("08:00 gan - you take Laor."), "nothingToSend": False}, standing=True)
+        self.assertFalse(result.nothing_new)
+
+    def test_a_conversation_is_always_answered(self) -> None:
+        result = self._run({**_reply("Nothing on today."), "nothingToSend": True}, standing=False)
+        self.assertFalse(result.nothing_new)
 
 
 class StandingTaskToolTests(unittest.TestCase):

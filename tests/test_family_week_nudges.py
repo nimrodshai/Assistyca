@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from unittest import mock
@@ -16,6 +17,7 @@ from packages.infrastructure.family_week_nudges import gap_lines
 from packages.infrastructure.family_week_nudges import rides_due
 from packages.infrastructure.family_week_nudges import rides_due_for_anyone
 from packages.infrastructure.portal_db import PortalDatabase
+from packages.infrastructure.school_days import SchoolCalendar
 
 UTC = timezone.utc
 # 2026-09-20 is a Sunday.
@@ -230,3 +232,125 @@ class GroupNudgeTests(unittest.TestCase):
             [],
             "the pickup at 17:30 has nobody down for it, so there is nobody to remind",
         )
+
+
+class HolidayNudgeTests(unittest.TestCase):
+    """The usual week, held up against the school calendar where they live."""
+
+    GROUP = "120363@g.us"
+
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.database = PortalDatabase(Path(self.temp_dir.name) / "portal.db")
+        self.database.register_user("dana@example.com", display_name="Dana Levi")
+        self.database.update_user_account_type("dana@example.com", account_type="family")
+        self.user_id = int((self.database.get_user("dana@example.com") or {})["id"])
+        self.database.save_household_activity(
+            user_id=self.user_id, title="Kindergarten", who=["Tom"], days=["sun", "mon"],
+            start_time="07:30", end_time="16:00", drop_off_by="Dana", pick_up_by="Shirly",
+        )
+        self.database.save_household_activity(
+            user_id=self.user_id, title="Ballet", who=["Noa"], days=["mon"],
+            start_time="16:30", end_time="17:30", drop_off_by="", pick_up_by="me",
+        )
+        self.database.save_household_activity(
+            user_id=self.user_id, group_id=self.GROUP, title="Football", who=["Noam"], days=["mon"],
+            start_time="16:00", end_time="17:30", drop_off_by="Yonatan", pick_up_by="",
+        )
+        # What the calendar says, by day, and which titles each closes.
+        self.days: dict[str, dict] = {}
+        self.closes: dict[str, set[str]] = {}
+        self.lookups: list[str] = []
+        calendar = SchoolCalendar(self.database, look_up=self._look_up, ask=self._ask)
+        self.nudger = FamilyWeekNudger(
+            self.database,
+            config=FamilyWeekNudgeConfig(morning_hour=7, evening_hour=20, ride_lead_minutes=30),
+            school_calendar=calendar,
+        )
+        # The family lives in Israel: 07:05 there is 04:05 UTC in September.
+        self.zone = mock.patch.object(FamilyWeekNudger, "_timezone_for_user", return_value="Asia/Jerusalem")
+        self.zone.start()
+        self.groups_on = mock.patch(
+            "packages.infrastructure.whatsapp_agent_chat.whatsapp_groups_enabled", return_value=True,
+        )
+        self.groups_on.start()
+
+    def tearDown(self) -> None:
+        self.groups_on.stop()
+        self.zone.stop()
+        self.temp_dir.cleanup()
+
+    def _look_up(self, *, place: str, day) -> dict:
+        self.lookups.append(day.isoformat())
+        return self.days.get(day.isoformat(), {
+            "country": "Israel", "schools": "open", "kindergartens": "open", "occasion": "", "note": "",
+            "ordinary": True, "sourceUrl": "",
+        })
+
+    def _ask(self, *, prompt: str, billing_email: str = "") -> str:
+        question = json.loads(prompt[prompt.index('{"date"'):])
+        closed = self.closes.get(question["date"], set())
+        return json.dumps({"off": [
+            {"id": activity["id"], "why": "closed"} for activity in question["activities"] if activity["title"] in closed
+        ]})
+
+    def holiday(self, day: str, occasion: str, *titles: str) -> None:
+        self.days[day] = {
+            "country": "Israel", "schools": "closed", "kindergartens": "closed", "occasion": occasion,
+            "note": f"{occasion}: schools and kindergartens are closed.", "ordinary": False, "sourceUrl": "",
+        }
+        self.closes[day] = set(titles)
+
+    def queued(self, title: str) -> list[dict]:
+        return [
+            action for action in self.database.list_scheduled_actions_for_user(self.user_id, limit=50)
+            if (action.get("payload") or {}).get("source") == "family_week" and action["payload"]["title"] == title
+        ]
+
+    def test_a_day_the_holiday_empties_sends_no_morning_and_no_drive(self) -> None:
+        self.holiday("2026-09-20", "Erev Sukkot", "Kindergarten")
+        # 07:05 local: the morning window, and ahead of Dana's 07:30 drop-off.
+        summary = self.nudger.run_pending(now=at(SUNDAY, 4, 5))
+        self.assertEqual((summary["morning"], summary["rides"]), (0, 0))
+        self.nudger.run_pending(now=at(SUNDAY, 4, 20))
+        self.assertEqual(self.queued("Today in your family's week"), [])
+        self.assertEqual(self.queued("Time to leave soon"), [])
+        self.assertEqual(self.lookups, ["2026-09-20"], "the day is looked up once, not every poll")
+
+    def test_the_morning_leaves_out_what_is_closed_and_says_why(self) -> None:
+        monday = SUNDAY.replace(day=21)
+        self.days["2026-09-21"] = {
+            "country": "Israel", "schools": "closed", "kindergartens": "closed", "occasion": "Sukkot break",
+            "note": "Kindergartens are closed until 2026-10-04.", "ordinary": False, "sourceUrl": "",
+        }
+        self.closes["2026-09-21"] = {"Kindergarten"}
+        summary = self.nudger.run_pending(now=at(monday, 4, 5))
+        self.assertEqual((summary["morning"], summary["rides"]), (1, 0))
+        [action] = self.queued("Today in your family's week")
+        instruction = action["payload"]["instruction"]
+        listed = instruction[instruction.index("TODAY:"):instruction.index("CALENDAR:")]
+        self.assertIn("Ballet (Noa)", listed)
+        self.assertNotIn("Kindergarten (Tom)", listed)
+        self.assertIn("CALENDAR: 2026-09-21 (Monday), Sukkot break", instruction)
+        self.assertNotIn("Kindergarten", action["payload"]["fallbackText"])
+
+    def test_an_ordinary_day_goes_as_it_always_did(self) -> None:
+        summary = self.nudger.run_pending(now=at(SUNDAY, 4, 5))
+        self.assertEqual((summary["morning"], summary["rides"]), (1, 1))
+        [action] = self.queued("Today in your family's week")
+        self.assertIn("Kindergarten", action["payload"]["instruction"])
+        self.assertNotIn("CALENDAR", action["payload"]["instruction"])
+
+    def test_the_evening_before_a_holiday_asks_nobody_to_cover_it(self) -> None:
+        self.holiday("2026-09-21", "Sukkot", "Kindergarten", "Ballet")
+        # 20:15 local on Sunday; Monday's Ballet drop-off has nobody, but Monday is off.
+        summary = self.nudger.run_pending(now=at(SUNDAY, 17, 15))
+        self.assertEqual(summary["evening"], 0)
+        self.assertEqual(self.queued("Tomorrow still needs someone"), [])
+
+    def test_a_group_run_on_a_holiday_reminds_nobody(self) -> None:
+        self.holiday("2026-09-21", "Sukkot", "Football", "Kindergarten", "Ballet")
+        monday = SUNDAY.replace(day=21)
+        # 15:40 local, twenty minutes before Yonatan's 16:00 run.
+        self.assertEqual(self.nudger.run_pending_for_groups(now=at(monday, 12, 40))["groupRides"], 0)
+        self.assertEqual(self.nudger.run_pending_for_groups(now=at(SUNDAY, 17, 15))["groupEvening"], 0)

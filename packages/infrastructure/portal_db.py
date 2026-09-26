@@ -545,6 +545,17 @@ CREATE TABLE IF NOT EXISTS household_nudges (
     PRIMARY KEY(user_id, nudge_key),
     FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
 );
+
+-- What the school calendar says about one day where families live, looked
+-- up online once per place (a clock such as Asia/Jerusalem) and day, and
+-- read by every family on that clock. Nobody's data: a holiday is public.
+CREATE TABLE IF NOT EXISTS school_day_checks (
+    place TEXT NOT NULL,
+    day TEXT NOT NULL,
+    status_json TEXT NOT NULL,
+    checked_at TEXT NOT NULL,
+    PRIMARY KEY(place, day)
+);
 """
 
 # Indexes live apart from the tables above, and run after them.
@@ -10098,6 +10109,40 @@ class PortalDatabase:
                 (int(user_id), normalize_text(nudge_key)[:160], now.isoformat()),
             )
         return cursor.rowcount > 0
+
+    def get_school_day_check(self, *, place: str, day: str) -> dict[str, Any] | None:
+        """What was found about that day in that place, or None when it has
+        not been looked up."""
+
+        with self._connection() as conn:
+            row = conn.execute(
+                "SELECT status_json FROM school_day_checks WHERE place = ? AND day = ?",
+                (normalize_text(place), normalize_text(day)),
+            ).fetchone()
+        if row is None:
+            return None
+        try:
+            status = json.loads(row["status_json"])
+        except (TypeError, ValueError):
+            return None
+        return status if isinstance(status, dict) else None
+
+    def save_school_day_check(self, *, place: str, day: str, status: dict[str, Any]) -> None:
+        """Keep what a day was found to be. Days a month gone are cleared:
+        nothing reads them once they have passed."""
+
+        now = datetime.now(timezone.utc)
+        with self._connection() as conn:
+            conn.execute(
+                "DELETE FROM school_day_checks WHERE day < ?", ((now - timedelta(days=30)).date().isoformat(),)
+            )
+            conn.execute(
+                """
+                INSERT INTO school_day_checks (place, day, status_json, checked_at) VALUES (?, ?, ?, ?)
+                ON CONFLICT(place, day) DO UPDATE SET status_json = excluded.status_json, checked_at = excluded.checked_at
+                """,
+                (normalize_text(place), normalize_text(day), json.dumps(status, ensure_ascii=False), now.isoformat()),
+            )
 
     def remove_household_activity(self, *, user_id: int, activity_id: int, group_id: str = "") -> bool:
         if int(user_id or 0) <= 0:
