@@ -27,6 +27,17 @@ from packages.infrastructure.portal_db import PortalDatabase
 TODAY = "2026-09-17"
 
 
+class GettingToKnowVoiceTests(unittest.TestCase):
+    def test_the_saving_is_kept_quiet_and_the_next_question_follows(self) -> None:
+        # Every answer is saved the moment it lands, but the person is not
+        # told so: "I've got Ella, Tom and Rina in the family now" is a
+        # system notice, not something one person says to another.
+        rules = chat_flow.chat_flow_rules({"accountType": "family", "goal": "family", "status": "in_progress"})
+        self.assertIn("Keep the saving to yourself", rules)
+        self.assertIn("a word of acknowledgement if any, then the next question", rules)
+        self.assertIn("The week is shown back once, when it is done", rules)
+
+
 class WhichOpeningTests(unittest.TestCase):
     def flow(self, **kwargs) -> dict:
         kwargs.setdefault("profile", None)
