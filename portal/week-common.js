@@ -38,15 +38,29 @@
     return String(who || "").trim();
   }
 
+  // A start and an end read "08:00 / until 13:30". With only an end, the
+  // end is the figure and "until" the small word above it; a made-up
+  // "Any time" would say more than the family told us. With neither the
+  // column stays blank.
+  function renderTime(activity) {
+    const time = el("div", "activity-time");
+    if (activity.startTime) {
+      time.append(activity.startTime);
+      if (activity.endTime) time.append(el("small", "", `until ${activity.endTime}`));
+    } else if (activity.endTime) {
+      time.append(el("small", "", "until"));
+      time.append(activity.endTime);
+    }
+    return time;
+  }
+
   function renderActivity(activity, { ownerName, selfLabel, onOpen }) {
     const node = onOpen ? el("button", "activity") : el("div", "activity");
     if (onOpen) {
       node.type = "button";
       node.addEventListener("click", () => onOpen(activity));
     }
-    const time = el("div", "activity-time", activity.startTime || "Any time");
-    if (activity.endTime) time.append(el("small", "", `until ${activity.endTime}`));
-    node.append(time);
+    node.append(renderTime(activity));
     node.append(el("div", "activity-title", activity.title));
     const meta = [(activity.who || []).join(", "), activity.place].filter(Boolean).join(" · ");
     if (meta) node.append(el("div", "activity-meta", meta));
