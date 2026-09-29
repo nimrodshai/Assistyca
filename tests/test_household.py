@@ -508,7 +508,11 @@ class WeekPageTests(unittest.TestCase):
 
     def test_a_whatsapp_link_signs_the_phone_in_and_opens_the_week(self) -> None:
         with urllib_request.urlopen(f"{self.base_url}/week", timeout=10) as response:
-            self.assertIn("week.js", response.read().decode())
+            page = response.read().decode()
+        self.assertIn("week.js", page)
+        # People are picked as chips, and Save waits for a complete row.
+        for marker in ('id="fieldWho" class="chips"', 'id="fieldDropOff" class="chips"', 'id="fieldPickUp" class="chips"', 'id="saveButton" class="button primary" type="submit" disabled'):
+            self.assertIn(marker, page)
         code = self.database.create_list_open_code(user_id=self.user_id, list_id=0, expires_at=time.time() + 60)
         opener = urllib_request.build_opener(_NoRedirect)
         try:
