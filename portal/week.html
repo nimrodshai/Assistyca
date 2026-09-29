@@ -8,7 +8,7 @@
     <meta name="color-scheme" content="light dark" />
     <meta name="robots" content="noindex" />
     <script src="/portal/theme-init.js?v=1"></script>
-    <link rel="stylesheet" href="/portal/week.css?v=1" />
+    <link rel="stylesheet" href="/portal/week.css?v=2" />
   </head>
   <body data-view="loading">
     <header class="topbar">
@@ -71,10 +71,11 @@
           <span class="field-label">What</span>
           <input id="fieldTitle" type="text" maxlength="120" required />
         </label>
-        <label class="field">
-          <span class="field-label">Who it is for</span>
-          <input id="fieldWho" type="text" maxlength="200" placeholder="Tom, Noa" />
-        </label>
+        <fieldset class="field">
+          <legend class="field-label">Who it is for</legend>
+          <div id="fieldWho" class="chips"></div>
+          <input id="fieldWhoOther" class="chip-input" type="text" maxlength="80" placeholder="Someone else" aria-label="Someone else, by name" />
+        </fieldset>
         <fieldset class="field">
           <legend class="field-label">Days</legend>
           <div id="fieldDays" class="days"></div>
@@ -94,27 +95,28 @@
           <input id="fieldPlace" type="text" maxlength="200" />
         </label>
         <div class="field-row">
-          <label class="field">
-            <span class="field-label">Takes them</span>
-            <input id="fieldDropOff" type="text" maxlength="80" placeholder="me" />
-          </label>
-          <label class="field">
-            <span class="field-label">Collects them</span>
-            <input id="fieldPickUp" type="text" maxlength="80" placeholder="me" />
-          </label>
+          <fieldset class="field">
+            <legend class="field-label">Takes them</legend>
+            <div id="fieldDropOff" class="chips"></div>
+          </fieldset>
+          <fieldset class="field">
+            <legend class="field-label">Collects them</legend>
+            <div id="fieldPickUp" class="chips"></div>
+          </fieldset>
         </div>
+        <p id="editorHint" class="form-hint is-hidden"></p>
         <p id="editorError" class="form-error is-hidden" role="alert"></p>
         <div class="editor-actions">
           <button id="deleteButton" class="button danger is-hidden" type="button">Remove</button>
           <span class="spacer"></span>
           <button id="cancelButton" class="button" type="button">Cancel</button>
-          <button class="button primary" type="submit">Save</button>
+          <button id="saveButton" class="button primary" type="submit" disabled>Save</button>
         </div>
       </form>
     </dialog>
 
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
     <script src="/portal/week-common.js?v=2"></script>
-    <script src="/portal/week.js?v=2"></script>
+    <script src="/portal/week.js?v=3"></script>
   </body>
 </html>

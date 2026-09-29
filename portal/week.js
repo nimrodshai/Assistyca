@@ -2,7 +2,7 @@
 // add or remove an activity, and share a read-only link. Same store the
 // assistant writes to.
 (() => {
-  const { DAYS, countGaps, el, renderDays, todayCode } = window.AssistycaWeek;
+  const { DAYS, countGaps, el, isSelf, renderDays, todayCode } = window.AssistycaWeek;
   const $ = (id) => document.getElementById(id);
   const state = { data: null, editing: null };
 
@@ -111,21 +111,125 @@
     return input;
   });
 
+  // The people in the family, as chips. "Who it is for" offers everyone
+  // at home, children first, and takes a name that is not there yet - a
+  // friend who comes along. Who drives is a parent: the owner as "me", so
+  // it reads "You" on this page and their name on the shared one, or the
+  // partner by name. Anything the chat recorded that fits none of these
+  // stays as its own chip rather than being lost.
+  function ownerFirstName() {
+    return String((state.data || {}).ownerName || "").trim().split(" ")[0];
+  }
+
+  function household() {
+    const members = (state.data || {}).members || [];
+    const byRole = (role) => members.filter((member) => member.role === role);
+    return { kids: byRole("child"), others: byRole("other"), partners: byRole("partner") };
+  }
+
+  function sameName(a, b) {
+    return String(a || "").trim().toLowerCase() === String(b || "").trim().toLowerCase();
+  }
+
+  function renderChips(container, { name, type, options, selected }) {
+    const chips = options.slice();
+    for (const value of selected) {
+      if (!chips.some((chip) => sameName(chip.value, value))) chips.push({ value, label: value });
+    }
+    container.replaceChildren();
+    for (const chip of chips) {
+      addChip(container, { name, type, value: chip.value, label: chip.label, checked: selected.some((value) => sameName(value, chip.value)) });
+    }
+  }
+
+  function addChip(container, { name, type, value, label, checked }) {
+    const wrap = el("label", "chip-toggle");
+    const input = document.createElement("input");
+    input.type = type;
+    input.name = name;
+    input.value = value;
+    input.checked = Boolean(checked);
+    wrap.append(input, el("span", "", label));
+    container.append(wrap);
+    return input;
+  }
+
+  function chipValues(container) {
+    return Array.from(container.querySelectorAll("input:checked")).map((input) => input.value);
+  }
+
+  function renderWhoChips(selectedNames) {
+    const { kids, others, partners } = household();
+    const options = [...kids, ...others, ...partners].map((member) => ({ value: member.name, label: member.name }));
+    const owner = ownerFirstName();
+    if (owner && !options.some((option) => sameName(option.value, owner))) options.push({ value: owner, label: owner });
+    renderChips($("fieldWho"), { name: "who", type: "checkbox", options, selected: selectedNames });
+  }
+
+  function renderDriverChips(container, name, current) {
+    const options = [{ value: "me", label: "Me" }];
+    for (const partner of household().partners) options.push({ value: partner.name, label: partner.name });
+    const value = String(current || "").trim();
+    const selected = !value ? [] : isSelf(value, (state.data || {}).ownerName) ? ["me"] : [value];
+    renderChips(container, { name, type: "radio", options, selected });
+  }
+
+  // A typed name becomes a chip, ticked; a name already there is ticked instead.
+  function takeTypedName() {
+    const input = $("fieldWhoOther");
+    const name = input.value.replace(/,/g, " ").trim().slice(0, 80);
+    input.value = "";
+    if (!name) return;
+    const existing = Array.from($("fieldWho").querySelectorAll("input")).find((chip) => sameName(chip.value, name));
+    if (existing) {
+      existing.checked = true;
+    } else {
+      addChip($("fieldWho"), { name: "who", type: "checkbox", value: name, label: name, checked: true });
+    }
+    refreshSaveState();
+  }
+
+  function timesInOrder() {
+    const start = $("fieldStart").value;
+    const end = $("fieldEnd").value;
+    return !start || !end || end > start;
+  }
+
+  // Save waits until the whole thing is there: what, who, a day, both
+  // times in order, where, and who takes and collects. A half-filled row
+  // is what the chat is for; the page keeps a complete one.
+  function refreshSaveState() {
+    const complete = Boolean($("fieldTitle").value.trim())
+      && chipValues($("fieldWho")).length > 0
+      && dayInputs.some((input) => input.checked)
+      && Boolean($("fieldStart").value)
+      && Boolean($("fieldEnd").value)
+      && Boolean($("fieldPlace").value.trim())
+      && chipValues($("fieldDropOff")).length === 1
+      && chipValues($("fieldPickUp")).length === 1;
+    const inOrder = timesInOrder();
+    $("saveButton").disabled = !complete || !inOrder;
+    $("editorHint").textContent = inOrder ? "" : "Until has to come after From.";
+    $("editorHint").classList.toggle("is-hidden", inOrder);
+  }
+
   function openEditor(activity) {
     state.editing = activity || null;
     $("editorTitle").textContent = activity ? "Change this" : "Add to the week";
     $("fieldTitle").value = activity ? activity.title : "";
-    $("fieldWho").value = activity ? (activity.who || []).join(", ") : "";
+    renderWhoChips(activity ? activity.who || [] : []);
+    $("fieldWhoOther").value = "";
     for (const input of dayInputs) {
       input.checked = activity ? (activity.days || []).includes(input.value) : false;
     }
     $("fieldStart").value = activity ? activity.startTime : "";
     $("fieldEnd").value = activity ? activity.endTime : "";
     $("fieldPlace").value = activity ? activity.place : "";
-    $("fieldDropOff").value = activity ? activity.dropOffBy : "";
-    $("fieldPickUp").value = activity ? activity.pickUpBy : "";
+    renderDriverChips($("fieldDropOff"), "dropOffBy", activity ? activity.dropOffBy : "");
+    renderDriverChips($("fieldPickUp"), "pickUpBy", activity ? activity.pickUpBy : "");
     $("deleteButton").classList.toggle("is-hidden", !activity);
     $("editorError").classList.add("is-hidden");
+    refreshSaveState();
     $("editor").showModal();
   }
 
@@ -139,22 +243,30 @@
     $("editorError").classList.remove("is-hidden");
   }
 
+  $("editorForm").addEventListener("input", refreshSaveState);
+  $("editorForm").addEventListener("change", refreshSaveState);
+  $("fieldWhoOther").addEventListener("keydown", (event) => {
+    if (event.key === "Enter" || event.key === ",") {
+      event.preventDefault();
+      takeTypedName();
+    }
+  });
+  $("fieldWhoOther").addEventListener("blur", takeTypedName);
+
   $("editorForm").addEventListener("submit", async (event) => {
     event.preventDefault();
-    const days = dayInputs.filter((input) => input.checked).map((input) => input.value);
-    if (!days.length) {
-      showError("Pick at least one day.");
-      return;
-    }
+    takeTypedName();
+    refreshSaveState();
+    if ($("saveButton").disabled) return;
     const body = {
       title: $("fieldTitle").value.trim(),
-      who: $("fieldWho").value.split(",").map((name) => name.trim()).filter(Boolean),
-      days,
+      who: chipValues($("fieldWho")),
+      days: dayInputs.filter((input) => input.checked).map((input) => input.value),
       startTime: $("fieldStart").value,
       endTime: $("fieldEnd").value,
       place: $("fieldPlace").value.trim(),
-      dropOffBy: $("fieldDropOff").value.trim(),
-      pickUpBy: $("fieldPickUp").value.trim(),
+      dropOffBy: chipValues($("fieldDropOff"))[0] || "",
+      pickUpBy: chipValues($("fieldPickUp"))[0] || "",
     };
     const path = state.editing ? `/api/household/activities/${state.editing.id}` : "/api/household/activities";
     try {
