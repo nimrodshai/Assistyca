@@ -63,6 +63,19 @@ class ComputedSentenceProperties(unittest.TestCase):
         self.assertIn(GOOGLE, sentence)
         self.assertNotIn("Ask me again", sentence)
 
+    def test_our_own_failure_is_not_handed_back_as_a_chore(self) -> None:
+        # "Ask me again in a moment" made the person do the retrying for a
+        # failure that was ours, and when the cause was systemic - the
+        # provider out of credits - asking again gave the same apology.
+        sentence = computed_recovery_sentence(build_situation("assistant_unavailable"))
+        self.assertIn("on my side", sentence)
+        self.assertIn("mine to sort out", sentence)
+        self.assertNotIn("Ask me again", sentence)
+        self.assertNotIn("think that through", sentence)
+        # The prompt tells the composer the same thing.
+        prompt = build_recovery_prompt(build_situation("assistant_unavailable"), conversation=[], channel="whatsapp", today="2026-09-29")
+        self.assertIn("never tell them to send it again", prompt)
+
     def test_no_retry_means_no_retry_offered(self) -> None:
         sentence = computed_recovery_sentence(build_situation("not_supported", what_happened="That can't run here."))
         self.assertNotIn("again", sentence)

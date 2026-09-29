@@ -175,7 +175,9 @@ def build_recovery_prompt(
         "do next: connect or reconnect means signing in with the link given, say means texting the words "
         "given, choose means picking from what is named, retry means asking again in a moment. Offer what "
         "fits, and offer at least one; when no option is given, invite them to say what they would like "
-        "instead. situation.canRetry false means asking again would not help, so do not suggest it.\n"
+        "instead. situation.canRetry false means asking again would not help, so do not suggest it. "
+        "situation.code assistant_unavailable means the failure was ours: say in a line that something on "
+        "your side went wrong and is yours to sort out, and never tell them to send it again.\n"
         "Read recentConversation so the reply follows on from it and does not repeat the last assistant "
         "message word for word. Sound like a capable assistant who hit a snag, not like a system.\n"
         f"{channel_rule}\n"
@@ -246,7 +248,7 @@ _DEFAULT_WHAT_HAPPENED = {
     "nothing_found": "I looked, and there was nothing to report.",
     "not_supported": "That isn't something I can do from here yet.",
     "rate_limited": "I'm getting a lot of requests at once.",
-    "assistant_unavailable": "I couldn't think that through just now.",
+    "assistant_unavailable": "Something on my side went wrong and that answer didn't come through.",
     "assistant_unclear": "I lost the thread of that for a moment.",
     "unsupported_message": "I couldn't read that kind of message; text, a photo, or a voice note works here.",
     "internal": "Something on my side got in the way of that.",
@@ -267,6 +269,10 @@ def _computed_next_step(situation: dict[str, Any]) -> str:
     option = by_kind.get("choose")
     if option and option.get("label"):
         return f"Tell me {option['label']} and I'll carry on."
+    if str(situation.get("code") or "") == "assistant_unavailable" and not by_kind.get("retry"):
+        # The failure was ours, and the person already tried once. Sending
+        # them back to try again is a chore for them and no promise from us.
+        return "Nothing to fix on your end - it's mine to sort out. If it's urgent, tell me and I'll take another run at it."
     if situation.get("canRetry") or by_kind.get("retry"):
         return "Ask me again in a moment and I'll try once more."
     return "Tell me what you'd like instead and I'll take it from there."

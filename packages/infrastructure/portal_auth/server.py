@@ -130,6 +130,8 @@ from packages.infrastructure.gmail_summary import GmailSummaryError
 from packages.infrastructure.insurance_manager import match_expense_to_policies
 from packages.infrastructure.openai_api import OpenAIConfigurationError
 from packages.infrastructure.openai_api import OpenAIError
+from packages.infrastructure.openai_api import OpenAIRequestError
+from packages.infrastructure.openai_api import on_billing_failure
 from packages.infrastructure.openai_api import call_openai_response
 from packages.infrastructure.openai_api import load_openai_config
 from packages.infrastructure.openai_api import prompt_cache_key_for
@@ -264,6 +266,9 @@ from packages.infrastructure.whatsapp_api import test_whatsapp_connection
 from packages.infrastructure.agent_loop import ACCOUNT_RIGHTS_TOOLS
 from packages.infrastructure.agent_loop import AGENT_LOOP_INSTRUCTIONS
 from packages.infrastructure.agent_loop import LOOP_MAX_OUTPUT_TOKENS
+
+# One pause before the single extra attempt at a model call that failed on the provider's side.
+AGENT_MODEL_RETRY_PAUSE_SECONDS = 2.0
 from packages.infrastructure.agent_loop import LoopContext
 from packages.infrastructure.agent_loop import TOOLS_BY_NAME
 from packages.infrastructure.agent_loop import reply_text_format
@@ -11015,10 +11020,10 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                     what_happened=(
                         "I'm getting a lot of requests at once and couldn't take that one."
                         if rate_limited
-                        else "I couldn't think that through just now."
+                        else "Something on my side went wrong and that answer didn't come through."
                     ),
-                    can_retry=True,
-                    options=[make_option("retry")],
+                    can_retry=rate_limited,
+                    options=[make_option("retry")] if rate_limited else [],
                 ),
                 conversation=conversation,
                 channel=channel,
@@ -11492,6 +11497,21 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         model = resolve_task_model(AGENT_TURN_COMPLEXITY, "PORTAL_ASSISTANT_MODEL", "OPENAI_MODEL")
 
         def call_model(input_items: list[dict[str, Any]], tools: list[dict[str, Any]]) -> Any:
+            # The request layer already retries a busy or broken provider.
+            # One more attempt here, after a pause, covers the blip that
+            # outlasts it - and only for a failure that is not the request's
+            # own fault, so a refused call is not sent twice. A model call
+            # retried is not a tool re-run: the loop's own state is untouched.
+            try:
+                return _call_agent_model(input_items, tools)
+            except OpenAIRequestError as exc:
+                if exc.status_code is not None and exc.status_code < 500:
+                    raise
+                print(f"Agent model call failed once ({exc.message}); trying once more.", flush=True)
+                time.sleep(AGENT_MODEL_RETRY_PAUSE_SECONDS)
+                return _call_agent_model(input_items, tools)
+
+        def _call_agent_model(input_items: list[dict[str, Any]], tools: list[dict[str, Any]]) -> Any:
             return call_openai_response(
                 tool_name="portal_agent_loop",
                 tool_id="portal_agent",
@@ -11540,10 +11560,13 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                     request=user_message,
                     what_happened=(
                         "I'm getting a lot of requests at once and couldn't take that one."
-                        if rate_limited else "I couldn't think that through just now."
+                        if rate_limited else "Something on my side went wrong and that answer didn't come through."
                     ),
-                    can_retry=True,
-                    options=[make_option("retry")],
+                    # A rate limit clears by itself, so asking again helps.
+                    # Anything else was ours: the person is not sent back to
+                    # try again for it.
+                    can_retry=rate_limited,
+                    options=[make_option("retry")] if rate_limited else [],
                 ),
                 conversation=conversation,
                 channel=channel,
@@ -19048,6 +19071,37 @@ def main() -> int:
         print("Scheduled web monitor is disabled.", flush=True)
 
     scheduled_action_config = load_scheduled_action_config()
+
+    def _tell_the_house_openai_is_out_of_money(message: str, status_code: int | None) -> None:
+        """OpenAI refused over billing: every reply and reminder is failing
+        until someone adds credits, and nobody would know from the outside."""
+
+        text = (
+            "Assistyca cannot reach OpenAI: "
+            + (message or "billing refused the request")
+            + ". Every reply and every reminder is failing until the OpenAI billing is sorted out."
+        )
+        numbers = sorted(resolve_operator_whatsapp_numbers())
+        if not numbers:
+            print(f"OpenAI billing alarm has nobody to tell (no operator numbers configured): {text}", flush=True)
+            return
+        for number in numbers:
+            try:
+                send_whatsapp_notification(
+                    recipient_wa_id=number,
+                    message_text=text,
+                    template_name=scheduled_action_config.whatsapp_template_name,
+                    template_language=scheduled_action_config.whatsapp_template_language,
+                )
+            except Exception as template_exc:  # noqa: BLE001 - plain text is the next thing to try
+                try:
+                    send_whatsapp_notification(recipient_wa_id=number, message_text=text)
+                except Exception as text_exc:  # noqa: BLE001 - logged; the alarm never adds a failure
+                    print(f"OpenAI billing alarm could not reach ...{number[-4:]}: {template_exc}; {text_exc}", flush=True)
+        print(json.dumps({"event": "openai_billing_alarm", "status": status_code, "told": len(numbers)}), flush=True)
+
+    on_billing_failure(_tell_the_house_openai_is_out_of_money)
+
     scheduled_action_stop_event = threading.Event()
     scheduled_action_thread: threading.Thread | None = None
     if scheduled_action_config.enabled:

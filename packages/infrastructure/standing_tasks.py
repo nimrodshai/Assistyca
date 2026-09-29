@@ -345,6 +345,14 @@ class StandingTaskRunner:
             code = normalize_text(turn.get("error")) or f"HTTP {status}"
             detail = normalize_text(turn.get("message"))
             raise RuntimeError(f"The assistant could not run the action ({code}{': ' + detail if detail else ''}).")
+        if turn.get("recovered"):
+            # The turn came back with an apology instead of the message. For a
+            # one-off queued with its facts the scheduler sends the plain
+            # sentence built from them; a standing action runs again next time.
+            raise RuntimeError(
+                "The assistant could not write the message "
+                f"({normalize_text(turn.get('recoveryCode')) or 'assistant_unavailable'})."
+            )
         if is_standing_task(action) and turn.get("nothingNew"):
             raise NothingNewToSend("Nothing to send this time.")
         news_found = [item for item in turn.get("newsFound") or [] if isinstance(item, dict)]
