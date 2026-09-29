@@ -73,10 +73,18 @@ class AssistantVoiceTests(unittest.TestCase):
     def test_the_voice_picks_a_thread_up_instead_of_quoting_it(self) -> None:
         self.assertIn("quoting their message back at them", ASSISTANT_VOICE)
 
-    def test_the_voice_refuses_the_opening_that_only_confirms_receipt(self) -> None:
+    def test_the_voice_takes_an_answer_like_a_person_and_moves_on(self) -> None:
         # "Nimrod, got it - starting with your family setup (Stav, Lotan,
-        # Lahav, and Laor)" is a receipt and a name badge, not a reply.
-        self.assertIn("Never open by confirming receipt", ASSISTANT_VOICE)
+        # Lahav, and Laor)" is a receipt and a name badge, not a reply. But
+        # the cure was worse: told never to say "got it", the model narrated
+        # the saving instead - "I've put Yoav, Noa and Itai in the family",
+        # "Noa's birthday is saved" - which nobody says either. A word and
+        # the next question is how a person takes an answer.
+        self.assertIn("a word at most", ASSISTANT_VOICE)
+        self.assertIn("straight on to what comes next", ASSISTANT_VOICE)
+        self.assertIn("narrating what you did with it", ASSISTANT_VOICE)
+        self.assertIn("the keeping is yours to do quietly", ASSISTANT_VOICE)
+        self.assertNotIn("Never open by confirming receipt", ASSISTANT_VOICE)
         self.assertIn("turns a conversation into a form", ASSISTANT_VOICE)
         self.assertIn("never at the head of every message", ASSISTANT_VOICE)
 
