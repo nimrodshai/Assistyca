@@ -11619,6 +11619,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             "calendarChoiceRequested": result.calendar_choice_requested,
             "links": result.links,
             "fallbackUsed": result.fallback_used,
+            "fallbackReason": result.fallback_reason,
             "blockedOnConnection": result.blocked_on_connection,
             "nothingNew": result.nothing_new,
             "newsFound": result.news_found,

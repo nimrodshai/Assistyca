@@ -4316,9 +4316,21 @@ def run_agent_loop(
                 executed += 1
             input_items.append({"type": "function_call_output", "call_id": call_id, "output": json.dumps(outcome, ensure_ascii=False)})
 
+    # The one run allowed to say nothing: a scheduled one that found nothing
+    # the person needs, did nothing and is asking nothing. Told that no
+    # message goes, the model leaves the reply empty as often as not, and
+    # that empty reply is the quiet it was asked for, not a reply that went
+    # missing.
+    quiet_run = bool(
+        context.standing_task_id
+        and isinstance(reply_payload, dict)
+        and reply_payload.get("nothingToSend") is True
+        and not completed
+        and pending is None
+    )
     fallback_used = False
     fallback_reason = ""
-    if reply_payload is None or not str(reply_payload.get("reply") or "").strip():
+    if not quiet_run and (reply_payload is None or not str(reply_payload.get("reply") or "").strip()):
         fallback_used = True
         fallback_reason = "no_reply" if reply_payload is None else "empty_reply"
         reply_text = computed_recovery_sentence(build_situation(
@@ -4349,13 +4361,7 @@ def run_agent_loop(
     )
     # Or the run itself found nothing worth a message. Never when it did
     # something or is asking something: that always has to be told.
-    nothing_new = nothing_new or bool(
-        context.standing_task_id
-        and not fallback_used
-        and reply_payload.get("nothingToSend") is True
-        and not completed
-        and pending is None
-    )
+    nothing_new = nothing_new or quiet_run
     return LoopResult(
         reply=reply,
         tool_calls=tool_calls,

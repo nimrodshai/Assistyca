@@ -345,13 +345,16 @@ class StandingTaskRunner:
             code = normalize_text(turn.get("error")) or f"HTTP {status}"
             detail = normalize_text(turn.get("message"))
             raise RuntimeError(f"The assistant could not run the action ({code}{': ' + detail if detail else ''}).")
-        if turn.get("recovered"):
-            # The turn came back with an apology instead of the message. For a
-            # one-off queued with its facts the scheduler sends the plain
-            # sentence built from them; a standing action runs again next time.
+        if turn.get("recovered") or turn.get("fallbackUsed"):
+            # The turn came back with an apology instead of the message, or
+            # the loop filled in one because the model wrote nothing. Either
+            # way it is a sentence for someone who just asked, and nobody
+            # did: for a one-off queued with its facts the scheduler sends
+            # the plain sentence built from them; a standing action runs
+            # again next time.
             raise RuntimeError(
                 "The assistant could not write the message "
-                f"({normalize_text(turn.get('recoveryCode')) or 'assistant_unavailable'})."
+                f"({normalize_text(turn.get('recoveryCode')) or normalize_text(turn.get('fallbackReason')) or 'assistant_unavailable'})."
             )
         if is_standing_task(action) and turn.get("nothingNew"):
             raise NothingNewToSend("Nothing to send this time.")
