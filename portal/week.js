@@ -67,7 +67,7 @@
     $("people").replaceChildren(...members.map(personLabel));
     $("peopleCard").classList.toggle("is-hidden", members.length === 0);
 
-    const gaps = countGaps(activities);
+    const gaps = countGaps(activities, members, data.ownerName);
     $("gapsText").textContent = gaps === 1
       ? "One drop-off or pickup this week has nobody down for it yet."
       : `${gaps} drop-offs and pickups this week have nobody down for them yet.`;
@@ -75,7 +75,7 @@
 
     $("emptyWeek").classList.toggle("is-hidden", activities.length > 0);
     $("days").classList.toggle("is-hidden", activities.length === 0);
-    renderDays($("days"), activities, { ownerName: data.ownerName, selfLabel: "You", onOpen: openEditor });
+    renderDays($("days"), activities, { ownerName: data.ownerName, selfLabel: "You", onOpen: openEditor, members });
 
     const share = data.share || {};
     $("shareRow").classList.toggle("is-hidden", !share.enabled);

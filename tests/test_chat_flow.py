@@ -116,7 +116,11 @@ class WhichOpeningTests(unittest.TestCase):
         )
         self.assertEqual(flow["goal"], "family")
         self.assertTrue(flow["weekReady"], "the two never disagree about whether the week can be run")
-        self.assertEqual(flow["weekGaps"], [{"missing": "afternoons", "who": "Lahav", "after": "School"}])
+        self.assertEqual(
+            flow["weekGaps"],
+            [{"missing": "afternoons", "who": "Lahav", "after": "School"}, {"missing": "own_week", "who": "me"}],
+            "the child's afternoon first, then the parent's own week - and neither holds the week back",
+        )
 
     def test_a_week_they_have_called_finished_is_not_reopened_as_questions(self) -> None:
         # Their "that's everything" stands: the goal moves on. What nobody is
@@ -188,6 +192,32 @@ class RulesTests(unittest.TestCase):
         self.assertIn("what that one does after school", rules)
         self.assertIn("never decide for yourself that there is nothing after them", rules)
         self.assertIn("'afternoons' gap never makes a week unready", rules)
+
+    def test_the_parent_is_asked_for_their_own_week_and_offered_their_calendar_for_it(self) -> None:
+        # Knowing when the parent works is knowing when it cannot be them
+        # collecting. They are asked once, may say no, and are offered their
+        # Google Calendar as the other way to answer - the one connection
+        # raised while the family is still being got to know.
+        rules = chat_flow.chat_flow_rules({"accountType": "family", "goal": "family"})
+        self.assertIn("'own_week' means the children are in", rules)
+        self.assertIn("whether they want to put their own week in too", rules)
+        self.assertIn("when they cannot be the one collecting", rules)
+        self.assertIn("Google Calendar", rules)
+        self.assertIn("call connect_link with google", rules)
+        self.assertIn("who is [\"me\"]", rules)
+        self.assertIn("drop_off_by and pick_up_by left empty", rules)
+        self.assertIn("a no is a whole answer", rules)
+        self.assertIn("the 'own_week' gap is the same kind of question", rules)
+
+        # And for good: a grown-up's hours are read as when they cannot do
+        # a pickup, never as something to collect them from.
+        for_good = chat_flow.chat_flow_rules({"accountType": "family", "goal": "done"})
+        self.assertIn("marked grownUp is a grown-up's own week", for_good)
+        self.assertIn("that grown-up cannot be the one", for_good)
+
+        # A calendar connected for their own week is not offered again.
+        then_connecting = chat_flow.chat_flow_rules({"accountType": "family", "goal": "connect"})
+        self.assertIn("A calendar they connected while you were getting to know them", then_connecting)
 
     def test_a_family_is_never_told_it_must_connect_anything(self) -> None:
         rules = chat_flow.chat_flow_rules({"accountType": "family", "goal": "connect"})

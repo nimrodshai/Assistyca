@@ -38,6 +38,20 @@
     return String(who || "").trim();
   }
 
+  // A grown-up's own week - the owner's work hours, the partner's shift -
+  // sits in the same week to say when they cannot do a pickup. Nobody takes
+  // or collects a grown-up, so those rows have no rides and no gaps.
+  function isGrownUp(activity, members, ownerName) {
+    const who = (activity.who || []).map((name) => String(name || "").trim()).filter(Boolean);
+    if (!who.length) return false;
+    const adults = new Set(
+      (members || [])
+        .filter((member) => member.role !== "child")
+        .map((member) => String(member.name || "").trim().toLowerCase()),
+    );
+    return who.every((name) => isSelf(name, ownerName) || adults.has(name.toLowerCase()));
+  }
+
   // A start and an end read "08:00 / until 13:30". With only an end, the
   // end is the figure and "until" the small word above it; a made-up
   // "Any time" would say more than the family told us. With neither the
@@ -54,7 +68,7 @@
     return time;
   }
 
-  function renderActivity(activity, { ownerName, selfLabel, onOpen }) {
+  function renderActivity(activity, { ownerName, selfLabel, onOpen, members }) {
     const node = onOpen ? el("button", "activity") : el("div", "activity");
     if (onOpen) {
       node.type = "button";
@@ -62,8 +76,10 @@
     }
     node.append(renderTime(activity));
     node.append(el("div", "activity-title", activity.title));
-    const meta = [(activity.who || []).join(", "), activity.place].filter(Boolean).join(" · ");
+    const who = (activity.who || []).map((name) => rideLabel(name, ownerName, selfLabel)).join(", ");
+    const meta = [who, activity.place].filter(Boolean).join(" · ");
     if (meta) node.append(el("div", "activity-meta", meta));
+    if (isGrownUp(activity, members, ownerName)) return node;
     const rides = el("div", "activity-rides");
     const takes = rideLabel(activity.dropOffBy, ownerName, selfLabel);
     const collects = rideLabel(activity.pickUpBy, ownerName, selfLabel);
@@ -94,9 +110,10 @@
     container.replaceChildren(...sections);
   }
 
-  function countGaps(activities) {
+  function countGaps(activities, members, ownerName) {
     let gaps = 0;
     for (const activity of activities) {
+      if (isGrownUp(activity, members, ownerName)) continue;
       const days = (activity.days || []).length;
       if (!String(activity.dropOffBy || "").trim()) gaps += days;
       if (!String(activity.pickUpBy || "").trim()) gaps += days;
@@ -104,5 +121,5 @@
     return gaps;
   }
 
-  window.AssistycaWeek = { DAYS, countGaps, el, isSelf, renderDays, todayCode };
+  window.AssistycaWeek = { DAYS, countGaps, el, isGrownUp, isSelf, renderDays, todayCode };
 })();

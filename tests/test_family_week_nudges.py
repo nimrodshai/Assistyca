@@ -39,6 +39,19 @@ class RulesTests(unittest.TestCase):
         self.assertEqual(line, "17:00-18:00 Football (Tom), takes: you, nobody collects them yet")
         self.assertEqual(gap_lines([self.football]), ["Football (Tom) at 18:00: nobody is down for the pickup"])
 
+    def test_a_grown_ups_own_week_has_nobody_to_collect_them(self) -> None:
+        # The owner's work hours sit in the same week so the pickups can be
+        # told apart; the morning line says them plainly and never that
+        # nobody is collecting them.
+        members = [{"name": "Tom", "role": "child"}, {"name": "Yoav", "role": "partner"}]
+        work = {"id": 2, "title": "Work", "who": ["me"], "days": ["sun"], "startTime": "09:00", "endTime": "17:00", "dropOffBy": "", "pickUpBy": ""}
+        self.assertEqual(describe_activity_line(work, ["Dana Levi"], members), "09:00-17:00 Work (you)")
+        self.assertEqual(gap_lines([work, self.football], members, ["Dana Levi"]), ["Football (Tom) at 18:00: nobody is down for the pickup"])
+        # Without the family it cannot tell, and says what it always said.
+        self.assertEqual(gap_lines([work]), ["Work (you) at 17:00: nobody is down for the drop-off and the pickup"])
+        # Nobody drives a grown-up anywhere, so it is never a ride due.
+        self.assertEqual(rides_due([work], owner_names=["Dana"], local_now=at(SUNDAY, 8, 40), lead_minutes=30), [])
+
     def test_a_drive_is_due_only_in_the_minutes_before_it(self) -> None:
         def due(hour: int, minute: int) -> list:
             return rides_due([self.football], owner_names=["Dana"], local_now=at(SUNDAY, hour, minute), lead_minutes=30)

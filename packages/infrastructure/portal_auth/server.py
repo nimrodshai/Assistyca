@@ -11416,7 +11416,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             if declined is not None:
                 declined_call = {"tool": declined["tool"], "arguments": declined["arguments"]}
         facts = self.database.list_account_facts(user_id=user_id) if user_id > 0 else []
-        household_block = self._household_block(user_id, timezone_name)
+        household_block = self._household_block(user_id, timezone_name, tool_context)
         account_type = self.database.get_account_type(user_id=user_id, email=session.email)
         chat_flow = self._chat_flow_block(
             user_id, account_type, tool_context, household_block, resolve_local_today(timezone_name),
@@ -11625,11 +11625,15 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             "newsFound": result.news_found,
         })
 
-    def _household_block(self, user_id: int, timezone_name: str) -> dict[str, Any] | None:
+    def _household_block(
+        self, user_id: int, timezone_name: str, tool_context: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
         """The family as the assistant reads it, for an account that has one.
 
         A family account always carries it, so getting to know them can begin
-        from an empty one; any other account once it keeps someone."""
+        from an empty one; any other account once it keeps someone.
+        tool_context says what is connected: a calendar already in answers
+        the question of the person's own week."""
 
         if user_id <= 0:
             return None
@@ -11645,6 +11649,8 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         return household.describe_household(
             profile=profile, members=members, activities=activities, today=self._household_today(timezone_name),
             calendar=self._school_calendar_days(timezone_name),
+            calendar_connected="calendar" in connected_sources(tool_context),
+            owner_names=[self._household_owner_name(user_id)],
         )
 
     def _group_week_block(self, user_id: int, timezone_name: str, group: dict[str, Any]) -> dict[str, Any] | None:

@@ -119,7 +119,8 @@ class RulesTests(unittest.TestCase):
             members=members, activities=week, today=date(2026, 9, 24),
         )
         self.assertTrue(block["weekReady"], "a week they can be run is ready; this is a question, not a hole")
-        self.assertEqual([gap["who"] for gap in block["weekGaps"]], ["Lahav", "Laor"])
+        # The children's afternoons first, and then the parent's own week.
+        self.assertEqual([gap["who"] for gap in block["weekGaps"]], ["Lahav", "Laor", "me"])
 
         # A club after school is the answer, and the question does not come back.
         week.append({"id": 3, "title": "Football", "who": ["Lahav"], "days": ["tue"], "endTime": "17:30", "dropOffBy": "Stav", "pickUpBy": "Stav"})
@@ -131,6 +132,63 @@ class RulesTests(unittest.TestCase):
             members=members, activities=week, today=date(2026, 9, 24),
         )
         self.assertNotIn("weekGaps", closed)
+
+    def test_the_parent_is_asked_about_their_own_week_once_the_children_are_in(self) -> None:
+        # The point of the week is who collects, and the parent's work hours
+        # are what says when it cannot be them. So they are asked - and it is
+        # a question, never a hole: the week is ready whatever they answer.
+        members = [{"name": "Stav", "role": "partner"}, {"name": "Lahav", "role": "child"}]
+        week = [
+            {"id": 1, "title": "School", "who": ["Lahav"], "days": ["sun"], "endTime": "13:45", "dropOffBy": "me", "pickUpBy": "Stav"},
+            {"id": 2, "title": "Football", "who": ["Lahav"], "days": ["tue"], "endTime": "17:30", "dropOffBy": "Stav", "pickUpBy": "Stav"},
+        ]
+        self.assertEqual(household.own_week_gaps(members, week), [{"missing": "own_week", "who": "me"}])
+        self.assertEqual(household.own_week_gaps([], []), [], "nobody known yet is the people question, not this one")
+        self.assertEqual(household.own_week_gaps(members, week, calendar_connected=True), [], "their calendar already holds the answer")
+
+        # Their work goes into the same week, as theirs: nobody takes or
+        # collects a grown-up, so it has no gaps and the question is closed.
+        work = {"id": 3, "title": "Work", "who": ["me"], "days": ["sun", "mon", "tue", "wed", "thu"], "startTime": "09:00", "endTime": "17:00"}
+        self.assertTrue(household.is_grown_up_activity(work, members))
+        self.assertEqual(household.activity_gaps(work, members), [])
+        self.assertEqual(household.activity_gaps(work), ["drop_off", "pick_up"], "without the family it cannot tell")
+        self.assertEqual(household.week_setup_gaps(members, week + [work]), [])
+        self.assertEqual(household.own_week_gaps(members, week + [work]), [])
+
+        # The partner's shift is theirs too; a child's club never is, and
+        # neither is something for a name nobody knows.
+        shift = {"id": 4, "title": "Night shift", "who": ["Stav"], "days": ["wed"], "startTime": "20:00", "endTime": "06:00"}
+        self.assertTrue(household.is_grown_up_activity(shift, members))
+        self.assertFalse(household.is_grown_up_activity(week[1], members))
+        self.assertFalse(household.is_grown_up_activity({"who": ["Noa"]}, members))
+        self.assertFalse(household.is_grown_up_activity({"who": []}, members))
+
+        # Saved under their own name from the week page, it is still theirs.
+        by_name = {"id": 5, "title": "Work", "who": ["Dana"], "days": ["sun"], "startTime": "09:00", "endTime": "17:00"}
+        self.assertFalse(household.is_grown_up_activity(by_name, members))
+        self.assertTrue(household.is_grown_up_activity(by_name, members, ["Dana Levi"]))
+        self.assertEqual(household.own_week_gaps(members, week + [by_name], owner_names=["Dana Levi"]), [])
+
+        block = household.describe_household(
+            profile={"accountKind": "family", "gettingToKnow": "in_progress"},
+            members=members, activities=week + [work], today=date(2026, 9, 24),
+        )
+        self.assertTrue(block["weekReady"])
+        self.assertTrue(block["week"][2]["grownUp"])
+        self.assertNotIn("grownUp", block["week"][0])
+        self.assertNotIn("nobodyDownFor", block["week"][2])
+        self.assertNotIn("weekGaps", block, "the children are in and the parent has answered")
+
+        asked = household.describe_household(
+            profile={"accountKind": "family", "gettingToKnow": "in_progress"},
+            members=members, activities=week, today=date(2026, 9, 24),
+        )
+        self.assertEqual(asked["weekGaps"], [{"missing": "own_week", "who": "me"}])
+        with_calendar = household.describe_household(
+            profile={"accountKind": "family", "gettingToKnow": "in_progress"},
+            members=members, activities=week, today=date(2026, 9, 24), calendar_connected=True,
+        )
+        self.assertNotIn("weekGaps", with_calendar)
 
     def test_a_group_is_not_asked_the_afternoons_question(self) -> None:
         # A room of parents is keeping a rota, not being got to know.
@@ -326,6 +384,17 @@ class ToolTests(unittest.TestCase):
         self.assertEqual([m["name"] for m in week["members"]], ["Shirly", "Tom"])
         self.assertEqual(list(week["byDay"]), ["tue"])
         self.assertNotIn("nobodyDownFor", week["byDay"]["tue"][0])
+
+        # The parent's own work hours: theirs, with nobody to collect them.
+        work = self.run_tool(
+            "save_week_activity", id=None, title="Work", who=["me"], days=["sun", "mon"], start_time="09:00",
+            end_time="17:00", place=None, drop_off_by="", pick_up_by="", notes=None,
+        )
+        self.assertTrue(work["ok"], work)
+        self.assertTrue(work["saved"]["grownUp"])
+        self.assertEqual(work["saved"]["nobodyDownFor"], [])
+        self.assertNotIn("grownUp", added["saved"])
+        self.assertNotIn("nobodyDownFor", self.run_tool("show_family_week")["byDay"]["sun"][0])
 
     def test_a_bad_email_or_unknown_activity_is_explained_not_saved(self) -> None:
         refused = self.run_tool("save_family_member", name="Shirly", previous_name=None, role="partner", age=None, school=None, email="shirly at gmail", phone=None, notes=None)

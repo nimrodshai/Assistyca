@@ -103,16 +103,22 @@ def activities_on(activities: list[dict[str, Any]], day: date) -> list[dict[str,
     return [activity for activity in activities if code in (activity.get("days") or [])]
 
 
-def _who(activity: dict[str, Any]) -> str:
-    return ", ".join(activity.get("who") or [])
+def _who(activity: dict[str, Any], owner_names: list[str] | None = None) -> str:
+    return ", ".join(_ride_word(name, owner_names or []) for name in activity.get("who") or [])
 
 
 def _ride_word(value: Any, owner_names: list[str]) -> str:
     return "you" if household.is_self(value, owner_names) else normalize_text(value)
 
 
-def describe_activity_line(activity: dict[str, Any], owner_names: list[str]) -> str:
-    """One activity as a plain line: time, what, for whom, who takes and collects."""
+def describe_activity_line(
+    activity: dict[str, Any],
+    owner_names: list[str],
+    members: list[dict[str, Any]] | None = None,
+) -> str:
+    """One activity as a plain line: time, what, for whom, who takes and
+    collects. A grown-up's own week - their work - is the line alone: nobody
+    takes them and nobody collects them, so neither is said to be missing."""
 
     parts = []
     times = normalize_text(activity.get("startTime"))
@@ -120,8 +126,10 @@ def describe_activity_line(activity: dict[str, Any], owner_names: list[str]) -> 
         times = f"{times}-{activity['endTime']}"
     head = f"{times} {activity.get('title')}".strip()
     if _who(activity):
-        head += f" ({_who(activity)})"
+        head += f" ({_who(activity, owner_names)})"
     parts.append(head)
+    if members is not None and household.is_grown_up_activity(activity, members, owner_names):
+        return head
     takes = _ride_word(activity.get("dropOffBy"), owner_names)
     collects = _ride_word(activity.get("pickUpBy"), owner_names)
     parts.append(f"takes: {takes}" if takes else "nobody takes them yet")
@@ -129,10 +137,14 @@ def describe_activity_line(activity: dict[str, Any], owner_names: list[str]) -> 
     return ", ".join(parts)
 
 
-def gap_lines(activities: list[dict[str, Any]]) -> list[str]:
+def gap_lines(
+    activities: list[dict[str, Any]],
+    members: list[dict[str, Any]] | None = None,
+    owner_names: list[str] | None = None,
+) -> list[str]:
     lines = []
     for activity in activities:
-        gaps = household.activity_gaps(activity)
+        gaps = household.activity_gaps(activity, members, owner_names or [])
         if not gaps:
             continue
         what = f"{activity.get('title')}" + (f" ({_who(activity)})" if _who(activity) else "")
@@ -346,6 +358,7 @@ class FamilyWeekNudger:
             today = local_now.date()
             group_name = self._group_name(user_id, group_id)
             activities = self.database.list_household_activities(user_id=user_id, group_id=group_id)
+            members = self.database.list_household_members(user_id=user_id, group_id=group_id)
             exceptions = self.database.list_schedule_exceptions(
                 user_id=user_id, group_id=group_id, ending_on_or_after=today.isoformat(),
             )
@@ -356,12 +369,12 @@ class FamilyWeekNudger:
             tomorrow = today + timedelta(days=1)
             in_evening = self.config.evening_hour <= local_now.hour < self.config.evening_hour + EVENING_WINDOW_HOURS
             tomorrow_gaps = []
-            if in_evening and gap_lines(activities_on(activities, tomorrow)):
+            if in_evening and gap_lines(activities_on(activities, tomorrow), members):
                 tomorrow_on, _ = self._on_day(
                     user_id=user_id, group_id=group_id, timezone_name=timezone_name, day=tomorrow,
                     activities=activities, exceptions=exceptions,
                 )
-                tomorrow_gaps = gap_lines(tomorrow_on)
+                tomorrow_gaps = gap_lines(tomorrow_on, members)
             if tomorrow_gaps:
                 if claim(f"evening:{tomorrow.isoformat()}"):
                     self._queue_group(
@@ -425,6 +438,7 @@ class FamilyWeekNudger:
             local_now = reference.astimezone(zone)
             today = local_now.date()
             activities = self.database.list_household_activities(user_id=user_id)
+            members = self.database.list_household_members(user_id=user_id)
             exceptions = self.database.list_schedule_exceptions(user_id=user_id, ending_on_or_after=today.isoformat())
             # The whole week on hold - a trip, a holiday at home - is quiet
             # about the family altogether, birthdays and all; they come back
@@ -440,7 +454,7 @@ class FamilyWeekNudger:
             )
             if todays and self.config.morning_hour <= local_now.hour < self.config.morning_hour + MORNING_WINDOW_HOURS:
                 if claim(f"morning:{today.isoformat()}"):
-                    lines = [describe_activity_line(activity, owner_names) for activity in todays]
+                    lines = [describe_activity_line(activity, owner_names, members) for activity in todays]
                     self._queue(
                         user_id=user_id, now=reference, timezone_name=timezone_name,
                         title="Today in your family's week",
@@ -465,12 +479,12 @@ class FamilyWeekNudger:
             tomorrow = today + timedelta(days=1)
             in_evening = self.config.evening_hour <= local_now.hour < self.config.evening_hour + EVENING_WINDOW_HOURS
             tomorrow_gaps = []
-            if in_evening and gap_lines(activities_on(activities, tomorrow)):
+            if in_evening and gap_lines(activities_on(activities, tomorrow), members, owner_names):
                 tomorrow_on, _ = self._on_day(
                     user_id=user_id, timezone_name=timezone_name, day=tomorrow, activities=activities,
                     exceptions=exceptions,
                 )
-                tomorrow_gaps = gap_lines(tomorrow_on)
+                tomorrow_gaps = gap_lines(tomorrow_on, members, owner_names)
             if tomorrow_gaps:
                 if claim(f"evening:{tomorrow.isoformat()}"):
                     self._queue(
