@@ -11,7 +11,9 @@ Three moments, each once, on the person's own clock:
 * the ride: shortly before the account holder is the one driving, a word
   that it is time to leave - and only then: a drive someone else does, or a
   child who comes home on the bus, is in the morning plan and is not
-  mentioned again through the day;
+  mentioned again through the day. Two of their drives close together -
+  school and kindergarten both at eight - are one word, planned as one
+  trip, not two messages a minute apart;
 * a birthday a month away, with an offer of the ready-made list to get
   ready for it.
 
@@ -55,6 +57,9 @@ NUDGE_SOURCE = "family_week"
 DEFAULT_MORNING_HOUR = 7
 DEFAULT_EVENING_HOUR = 20
 DEFAULT_RIDE_LEAD_MINUTES = 30
+# Drives of the owner's that follow one another within this many minutes
+# of the first due are said together, as one trip.
+DEFAULT_RIDE_MERGE_MINUTES = 30
 DEFAULT_POLL_SECONDS = 120
 # How late a moment may still be told. A poll that runs a little after the
 # hour still counts; one that runs hours later has missed it.
@@ -71,6 +76,7 @@ class FamilyWeekNudgeConfig:
     morning_hour: int = DEFAULT_MORNING_HOUR
     evening_hour: int = DEFAULT_EVENING_HOUR
     ride_lead_minutes: int = DEFAULT_RIDE_LEAD_MINUTES
+    ride_merge_minutes: int = DEFAULT_RIDE_MERGE_MINUTES
     poll_seconds: int = DEFAULT_POLL_SECONDS
     # Whether each day is checked against the school calendar online. Off
     # only for an incident: without it a holiday is nudged like any day.
@@ -91,6 +97,7 @@ def load_family_week_nudge_config() -> FamilyWeekNudgeConfig:
         morning_hour=min(23, max(0, _parse_int(os.getenv("PORTAL_FAMILY_MORNING_HOUR"), DEFAULT_MORNING_HOUR))),
         evening_hour=min(23, max(0, _parse_int(os.getenv("PORTAL_FAMILY_EVENING_HOUR"), DEFAULT_EVENING_HOUR))),
         ride_lead_minutes=min(180, max(5, _parse_int(os.getenv("PORTAL_FAMILY_RIDE_LEAD_MINUTES"), DEFAULT_RIDE_LEAD_MINUTES))),
+        ride_merge_minutes=min(180, max(0, _parse_int(os.getenv("PORTAL_FAMILY_RIDE_MERGE_MINUTES"), DEFAULT_RIDE_MERGE_MINUTES))),
         poll_seconds=max(30, _parse_int(os.getenv("PORTAL_FAMILY_NUDGE_POLL_SECONDS"), DEFAULT_POLL_SECONDS)),
         school_calendar=normalize_text(os.getenv("PORTAL_FAMILY_SCHOOL_CALENDAR")).lower()
         not in {"0", "false", "no", "off", "disabled"},
@@ -183,6 +190,32 @@ def rides_due_for_anyone(
     return due
 
 
+def _owner_rides_today(
+    activities: list[dict[str, Any]],
+    *,
+    owner_names: list[str],
+    local_now: datetime,
+) -> list[tuple[datetime, dict[str, Any]]]:
+    """Every leg today the account holder drives, with its moment, in time
+    order. Only theirs: a leg the partner, a grandparent or the bus takes is
+    in the morning plan and nowhere else."""
+
+    rides = []
+    for activity in activities_on(activities, local_now.date()):
+        for leg, who_key, time_key in (("drop_off", "dropOffBy", "startTime"), ("pick_up", "pickUpBy", "endTime")):
+            if not household.is_self(activity.get(who_key), owner_names):
+                continue
+            clock = household.normalize_time(activity.get(time_key))
+            if not clock:
+                continue
+            hour, minute = (int(part) for part in clock.split(":"))
+            moment = local_now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+            rides.append((moment, {"activity": activity, "leg": leg, "at": clock}))
+    # Two at the same time keep the week's own order.
+    rides.sort(key=lambda pair: (pair[0], int(pair[1]["activity"].get("id") or 0)))
+    return rides
+
+
 def rides_due(
     activities: list[dict[str, Any]],
     *,
@@ -193,23 +226,36 @@ def rides_due(
     """The drives today the account holder is down for, whose leaving time
     has come: within lead_minutes before it, and not yet past.
 
-    Only theirs. A leg the partner, a grandparent or the bus takes is in the
-    morning plan and nowhere else: a reminder through the day about a drive
-    that is not theirs is noise, so it is never raised."""
+    Only theirs. A reminder through the day about a drive that is not theirs
+    is noise, so it is never raised."""
 
-    due = []
-    for activity in activities_on(activities, local_now.date()):
-        for leg, who_key, time_key in (("drop_off", "dropOffBy", "startTime"), ("pick_up", "pickUpBy", "endTime")):
-            if not household.is_self(activity.get(who_key), owner_names):
-                continue
-            clock = household.normalize_time(activity.get(time_key))
-            if not clock:
-                continue
-            hour, minute = (int(part) for part in clock.split(":"))
-            moment = local_now.replace(hour=hour, minute=minute, second=0, microsecond=0)
-            if moment - timedelta(minutes=lead_minutes) <= local_now < moment:
-                due.append({"activity": activity, "leg": leg, "at": clock})
-    return due
+    return [
+        ride for moment, ride in _owner_rides_today(activities, owner_names=owner_names, local_now=local_now)
+        if moment - timedelta(minutes=lead_minutes) <= local_now < moment
+    ]
+
+
+def rides_leaving_together(
+    activities: list[dict[str, Any]],
+    *,
+    owner_names: list[str],
+    local_now: datetime,
+    lead_minutes: int,
+    merge_minutes: int,
+) -> list[dict[str, Any]]:
+    """The owner's drives that go out as one word: those due now, and any
+    other of theirs that follows within merge_minutes of the earliest of
+    them. School at eight and kindergarten at eight, or at a quarter past,
+    are one trip to plan - take both, drop one, then the other - so they are
+    said once, in time order, not as two messages. A drive further off waits
+    for its own time."""
+
+    rides = _owner_rides_today(activities, owner_names=owner_names, local_now=local_now)
+    due = [moment for moment, _ride in rides if moment - timedelta(minutes=lead_minutes) <= local_now < moment]
+    if not due:
+        return []
+    first = min(due)
+    return [ride for moment, ride in rides if first <= moment <= first + timedelta(minutes=merge_minutes)]
 
 
 # -- the nudger ----------------------------------------------------------------
@@ -506,23 +552,43 @@ class FamilyWeekNudger:
                     )
                     counts["evening"] += 1
 
-            for ride in rides_due(todays, owner_names=owner_names, local_now=local_now, lead_minutes=self.config.ride_lead_minutes):
+            together = rides_leaving_together(
+                todays, owner_names=owner_names, local_now=local_now,
+                lead_minutes=self.config.ride_lead_minutes, merge_minutes=self.config.ride_merge_minutes,
+            )
+            facts = []
+            for ride in together:
                 activity = ride["activity"]
                 if not claim(f"ride:{today.isoformat()}:{activity['id']}:{ride['leg']}"):
                     continue
                 verb = "take" if ride["leg"] == "drop_off" else "collect"
                 who = _who(activity) or "them"
                 place = normalize_text(activity.get("place"))
-                fact = f"{verb} {who} - {activity.get('title')} at {ride['at']}" + (f", {place}" if place else "")
+                facts.append(f"{verb} {who} - {activity.get('title')} at {ride['at']}" + (f", {place}" if place else ""))
+            if len(facts) == 1:
                 self._queue(
                     user_id=user_id, now=reference, timezone_name=timezone_name,
                     title="Time to leave soon",
                     instruction=(
                         "The person is the one driving shortly. In one short sentence, in the language they write to "
                         "you in, remind them what it is and when. The fact is exact; add nothing, and use no tool.\n"
-                        f"DRIVE: {fact}"
+                        f"DRIVE: {facts[0]}"
                     ),
-                    fallback=f"Soon: {fact}.",
+                    fallback=f"Soon: {facts[0]}.",
+                )
+                counts["rides"] += 1
+            elif facts:
+                self._queue(
+                    user_id=user_id, now=reference, timezone_name=timezone_name,
+                    title="Time to leave soon",
+                    instruction=(
+                        "The person is the one driving shortly, and these runs of theirs fall close together, so they "
+                        "are one trip. In one or two short sentences, in the language they write to you in, remind "
+                        "them of all of them in time order as one plan - at the same time means taking everyone "
+                        "together and dropping one, then the other. Say each once. The facts are exact; add nothing, "
+                        "and use no tool.\nDRIVES:\n" + "\n".join(facts)
+                    ),
+                    fallback="Soon, one trip:\n" + "\n".join(f"• {fact}" for fact in facts),
                 )
                 counts["rides"] += 1
 
@@ -613,4 +679,5 @@ __all__ = [
     "load_family_week_nudge_config",
     "rides_due",
     "rides_due_for_anyone",
+    "rides_leaving_together",
 ]
