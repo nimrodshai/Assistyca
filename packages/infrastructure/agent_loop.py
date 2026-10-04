@@ -85,6 +85,11 @@ LOOP_MAX_OUTPUT_TOKENS = 4000
 MAX_RECORDS_TO_MODEL = 40
 MAX_RECORD_FIELD_LENGTH = 300
 MAX_REPLY_LENGTH = 3500
+# The longest message one turn takes in: WhatsApp's own ceiling for a text.
+# A standing action's instruction comes through the same door, and a
+# family's morning with four or five things on it runs past a thousand
+# characters; cut short, the last line of the day simply went unsaid.
+MAX_USER_MESSAGE_LENGTH = 4096
 # WhatsApp shows a link as a button under the reply, and a button label is
 # at most this long.
 MAX_LINK_BUTTON_LABEL = 20
