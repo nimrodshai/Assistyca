@@ -552,6 +552,10 @@ CREATE TABLE IF NOT EXISTS household_activities (
     drop_off_by TEXT NOT NULL DEFAULT '',
     pick_up_by TEXT NOT NULL DEFAULT '',
     notes TEXT NOT NULL DEFAULT '',
+    -- The legs (drop_off, pick_up) the account holder has said are fine
+    -- although they fall inside their own work hours, so the week stops
+    -- asking about them.
+    fine_during_work TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
@@ -1762,6 +1766,8 @@ class PortalDatabase:
         activity_columns = {row["name"] for row in conn.execute("PRAGMA table_info(household_activities)").fetchall()}
         if "group_id" not in activity_columns:
             conn.execute("ALTER TABLE household_activities ADD COLUMN group_id TEXT NOT NULL DEFAULT ''")
+        if "fine_during_work" not in activity_columns:
+            conn.execute("ALTER TABLE household_activities ADD COLUMN fine_during_work TEXT NOT NULL DEFAULT ''")
         profile_columns = {row["name"] for row in conn.execute("PRAGMA table_info(household_profiles)").fetchall()}
         if "connect_offer" not in profile_columns:
             conn.execute("ALTER TABLE household_profiles ADD COLUMN connect_offer TEXT NOT NULL DEFAULT 'not_started'")
@@ -10313,6 +10319,7 @@ class PortalDatabase:
             "dropOffBy": str(row["drop_off_by"] or ""),
             "pickUpBy": str(row["pick_up_by"] or ""),
             "notes": str(row["notes"] or ""),
+            "fineDuringWork": household.normalize_legs(str(row["fine_during_work"] or "").split(",")),
             "createdAt": str(row["created_at"] or ""),
             "updatedAt": str(row["updated_at"] or ""),
         }
@@ -10411,6 +10418,31 @@ class PortalDatabase:
                         f"UPDATE household_activities SET {', '.join(f'{column} = ?' for column in fields)}, updated_at = ? WHERE id = ?",
                         (*fields.values(), now, int(activity_id)),
                     )
+            row = conn.execute("SELECT * FROM household_activities WHERE id = ?", (int(activity_id),)).fetchone()
+        return self._household_activity_row(row) or {}
+
+    def mark_household_drive_fine_during_work(
+        self, *, user_id: int, activity_id: int, leg: str, group_id: str = "",
+    ) -> dict[str, Any]:
+        """Keep that the account holder is fine doing this drive although it
+        falls inside their own work hours, so it is never raised again."""
+
+        legs = household.normalize_legs([leg])
+        if not legs:
+            raise ValueError("leg is drop_off or pick_up.")
+        scope = normalize_text(group_id)
+        with self._connection() as conn:
+            row = conn.execute(
+                "SELECT fine_during_work FROM household_activities WHERE id = ? AND user_id = ? AND group_id = ?",
+                (int(activity_id), int(user_id), scope),
+            ).fetchone()
+            if row is None:
+                raise LookupError(f"There is no activity {activity_id} in this week.")
+            kept = household.normalize_legs([*str(row["fine_during_work"] or "").split(","), *legs])
+            conn.execute(
+                "UPDATE household_activities SET fine_during_work = ?, updated_at = ? WHERE id = ?",
+                (",".join(kept), now_iso(), int(activity_id)),
+            )
             row = conn.execute("SELECT * FROM household_activities WHERE id = ?", (int(activity_id),)).fetchone()
         return self._household_activity_row(row) or {}
 

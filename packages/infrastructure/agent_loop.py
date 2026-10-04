@@ -2017,7 +2017,40 @@ def _tool_save_week_activity(context: LoopContext, args: dict[str, Any]) -> dict
     if household.is_grown_up_activity(activity, members, owners):
         saved["grownUp"] = True
     saved["nobodyDownFor"] = household.activity_gaps(activity, members, owners)
+    # Saving work hours, or a pickup, can put a drive of theirs inside their
+    # own working day: said here so it is raised now, not tomorrow evening.
+    # "me" is the account holder whatever they are called, so a group's
+    # week is the only one without an owner to ask about.
+    if not scope:
+        all_activities = context.database.list_household_activities(user_id=context.user_id, group_id=scope)
+        saved["driveDuringWork"] = [
+            {
+                "id": found["activity"]["id"], "title": found["activity"]["title"], "leg": found["leg"],
+                "at": found["at"], "inside": household.describe_work_hours(found["work"]), "days": found["days"],
+            }
+            for found in household.drives_during_work(all_activities, members, owners)
+            if int(found["activity"]["id"]) == int(activity["id"]) or int(found["work"]["id"]) == int(activity["id"])
+        ]
     return _ok({"saved": saved})
+
+
+def _tool_accept_drive_during_work(context: LoopContext, args: dict[str, Any]) -> dict[str, Any]:
+    try:
+        activity_id = int(args.get("id"))
+    except (TypeError, ValueError):
+        return _error("choice_required", "id is the number of an activity from household.week.")
+    legs = household.normalize_legs([args.get("leg")])
+    if not legs:
+        return _error("choice_required", "leg is drop_off or pick_up.")
+    try:
+        activity = context.database.mark_household_drive_fine_during_work(
+            user_id=context.user_id, activity_id=activity_id, leg=legs[0], group_id=week_scope(context),
+        )
+    except LookupError as exc:
+        return _error("not_found", str(exc))
+    except Exception as exc:  # noqa: BLE001
+        return _error("internal", f"That could not be saved: {exc}", can_retry=True)
+    return _ok({"accepted": {"id": activity["id"], "title": activity["title"], "leg": legs[0], "fineDuringWork": activity["fineDuringWork"]}})
 
 
 def _tool_remove_week_activity(context: LoopContext, args: dict[str, Any]) -> dict[str, Any]:
@@ -3679,6 +3712,18 @@ TOOLS: list[ToolSpec] = [
         run=_tool_save_week_activity,
     ),
     ToolSpec(
+        name="accept_drive_during_work",
+        description=(
+            "The person says a drive of theirs that falls inside their own work hours is fine as it is - they "
+            "work close by, or leave early that day. household.week marks such a drive with driveDuringWork; "
+            "call this with the activity's id and the leg (drop_off or pick_up) so it is kept as settled and "
+            "never raised again. When they name somebody else for it instead, use save_week_activity."
+        ),
+        parameters=_params({"id": {"type": "integer"}, "leg": {"type": "string", "enum": list(household.DRIVE_LEGS)}}),
+        side_effect=True,
+        run=_tool_accept_drive_during_work,
+    ),
+    ToolSpec(
         name="remove_week_activity",
         description="Take an activity out of the family's week because it stopped or the person asks to. id is from household.week.",
         parameters=_params({"id": {"type": "integer"}}),
@@ -3797,6 +3842,7 @@ ACCOUNT_RIGHTS_TOOLS = frozenset({"delete_account", "sign_out", "disconnect"})
 # and is reminded of the drives that are theirs, and that is all.
 WEEK_CHANGE_TOOLS = frozenset({
     "save_family_member", "remove_family_member", "save_week_activity", "remove_week_activity",
+    "accept_drive_during_work",
     "add_exception", "remove_exception", "set_getting_to_know", "start_birthday_list",
     "invite_family_member",
 })
@@ -4175,6 +4221,13 @@ _FAMILY = (
     "Something not happening for a while - a sick day, a trip, a holiday, football off this week - is an "
     "exception: add_exception, never save_week_activity or remove_week_activity, and say in a line when it "
     "is all back on.\n"
+    "A drive inside their own work hours: when a week activity carries driveDuringWork, a drop-off or pickup "
+    "the person is down for falls inside their own working day as they gave it, and nobody has settled it. "
+    "Raise it once, plainly, when it comes up - the evening before, the morning of, or the moment the hours "
+    "or the drive are saved - and ask who could take it, or whether it works as it is: they may work round "
+    "the corner or leave early that day. When they say it is fine, call accept_drive_during_work and never "
+    "mention it again; when they name somebody else, save_week_activity with that name. Never decide for "
+    "them, and never keep asking.\n"
     "Getting to know a family, and connecting a business to its mail and calendar, are each an opening "
     "the conversation works through in its own way: CONTEXT.chatFlow says which one this account is on "
     "and the rules above it say how to carry it.\n"

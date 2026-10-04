@@ -486,6 +486,90 @@ if __name__ == "__main__":
     unittest.main()
 
 
+class DriveDuringWorkNudgeTests(unittest.TestCase):
+    """Dana works 09:00-17:00 on Mondays and is down to collect Noa from
+    school at 13:30: the week itself says those cannot both be true."""
+
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.database = PortalDatabase(Path(self.temp_dir.name) / "portal.db")
+        self.database.register_user("dana@example.com", display_name="Dana Levi")
+        self.database.update_user_account_type("dana@example.com", account_type="family")
+        self.user_id = int((self.database.get_user("dana@example.com") or {})["id"])
+        self.database.save_household_member(user_id=self.user_id, name="Noa", role="child")
+        self.database.save_household_member(user_id=self.user_id, name="Yoav", role="partner")
+        self.database.save_household_activity(
+            user_id=self.user_id, title="Work", who=["me"], days=["mon"], start_time="09:00", end_time="17:00", place="the office",
+        )
+        self.school = self.database.save_household_activity(
+            user_id=self.user_id, title="Gretz school", who=["Noa"], days=["mon"],
+            start_time="08:00", end_time="13:30", drop_off_by="Yoav", pick_up_by="me",
+        )
+        self.nudger = FamilyWeekNudger(self.database, config=FamilyWeekNudgeConfig(morning_hour=7, evening_hour=20, ride_lead_minutes=30))
+
+    def tearDown(self) -> None:
+        self.temp_dir.cleanup()
+
+    def queued(self) -> list[dict]:
+        return [
+            action for action in self.database.list_scheduled_actions_for_user(self.user_id, limit=50)
+            if (action.get("payload") or {}).get("source") == "family_week"
+        ]
+
+    def test_the_evening_before_says_the_pickup_is_inside_her_work_hours(self) -> None:
+        # Everyone is named, so without this the evening would be quiet.
+        self.assertEqual(self.nudger.run_pending(now=at(SUNDAY, 20, 15))["evening"], 1)
+        [action] = self.queued()
+        instruction = action["payload"]["instruction"]
+        self.assertNotIn("TOMORROW:", instruction)
+        self.assertIn(
+            "INSIDE YOUR OWN WORK HOURS:\nGretz school (Noa), the pickup at 13:30: you are down for it, but it falls "
+            "inside your own Work at the office 09:00-17:00",
+            instruction,
+        )
+        self.assertIn("whether it is fine as it is", instruction)
+        self.assertEqual(
+            action["payload"]["fallbackText"],
+            "Tomorrow, inside your own work hours:\n• Gretz school (Noa), the pickup at 13:30: you are down for it, but it "
+            "falls inside your own Work at the office 09:00-17:00",
+        )
+        self.nudger.run_pending(now=at(SUNDAY, 20, 25))
+        self.assertEqual(len(self.queued()), 1)
+
+    def test_the_morning_says_it_in_the_bullet_while_it_is_not_settled(self) -> None:
+        monday = SUNDAY.replace(day=21)
+        self.assertEqual(self.nudger.run_pending(now=at(monday, 7, 5))["morning"], 1)
+        [action] = self.queued()
+        instruction = action["payload"]["instruction"]
+        self.assertIn(
+            "08:00-13:30 Gretz school (Noa), takes: Yoav, collects: you (inside your own Work at the office 09:00-17:00, not settled yet)",
+            instruction,
+        )
+        self.assertIn("09:00-17:00 Work (you)", instruction)
+        self.assertIn("who could take it or whether it is fine as it is", instruction)
+
+    def test_once_she_says_it_is_fine_nobody_mentions_it_again(self) -> None:
+        kept = self.database.mark_household_drive_fine_during_work(user_id=self.user_id, activity_id=int(self.school["id"]), leg="pick_up")
+        self.assertEqual(kept["fineDuringWork"], ["pick_up"])
+        self.assertEqual(self.nudger.run_pending(now=at(SUNDAY, 20, 15))["evening"], 0)
+        monday = SUNDAY.replace(day=21)
+        self.nudger.run_pending(now=at(monday, 7, 5))
+        [action] = self.queued()
+        self.assertIn("collects: you\n", action["payload"]["instruction"] + "\n")
+        self.assertNotIn("not settled", action["payload"]["instruction"])
+        self.assertNotIn("fine as it is", action["payload"]["instruction"])
+        # Saying so twice keeps one leg, and the other leg is still open to ask about.
+        again = self.database.mark_household_drive_fine_during_work(user_id=self.user_id, activity_id=int(self.school["id"]), leg="pickup")
+        self.assertEqual(again["fineDuringWork"], ["pick_up"])
+        with self.assertRaises(LookupError):
+            self.database.mark_household_drive_fine_during_work(user_id=self.user_id, activity_id=999, leg="pick_up")
+
+    def test_somebody_else_on_the_pickup_settles_it_too(self) -> None:
+        self.database.save_household_activity(user_id=self.user_id, activity_id=int(self.school["id"]), pick_up_by="Yoav")
+        self.assertEqual(self.nudger.run_pending(now=at(SUNDAY, 20, 15))["evening"], 0)
+        self.assertEqual(self.queued(), [])
+
+
 class GroupNudgeTests(unittest.TestCase):
     """A group's rota: ask the room the night before, remind the one who took it."""
 
