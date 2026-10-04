@@ -40,6 +40,20 @@ class RulesTests(unittest.TestCase):
         self.assertFalse(household.is_self("Shirly", owner_names=["Nimrod Shai"]))
         self.assertFalse(household.is_self(""))
 
+    def test_the_bus_and_their_own_feet_are_nobody_driving(self) -> None:
+        # Written in "who drives" so the morning can say it and nobody is
+        # asked to cover it; not anyone's drive, so nobody is told to leave.
+        for value in ("the bus", "Bus", "takes the bus home", "walks", "on their own", "by herself",
+                      "אוטובוס", "הסעה", "הולכת לבד הביתה"):
+            self.assertTrue(household.nobody_drives(value), value)
+            self.assertFalse(household.is_self(value, ["Bus Levi"]), value)
+        # A person next to one of the words is still a person, and an empty
+        # value is a gap, not this.
+        for value in ("Dana", "Dana, by bus", "Grandma walks them", "me", "", None, "דנה"):
+            self.assertFalse(household.nobody_drives(value), repr(value))
+        on_the_bus = {"title": "School", "who": ["Lotan"], "dropOffBy": "the bus", "pickUpBy": "the bus"}
+        self.assertEqual(household.activity_gaps(on_the_bus), [])
+
     def test_an_age_keeps_counting_from_when_it_was_said(self) -> None:
         self.assertEqual(household.current_age(4, "2024-10-01", date(2026, 9, 17)), 5)
         self.assertEqual(household.current_age(4, "2024-09-01", date(2026, 9, 17)), 6)
