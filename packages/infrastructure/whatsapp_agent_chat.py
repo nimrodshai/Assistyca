@@ -694,6 +694,19 @@ def build_signup_concierge_prompt(
             + (", what they told you when they registered" if registered else "")
             + " and this conversation - and ask them to confirm with a yes, and set erase to \"ask\"."
         )
+        # A phone with no account may have held one once: the record of a
+        # deletion is kept for a day and then forgotten, so "was I deleted?"
+        # after that finds no account. The truthful answer is what is held
+        # now, never a verdict on a past this prompt cannot see.
+        task += (
+            " And if they ask whether their account, their details or their data were deleted, or whether "
+            "you still hold anything of theirs, do none of the above and do not ask for an email: say plainly "
+            "that there is no account for this phone and that all you hold is "
+            + ("their name, what they told you when they registered, and " if registered else "")
+            + "this conversation. Never say that they were not deleted, and never say that an account of "
+            "theirs exists: you cannot see whether one was deleted earlier, only what is here now. Set erase "
+            "to \"none\"."
+        )
     context = {
         "whatAssistycaDoes": product_summary_for(registered_kind),
         "registeredOnTheWebsite": {
