@@ -538,6 +538,17 @@ class WeekPageTests(unittest.TestCase):
             except ValueError:
                 return int(exc.code), {}
 
+    def test_the_nudger_can_ask_for_one_day_of_the_owners_calendar(self) -> None:
+        # Read over loopback with a session for the account, like the inbox
+        # watch poll. Nothing connected is an empty day, not an error.
+        self.database.update_user_account_type("parent@example.com", account_type="family")
+        status, body = self.request("POST", "/api/family-week/calendar-day", {"day": "2026-09-21", "timezone": "Asia/Jerusalem"})
+        self.assertEqual((status, body["ok"], body["day"], body["events"]), (200, True, "2026-09-21", []))
+        status, body = self.request("POST", "/api/family-week/calendar-day", {"day": "tomorrow", "timezone": "Asia/Jerusalem"})
+        self.assertEqual((status, body["error"]), (400, "invalid_day"))
+        status, _ = self.request("POST", "/api/family-week/calendar-day", {"day": "2026-09-21"}, signed_in=False)
+        self.assertEqual(status, 401)
+
     def test_the_week_is_read_changed_and_emptied_from_the_page(self) -> None:
         self.database.save_household_member(user_id=self.user_id, name="Tom", role="child", age=4, email=None)
         status, created = self.request("POST", "/api/household/activities", {
