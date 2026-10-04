@@ -16,7 +16,10 @@ Three moments, each once, on the person's own clock:
   child who comes home on the bus, is in the morning plan and is not
   mentioned again through the day. Two of their drives close together -
   school and kindergarten both at eight - are one word, planned as one
-  trip, not two messages a minute apart;
+  trip, not two messages a minute apart. A drive whose leaving time falls
+  within twenty minutes of the morning message, either side, is in that
+  message and is not said again: two messages at once saying the same
+  thing read as a glitch, not as care;
 * a birthday a month away, with an offer of the ready-made list to get
   ready for it.
 
@@ -67,6 +70,9 @@ DEFAULT_RIDE_LEAD_MINUTES = 30
 # Drives of the owner's that follow one another within this many minutes
 # of the first due are said together, as one trip.
 DEFAULT_RIDE_MERGE_MINUTES = 30
+# A drive whose leaving time is nearer than this to the morning message is
+# told in the morning message alone, not reminded again beside it.
+DEFAULT_RIDE_DIGEST_GAP_MINUTES = 20
 DEFAULT_POLL_SECONDS = 120
 # How late a moment may still be told. A poll that runs a little after the
 # hour still counts; one that runs hours later has missed it.
@@ -94,6 +100,7 @@ class FamilyWeekNudgeConfig:
     evening_hour: int = DEFAULT_EVENING_HOUR
     ride_lead_minutes: int = DEFAULT_RIDE_LEAD_MINUTES
     ride_merge_minutes: int = DEFAULT_RIDE_MERGE_MINUTES
+    ride_digest_gap_minutes: int = DEFAULT_RIDE_DIGEST_GAP_MINUTES
     poll_seconds: int = DEFAULT_POLL_SECONDS
     # Whether each day is checked against the school calendar online. Off
     # only for an incident: without it a holiday is nudged like any day.
@@ -115,6 +122,7 @@ def load_family_week_nudge_config() -> FamilyWeekNudgeConfig:
         evening_hour=min(23, max(0, _parse_int(os.getenv("PORTAL_FAMILY_EVENING_HOUR"), DEFAULT_EVENING_HOUR))),
         ride_lead_minutes=min(180, max(5, _parse_int(os.getenv("PORTAL_FAMILY_RIDE_LEAD_MINUTES"), DEFAULT_RIDE_LEAD_MINUTES))),
         ride_merge_minutes=min(180, max(0, _parse_int(os.getenv("PORTAL_FAMILY_RIDE_MERGE_MINUTES"), DEFAULT_RIDE_MERGE_MINUTES))),
+        ride_digest_gap_minutes=min(180, max(0, _parse_int(os.getenv("PORTAL_FAMILY_RIDE_DIGEST_GAP_MINUTES"), DEFAULT_RIDE_DIGEST_GAP_MINUTES))),
         poll_seconds=max(30, _parse_int(os.getenv("PORTAL_FAMILY_NUDGE_POLL_SECONDS"), DEFAULT_POLL_SECONDS)),
         school_calendar=normalize_text(os.getenv("PORTAL_FAMILY_SCHOOL_CALENDAR")).lower()
         not in {"0", "false", "no", "off", "disabled"},
@@ -389,6 +397,8 @@ def rides_leaving_together(
     lead_minutes: int,
     merge_minutes: int,
     driver_names: list[str] | None = None,
+    digest_at: datetime | None = None,
+    digest_gap_minutes: int = 0,
 ) -> list[dict[str, Any]]:
     """The owner's drives that go out as one word: those due now, and any
     other of theirs that follows within merge_minutes of the earliest of
@@ -396,10 +406,20 @@ def rides_leaving_together(
     are one trip to plan - take both, drop one, then the other - so they are
     said once, in time order, not as two messages. A drive further off waits
     for its own time. driver_names makes them a family member's drives
-    rather than the account holder's."""
+    rather than the account holder's.
+
+    digest_at is when this reader's morning message goes out. A drive whose
+    leaving time - lead_minutes before it - is nearer than digest_gap_minutes
+    to that moment, before or after, is in the morning message already and
+    is left out here: it is not said again a minute later. A reader who
+    gets no morning message passes nothing, and hears about every drive."""
 
     rides = _owner_rides_today(activities, owner_names=owner_names, local_now=local_now, driver_names=driver_names)
-    due = [moment for moment, _ride in rides if moment - timedelta(minutes=lead_minutes) <= local_now < moment]
+    lead = timedelta(minutes=lead_minutes)
+    if digest_at is not None and digest_gap_minutes > 0:
+        gap = timedelta(minutes=digest_gap_minutes)
+        rides = [(moment, ride) for moment, ride in rides if abs(moment - lead - digest_at) >= gap]
+    due = [moment for moment, _ride in rides if moment - lead <= local_now < moment]
     if not due:
         return []
     first = min(due)
@@ -786,6 +806,7 @@ class FamilyWeekNudger:
             together = rides_leaving_together(
                 todays, owner_names=owner_names, local_now=local_now,
                 lead_minutes=self.config.ride_lead_minutes, merge_minutes=self.config.ride_merge_minutes,
+                digest_at=self._morning_moment(local_now), digest_gap_minutes=self.config.ride_digest_gap_minutes,
             )
             facts = []
             for ride in together:
@@ -953,9 +974,14 @@ class FamilyWeekNudger:
                     counts["evening"] += 1
             if "rides" not in wants:
                 continue
+            # A parent who got the morning plan is not told again, a minute
+            # after it, about a drive that plan already named; a grandparent
+            # who hears only about their own drives is told about each one.
             together = rides_leaving_together(
                 todays, owner_names=owner_names, local_now=local_now, driver_names=names,
                 lead_minutes=self.config.ride_lead_minutes, merge_minutes=self.config.ride_merge_minutes,
+                digest_at=self._morning_moment(local_now) if "morning" in wants else None,
+                digest_gap_minutes=self.config.ride_digest_gap_minutes,
             )
             facts = []
             for ride in together:
@@ -985,6 +1011,11 @@ class FamilyWeekNudger:
                 fallback=f"Soon: {facts[0]}." if len(facts) == 1 else "Soon, one trip:\n" + "\n".join(f"• {fact}" for fact in facts),
             )
             counts["rides"] += 1
+
+    def _morning_moment(self, local_now: datetime) -> datetime:
+        """When today's morning message goes out on this person's clock."""
+
+        return local_now.replace(hour=self.config.morning_hour, minute=0, second=0, microsecond=0)
 
     def serve_forever(self, stop_event: threading.Event, *, log: Callable[[str], None] | None = None) -> None:
         logger = log or (lambda _message: None)

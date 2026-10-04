@@ -28,6 +28,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from packages.infrastructure import household
 from packages.infrastructure.agent_loop import LoopContext
+from packages.infrastructure.agent_loop import MAX_USER_MESSAGE_LENGTH
 from packages.infrastructure.agent_loop import run_agent_loop
 from packages.infrastructure.portal_auth.server import PortalConfig
 from packages.infrastructure.portal_auth.server import create_server
@@ -386,6 +387,44 @@ class StandingTaskApiTests(unittest.TestCase):
         self.assertEqual(saved["status"], "pending")
         self.assertEqual(saved["payload"]["runCount"], 1)
         self.assertEqual(saved["payload"]["lastRunStatus"], "success")
+
+    def test_a_long_instruction_reaches_the_assistant_whole(self) -> None:
+        # The loop endpoint trims what comes in. A family's morning plan with
+        # four things on it runs past 900 characters, and for a while the cut
+        # fell inside the list: the afternoon activity never reached the model,
+        # while its "time to leave" reminder still went out hours later.
+        lines = [f"{7 + i:02d}:00-{8 + i:02d}:00 Thing {i} (Child {i}), takes: you, collects: Partner" for i in range(6)]
+        instruction = ("It is the morning. " + "Write the person one short message with what today holds. " * 12
+                       + "\nTODAY:\n" + "\n".join(lines) + "\n17:30-18:30 Judo (Noa), takes: Yoav, collects: you")
+        self.assertGreater(len(instruction), 900)
+        self.assertLess(len(build_task_run_message(title="Today", instruction=instruction, schedule_text="", standing=False)), MAX_USER_MESSAGE_LENGTH)
+        self.database.create_scheduled_action(
+            user_id=int(self.user["id"]), action_type=STANDING_TASK_ACTION_TYPE, channel="whatsapp", recipient_ref="owner",
+            run_at=datetime.now(timezone.utc) - timedelta(seconds=1), timezone_name=JERUSALEM,
+            payload={"title": "Today in your family's week", "instruction": instruction, "oneOff": True, "fallbackText": "Today: ..."},
+        )
+        self.database.save_whatsapp_agent_message(user_id=int(self.user["id"]), role="user", text="hi")
+        runner = StandingTaskRunner(
+            database=self.database, base_url=self.base_url,
+            session_token_factory=lambda email: mint_agent_session_token(self.server.store, email),
+        )
+        scheduler = ScheduledActionScheduler(
+            self.database, config=ScheduledActionConfig(enabled=True, poll_seconds=1, batch_size=10), task_runner=runner.run,
+        )
+        reply = {"reply": "• Judo at 17:30", "claimsCompleted": [], "rememberFact": None, "forgetFact": None, "answersOpenQuestion": None}
+        model_result = SimpleNamespace(
+            output_text=json.dumps(reply),
+            raw_response={"output": [{"type": "message", "content": [{"type": "output_text", "text": json.dumps(reply)}]}]},
+            input_tokens=10, output_tokens=5,
+        )
+        with mock.patch("packages.infrastructure.portal_auth.server.call_openai_response", return_value=model_result) as model, mock.patch(
+            "packages.infrastructure.scheduled_actions.send_whatsapp_notification", return_value="wamid.task-long",
+        ):
+            summary = scheduler.run_pending(now=datetime.now(timezone.utc))
+
+        self.assertEqual(summary["sent"], 1, summary)
+        prompt = str(model.call_args.kwargs["input"][0]["content"])
+        self.assertIn("17:30-18:30 Judo (Noa), takes: Yoav, collects: you", prompt)
 
     def test_a_morning_with_nothing_on_sends_nothing(self) -> None:
         """Saturday, or a holiday the school calendar says closes the gan: the

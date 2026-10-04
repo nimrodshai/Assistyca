@@ -268,6 +268,7 @@ from packages.infrastructure.whatsapp_api import test_whatsapp_connection
 from packages.infrastructure.agent_loop import ACCOUNT_RIGHTS_TOOLS
 from packages.infrastructure.agent_loop import AGENT_LOOP_INSTRUCTIONS
 from packages.infrastructure.agent_loop import LOOP_MAX_OUTPUT_TOKENS
+from packages.infrastructure.agent_loop import MAX_USER_MESSAGE_LENGTH
 
 # One pause before the single extra attempt at a model call that failed on the provider's side.
 AGENT_MODEL_RETRY_PAUSE_SECONDS = 2.0
@@ -10954,10 +10955,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             })
             return
 
-        user_message = normalize_contact_message(
-            payload.get("userMessage"),
-            AGENT_PROPOSAL_REVISION_MAX_MESSAGE_LENGTH,
-        )
+        user_message = normalize_contact_message(payload.get("userMessage"), MAX_USER_MESSAGE_LENGTH)
         # A photo sent with the message. It goes to the model as an image, so
         # the person can show a receipt or a screenshot instead of typing it
         # out; the prompt and everything that gets logged only name it.
@@ -11421,7 +11419,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             json_response(self, HTTPStatus.BAD_REQUEST, {"ok": False, "error": "invalid_json", "message": str(exc)})
             return
 
-        user_message = normalize_contact_message(payload.get("userMessage"), AGENT_PROPOSAL_REVISION_MAX_MESSAGE_LENGTH)
+        user_message = normalize_contact_message(payload.get("userMessage"), MAX_USER_MESSAGE_LENGTH)
         conversation = normalize_agent_proposal_revision_conversation(payload.get("conversation"))
         timezone_name = normalize_contact_single_line(payload.get("timezone"), 120) or "UTC"
         channel = normalize_contact_single_line(payload.get("channel"), 20).lower() or "portal"
