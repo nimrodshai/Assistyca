@@ -88,7 +88,12 @@ class NudgerTests(unittest.TestCase):
         payload = action["payload"]
         self.assertEqual(action["actionType"], "run_task")
         self.assertIn("07:30-16:00 Kindergarten (Tom), takes: you, collects: Shirly", payload["instruction"])
-        self.assertTrue(payload["fallbackText"].startswith("Today:"))
+        # The facts go once, as bullets: a second "nobody down for" block
+        # came back as the same pickup said twice.
+        self.assertIn("one bullet per thing", payload["instruction"])
+        self.assertIn("Say each fact once", payload["instruction"])
+        self.assertNotIn("NOBODY DOWN FOR", payload["instruction"])
+        self.assertTrue(payload["fallbackText"].startswith("Today:\n• "))
         self.assertNotIn("offerInstruction", payload)
 
     def test_a_morning_missed_by_hours_is_not_sent_late(self) -> None:

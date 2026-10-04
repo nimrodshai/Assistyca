@@ -2,8 +2,10 @@
 
 Three moments, each once, on the person's own clock:
 
-* the morning: what today holds, who takes and who collects, and anything
-  nobody is down for yet;
+* the morning: what today holds, one bullet per thing, who takes and who
+  collects, with anything nobody is down for yet said in its own bullet
+  and nowhere else - the facts go to the model once, so they come back
+  once;
 * the evening before: a drop-off or pickup tomorrow that still has nobody,
   while there is time to sort it out;
 * the ride: shortly before the account holder is the one driving, a word
@@ -439,20 +441,21 @@ class FamilyWeekNudger:
             if todays and self.config.morning_hour <= local_now.hour < self.config.morning_hour + MORNING_WINDOW_HOURS:
                 if claim(f"morning:{today.isoformat()}"):
                     lines = [describe_activity_line(activity, owner_names) for activity in todays]
-                    gaps = gap_lines(todays)
                     self._queue(
                         user_id=user_id, now=reference, timezone_name=timezone_name,
                         title="Today in your family's week",
                         instruction=(
                             "It is the morning. Write the person one short WhatsApp message with what today holds for "
-                            "their family, in the language they write to you in: each thing with its time and who takes "
-                            "and collects, and, plainly and last, anything nobody is down for yet. 'you' is the person. "
+                            "their family, in the language they write to you in: one bullet per thing, each a few words "
+                            "- its time, who it is for, where, who takes and who collects - and where nobody is down "
+                            "for a drop-off or pickup yet, say so in that bullet. Say each fact once: no opening line, "
+                            "no sign-off, and no closing line that repeats what the bullets already say. 'you' is the "
+                            "person. "
                             + (
                                 "CALENDAR is what the school calendar says about today: mention it in a few words only "
                                 "where it bears on what is listed, such as an earlier finish. " if today_calendar else ""
                             )
                             + "The facts are exact; add none, and use no tool.\nTODAY:\n" + "\n".join(lines)
-                            + ("\nNOBODY DOWN FOR:\n" + "\n".join(gaps) if gaps else "")
                             + (f"\nCALENDAR: {describe_day(today, today_calendar)}" if today_calendar else "")
                         ),
                         fallback="Today:\n" + "\n".join(f"• {line}" for line in lines),
