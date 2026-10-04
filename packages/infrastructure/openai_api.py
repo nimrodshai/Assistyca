@@ -548,6 +548,76 @@ def current_usage_context() -> dict[str, str]:
     return merged
 
 
+
+# -- when OpenAI stops answering for money -------------------------------------
+#
+# A credit balance that runs out fails every turn and every reminder at once,
+# and from the outside it looks like the assistant went quiet. The request
+# layer below recognises the provider's billing codes and raises an alarm
+# through whatever the server registered here - a WhatsApp to the house -
+# at most once per quiet period, so a burst of failures is one message.
+
+BILLING_FAILURE_CODES = frozenset({
+    "credit_balance_exhausted",
+    "insufficient_quota",
+    "billing_not_active",
+    "billing_hard_limit_reached",
+})
+BILLING_ALARM_QUIET_SECONDS = 6 * 60 * 60
+_billing_alarm_callbacks: list[Callable[[str, int | None], None]] = []
+_billing_alarm_last: dict[str, float] = {}
+_billing_alarm_lock = threading.Lock()
+
+
+def on_billing_failure(callback: Callable[[str, int | None], None]) -> None:
+    """Register what to do when OpenAI refuses to answer over billing."""
+
+    _billing_alarm_callbacks.append(callback)
+
+
+def is_billing_failure(payload: Any, message: str = "") -> bool:
+    """Whether an error response says the account is out of money, not busy."""
+
+    error = payload.get("error") if isinstance(payload, dict) else None
+    error = error if isinstance(error, dict) else {}
+    code = normalize_text(error.get("code")).lower()
+    error_type = normalize_text(error.get("type")).lower()
+    text = f"{message} {normalize_text(error.get('message'))}".lower()
+    return (
+        code in BILLING_FAILURE_CODES
+        or error_type in BILLING_FAILURE_CODES
+        or "no credits remaining" in text
+        or "credit balance" in text
+        or "insufficient quota" in text
+        or "exceeded your current quota" in text
+    )
+
+
+def raise_billing_alarm(message: str, status_code: int | None = None, *, key: str = "openai") -> bool:
+    """Tell the house once per quiet period. Returns whether anyone was told."""
+
+    now = time.monotonic()
+    with _billing_alarm_lock:
+        last = _billing_alarm_last.get(key)
+        if last is not None and now - last < BILLING_ALARM_QUIET_SECONDS:
+            return False
+        _billing_alarm_last[key] = now
+    told = False
+    for callback in list(_billing_alarm_callbacks):
+        try:
+            callback(message, status_code)
+            told = True
+        except Exception as exc:  # noqa: BLE001 - the alarm must never add a failure of its own
+            print(f"OpenAI billing alarm could not be delivered: {exc}", flush=True)
+    return told
+
+
+def reset_billing_alarm() -> None:
+    """For tests: forget when the house was last told."""
+
+    with _billing_alarm_lock:
+        _billing_alarm_last.clear()
+
 def _request_url(base_url: str, path: str) -> str:
     return f"{normalize_text(base_url).rstrip('/')}/{path.lstrip('/')}"
 
@@ -583,6 +653,8 @@ def _perform_request(request: urllib_request.Request, *, timeout_seconds: float)
             message = extract_openai_error_message(parsed, status_code=exc.code) if isinstance(parsed, dict) else ""
             if not message:
                 message = f"OpenAI returned HTTP {exc.code}."
+            if is_billing_failure(parsed, message):
+                raise_billing_alarm(message, exc.code)
             raise OpenAIRequestError(message, details=raw_body, status_code=exc.code) from exc
         except urllib_error.URLError as exc:
             if attempt < max_attempts:
@@ -1192,33 +1264,29 @@ class OpenAIGateway:
                             "error": str(exc),
                         },
                     )
-                    raise OpenAITrackingError(
-                        "OpenAI usage could not be recorded.",
-                        details=str(exc),
-                        data={
-                            "request_id": request_id,
-                            "response_id": response_id,
-                            "tool_name": request.tool_name,
-                            "model": response_model,
-                            "response": make_json_safe(response_body),
-                        },
-                    ) from exc
+                    # The reply is already here and the money already spent. A
+                    # ledger row that cannot be written is the house's problem to
+                    # chase from the log, never a reason to throw the person's
+                    # answer away.
+                    usage_record = None
+                    print(f"OpenAI usage could not be recorded for {billing_email or '(no account)'}; the reply was kept. request={request_id} response={response_id} error={exc}", flush=True)
 
-                self._emit(
-                    "openai.usage.recorded",
-                    {
-                        "request_id": request_id,
-                        "billing_email": billing_email,
-                        "tool_name": normalize_text(request.tool_name),
-                        "tool_id": normalize_text(request.tool_id) or normalize_text(request.tool_name),
-                        "model": response_model,
-                        "response_id": response_id,
-                        "input_tokens": usage["input_tokens"],
-                        "output_tokens": usage["output_tokens"],
-                        "billing_snapshot": price_snapshot,
-                        "usage_record": make_json_safe(usage_record),
-                    },
-                )
+                if usage_record is not None:
+                    self._emit(
+                        "openai.usage.recorded",
+                        {
+                            "request_id": request_id,
+                            "billing_email": billing_email,
+                            "tool_name": normalize_text(request.tool_name),
+                            "tool_id": normalize_text(request.tool_id) or normalize_text(request.tool_name),
+                            "model": response_model,
+                            "response_id": response_id,
+                            "input_tokens": usage["input_tokens"],
+                            "output_tokens": usage["output_tokens"],
+                            "billing_snapshot": price_snapshot,
+                            "usage_record": make_json_safe(usage_record),
+                        },
+                    )
 
         completed_at_iso = completed_at.isoformat()
         return OpenAIResult(
@@ -1430,25 +1498,27 @@ class OpenAIGateway:
                             "error": str(exc),
                         },
                     )
-                    raise OpenAITrackingError(
-                        "OpenAI usage could not be recorded.",
-                        details=str(exc),
-                        data={"request_id": request_id, "tool_name": tool_name, "model": model},
-                    ) from exc
-                self._emit(
-                    "openai.usage.recorded",
-                    {
-                        "request_id": request_id,
-                        "billing_email": billing_email,
-                        "tool_name": tool_name,
-                        "tool_id": tool_id,
-                        "model": model,
-                        "input_tokens": usage["input_tokens"],
-                        "output_tokens": usage["output_tokens"],
-                        "billing_snapshot": price_snapshot,
-                        "usage_record": make_json_safe(usage_record),
-                    },
-                )
+                    # The reply is already here and the money already spent. A
+                    # ledger row that cannot be written is the house's problem to
+                    # chase from the log, never a reason to throw the person's
+                    # answer away.
+                    usage_record = None
+                    print(f"OpenAI usage could not be recorded for {billing_email or '(no account)'}; the transcript was kept. request={request_id} error={exc}", flush=True)
+                if usage_record is not None:
+                    self._emit(
+                        "openai.usage.recorded",
+                        {
+                            "request_id": request_id,
+                            "billing_email": billing_email,
+                            "tool_name": tool_name,
+                            "tool_id": tool_id,
+                            "model": model,
+                            "input_tokens": usage["input_tokens"],
+                            "output_tokens": usage["output_tokens"],
+                            "billing_snapshot": price_snapshot,
+                            "usage_record": make_json_safe(usage_record),
+                        },
+                    )
 
         return OpenAITranscriptionResult(
             request_id=request_id,

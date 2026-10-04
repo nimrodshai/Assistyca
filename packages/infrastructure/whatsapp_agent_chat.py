@@ -694,6 +694,19 @@ def build_signup_concierge_prompt(
             + (", what they told you when they registered" if registered else "")
             + " and this conversation - and ask them to confirm with a yes, and set erase to \"ask\"."
         )
+        # A phone with no account may have held one once: the record of a
+        # deletion is kept for a day and then forgotten, so "was I deleted?"
+        # after that finds no account. The truthful answer is what is held
+        # now, never a verdict on a past this prompt cannot see.
+        task += (
+            " And if they ask whether their account, their details or their data were deleted, or whether "
+            "you still hold anything of theirs, do none of the above and do not ask for an email: say plainly "
+            "that there is no account for this phone and that all you hold is "
+            + ("their name, what they told you when they registered, and " if registered else "")
+            + "this conversation. Never say that they were not deleted, and never say that an account of "
+            "theirs exists: you cannot see whether one was deleted earlier, only what is here now. Set erase "
+            "to \"none\"."
+        )
     context = {
         "whatAssistycaDoes": product_summary_for(registered_kind),
         "registeredOnTheWebsite": {
@@ -2028,7 +2041,7 @@ class WhatsAppAgentChat:
         if not question:
             reply = acknowledged + " Ask me anything about your schedule."
             message_id = self._send_owner_text(reply)
-            self.database.save_whatsapp_agent_message(user_id=self.user_id, role="assistant", text=reply)
+            self._note_message(role="assistant", text=reply)
             return {"type": "owner", "action": "agent_chat_reply", "outcome": "calendar_choice_saved",
                     "reply_text": reply, "message_id": message_id}
         # The interrupted question, answered now rather than asked for again.
@@ -2191,7 +2204,7 @@ class WhatsAppAgentChat:
 
     def _reply_and_log(self, reply: str, *, outcome: str) -> dict[str, Any]:
         message_id = self._send_owner_text(reply)
-        self.database.save_whatsapp_agent_message(user_id=self.user_id, role="assistant", text=reply)
+        self._note_message(role="assistant", text=reply)
         return {"type": "owner", "action": "agent_chat_reply", "outcome": outcome,
                 "reply_text": reply, "message_id": message_id}
 
@@ -2337,7 +2350,7 @@ class WhatsAppAgentChat:
         history = self.database.list_recent_whatsapp_agent_messages(user_id=self.user_id, limit=AGENT_CHAT_HISTORY_LIMIT)
         conversation = [{"role": item["role"], "text": item["text"]} for item in history]
         if record_user:
-            self.database.save_whatsapp_agent_message(user_id=self.user_id, role="user", text=transcript_text(text, photo, voice=voice))
+            self._note_message(role="user", text=transcript_text(text, photo, voice=voice))
         else:
             conversation = conversation[:-1] if conversation and conversation[-1].get("role") == "user" else conversation
         payload: dict[str, Any] = {
@@ -2421,7 +2434,7 @@ class WhatsAppAgentChat:
                     if available and not open_question:
                         if reply:
                             self._send_owner_text(format_agent_reply_for_whatsapp(reply))
-                            self.database.save_whatsapp_agent_message(user_id=self.user_id, role="assistant", text=reply)
+                            self._note_message(role="assistant", text=reply)
                         self._ask_calendar_choice(available, question="", selected=ticked)
                         return {"type": "owner", "action": "agent_chat_reply", "outcome": "calendar_choice",
                                 "reply_text": reply, "message_id": ""}
@@ -2429,13 +2442,13 @@ class WhatsAppAgentChat:
                     available = [entry for entry in calendars if isinstance(entry, dict)]
                     if len(available) == 1 and self._save_calendar_selection(available):
                         # One calendar is not a choice: read it and run the turn again.
-                        self.database.save_whatsapp_agent_message(user_id=self.user_id, role="assistant", text=reply or "(chose the only calendar)")
+                        self._note_message(role="assistant", text=reply or "(chose the only calendar)")
                         return self._loop_turn(text, source_message_id=source_message_id, open_question=open_question, photo=photo, voice=voice)
                     if available and not open_question:
                         outcome = "calendar_choice"
                         if reply:
                             self._send_owner_text(format_agent_reply_for_whatsapp(reply))
-                            self.database.save_whatsapp_agent_message(user_id=self.user_id, role="assistant", text=reply)
+                            self._note_message(role="assistant", text=reply)
                         self._ask_calendar_choice(available, question=text)
                         return {"type": "owner", "action": "agent_chat_reply", "outcome": outcome, "reply_text": reply, "message_id": ""}
 
@@ -2458,7 +2471,7 @@ class WhatsAppAgentChat:
             # sent and nothing is written down anywhere.
             outcome = "account_deleted"
         else:
-            self.database.save_whatsapp_agent_message(user_id=self.user_id, role="assistant", text=reply)
+            self._note_message(role="assistant", text=reply)
         return {
             "type": "owner",
             "action": "agent_chat_reply",
@@ -2570,8 +2583,8 @@ class WhatsAppAgentChat:
         return build_situation(
             "assistant_unavailable",
             request=user_message,
-            what_happened="I couldn't think that through just now.",
-            can_retry=True,
+            what_happened="Something on my side went wrong and that answer didn't come through.",
+            can_retry=False,
         )
 
     def _connect_options(self, kind: str) -> list[dict[str, str]]:
@@ -2614,6 +2627,18 @@ class WhatsAppAgentChat:
         return reply or computed_recovery_sentence(situation)
 
     # -- sending -----------------------------------------------------------
+
+    def _note_message(self, *, role: str, text: str) -> None:
+        """Write a line of the transcript down, or say that it could not be.
+
+        The transcript is memory for next time. A row that cannot be written
+        costs a little context tomorrow; failing the reply in front of the
+        person over it would cost the conversation."""
+
+        try:
+            self.database.save_whatsapp_agent_message(user_id=self.user_id, role=role, text=text)
+        except Exception as exc:  # noqa: BLE001 - bookkeeping never outranks the reply
+            print(f"WhatsApp transcript line could not be saved (role={role}): {exc}", flush=True)
 
     def _send_owner_text(self, reply_text: str) -> str:
         return send_assistyca_text(
@@ -3009,7 +3034,7 @@ class WhatsAppAgentChat:
             limit=AGENT_CHAT_HISTORY_LIMIT,
         )
         conversation = [{"role": item["role"], "text": item["text"]} for item in history]
-        self.database.save_whatsapp_agent_message(user_id=self.user_id, role="user", text=transcript_text(text, photo, voice=voice_note))
+        self._note_message(role="user", text=transcript_text(text, photo, voice=voice_note))
         active_proposal = self.database.get_whatsapp_agent_active_proposal(user_id=self.user_id)
 
         turn_payload: dict[str, Any] = {
@@ -3099,7 +3124,7 @@ class WhatsAppAgentChat:
             conversation,
         )
         message_id = self._send_owner_text(reply)
-        self.database.save_whatsapp_agent_message(user_id=self.user_id, role="assistant", text=reply)
+        self._note_message(role="assistant", text=reply)
         return {
             "type": "owner",
             "action": "agent_chat_reply",

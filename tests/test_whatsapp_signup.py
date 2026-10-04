@@ -192,6 +192,26 @@ class WhatsAppSignupTests(unittest.TestCase):
         self.assertIsNone(self.database.whatsapp_phone_erased_at(NEW_PHONE))
         self.assertTrue(stored and NEW_PHONE not in stored[0], "only a hash of the number is kept")
 
+    def test_asking_about_a_deletion_older_than_a_day_is_never_told_it_did_not_happen(self) -> None:
+        # The account was deleted two days ago, so the record of it is gone
+        # and the phone looks new. "Was I deleted?" must not be met with a
+        # cheerful "no" the prompt has no grounds for - only with what is
+        # held now, which is nothing.
+        self.database.mark_whatsapp_phones_erased([NEW_PHONE])
+        with self.database._connection() as conn:
+            conn.execute("UPDATE erased_whatsapp_phones SET erased_at = ?",
+                         ((datetime.now(timezone.utc) - timedelta(days=2)).isoformat(),))
+            conn.commit()
+
+        result = self.post("was I deleted?", message_id="wamid.later")
+
+        self.assertEqual(result["results"][0]["action"], "signup_started")
+        prompt = self.model.call_args.kwargs["prompt"]
+        self.assertIn('"accountDeletedMinutesAgo":null', prompt)
+        self.assertIn("Never say that they were not deleted", prompt)
+        self.assertIn("there is no account for this phone", prompt)
+        self.assertNotIn("their name, what they told you when they registered", prompt)
+
     def _answers(self, *outputs):
         """The concierge says these, in order, one per turn."""
 

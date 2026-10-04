@@ -586,6 +586,19 @@ class QuietRunTests(unittest.TestCase):
         result = self._run({**_reply("Saturday - nothing on."), "nothingToSend": True}, standing=True)
         self.assertTrue(result.nothing_new)
 
+    def test_a_quiet_run_may_leave_the_reply_empty(self) -> None:
+        # Told that no message goes, the model writes none: that is the
+        # quiet it was asked for, not a reply that went missing.
+        result = self._run({**_reply(""), "nothingToSend": True}, standing=True)
+        self.assertTrue(result.nothing_new)
+        self.assertFalse(result.fallback_used)
+        self.assertNotIn("lost the thread", result.reply)
+
+    def test_an_empty_reply_without_the_flag_is_still_a_missing_one(self) -> None:
+        result = self._run({**_reply(""), "nothingToSend": False}, standing=True)
+        self.assertFalse(result.nothing_new)
+        self.assertTrue(result.fallback_used)
+
     def test_a_scheduled_run_with_something_to_tell_sends_it(self) -> None:
         result = self._run({**_reply("08:00 gan - you take Laor."), "nothingToSend": False}, standing=True)
         self.assertFalse(result.nothing_new)
@@ -683,3 +696,85 @@ class StandingTaskToolTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ReminderTheAssistantCouldNotWriteTests(unittest.TestCase):
+    """A queued nudge carries the plain sentence its facts make. When the turn
+    comes back with an apology instead of the message, that sentence goes,
+    not the apology - a parent at 07:05 needs the day's plan, not "something
+    went wrong on my side"."""
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.database = PortalDatabase(Path(self.temp.name) / "portal.db")
+        user = self.database.register_user("parent@example.com")
+        self.user_id = int(user["id"])
+        self.database.save_whatsapp_connection(
+            "parent@example.com", business_account_id="waba", phone_number_id="phone",
+            owner_wa_id=OWNER_WA_ID, connection_status="connected",
+        )
+
+    def tearDown(self) -> None:
+        self.temp.cleanup()
+
+    def _queued_plan(self) -> dict:
+        return self.database.create_scheduled_action(
+            user_id=self.user_id, action_type=STANDING_TASK_ACTION_TYPE, channel="whatsapp",
+            recipient_ref="owner", run_at=datetime.now(timezone.utc), timezone_name=JERUSALEM,
+            payload={
+                "title": "Today in your family's week",
+                "instruction": "It is the morning. Write the plan.\nTODAY:\n08:00 School (Noa), takes: you, collects: Yoav",
+                "fallbackText": "Today:\n• 08:00 School (Noa), takes: you, collects: Yoav",
+                "oneOff": True, "source": "family_week",
+            },
+        )
+
+    def test_a_recovered_turn_is_a_failure_to_the_runner_not_a_message(self) -> None:
+        action = self._queued_plan()
+        runner = StandingTaskRunner(database=self.database, base_url="http://127.0.0.1:1", session_token_factory=lambda email: "t")
+        fake_chat = SimpleNamespace(
+            timezone_name=JERUSALEM, owner_wa_id=OWNER_WA_ID, _build_tool_context=lambda: {},
+            _api=lambda *args, **kwargs: ({"ok": True, "outcome": "message", "recovered": True, "recoveryCode": "assistant_unavailable", "reply": "Something on my side went wrong."}, 200),
+        )
+        with mock.patch("packages.infrastructure.whatsapp_agent_chat.WhatsAppAgentChat", return_value=fake_chat):
+            with self.assertRaises(RuntimeError) as caught:
+                runner.run(action)
+        self.assertIn("could not write the message", str(caught.exception))
+        self.assertIn("assistant_unavailable", str(caught.exception))
+
+    def test_a_turn_the_loop_had_to_fill_in_is_a_failure_to_the_runner_too(self) -> None:
+        action = self._queued_plan()
+        runner = StandingTaskRunner(database=self.database, base_url="http://127.0.0.1:1", session_token_factory=lambda email: "t")
+        fake_chat = SimpleNamespace(
+            timezone_name=JERUSALEM, owner_wa_id=OWNER_WA_ID, _build_tool_context=lambda: {},
+            _api=lambda *args, **kwargs: ({
+                "ok": True, "outcome": "message", "fallbackUsed": True, "fallbackReason": "empty_reply",
+                "reply": "I lost the thread of that for a moment. Ask me again in a moment and I'll try once more.",
+            }, 200),
+        )
+        with mock.patch("packages.infrastructure.whatsapp_agent_chat.WhatsAppAgentChat", return_value=fake_chat):
+            with self.assertRaises(RuntimeError) as caught:
+                runner.run(action)
+        self.assertIn("could not write the message", str(caught.exception))
+        self.assertIn("empty_reply", str(caught.exception))
+
+    def test_the_plain_sentence_goes_out_when_the_assistant_cannot_write(self) -> None:
+        self._queued_plan()
+        sent: list[dict] = []
+
+        def cannot_write(action):
+            raise RuntimeError("The assistant could not write the message (assistant_unavailable).")
+
+        scheduler = ScheduledActionScheduler(
+            self.database, config=ScheduledActionConfig(enabled=True), task_runner=cannot_write,
+        )
+        with mock.patch(
+            "packages.infrastructure.scheduled_actions.send_whatsapp_notification",
+            side_effect=lambda **kwargs: (sent.append(kwargs) or "wamid.plain"),
+        ):
+            summary = scheduler.run_pending(now=datetime.now(timezone.utc) + timedelta(seconds=1))
+
+        self.assertEqual(summary.get("sent"), 1, summary)
+        self.assertEqual(len(sent), 1)
+        self.assertTrue(sent[0]["message_text"].startswith("Today:"))
+        self.assertNotIn("on my side", sent[0]["message_text"])

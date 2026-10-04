@@ -997,8 +997,10 @@ class WhatsAppRecoveryTests(_WhatsAppApiCase):
             response = self._post_webhook(inbound_text_payload("are you there?", message_id="wamid.rec-4"))
 
         reply = self._reply(response)
-        self.assertIn("couldn't think that through", reply)
-        self.assertIn("Ask me again", reply)
+        # The failure was ours, so the person is not sent back to try again.
+        self.assertIn("on my side", reply)
+        self.assertIn("mine to sort out", reply)
+        self.assertNotIn("Ask me again", reply)
         self.assertNotIn("OpenAI", reply)
 
     def test_a_voice_note_is_answered_in_words_the_composer_wrote(self) -> None:
@@ -1023,7 +1025,7 @@ class WhatsAppRecoveryTests(_WhatsAppApiCase):
 
         for code in sorted(RECOVERY_CODES):
             sentence = computed_recovery_sentence(build_situation(code, can_retry=True))
-            self.assertTrue(any(word in sentence for word in ("Ask me again", "Reply", "Tell me", "https://")), sentence)
+            self.assertTrue(any(word in sentence.lower() for word in ("ask me again", "reply", "tell me", "https://")), sentence)
 
 
 class WhatsAppPreflightTests(_WhatsAppApiCase):
@@ -1496,5 +1498,6 @@ class WhatsAppLoopTests(_WhatsAppApiCase):
             response = self._post_webhook(inbound_text_payload("are you there?", message_id="wamid.loop-6"))
 
         reply = self._reply(response)
-        self.assertIn("Ask me again", reply)
+        self.assertIn("on my side", reply)
+        self.assertNotIn("Ask me again", reply)
         self.assertNotIn("OpenAI", reply)
