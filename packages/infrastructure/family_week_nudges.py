@@ -9,7 +9,9 @@ Three moments, each once, on the person's own clock:
 * the evening before: a drop-off or pickup tomorrow that still has nobody,
   while there is time to sort it out;
 * the ride: shortly before the account holder is the one driving, a word
-  that it is time to leave;
+  that it is time to leave - and only then: a drive someone else does, or a
+  child who comes home on the bus, is in the morning plan and is not
+  mentioned again through the day;
 * a birthday a month away, with an offer of the ready-made list to get
   ready for it.
 
@@ -151,7 +153,8 @@ def rides_due_for_anyone(
     """The drives today that somebody is down for, whose leaving time has
     come. Unlike the account's own week, a group's runs belong to whoever
     said they would take them, so each one carries that name: the reminder
-    goes into the room and is addressed to them.
+    goes into the room and is addressed to them. A child who gets there on
+    the bus or on foot is nobody's run, so the room is not told about it.
     """
 
     due = []
@@ -159,7 +162,7 @@ def rides_due_for_anyone(
         for leg, who_key, time_key in (("drop_off", "dropOffBy", "startTime"), ("pick_up", "pickUpBy", "endTime")):
             driver = normalize_text(activity.get(who_key))
             clock = household.normalize_time(activity.get(time_key))
-            if not driver or not clock:
+            if not driver or not clock or household.nobody_drives(driver):
                 continue
             hour, minute = (int(part) for part in clock.split(":"))
             moment = local_now.replace(hour=hour, minute=minute, second=0, microsecond=0)
@@ -176,7 +179,11 @@ def rides_due(
     lead_minutes: int,
 ) -> list[dict[str, Any]]:
     """The drives today the account holder is down for, whose leaving time
-    has come: within lead_minutes before it, and not yet past."""
+    has come: within lead_minutes before it, and not yet past.
+
+    Only theirs. A leg the partner, a grandparent or the bus takes is in the
+    morning plan and nowhere else: a reminder through the day about a drive
+    that is not theirs is noise, so it is never raised."""
 
     due = []
     for activity in activities_on(activities, local_now.date()):

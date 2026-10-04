@@ -39,6 +39,29 @@ MAX_TEXT_LENGTH = 240
 # Words a person uses for themselves when saying who drives. The assistant
 # is asked to write "me"; the others are here because people type.
 _SELF_WORDS = {"me", "myself", "i", "owner", "אני", "אני עצמי"}
+# Ways a child gets there without anyone driving them: the school bus, the
+# shuttle, their own two feet. Written in "who drives" so the morning can say
+# it and nobody is asked to cover it - but it is not a drive, so nobody is
+# told it is time to leave.
+_NOBODY_DRIVES_WORDS = {
+    "bus", "the bus", "school bus", "the school bus", "shuttle", "the shuttle", "hasaa", "train", "the train",
+    "walks", "walk", "walking", "on foot", "by foot", "bike", "bicycle", "by bike", "scooter",
+    "alone", "on their own", "by themselves", "themselves", "on his own", "by himself", "himself",
+    "on her own", "by herself", "herself", "independently",
+    "אוטובוס", "באוטובוס", "הסעה", "בהסעה", "רכבת", "ברכבת", "ברגל", "הולך", "הולכת", "הולך ברגל", "הולכת ברגל",
+    "לבד", "בעצמו", "בעצמה", "אופניים", "באופניים", "קורקינט", "בקורקינט",
+}
+_NOBODY_DRIVES_RE = re.compile(
+    r"\b(?:bus|shuttle|train|walks?|walking|foot|bike|bicycle|scooter|alone|themselves|himself|herself"
+    r"|independently)\b|(?:^|\s)(?:אוטובוס|באוטובוס|הסעה|בהסעה|רכבת|ברכבת|ברגל|לבד|בעצמו|בעצמה|אופניים|באופניים"
+    r"|קורקינט|בקורקינט)(?:\s|$)"
+)
+# A phrase may start with one of these capitalised ("Takes the bus home") and
+# still be nobody driving; any other capitalised word is somebody's name.
+_NOBODY_DRIVES_LEADING = {
+    "the", "a", "on", "by", "takes", "goes", "comes", "gets", "rides", "walks", "school", "home",
+    "bus", "shuttle", "train", "bike", "alone",
+}
 _TIME_RE = re.compile(r"^\s*(\d{1,2})(?:[:.](\d{2}))?\s*$")
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
@@ -94,13 +117,38 @@ def is_self(who: Any, owner_names: Iterable[str] = ()) -> bool:
     """Whether "who drives" names the account holder."""
 
     text = name_key(who)
-    if not text:
+    if not text or nobody_drives(text):
         return False
     if text in _SELF_WORDS:
         return True
     names = {name_key(name) for name in owner_names if name_key(name)}
     firsts = {name.split(" ")[0] for name in names}
     return text in names or text in firsts
+
+
+def nobody_drives(who: Any) -> bool:
+    """Whether "who drives" says the child gets there with nobody driving:
+    the bus, the shuttle, on foot, on their own.
+
+    Written down it is not a gap - the morning says "collects: the bus" and
+    nobody is asked to cover it - and it is not anyone's drive either, so no
+    one is told it is time to leave. An empty value is a gap, not this.
+    """
+
+    text = name_key(who)
+    if not text:
+        return False
+    if text in _NOBODY_DRIVES_WORDS:
+        return True
+    # A phrase around one of the words - "takes the bus home", "walks back",
+    # "הולכת לבד הביתה" - is still nobody driving. A name next to one of them
+    # ("Dana, by bus") is still a person.
+    if not _NOBODY_DRIVES_RE.search(text):
+        return False
+    words = clean(who, MAX_NAME_LENGTH).replace(",", " ").split()
+    if any(word[:1].isupper() for word in words[1:]):
+        return False
+    return not words[0][:1].isupper() or words[0].casefold() in _NOBODY_DRIVES_LEADING
 
 
 _BIRTHDAY_RE = re.compile(r"^\s*(?:(\d{4})-)?(\d{1,2})-(\d{1,2})\s*$")
@@ -473,6 +521,7 @@ __all__ = [
     "describe_household",
     "in_ask_order",
     "is_self",
+    "nobody_drives",
     "name_key",
     "next_birthday",
     "normalize_birthday",

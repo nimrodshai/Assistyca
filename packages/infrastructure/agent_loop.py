@@ -3533,7 +3533,9 @@ TOOLS: list[ToolSpec] = [
             "change one. title is what it is, in the person's words. who is the family members it is for, by "
             "name. days is the weekdays it runs. start_time and end_time are HH:MM. place is where. "
             "drop_off_by and pick_up_by are who takes them and who collects them: 'me' when it is the person "
-            "themselves, the name as they say it otherwise, an empty string when nobody is down for it yet. "
+            "themselves, the name as they say it otherwise, 'the bus' / 'walks' / 'on their own' when the child "
+            "gets there with nobody driving (that is settled, not a gap), an empty string when nobody is down "
+            "for it yet. "
             "When changing one, pass null (or an empty array) for what stays as it is."
         ),
         parameters=_params({

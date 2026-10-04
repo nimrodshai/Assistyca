@@ -51,6 +51,21 @@ class RulesTests(unittest.TestCase):
         monday = SUNDAY.replace(day=21)
         self.assertEqual(rides_due([self.football], owner_names=[], local_now=at(monday, 16, 40), lead_minutes=30), [])
 
+    def test_a_child_on_the_bus_is_in_the_plan_and_is_nobodys_drive(self) -> None:
+        # The big one comes home on the bus: the morning says so, nobody is
+        # asked to cover it, and through the day nothing is said about it -
+        # not to the owner, and not into a group either.
+        school = {
+            "id": 3, "title": "School", "who": ["Lotan"], "days": ["sun"], "startTime": "08:00", "endTime": "14:30",
+            "dropOffBy": "me", "pickUpBy": "the bus",
+        }
+        self.assertEqual(describe_activity_line(school, ["Dana"]), "08:00-14:30 School (Lotan), takes: you, collects: the bus")
+        self.assertEqual(gap_lines([school]), [])
+        self.assertEqual([r["leg"] for r in rides_due([school], owner_names=["Dana"], local_now=at(SUNDAY, 7, 40), lead_minutes=30)], ["drop_off"])
+        self.assertEqual(rides_due([school], owner_names=["Dana"], local_now=at(SUNDAY, 14, 10), lead_minutes=30), [])
+        self.assertEqual(rides_due([school], owner_names=["Bus"], local_now=at(SUNDAY, 14, 10), lead_minutes=30), [])
+        self.assertEqual(rides_due_for_anyone([school], local_now=at(SUNDAY, 14, 10), lead_minutes=30), [])
+
 
 class NudgerTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -66,6 +81,11 @@ class NudgerTests(unittest.TestCase):
         self.database.save_household_activity(
             user_id=self.user_id, title="Ballet", who=["Noa"], days=["mon"],
             start_time="16:30", end_time="17:30", drop_off_by="", pick_up_by="me",
+        )
+        # The big one goes by bus both ways.
+        self.database.save_household_activity(
+            user_id=self.user_id, title="Junior high", who=["Lotan"], days=["sun", "mon"],
+            start_time="08:00", end_time="14:30", drop_off_by="the bus", pick_up_by="the bus",
         )
         self.nudger = FamilyWeekNudger(self.database, config=FamilyWeekNudgeConfig(morning_hour=7, evening_hour=20, ride_lead_minutes=30))
 
@@ -88,6 +108,7 @@ class NudgerTests(unittest.TestCase):
         payload = action["payload"]
         self.assertEqual(action["actionType"], "run_task")
         self.assertIn("07:30-16:00 Kindergarten (Tom), takes: you, collects: Shirly", payload["instruction"])
+        self.assertIn("08:00-14:30 Junior high (Lotan), takes: the bus, collects: the bus", payload["instruction"])
         # The facts go once, as bullets: a second "nobody down for" block
         # came back as the same pickup said twice.
         self.assertIn("one bullet per thing", payload["instruction"])
@@ -115,6 +136,20 @@ class NudgerTests(unittest.TestCase):
         rides = [a for a in self.queued() if a["payload"]["title"] == "Time to leave soon"]
         self.assertEqual(len(rides), 2)
         self.assertIn("collect Noa - Ballet at 17:30", rides[-1]["payload"]["instruction"])
+
+    def test_nothing_is_said_through_the_day_about_a_drive_that_is_not_theirs(self) -> None:
+        # Sunday: the morning plan lists everything, as it should, and Dana
+        # is told before taking Tom at 07:30. Then the bus takes Lotan at
+        # 08:00 and brings them home at 14:30, and Shirly collects Tom at
+        # 16:00 - none of it the owner's drive, so the rest of the day is quiet.
+        first = self.nudger.run_pending(now=at(SUNDAY, 7, 5))
+        self.assertEqual((first["morning"], first["rides"]), (1, 1))
+        for hour, minute in ((7, 35), (7, 50), (14, 5), (14, 20), (15, 35), (15, 50)):
+            self.assertEqual(self.nudger.run_pending(now=at(SUNDAY, hour, minute))["rides"], 0, f"{hour}:{minute}")
+        titles = sorted(a["payload"]["title"] for a in self.queued())
+        self.assertEqual(titles, ["Time to leave soon", "Today in your family's week"])
+        [ride] = [a for a in self.queued() if a["payload"]["title"] == "Time to leave soon"]
+        self.assertIn("take Tom - Kindergarten at 07:30", ride["payload"]["instruction"])
 
     def test_nothing_goes_when_the_family_week_is_switched_off(self) -> None:
         self.database.set_account_type_feature(account_type="family", feature_id="family_week", allowed=False)
@@ -226,6 +261,17 @@ class GroupNudgeTests(unittest.TestCase):
             })
         self.assertEqual(self.queued(), [])
         self.groups_on.start()
+
+    def test_a_child_who_comes_by_bus_is_not_announced_to_the_room(self) -> None:
+        self.database.save_household_activity(
+            user_id=self.user_id, group_id=self.GROUP, title="Swimming", who=["Noam"], days=["mon"],
+            start_time="18:00", end_time="19:00", drop_off_by="the bus", pick_up_by="Yonatan",
+        )
+        monday = SUNDAY.replace(day=21)
+        self.assertEqual(self.nudger.run_pending_for_groups(now=at(monday, 17, 40))["groupRides"], 0)
+        self.assertEqual(self.nudger.run_pending_for_groups(now=at(monday, 18, 40))["groupRides"], 1)
+        [action] = [a for a in self.queued() if a["payload"]["title"] == "Time to leave soon"]
+        self.assertIn("Yonatan collects Noam - Swimming at 19:00", action["payload"]["instruction"])
 
     def test_a_run_nobody_took_reminds_nobody(self) -> None:
         football = self.database.list_household_activities(user_id=self.user_id, group_id=self.GROUP)[0]
