@@ -386,6 +386,92 @@ class WhatsAppSignupTests(unittest.TestCase):
         self.assertEqual(status["completedToday"], 1)
         self.assertEqual(status["defaultTrialDays"], 2)
 
+    def _family_with_an_invitation(self, code: str = "ABC234", role: str = "partner", name: str = "Yoav") -> int:
+        self.database.register_user("dana@example.com", display_name="Dana Levi")
+        self.database.update_user_account_type("dana@example.com", account_type="family")
+        owner_id = int((self.database.get_user("dana@example.com") or {})["id"])
+        self.database.link_user_whatsapp_number(user_id=owner_id, wa_id="972500000001")
+        member = self.database.save_household_member(user_id=owner_id, name=name, role=role)
+        self.database.save_household_member(user_id=owner_id, name="Tom", role="child", age=4)
+        self.database.save_household_activity(
+            user_id=owner_id, title="Kindergarten", who=["Tom"], days=["sun", "mon"],
+            start_time="07:30", end_time="16:00", drop_off_by="me", pick_up_by=name,
+        )
+        self.database.save_household_profile(user_id=owner_id, getting_to_know="done")
+        self.database.create_household_invite(
+            user_id=owner_id, member_id=int(member["id"]), code=code,
+            expires_at=datetime.now(timezone.utc) + timedelta(days=14),
+        )
+        return owner_id
+
+    def test_an_invited_phone_joins_the_family_and_talks_in_its_own_thread(self) -> None:
+        owner_id = self._family_with_an_invitation()
+        turn = mock.patch(
+            "packages.infrastructure.portal_auth.server.call_openai_response",
+            return_value=SimpleNamespace(output_text=json.dumps({"outcome": "message", "reply": "Hi Yoav, you're in."})),
+        )
+        with turn as model:
+            result = self.post("Assistyca family ABC234", message_id="wamid.j1", name="Yoav")
+        actions = [entry["action"] for entry in result["results"]]
+        self.assertEqual(actions, ["member_joined", "agent_chat_reply"], result)
+        # No account was opened for the phone: it is Dana's account now, as Yoav.
+        self.assertIsNone(self.database.get_whatsapp_signup(NEW_PHONE))
+        self.assertEqual(self.database.get_user_id_for_whatsapp_number(NEW_PHONE), owner_id)
+        self.assertEqual(self.database.get_household_member_by_wa_id(NEW_PHONE, user_id=owner_id)["name"], "Yoav")
+        # The welcome is the assistant's own first turn with Yoav, told who is
+        # writing and that this is the first thing said on this phone.
+        context_text = json.dumps(model.call_args.kwargs["input"], ensure_ascii=False)
+        self.assertIn('\\"speaker\\"', context_text)
+        self.assertIn('\\"name\\":\\"Yoav\\"', context_text)
+        self.assertIn('\\"firstConversation\\":true', context_text)
+        self.assertIn('\\"accountHolder\\":\\"Dana Levi\\"', context_text)
+        self.assertEqual(self.replies()[-1], "Hi Yoav, you're in.")
+        # Yoav's conversation is his own, not Dana's.
+        yours = self.database.list_recent_whatsapp_agent_messages(user_id=owner_id, thread_id=f"phone:{NEW_PHONE}")
+        self.assertEqual([m["role"] for m in yours], ["user", "assistant"])
+        self.assertEqual(self.database.list_recent_whatsapp_agent_messages(user_id=owner_id), [])
+        # Dana is told, on her own phone, by a line the assistant writes.
+        [note] = [a for a in self.database.list_scheduled_actions_for_user(owner_id, limit=20) if a["payload"].get("title") == "Yoav joined"]
+        self.assertEqual((note["recipientRef"], note["channel"]), ("owner", "whatsapp"))
+        self.assertIn("Yoav (partner) has just joined", note["payload"]["instruction"])
+        self.assertEqual(note["payload"]["fallbackText"], "Yoav is in 👍")
+
+        # From here the phone is Yoav talking to the assistant, as himself.
+        with turn as model:
+            second = self.post("what's on today?", message_id="wamid.j2", name="Yoav")
+        self.assertEqual(second["results"][0]["action"], "agent_chat_reply")
+        context_text = json.dumps(model.call_args.kwargs["input"], ensure_ascii=False)
+        self.assertIn('\\"drivesAs\\":\\"Yoav\\"', context_text)
+        self.assertNotIn('\\"firstConversation\\":true', context_text)
+
+    def test_an_invitation_code_from_the_wrong_phone_joins_nothing(self) -> None:
+        owner_id = self._family_with_an_invitation(code="RNA333", role="other", name="Rina")
+        # Dana taps her own link: the link is for Rina to open.
+        result = self.post("Assistyca family RNA333", sender="972500000001", message_id="wamid.w1", name="Dana")
+        self.assertEqual(result["results"][0]["action"], "join_link_not_for_this_phone")
+        self.assertIn("for Rina to open", self.replies()[-1])
+        self.assertEqual(self.database.get_household_invite("RNA333")["status"], "live")
+        # Somebody with an account of their own cannot be moved into the family.
+        self.database.register_user("else@example.com")
+        self.database.link_user_whatsapp_number(user_id=int(self.database.get_user("else@example.com")["id"]), wa_id="972500000077")
+        result = self.post("Assistyca family RNA333", sender="972500000077", message_id="wamid.w2", name="Else")
+        self.assertEqual(result["results"][0]["action"], "join_link_not_for_this_phone")
+        self.assertIn("already has its own Assistyca account", self.replies()[-1])
+        # Rina joins; the spent code from yet another stranger is refused, and
+        # no account is opened for that stranger either.
+        with mock.patch(
+            "packages.infrastructure.portal_auth.server.call_openai_response",
+            return_value=SimpleNamespace(output_text=json.dumps({"outcome": "message", "reply": "Hi Rina."})),
+        ):
+            joined = self.post("Assistyca family RNA333", message_id="wamid.w3", name="Rina")
+        self.assertEqual(joined["results"][0]["action"], "member_joined")
+        self.assertEqual(joined["results"][0]["role"], "other")
+        self.assertEqual(self.database.get_household_member_by_wa_id(NEW_PHONE, user_id=owner_id)["name"], "Rina")
+        late = self.post("Assistyca family RNA333", sender="447700900999", message_id="wamid.w4", name="Late")
+        self.assertEqual((late["results"][0]["action"], late["results"][0]["reason"]), ("join_rejected", "already_claimed"))
+        self.assertIn("already been used", self.replies()[-1])
+        self.assertIsNone(self.database.get_whatsapp_signup("447700900999"))
+
 
 if __name__ == "__main__":
     unittest.main()

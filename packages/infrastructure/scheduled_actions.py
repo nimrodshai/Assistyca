@@ -21,6 +21,8 @@ from packages.infrastructure.schedule_exceptions import action_exception
 from packages.infrastructure.schedule_exceptions import held_until
 from packages.infrastructure.standing_tasks import STANDING_TASK_ACTION_TYPE
 from packages.infrastructure.standing_tasks import NothingNewToSend
+from packages.infrastructure import household
+from packages.infrastructure.family_week_nudges import owner_phone
 from packages.infrastructure.standing_tasks import is_standing_task
 from packages.infrastructure.standing_tasks import next_task_run_at
 
@@ -422,13 +424,31 @@ class ScheduledActionScheduler:
             return f"{message_text}\n\n(The list this was about is no longer there.)"
         return f"{message_text}\n\n{describe_list_for_message(record)}"
 
-    def _service_window_open(self, user_id: int, *, now: datetime | None = None) -> bool:
+    def _thread_for_phone(self, user_id: int, wa_id: str) -> str:
+        """The conversation a phone has on the account: a family member's own
+        thread when the phone joined the family, the owner's otherwise. The
+        plain-text window is the phone's, so it is read from that thread."""
+
+        finder = getattr(self.database, "get_household_member_by_wa_id", None)
+        if not callable(finder):
+            return ""
+        try:
+            member = finder(wa_id, user_id=user_id)
+        except Exception:  # noqa: BLE001 - a store that cannot say treats the phone as the owner's
+            return ""
+        return household.member_thread_id(wa_id) if member else ""
+
+    def _service_window_open(self, user_id: int, *, now: datetime | None = None, thread_id: str = "") -> bool:
         """True while Meta still takes plain text for this person: they wrote
-        to the Assistyca number less than a day ago."""
+        to the Assistyca number less than a day ago. thread_id is the
+        conversation of the phone being written to - a family member's own
+        when the message is for them, since the window is the phone's."""
 
         if user_id <= 0:
             return False
         try:
+            history = self.database.list_recent_whatsapp_agent_messages(user_id=user_id, limit=50, thread_id=thread_id)
+        except TypeError:
             history = self.database.list_recent_whatsapp_agent_messages(user_id=user_id, limit=50)
         except Exception:  # noqa: BLE001 - no history means no window, not no reminder
             return False
@@ -476,9 +496,9 @@ class ScheduledActionScheduler:
             recipient_ref = normalize_text((connection or {}).get("ownerWaId"))
             if not recipient_ref:
                 # No notification number from the older setup: the newest
-                # phone linked to the account is the one that reaches it.
-                linked = self.database.list_user_whatsapp_numbers(user_id=user_id)
-                recipient_ref = normalize_text(linked[0].get("waId")) if linked else ""
+                # phone linked to the account is the one that reaches it -
+                # the account holder's own, never a family member's.
+                recipient_ref = owner_phone(self.database, user_id)
             if not recipient_ref:
                 raise RuntimeError("No WhatsApp notification recipient is configured for this account.")
 
@@ -486,7 +506,7 @@ class ScheduledActionScheduler:
             raise RuntimeError("WhatsApp recipient is missing.")
 
         refusals: list[str] = []
-        if self._service_window_open(user_id):
+        if self._service_window_open(user_id, thread_id=self._thread_for_phone(user_id, recipient_ref)):
             try:
                 provider_message_id = send_whatsapp_notification(
                     recipient_wa_id=recipient_ref,

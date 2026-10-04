@@ -618,5 +618,269 @@ class WeekPageTests(unittest.TestCase):
             self.assertIn("assistyca_portal_session", exc.headers.get("Set-Cookie", ""))
 
 
+
+class FamilyOnTheirOwnPhonesTests(unittest.TestCase):
+    """The partner and the grandparents on the same account, from their own
+    phones: brought in by a link, told about the drives that are theirs, and
+    - unless they are a parent - never changing the week."""
+
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.path = Path(self.temp_dir.name) / "portal.db"
+        self.database = PortalDatabase(self.path)
+        self.database.register_user("parent@example.com", display_name="Dana Levi")
+        self.database.update_user_account_type("parent@example.com", account_type="family")
+        self.user_id = int((self.database.get_user("parent@example.com") or {})["id"])
+        self.yoav = self.database.save_household_member(user_id=self.user_id, name="Yoav", role="partner")
+        self.rina = self.database.save_household_member(user_id=self.user_id, name="Rina", role="other")
+        self.database.save_household_member(user_id=self.user_id, name="Tom", role="child", age=4)
+        self.database.save_household_activity(
+            user_id=self.user_id, title="Kindergarten", who=["Tom"], days=["sun"],
+            start_time="07:30", end_time="16:00", drop_off_by="me", pick_up_by="Yoav",
+        )
+
+    def tearDown(self) -> None:
+        self.temp_dir.cleanup()
+
+    def invite(self, member: dict, code: str, *, days: int = 14) -> dict:
+        from datetime import datetime, timedelta, timezone
+
+        return self.database.create_household_invite(
+            user_id=self.user_id, member_id=int(member["id"]), code=code,
+            expires_at=datetime.now(timezone.utc) + timedelta(days=days),
+        )
+
+    def test_a_name_is_not_me_and_only_the_parents_change_the_week(self) -> None:
+        self.assertTrue(household.is_named("Yoav", ["Yoav Levi"]))
+        self.assertTrue(household.is_named("yoav levi", ["Yoav Levi"]))
+        self.assertFalse(household.is_named("me", ["Yoav"]), "'me' is the account holder, never a named member")
+        self.assertFalse(household.is_named("the bus", ["Bus"]))
+        self.assertTrue(household.can_change_week("owner"))
+        self.assertTrue(household.can_change_week("partner"))
+        self.assertFalse(household.can_change_week("other"))
+        self.assertEqual(household.member_nudges("partner"), ("morning", "evening", "rides"))
+        self.assertEqual(household.member_nudges("other"), ("rides",))
+        self.assertEqual(household.member_thread_id("+972 50-000-0002"), "phone:972500000002")
+
+        partner = household.describe_speaker({"name": "Yoav", "role": "partner"}, owner_name="Dana Levi")
+        self.assertEqual(partner, {"name": "Yoav", "role": "partner", "isOwner": False, "canChangeWeek": True, "drivesAs": "Yoav", "accountHolder": "Dana Levi"})
+        self.assertFalse(household.describe_speaker({"name": "Rina", "role": "other"})["canChangeWeek"])
+        self.assertEqual(household.describe_speaker(None), {})
+
+        # The grown-ups not yet on the account, partner first; a child never.
+        members = self.database.list_household_members(user_id=self.user_id)
+        self.assertEqual([c["name"] for c in household.invite_candidates(members)], ["Yoav", "Rina"])
+        self.assertEqual(household.invite_candidates(members)[0]["theyGet"], ("morning", "evening", "rides"))
+        joined = [{**m, "waId": "972500000002"} if m["name"] == "Yoav" else m for m in members]
+        self.assertEqual([c["name"] for c in household.invite_candidates(joined)], ["Rina"])
+        block = household.describe_household(profile={"accountKind": "family"}, members=joined, activities=[], today=date(2026, 9, 20))
+        self.assertEqual([m.get("onWhatsApp") for m in block["members"]], [True, None, None])
+
+    def test_an_invitation_brings_a_phone_onto_the_account_as_that_person(self) -> None:
+        from datetime import datetime, timedelta, timezone
+
+        made = self.invite(self.yoav, "ABC234")
+        self.assertEqual((made["memberName"], made["role"]), ("Yoav", "partner"))
+        self.assertEqual(self.database.get_household_invite("abc234")["status"], "live")
+        with self.assertRaises(ValueError):
+            tom = next(m for m in self.database.list_household_members(user_id=self.user_id) if m["name"] == "Tom")
+            self.invite(tom, "TOM234")
+
+        joined = self.database.claim_household_invite(code="ABC234", wa_id="972500000002", label="Yoav")
+        self.assertTrue(joined["ok"], joined)
+        self.assertEqual(joined["member"]["waId"], "972500000002")
+        # The phone reaches this account, as this member, and the code is spent.
+        self.assertEqual(self.database.get_user_id_for_whatsapp_number("972500000002"), self.user_id)
+        self.assertEqual(self.database.get_household_member_by_wa_id("972500000002", user_id=self.user_id)["name"], "Yoav")
+        self.assertEqual(self.database.get_household_invite("ABC234")["status"], "claimed")
+        self.assertEqual(self.database.claim_household_invite(code="ABC234", wa_id="972500000003")["reason"], "already_claimed")
+        self.assertEqual(self.database.claim_household_invite(code="NOPE22", wa_id="972500000003")["reason"], "unknown_code")
+
+        # A phone that already has an account of its own is not moved.
+        self.database.register_user("other@example.com")
+        other_id = int((self.database.get_user("other@example.com") or {})["id"])
+        self.database.link_user_whatsapp_number(user_id=other_id, wa_id="972500000009")
+        self.invite(self.rina, "RINA22")
+        self.assertEqual(self.database.claim_household_invite(code="RINA22", wa_id="972500000009")["reason"], "number_taken")
+        # One live invitation per person: a fresh one retires the last.
+        stale = self.database.create_household_invite(
+            user_id=self.user_id, member_id=int(self.rina["id"]), code="RINA44",
+            expires_at=datetime.now(timezone.utc) - timedelta(minutes=1),
+        )
+        self.assertIsNone(self.database.get_household_invite("RINA22"))
+        self.assertEqual(self.database.get_household_invite(stale["code"])["status"], "expired")
+        self.assertEqual(self.database.claim_household_invite(code="RINA44", wa_id="972500000005")["reason"], "expired")
+        self.invite(self.rina, "RINA33")
+        self.assertIsNone(self.database.get_household_invite("RINA44"))
+        self.assertEqual(self.database.get_household_invite("RINA33")["status"], "live")
+        # The account holder's own phone is the one "the owner" means, however
+        # many family phones joined after it.
+        self.database.link_user_whatsapp_number(user_id=self.user_id, wa_id="972500000001")
+        self.assertEqual(self.database.get_owner_whatsapp_number(user_id=self.user_id), "972500000001")
+
+        # Each phone has a conversation of its own, with its own open question.
+        thread = household.member_thread_id("972500000002")
+        self.database.save_whatsapp_agent_pending(user_id=self.user_id, pending={"kind": "tool_confirmation"}, thread_id=thread)
+        self.assertIsNone(self.database.get_whatsapp_agent_pending(user_id=self.user_id))
+        self.assertEqual(self.database.get_whatsapp_agent_pending(user_id=self.user_id, thread_id=thread)["kind"], "tool_confirmation")
+        self.database.save_whatsapp_agent_active_proposal(user_id=self.user_id, proposal={"type": "x"}, thread_id=thread)
+        self.assertIsNone(self.database.get_whatsapp_agent_active_proposal(user_id=self.user_id))
+
+        # Signing the phone out keeps the person in the family and takes the
+        # phone, and its thread's state, off the account.
+        self.assertTrue(self.database.delete_user_whatsapp_number(user_id=self.user_id, wa_id="972500000002"))
+        self.assertEqual(self.database.get_user_id_for_whatsapp_number("972500000002"), 0)
+        self.assertEqual(next(m for m in self.database.list_household_members(user_id=self.user_id) if m["name"] == "Yoav")["waId"], "")
+        self.assertIsNone(self.database.get_whatsapp_agent_pending(user_id=self.user_id, thread_id=thread))
+
+        # Taking someone out of the family takes their phone off with them.
+        self.database.claim_household_invite(code="RINA33", wa_id="972500000005")
+        self.assertEqual(self.database.get_user_id_for_whatsapp_number("972500000005"), self.user_id)
+        self.assertTrue(self.database.remove_household_member(user_id=self.user_id, name="Rina"))
+        self.assertEqual(self.database.get_user_id_for_whatsapp_number("972500000005"), 0)
+        self.assertIsNone(self.database.get_household_invite("RINA33"))
+
+    def test_a_database_from_before_invitations_opens_and_catches_up(self) -> None:
+        with self.database._connection() as conn:
+            conn.execute("DROP TABLE household_invites")
+            conn.execute("DROP TABLE whatsapp_agent_thread_state")
+            conn.execute("ALTER TABLE household_members DROP COLUMN wa_id")
+            conn.execute("ALTER TABLE household_members DROP COLUMN wa_linked_at")
+        reopened = PortalDatabase(self.path)
+        with reopened._connection() as conn:
+            columns = {row["name"] for row in conn.execute("PRAGMA table_info(household_members)")}
+            tables = {row["name"] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+        self.assertIn("wa_id", columns)
+        self.assertIn("household_invites", tables)
+        self.assertIn("whatsapp_agent_thread_state", tables)
+        self.assertEqual(reopened.list_household_members(user_id=self.user_id)[0]["waId"], "")
+
+    def test_done_offers_the_partner_and_the_invitation_is_a_link_to_forward(self) -> None:
+        context = LoopContext(
+            api=lambda *a, **k: ({}, 200), database=self.database, email="parent@example.com",
+            user_id=self.user_id, timezone_name="Asia/Jerusalem", channel="whatsapp",
+            join_link=lambda code: f"https://assistyca.com/join/{code}",
+        )
+        done = TOOLS_BY_NAME["set_getting_to_know"].run(context, {"status": "done", "ask_again_in_days": None})
+        self.assertEqual([c["name"] for c in done["inviteOffer"]], ["Yoav", "Rina"])
+
+        invited = TOOLS_BY_NAME["invite_family_member"].run(context, {"name": "yoav"})
+        self.assertTrue(invited["ok"], invited)
+        self.assertEqual((invited["forName"], invited["role"], invited["canChangeWeek"]), ("Yoav", "partner", True))
+        self.assertRegex(invited["link"], r"^https://assistyca\.com/join/[A-Z2-9]{6}$")
+        code = invited["link"].rsplit("/", 1)[1]
+        self.assertEqual(self.database.get_household_invite(code)["memberName"], "Yoav")
+        # The link stays written in the reply for forwarding: it is offered,
+        # so the guard keeps it, and it is not turned into a button.
+        self.assertIn(invited["link"], context.links_offered)
+        self.assertIn(invited["link"], context.links_in_text)
+
+        refused = TOOLS_BY_NAME["invite_family_member"].run(context, {"name": "Tom"})
+        self.assertEqual(refused["error"]["code"], "not_supported")
+        nobody = TOOLS_BY_NAME["invite_family_member"].run(context, {"name": "Noa"})
+        self.assertEqual((nobody["error"]["code"], nobody["error"]["known"]), ("not_found", ["Yoav", "Tom", "Rina"]))
+        self.database.claim_household_invite(code=code, wa_id="972500000002")
+        again = TOOLS_BY_NAME["invite_family_member"].run(context, {"name": "Yoav"})
+        self.assertEqual(again["error"]["code"], "not_supported")
+        self.assertEqual(TOOLS_BY_NAME["set_getting_to_know"].run(context, {"status": "done", "ask_again_in_days": None})["inviteOffer"][0]["name"], "Rina")
+        # Without a way to build the link, nothing is promised.
+        bare = LoopContext(api=lambda *a, **k: ({}, 200), database=self.database, email="parent@example.com", user_id=self.user_id)
+        self.assertEqual(TOOLS_BY_NAME["invite_family_member"].run(bare, {"name": "Rina"})["error"]["code"], "not_supported")
+
+    def test_a_grandparent_reads_the_week_and_a_partner_cannot_close_the_account(self) -> None:
+        from packages.infrastructure.agent_loop import FAMILY_GUEST_TOOLS
+        from packages.infrastructure.agent_loop import WEEK_CHANGE_TOOLS
+        from packages.infrastructure.agent_loop import tool_availability
+        from packages.infrastructure.agent_loop import tool_definitions
+
+        grandparent = household.describe_speaker({"name": "Rina", "role": "other"}, owner_name="Dana")
+        partner = household.describe_speaker({"name": "Yoav", "role": "partner"}, owner_name="Dana")
+        for name in WEEK_CHANGE_TOOLS | {"read_inbox", "search_receipts", "show_lists", "delete_account", "connect_link"}:
+            self.assertFalse(tool_availability(TOOLS_BY_NAME[name], {}, {}, speaker=grandparent).usable, name)
+        for name in FAMILY_GUEST_TOOLS:
+            self.assertTrue(tool_availability(TOOLS_BY_NAME[name], {}, {}, speaker=grandparent).usable, name)
+        self.assertEqual(tool_availability(TOOLS_BY_NAME["save_week_activity"], {}, {}, speaker=grandparent).code, "not_theirs")
+        # A parent has the week, and everything else on the account, but
+        # closing the account is for the person who opened it.
+        self.assertTrue(tool_availability(TOOLS_BY_NAME["save_week_activity"], {}, {}, speaker=partner).usable)
+        self.assertTrue(tool_availability(TOOLS_BY_NAME["invite_family_member"], {}, {}, speaker=partner).usable)
+        self.assertFalse(tool_availability(TOOLS_BY_NAME["delete_account"], {}, {}, speaker=partner).usable)
+        self.assertTrue(tool_availability(TOOLS_BY_NAME["delete_account"], {}, {}).usable)
+        shown = {tool["name"]: tool for tool in tool_definitions({}, {}, speaker=grandparent)}
+        self.assertIn("UNAVAILABLE RIGHT NOW", shown["save_week_activity"]["description"])
+        self.assertNotIn("UNAVAILABLE", shown["show_family_week"]["description"])
+
+        # The turn says who is writing, and how to read "me" and their name.
+        text = build_loop_context_text(
+            user_message="can you pick Tom up today?", conversation=[], timezone_name="Asia/Jerusalem", today="2026-09-20",
+            tool_context={}, facts=[], channel="whatsapp", speaker={**grandparent, "firstConversation": True, "theyGet": ["rides"]},
+        )
+        self.assertIn("CONTEXT.speaker says the person writing is not the account holder", text)
+        self.assertIn("'me' is always the account holder", text)
+        self.assertIn('"speaker":{"name":"Rina","role":"other","isOwner":false,"canChangeWeek":false,"drivesAs":"Rina","accountHolder":"Dana","firstConversation":true,"theyGet":["rides"]}', text)
+        self.assertNotIn("CONTEXT.speaker", build_loop_context_text(
+            user_message="hi", conversation=[], timezone_name="UTC", today="2026-09-20", tool_context={}, facts=[], channel="whatsapp",
+        ))
+
+
+class JoinPageTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.server = create_server(
+            "127.0.0.1", 0, Path(__file__).resolve().parents[1],
+            PortalConfig(db_path=Path(self.temp_dir.name) / "portal.db", session_secret="join-page-test-secret-0123456789abcdef"),
+        )
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+        self.base_url = f"http://127.0.0.1:{self.server.server_address[1]}"
+        self.database = self.server.database
+        self.database.register_user("parent@example.com", display_name="Dana Levi")
+        self.user_id = int((self.database.get_user("parent@example.com") or {})["id"])
+        self.yoav = self.database.save_household_member(user_id=self.user_id, name="Yoav", role="partner")
+
+    def tearDown(self) -> None:
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join(timeout=5)
+        self.temp_dir.cleanup()
+
+    def open(self, path: str) -> tuple[int, dict, str]:
+        opener = urllib_request.build_opener(_NoRedirect)
+        try:
+            with opener.open(f"{self.base_url}{path}", timeout=10) as response:
+                return int(response.status), dict(response.headers), response.read().decode()
+        except urllib_error.HTTPError as exc:
+            return int(exc.code), dict(exc.headers), exc.read().decode()
+
+    def test_the_join_link_opens_whatsapp_with_the_code_and_dies_with_the_invitation(self) -> None:
+        from datetime import datetime, timedelta, timezone
+        from unittest import mock
+
+        self.database.create_household_invite(
+            user_id=self.user_id, member_id=int(self.yoav["id"]), code="ABC234",
+            expires_at=datetime.now(timezone.utc) + timedelta(days=14),
+        )
+        with mock.patch.dict("os.environ", {"ASSISTYCA_WHATSAPP_DISPLAY_NUMBER": "972559196101"}):
+            status, headers, _ = self.open("/join/abc234")
+            self.assertEqual(status, 302)
+            self.assertEqual(headers["Location"], "https://wa.me/972559196101?text=Assistyca%20family%20ABC234")
+            status, _, body = self.open("/join/ZZZ999")
+            self.assertEqual(status, 404)
+            self.assertIn("no longer valid", body)
+            self.database.claim_household_invite(code="ABC234", wa_id="972500000002")
+            status, _, body = self.open("/join/ABC234")
+            self.assertEqual(status, 410)
+            self.assertIn("no longer valid", body)
+        # Without the Assistyca number to open, the page says what to send.
+        self.database.create_household_invite(
+            user_id=self.user_id, member_id=int(self.yoav["id"]), code="DEF567",
+            expires_at=datetime.now(timezone.utc) + timedelta(days=14),
+        )
+        with mock.patch.dict("os.environ", {"ASSISTYCA_WHATSAPP_DISPLAY_NUMBER": ""}):
+            status, _, body = self.open("/join/DEF567")
+        self.assertEqual(status, 410)
+        self.assertIn("Assistyca family DEF567", body)
+
+
 if __name__ == "__main__":
     unittest.main()

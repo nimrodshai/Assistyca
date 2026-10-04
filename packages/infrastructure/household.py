@@ -25,6 +25,17 @@ from typing import Iterable
 
 ACCOUNT_KINDS = ("business", "family")
 MEMBER_ROLES = ("partner", "child", "other")
+# Who may change the week: the two parents, which is the account holder and
+# the partner. A grandparent who joined gets the pickups that are theirs and
+# can read the week, and that is all - the week is the parents' to set.
+WEEK_EDITOR_ROLES = ("owner", "partner")
+# An invitation to join the family's account stands this long. It is a link
+# the parent forwards and the other person opens when they get to it, so it
+# is given days, not the minutes a sign-in code gets.
+INVITE_TTL_DAYS = 14
+# The conversation a joined phone has with the assistant is its own thread,
+# kept apart from the account holder's under this key.
+MEMBER_THREAD_PREFIX = "phone:"
 # The week as it is lived where most of these families are: it starts on
 # Sunday. Stored as these codes, shown in the person's own words.
 WEEKDAY_CODES = ("sun", "mon", "tue", "wed", "thu", "fri", "sat")
@@ -126,6 +137,83 @@ def is_self(who: Any, owner_names: Iterable[str] = ()) -> bool:
     names = {name_key(name) for name in owner_names if name_key(name)}
     firsts = {name.split(" ")[0] for name in names}
     return text in names or text in firsts
+
+
+def is_named(who: Any, names: Iterable[str]) -> bool:
+    """Whether "who drives" is one of these people by name - the name as
+    given or its first word - and never by "me", which is the account
+    holder's word for themselves."""
+
+    text = name_key(who)
+    if not text or text in _SELF_WORDS or nobody_drives(text):
+        return False
+    known = {name_key(name) for name in names if name_key(name)}
+    firsts = {name.split(" ")[0] for name in known}
+    return text in known or text in firsts
+
+
+def can_change_week(role: Any) -> bool:
+    """Whether someone with this role may change the week. "owner" is the
+    account holder; anyone else is a member row's role."""
+
+    return clean(role).lower() in WEEK_EDITOR_ROLES
+
+
+def member_thread_id(wa_id: Any) -> str:
+    """The conversation key for a phone that joined the family."""
+
+    number = re.sub(r"\D+", "", str(wa_id or ""))
+    return f"{MEMBER_THREAD_PREFIX}{number}" if number else ""
+
+
+def describe_speaker(member: dict[str, Any] | None, *, owner_name: str = "") -> dict[str, Any]:
+    """Who is writing, as the assistant reads it when it is not the account
+    holder: their name and role, whether the week is theirs to change, and
+    what name the week knows them by - the drives written under that name
+    are theirs, while "me" in the week is always the account holder."""
+
+    if not member:
+        return {}
+    role = normalize_role(member.get("role"))
+    name = clean(member.get("name"), MAX_NAME_LENGTH)
+    speaker: dict[str, Any] = {
+        "name": name,
+        "role": role,
+        "isOwner": False,
+        "canChangeWeek": can_change_week(role),
+        "drivesAs": name,
+    }
+    if clean(owner_name):
+        speaker["accountHolder"] = clean(owner_name, MAX_NAME_LENGTH)
+    return speaker
+
+
+def invite_candidates(members: Iterable[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    """The grown-ups in the family who could be brought onto the account and
+    are not on it yet: the partner first, then anyone else who is not a
+    child. Each with what joining would give them, so the offer is exact."""
+
+    found = []
+    for member in members or ():
+        role = normalize_role(member.get("role"))
+        name = clean(member.get("name"), MAX_NAME_LENGTH)
+        if role == "child" or not name or member.get("waId") or member.get("onWhatsApp"):
+            continue
+        found.append({"name": name, "role": role, "theyGet": member_nudges(role)})
+    found.sort(key=lambda entry: 0 if entry["role"] == "partner" else 1)
+    return found
+
+
+def member_nudges(role: Any) -> tuple[str, ...]:
+    """What a joined phone is told about the week on its own: a parent gets
+    the whole of it - the morning plan, the evening before when tomorrow
+    still has nobody down for a pickup, and a word before each drive of
+    theirs; anyone else gets only the word before the drives that are
+    theirs."""
+
+    if normalize_role(role) == "partner":
+        return ("morning", "evening", "rides")
+    return ("rides",)
 
 
 def nobody_drives(who: Any) -> bool:
@@ -534,6 +622,7 @@ def describe_household(
                     "email": member.get("email") or None,
                     "phone": member.get("phone") or None,
                     "notes": member.get("notes") or None,
+                    "onWhatsApp": True if member.get("waId") else None,
                 }.items()
                 if value not in (None, "")
             }
@@ -594,6 +683,15 @@ def should_describe_household(profile: dict[str, Any] | None, members: list[Any]
 __all__ = [
     "ACCOUNT_KINDS",
     "GETTING_TO_KNOW_STATUSES",
+    "INVITE_TTL_DAYS",
+    "MEMBER_THREAD_PREFIX",
+    "WEEK_EDITOR_ROLES",
+    "can_change_week",
+    "describe_speaker",
+    "invite_candidates",
+    "is_named",
+    "member_nudges",
+    "member_thread_id",
     "MAX_ACTIVITIES",
     "MAX_MEMBERS",
     "MEMBER_ROLES",

@@ -124,16 +124,44 @@ def load_family_week_nudge_config() -> FamilyWeekNudgeConfig:
 # -- what is due, in code -----------------------------------------------------
 
 
+def owner_phone(database: Any, user_id: int) -> str:
+    """The account holder's own linked phone, never a family member's. A
+    store without the distinction (an older one, a test double) gives the
+    newest linked number, as before."""
+
+    finder = getattr(database, "get_owner_whatsapp_number", None)
+    if callable(finder):
+        try:
+            return normalize_text(finder(user_id=user_id))
+        except Exception:  # noqa: BLE001 - fall back to the plain list
+            pass
+    linked = database.list_user_whatsapp_numbers(user_id=user_id)
+    return normalize_text(linked[0].get("waId")) if linked else ""
+
+
 def activities_on(activities: list[dict[str, Any]], day: date) -> list[dict[str, Any]]:
     code = household.weekday_code(day)
     return [activity for activity in activities if code in (activity.get("days") or [])]
 
 
-def _who(activity: dict[str, Any], owner_names: list[str] | None = None) -> str:
-    return ", ".join(_ride_word(name, owner_names or []) for name in activity.get("who") or [])
+def _who(activity: dict[str, Any], owner_names: list[str] | None = None, viewer_names: list[str] | None = None) -> str:
+    return ", ".join(_ride_word(name, owner_names or [], viewer_names) for name in activity.get("who") or [])
 
 
-def _ride_word(value: Any, owner_names: list[str]) -> str:
+def _ride_word(value: Any, owner_names: list[str], viewer_names: list[str] | None = None) -> str:
+    """Who drives, as the reader sees it. Read by the account holder, "me"
+    and their own name are "you". Read by a family member on their own
+    phone (viewer_names), their name is "you" and the account holder's "me"
+    is the account holder's first name - never "you", which would hand them
+    a drive that is not theirs."""
+
+    if viewer_names is not None:
+        if household.is_named(value, viewer_names):
+            return "you"
+        if household.is_self(value, owner_names):
+            first = next((normalize_text(name).split(" ")[0] for name in owner_names if normalize_text(name)), "")
+            return first or normalize_text(value)
+        return normalize_text(value)
     return "you" if household.is_self(value, owner_names) else normalize_text(value)
 
 
@@ -141,10 +169,13 @@ def describe_activity_line(
     activity: dict[str, Any],
     owner_names: list[str],
     members: list[dict[str, Any]] | None = None,
+    viewer_names: list[str] | None = None,
 ) -> str:
     """One activity as a plain line: time, what, for whom, who takes and
     collects. A grown-up's own week - their work - is the line alone: nobody
-    takes them and nobody collects them, so neither is said to be missing."""
+    takes them and nobody collects them, so neither is said to be missing.
+    viewer_names is who is reading when it is a family member on their own
+    phone rather than the account holder: "you" is then them."""
 
     parts = []
     times = normalize_text(activity.get("startTime"))
@@ -152,12 +183,12 @@ def describe_activity_line(
         times = f"{times}-{activity['endTime']}"
     head = f"{times} {activity.get('title')}".strip()
     if _who(activity):
-        head += f" ({_who(activity, owner_names)})"
+        head += f" ({_who(activity, owner_names, viewer_names)})"
     parts.append(head)
     if members is not None and household.is_grown_up_activity(activity, members, owner_names):
         return head
-    takes = _ride_word(activity.get("dropOffBy"), owner_names)
-    collects = _ride_word(activity.get("pickUpBy"), owner_names)
+    takes = _ride_word(activity.get("dropOffBy"), owner_names, viewer_names)
+    collects = _ride_word(activity.get("pickUpBy"), owner_names, viewer_names)
     parts.append(f"takes: {takes}" if takes else "nobody takes them yet")
     parts.append(f"collects: {collects}" if collects else "nobody collects them yet")
     return ", ".join(parts)
@@ -293,20 +324,32 @@ def ride_clashes(
     return lines
 
 
+def _is_driver(owner_names: list[str], driver_names: list[str] | None) -> Callable[[Any], bool]:
+    """Whose drives are being looked for: the account holder's ("me" and
+    their own name) by default, or a family member's by their name when
+    driver_names is given - never "me", which is the account holder."""
+
+    if driver_names is not None:
+        return lambda who: household.is_named(who, driver_names)
+    return lambda who: household.is_self(who, owner_names)
+
+
 def _owner_rides_today(
     activities: list[dict[str, Any]],
     *,
     owner_names: list[str],
     local_now: datetime,
+    driver_names: list[str] | None = None,
 ) -> list[tuple[datetime, dict[str, Any]]]:
-    """Every leg today the account holder drives, with its moment, in time
-    order. Only theirs: a leg the partner, a grandparent or the bus takes is
-    in the morning plan and nowhere else."""
+    """Every leg today the account holder drives - or, with driver_names, a
+    family member - with its moment, in time order. Only theirs: a leg
+    somebody else or the bus takes is in the morning plan and nowhere else."""
 
+    is_driver = _is_driver(owner_names, driver_names)
     rides = []
     for activity in activities_on(activities, local_now.date()):
         for leg, who_key, time_key in (("drop_off", "dropOffBy", "startTime"), ("pick_up", "pickUpBy", "endTime")):
-            if not household.is_self(activity.get(who_key), owner_names):
+            if not is_driver(activity.get(who_key)):
                 continue
             clock = household.normalize_time(activity.get(time_key))
             if not clock:
@@ -345,15 +388,17 @@ def rides_leaving_together(
     local_now: datetime,
     lead_minutes: int,
     merge_minutes: int,
+    driver_names: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     """The owner's drives that go out as one word: those due now, and any
     other of theirs that follows within merge_minutes of the earliest of
     them. School at eight and kindergarten at eight, or at a quarter past,
     are one trip to plan - take both, drop one, then the other - so they are
     said once, in time order, not as two messages. A drive further off waits
-    for its own time."""
+    for its own time. driver_names makes them a family member's drives
+    rather than the account holder's."""
 
-    rides = _owner_rides_today(activities, owner_names=owner_names, local_now=local_now)
+    rides = _owner_rides_today(activities, owner_names=owner_names, local_now=local_now, driver_names=driver_names)
     due = [moment for moment, _ride in rides if moment - timedelta(minutes=lead_minutes) <= local_now < moment]
     if not due:
         return []
@@ -464,10 +509,7 @@ class FamilyWeekNudger:
             connection = self.database.get_whatsapp_connection_by_user_id(user_id) or {}
         except Exception:  # noqa: BLE001
             connection = {}
-        wa_id = normalize_text(connection.get("ownerWaId"))
-        if not wa_id:
-            linked = self.database.list_user_whatsapp_numbers(user_id=user_id)
-            wa_id = normalize_text(linked[0].get("waId")) if linked else ""
+        wa_id = normalize_text(connection.get("ownerWaId")) or owner_phone(self.database, user_id)
         inferred = infer_timezone_from_wa_id(wa_id) if wa_id else ""
         return inferred or "UTC"
 
@@ -479,12 +521,15 @@ class FamilyWeekNudger:
                 names.append(normalize_text(fact.get("fact")).removeprefix("Their name is ").rstrip("."))
         return [name for name in names if name]
 
-    def _queue(self, *, user_id: int, now: datetime, timezone_name: str, title: str, instruction: str, fallback: str, offer: str = "") -> None:
+    def _queue(
+        self, *, user_id: int, now: datetime, timezone_name: str, title: str, instruction: str, fallback: str,
+        offer: str = "", recipient_wa_id: str = "",
+    ) -> None:
+        """Queue one message for the account holder, or - with recipient_wa_id
+        - for a family member's own phone on the same account."""
+
         connection = self.database.get_whatsapp_connection_by_user_id(user_id) or {}
-        owner_wa_id = normalize_text(connection.get("ownerWaId"))
-        if not owner_wa_id:
-            linked = self.database.list_user_whatsapp_numbers(user_id=user_id)
-            owner_wa_id = normalize_text(linked[0].get("waId")) if linked else ""
+        owner_wa_id = normalize_text(connection.get("ownerWaId")) or owner_phone(self.database, user_id)
         payload: dict[str, Any] = {
             "title": title,
             "instruction": instruction,
@@ -494,11 +539,13 @@ class FamilyWeekNudger:
         }
         if offer:
             payload["offerInstruction"] = offer
+        if recipient_wa_id:
+            payload["recipientWaId"] = recipient_wa_id
         self.database.create_scheduled_action(
             user_id=user_id,
             action_type=STANDING_TASK_ACTION_TYPE,
-            channel="whatsapp" if owner_wa_id else "portal",
-            recipient_ref="owner",
+            channel="whatsapp" if (recipient_wa_id or owner_wa_id) else "portal",
+            recipient_ref=recipient_wa_id or "owner",
             run_at=now,
             timezone_name=timezone_name,
             payload=payload,
@@ -776,6 +823,12 @@ class FamilyWeekNudger:
                 )
                 counts["rides"] += 1
 
+            self._nudge_members(
+                user_id=user_id, members=members, activities=activities, exceptions=exceptions, todays=todays,
+                local_now=local_now, reference=reference, timezone_name=timezone_name, owner_names=owner_names,
+                claim=claim, counts=counts,
+            )
+
             if 10 <= local_now.hour < 19 and not week_paused:
                 for member in self.database.list_household_members(user_id=user_id):
                     upcoming = household.next_birthday(member.get("birthday"), today)
@@ -838,6 +891,100 @@ class FamilyWeekNudger:
                 self.database.save_household_profile(user_id=user_id, ask_again_on="")
                 counts["askedAgain"] += 1
         return {"ok": True, **counts}
+
+    def _nudge_members(
+        self, *, user_id: int, members: list[dict[str, Any]], activities: list[dict[str, Any]],
+        exceptions: list[dict[str, Any]], todays: list[dict[str, Any]], local_now: datetime, reference: datetime,
+        timezone_name: str, owner_names: list[str], claim: Callable[[str], bool], counts: dict[str, int],
+    ) -> None:
+        """The same week, on the phones of the family members who joined the
+        account. A parent gets the morning plan, the evening before and a
+        word before each drive of theirs; anyone else only the drives that
+        are theirs. Each goes to that phone and is claimed for that person,
+        so the account holder's message and theirs never stand in for one
+        another. 'you' in each is the person reading it."""
+
+        today = local_now.date()
+        tomorrow = today + timedelta(days=1)
+        in_morning = self.config.morning_hour <= local_now.hour < self.config.morning_hour + MORNING_WINDOW_HOURS
+        in_evening = self.config.evening_hour <= local_now.hour < self.config.evening_hour + EVENING_WINDOW_HOURS
+        for member in members:
+            wa_id = normalize_text(member.get("waId"))
+            if not wa_id:
+                continue
+            wants = household.member_nudges(member.get("role"))
+            names = [str(member.get("name") or "")]
+            first = names[0].split(" ")[0] if names[0] else "the person"
+            suffix = f":{member['id']}"
+            if "morning" in wants and todays and in_morning and claim(f"morning:{today.isoformat()}{suffix}"):
+                lines = [describe_activity_line(activity, owner_names, members, viewer_names=names) for activity in todays]
+                self._queue(
+                    user_id=user_id, now=reference, timezone_name=timezone_name, recipient_wa_id=wa_id,
+                    title="Today in your family's week",
+                    instruction=(
+                        f"It is the morning, and this message is for {first}, a parent in this family writing from "
+                        "their own phone. Write them one short WhatsApp message with what today holds for their "
+                        "family, in the language the family writes to you in: one bullet per thing, each a few "
+                        "words - its time, who it is for, where, who takes and who collects - and where nobody is "
+                        "down for a drop-off or pickup yet, say so in that bullet. Say each fact once: no opening "
+                        f"line, no sign-off, and no closing line that repeats the bullets. 'you' is {first}; a name "
+                        "is somebody else. The facts are exact; add none, and use no tool.\nTODAY:\n" + "\n".join(lines)
+                    ),
+                    fallback="Today:\n" + "\n".join(f"• {line}" for line in lines),
+                )
+                counts["morning"] += 1
+            if "evening" in wants and in_evening and gap_lines(activities_on(activities, tomorrow), members, owner_names):
+                tomorrow_on, _ = self._on_day(
+                    user_id=user_id, timezone_name=timezone_name, day=tomorrow, activities=activities, exceptions=exceptions,
+                )
+                gaps = gap_lines(tomorrow_on, members, owner_names)
+                if gaps and claim(f"evening:{tomorrow.isoformat()}{suffix}"):
+                    self._queue(
+                        user_id=user_id, now=reference, timezone_name=timezone_name, recipient_wa_id=wa_id,
+                        title="Tomorrow still needs someone",
+                        instruction=(
+                            f"It is the evening, and this message is for {first}, a parent in this family writing from "
+                            "their own phone. In one or two short sentences, in the language the family writes to you "
+                            "in, tell them what tomorrow still has nobody down for, so there is time to sort it out. "
+                            f"'you' is {first}. The facts are exact; add none, and use no tool.\nTOMORROW:\n" + "\n".join(gaps)
+                        ),
+                        fallback="Tomorrow still needs someone:\n" + "\n".join(f"• {line}" for line in gaps),
+                    )
+                    counts["evening"] += 1
+            if "rides" not in wants:
+                continue
+            together = rides_leaving_together(
+                todays, owner_names=owner_names, local_now=local_now, driver_names=names,
+                lead_minutes=self.config.ride_lead_minutes, merge_minutes=self.config.ride_merge_minutes,
+            )
+            facts = []
+            for ride in together:
+                activity = ride["activity"]
+                if not claim(f"ride:{today.isoformat()}:{activity['id']}:{ride['leg']}{suffix}"):
+                    continue
+                verb = "take" if ride["leg"] == "drop_off" else "collect"
+                who = _who(activity, owner_names, names) or "them"
+                place = normalize_text(activity.get("place"))
+                facts.append(f"{verb} {who} - {activity.get('title')} at {ride['at']}" + (f", {place}" if place else ""))
+            if not facts:
+                continue
+            self._queue(
+                user_id=user_id, now=reference, timezone_name=timezone_name, recipient_wa_id=wa_id,
+                title="Time to leave soon",
+                instruction=(
+                    f"This message is for {first}, who is in this family and is the one driving shortly. "
+                    + (
+                        "In one short sentence, in the language the family writes to you in, remind them what it is "
+                        "and when. The fact is exact; add nothing, and use no tool.\nDRIVE: " + facts[0]
+                        if len(facts) == 1 else
+                        "These runs of theirs fall close together, so they are one trip. In one or two short sentences, "
+                        "in the language the family writes to you in, remind them of all of them in time order as one "
+                        "plan. Say each once. The facts are exact; add nothing, and use no tool.\nDRIVES:\n" + "\n".join(facts)
+                    )
+                ),
+                fallback=f"Soon: {facts[0]}." if len(facts) == 1 else "Soon, one trip:\n" + "\n".join(f"• {fact}" for fact in facts),
+            )
+            counts["rides"] += 1
 
     def serve_forever(self, stop_event: threading.Event, *, log: Callable[[str], None] | None = None) -> None:
         logger = log or (lambda _message: None)

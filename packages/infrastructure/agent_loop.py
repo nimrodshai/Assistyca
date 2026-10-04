@@ -60,6 +60,7 @@ from packages.infrastructure.standing_tasks import normalize_task_schedule
 from packages.infrastructure.whatsapp_agent_chat import connection_display_name
 from packages.infrastructure.whatsapp_agent_chat import connections_for_disconnect
 from packages.infrastructure.whatsapp_agent_chat import describe_local_time
+from packages.infrastructure.whatsapp_agent_chat import generate_whatsapp_claim_code
 from packages.infrastructure.whatsapp_agent_chat import resolve_scheduled_message_run_at
 from packages.infrastructure.standing_news import describe_window
 from packages.infrastructure.standing_news import item_fingerprints
@@ -339,6 +340,18 @@ class LoopContext:
     # The news items this run found new, with the keys they are remembered
     # by. The scheduler writes them down only once the message is delivered.
     news_found: list[dict[str, Any]] = field(default_factory=list)
+    # Who is writing when it is not the account holder: a family member who
+    # joined the account from their own phone (household.describe_speaker).
+    # Empty for the account holder, on every channel. It decides which tools
+    # are theirs: a parent has the week to change, anyone else reads it.
+    speaker: dict[str, Any] = field(default_factory=dict)
+    # Builds the link a parent forwards to bring someone onto the account,
+    # from an invitation code. The server knows the public address.
+    join_link: Callable[[str], str] | None = None
+    # Offered links that stay written out in the reply instead of becoming a
+    # button: a link meant to be forwarded to somebody else is no use as a
+    # button the person taps themselves.
+    links_in_text: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -2199,7 +2212,68 @@ def _tool_set_getting_to_know(context: LoopContext, args: dict[str, Any]) -> dic
         link = _week_page_link(context)
         if link:
             data["weekPage"] = link
+        # The week is in, so the other grown-ups can have it too: the offer
+        # to bring them onto the account goes out with the finished week.
+        candidates = _invite_candidates(context)
+        if candidates:
+            data["inviteOffer"] = candidates
     return _ok(data)
+
+
+def _invite_candidates(context: LoopContext) -> list[dict[str, Any]]:
+    try:
+        members = context.database.list_household_members(user_id=context.user_id, group_id=week_scope(context))
+    except Exception:  # noqa: BLE001 - no family to offer is an empty offer
+        return []
+    return household.invite_candidates(members)
+
+
+def _tool_invite_family_member(context: LoopContext, args: dict[str, Any]) -> dict[str, Any]:
+    """A link for one grown-up in the family to join the account from their
+    own phone - the partner, a grandparent - forwarded to them by the person
+    asking. It costs nothing more: the same account, the same week."""
+
+    name = str(args.get("name") or "").strip()
+    if not name:
+        return _error("choice_required", "Say who the invitation is for: a name from household.members.")
+    if context.in_group:
+        return _error("not_supported", "Invitations are made in the person's own chat, not in a group.")
+    if context.join_link is None:
+        return _error("not_supported", "Invitations cannot be made from here.")
+    key = household.name_key(name)
+    members = context.database.list_household_members(user_id=context.user_id)
+    member = next((entry for entry in members if household.name_key(entry.get("name")) == key), None)
+    if member is None:
+        return _error(
+            "not_found", f"Nobody called {name!r} is in the family yet. Save them with save_family_member first.",
+            known=[entry["name"] for entry in members],
+        )
+    if household.normalize_role(member.get("role")) == "child":
+        return _error("not_supported", f"{member['name']} is a child; children are not brought onto the account.")
+    if member.get("waId"):
+        return _error("not_supported", f"{member['name']} is already on the account from their own phone.")
+    try:
+        invite = context.database.create_household_invite(
+            user_id=context.user_id, member_id=int(member["id"]), code=generate_whatsapp_claim_code(),
+            expires_at=datetime.now(timezone.utc) + timedelta(days=household.INVITE_TTL_DAYS),
+        )
+        link = str(context.join_link(invite["code"]) or "").strip()
+    except Exception as exc:  # noqa: BLE001
+        return _error("internal", f"The invitation could not be made: {exc}", can_retry=True)
+    if not link:
+        return _error("internal", "The invitation could not be made just now.", can_retry=True)
+    _offer_link(context, link, f"Invite {member['name']}", in_text=True)
+    role = household.normalize_role(member.get("role"))
+    return _ok({
+        "forName": member["name"],
+        "role": role,
+        "link": link,
+        "expiresOn": str(invite.get("expiresAt") or "")[:10],
+        "forwardIt": "The link is for the person to forward; it opens WhatsApp on their side and they join by sending what it fills in.",
+        "theyGet": household.member_nudges(role),
+        "canChangeWeek": household.can_change_week(role),
+        "cost": "none - the same account",
+    })
 
 
 def _tool_set_connect_offer(context: LoopContext, args: dict[str, Any]) -> dict[str, Any]:
@@ -2304,14 +2378,18 @@ MAX_LIST_ITEMS_TO_MODEL = 150
 LIST_ACTIONS = ("add", "remove", "check", "uncheck", "set_due", "rename", "clear_done", "delete")
 
 
-def _offer_link(context: LoopContext, link: str, label: str) -> None:
-    """Remember a link the reply may carry, and what to call it on a button."""
+def _offer_link(context: LoopContext, link: str, label: str, *, in_text: bool = False) -> None:
+    """Remember a link the reply may carry, and what to call it on a button.
+    in_text keeps it in the words instead: a link to forward to somebody
+    else is not a button for the person reading."""
 
     if not link:
         return
     if link not in context.links_offered:
         context.links_offered.append(link)
     context.link_labels[link] = label
+    if in_text and link not in context.links_in_text:
+        context.links_in_text.append(link)
 
 
 def _list_link_label(record: dict[str, Any]) -> str:
@@ -3551,6 +3629,20 @@ TOOLS: list[ToolSpec] = [
         run=_tool_remove_family_member,
     ),
     ToolSpec(
+        name="invite_family_member",
+        description=(
+            "Make the link that brings a grown-up in the family - the partner, a grandparent - onto this "
+            "account from their own phone, at no extra cost and with nothing to set up: the week is already in. "
+            "name is theirs from household.members (not a child, and not someone marked onWhatsApp). Returns the "
+            "link for the person to forward to them; put it on its own line exactly as given. A partner gets the "
+            "whole week on their phone and can change it; anyone else is told before the pickups that are theirs "
+            "and cannot change the week."
+        ),
+        parameters=_params({"name": {"type": "string"}}),
+        side_effect=True,
+        run=_tool_invite_family_member,
+    ),
+    ToolSpec(
         name="save_week_activity",
         description=(
             "Keep something that happens every week in the family's week: kindergarten or school hours, a "
@@ -3641,7 +3733,8 @@ TOOLS: list[ToolSpec] = [
         description=(
             "Where getting to know the family stands: in_progress once it has started, postponed when the "
             "person says not now (ask_again_in_days is when to bring it up again, 2 unless they said), done "
-            "when the family and their week are in."
+            "when the family and their week are in. done returns inviteOffer when a grown-up in the family could "
+            "be brought onto the account from their own phone."
         ),
         parameters=_params({
             "status": {"type": "string", "enum": ["in_progress", "postponed", "done"]},
@@ -3694,6 +3787,35 @@ TOOLS_BY_NAME = {tool.name: tool for tool in TOOLS}
 # sign-in - is the person's right whether or not they pay.
 ACCOUNT_RIGHTS_TOOLS = frozenset({"delete_account", "sign_out", "disconnect"})
 
+# What changes the family's week, or who is in it. The two parents have
+# these; anyone else who joined the account - a grandparent - reads the week
+# and is reminded of the drives that are theirs, and that is all.
+WEEK_CHANGE_TOOLS = frozenset({
+    "save_family_member", "remove_family_member", "save_week_activity", "remove_week_activity",
+    "add_exception", "remove_exception", "set_getting_to_know", "start_birthday_list",
+    "invite_family_member",
+})
+# Everything someone who is not a parent can do on the account: read the
+# week, look things up on the public web, and take their own phone off.
+# Nothing else on the account - mail, receipts, lists, the calendar - is
+# theirs, and the people who put it there did not open it to them.
+FAMILY_GUEST_TOOLS = frozenset({"show_family_week", "search_web", "search_news", "exchange_rate", "look_up_property", "sign_out"})
+# Only the person who opened the account closes it: a partner on the same
+# account would be deleting the other parent's as well.
+OWNER_ONLY_TOOLS = frozenset({"delete_account"})
+
+GUEST_TOOL_WORDS = (
+    "not theirs. The person writing joined this family's account to be told about the drives that are "
+    "theirs and to see the week; the week is the parents' to change, and nothing else on the account - "
+    "mail, receipts, lists, the calendar - is open to them. Say so in one plain, warm line, naming the "
+    "parent who can make the change, and offer what you can: what is on, and when."
+)
+OWNER_ONLY_TOOL_WORDS = (
+    "not theirs. Only the person who opened the account can close it; this phone belongs to someone else in "
+    "the family. Say so in one plain line and offer sign_out, which takes this phone off the account and "
+    "nothing more."
+)
+
 _SOURCE_WORDS = {
     "mailbox": "no mailbox is connected",
     "calendar": "the calendar is not connected",
@@ -3730,6 +3852,7 @@ def tool_availability(
     blocked: dict[str, str] | None = None,
     *,
     in_group: bool = False,
+    speaker: dict[str, Any] | None = None,
 ) -> Availability:
     """Can this tool run for this account right now, and if not, why.
 
@@ -3740,6 +3863,10 @@ def tool_availability(
 
     if in_group and tool.name not in GROUP_TOOLS:
         return Availability("not_here", GROUP_TOOL_WORDS, "not in a group chat - nobody's account is open here.")
+    if speaker and not speaker.get("isOwner") and tool.name in OWNER_ONLY_TOOLS:
+        return Availability("not_theirs", OWNER_ONLY_TOOL_WORDS, "only the person who opened the account can do this.")
+    if speaker and not speaker.get("canChangeWeek") and tool.name not in FAMILY_GUEST_TOOLS:
+        return Availability("not_theirs", GUEST_TOOL_WORDS, "the week is the parents' to change, and the rest of the account is not open to them.")
     if tool.name in (blocked or {}):
         feature = blocked[tool.name]
         return Availability("not_included", _not_included_words(feature), f"{feature} is not included in this account.")
@@ -3761,12 +3888,13 @@ def tool_definitions(
     blocked: dict[str, str] | None = None,
     *,
     in_group: bool = False,
+    speaker: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """The tools as the model sees them: the callable ones in full, the rest
     named, explained and left without a schema."""
 
     return [
-        tool.definition(tool_availability(tool, tool_context, blocked, in_group=in_group))
+        tool.definition(tool_availability(tool, tool_context, blocked, in_group=in_group, speaker=speaker))
         for tool in TOOLS
     ]
 
@@ -4053,6 +4181,27 @@ _FAMILY = (
     "calendar - one offer, briefly, and do nothing until they say which."
 )
 
+_SPEAKER_RULES = (
+    "CONTEXT.speaker says the person writing is not the account holder: they are someone in the family who "
+    "joined this account from their own phone - speaker.name, in the role speaker.role; speaker.accountHolder "
+    "is who opened the account. Speak to them as themselves. The week is one week, shared by everyone on "
+    "the account, and in household.week 'me' is always the account holder, never the person writing: the "
+    "drives that are theirs are the ones written under their own name (speaker.drivesAs), so when they say "
+    "they will take or collect, put down their name and never 'me'. When speaker.canChangeWeek is true they "
+    "are a parent here, with the whole week to read and change. When it is false, the week is theirs to read "
+    "and to be reminded of - the drives under their name - and not to change: a change they ask for is one "
+    "for the parents, say so in one warm line naming them, and nothing else on the account (mail, receipts, "
+    "lists, the calendar) is open to them, so never read it for them and never offer it. Never offer them a "
+    "page link or a sign-in link. When speaker.firstConversation is true they have just come in through the "
+    "invitation and their message is the code it carried, nothing more: greet them by their name, say in a "
+    "line that they are on speaker.accountHolder's family account - nothing to pay and nothing to set up, the "
+    "week is already in - then say in plain words what you will do for them, from speaker.theyGet: 'morning' "
+    "is what each day holds, 'evening' is the evening before when tomorrow still has nobody down for a "
+    "pickup, 'rides' is a word before each drive of theirs; and that they can ask what is on any time. Two "
+    "or three short lines, no list of features, and name one or two of the children's things from the week "
+    "so they can see you hold it.\n"
+)
+
 _REPLY = (
     f"{ASSISTANT_VOICE}\n"
     "Write the reply like a capable assistant in a real chat: concise, specific, varied. Do not mirror the "
@@ -4170,6 +4319,7 @@ def build_loop_context_text(
     chat_flow: dict[str, Any] | None = None,
     group: dict[str, Any] | None = None,
     exceptions: list[dict[str, Any]] | None = None,
+    speaker: dict[str, Any] | None = None,
 ) -> str:
     normalized_channel = "whatsapp" if str(channel or "").lower() == "whatsapp" else "portal"
     safe_context = {k: v for k, v in (tool_context or {}).items() if k != "connectLinks"}
@@ -4207,9 +4357,12 @@ def build_loop_context_text(
         context["chatFlow"] = chat_flow
     if group:
         context["group"] = group
+    if speaker:
+        context["speaker"] = speaker
     return (
         f"{_CHANNEL_RULES[normalized_channel]}\n"
         + (_GROUP_RULES if group else "")
+        + (_SPEAKER_RULES if speaker else "")
         + (_PHOTO_RULES if attached_photo else "")
         + (_TRIAL_ENDED_RULES if trial_ended else "")
         + ("" if trial_ended else chat_flow_rules(chat_flow))
@@ -4254,7 +4407,7 @@ def run_agent_loop(
         # model's only job is to report what happened.
         confirmed_action = _execute_confirmed(context, confirmed_call, tool_calls, completed)
 
-    tools = tool_definitions(context.tool_context, context.blocked_tools, in_group=context.in_group)
+    tools = tool_definitions(context.tool_context, context.blocked_tools, in_group=context.in_group, speaker=context.speaker)
     if trial_ended:
         tools = [definition for definition in tools if definition["name"] in ACCOUNT_RIGHTS_TOOLS]
     # The lists page is in the context from the start, not only inside a
@@ -4282,6 +4435,7 @@ def run_agent_loop(
         chat_flow=None if trial_ended else chat_flow,
         group=context.group if context.in_group else None,
         exceptions=None if trial_ended else exceptions_payload(context),
+        speaker=context.speaker or None,
     )
     input_items: list[dict[str, Any]] = build_agent_turn_input(context_text, photo) or [
         {"role": "user", "content": context_text},
@@ -4423,7 +4577,7 @@ def _execute(context: LoopContext, tool: ToolSpec, args: dict[str, Any], tool_ca
     # Checked here and nowhere else on the way in: a tool switched off after
     # the question was asked is refused although the yes arrived, and every
     # call the model makes - refused or run - is recorded and counted.
-    availability = tool_availability(tool, context.tool_context, context.blocked_tools, in_group=context.in_group)
+    availability = tool_availability(tool, context.tool_context, context.blocked_tools, in_group=context.in_group, speaker=context.speaker)
     if not availability.usable:
         if availability.source:
             context.blocked_on_connection = context.blocked_on_connection or availability.source
@@ -4469,7 +4623,7 @@ def _execute(context: LoopContext, tool: ToolSpec, args: dict[str, Any], tool_ca
 def _run_preflight(tool: ToolSpec, context: LoopContext, args: dict[str, Any]) -> dict[str, Any] | None:
     """The check before a question: only ask a yes for something that can happen."""
 
-    availability = tool_availability(tool, context.tool_context, context.blocked_tools, in_group=context.in_group)
+    availability = tool_availability(tool, context.tool_context, context.blocked_tools, in_group=context.in_group, speaker=context.speaker)
     if not availability.usable:
         return availability.refusal()
     if tool.preflight is None:
@@ -4565,7 +4719,7 @@ def _links_in_reply(reply: str, context: LoopContext) -> list[dict[str, str]]:
     seen: set[str] = set()
     for match in _URL_PATTERN.finditer(reply):
         bare = match.group(0).rstrip(".,;:!?")
-        if bare in context.links_offered and bare not in seen:
+        if bare in context.links_offered and bare not in seen and bare not in context.links_in_text:
             seen.add(bare)
             found.append({"url": bare, "label": context.link_labels.get(bare) or "Open"})
     return found

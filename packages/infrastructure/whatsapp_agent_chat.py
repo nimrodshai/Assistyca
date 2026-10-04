@@ -206,6 +206,21 @@ def build_whatsapp_claim_link(code: str) -> str:
     return f"https://wa.me/{number}?text={message}"
 
 
+# What a phone sends to join a family's account: the words a join link puts
+# in the message, with the invitation code after them.
+FAMILY_JOIN_WORDS = "Assistyca family"
+
+
+def build_whatsapp_join_link(code: str) -> str:
+    """A tap-to-open WhatsApp link that sends the family invitation code."""
+
+    number = resolve_assistyca_display_number()
+    normalized_code = normalize_text(code).upper()
+    if not number or not normalized_code:
+        return ""
+    return f"https://wa.me/{number}?text={urllib_parse.quote(f'{FAMILY_JOIN_WORDS} {normalized_code}')}"
+
+
 def send_assistyca_text(*, recipient_wa_id: str, text: str, api_version: str = DEFAULT_WHATSAPP_API_VERSION) -> str:
     """Send one plain message from the Assistyca number."""
 
@@ -1722,6 +1737,11 @@ class WhatsAppAgentChat:
         self.user_id = int(self.connection.get("userId") or 0)
         self.email = normalize_email(self.connection.get("email"))
         self.owner_wa_id = normalize_text(self.connection.get("ownerWaId"))
+        # Whose conversation this is on the account: empty for the account
+        # holder's own, and a family member's thread when the phone that
+        # wrote in is one that joined the family. Each thread keeps its own
+        # transcript and its own open question.
+        self.thread_id = normalize_text(self.connection.get("agentThreadId"))
         self.timezone_name = infer_timezone_from_wa_id(self.owner_wa_id)
         # The turn the server is recording for this message. A turn reply
         # carries its id; every later call for the same message - a lookup,
@@ -1849,7 +1869,7 @@ class WhatsAppAgentChat:
         else:
             fields = changes.get("fields") if isinstance(changes.get("fields"), dict) else {}
             proposal["fields"] = fields
-        self.database.save_whatsapp_agent_active_proposal(user_id=self.user_id, proposal=proposal)
+        self.database.save_whatsapp_agent_active_proposal(user_id=self.user_id, thread_id=self.thread_id, proposal=proposal)
 
     def _revise_proposal(self, turn: dict[str, Any], active_proposal: dict[str, Any]) -> None:
         changes = turn.get("changes") if isinstance(turn.get("changes"), dict) else {}
@@ -1866,7 +1886,7 @@ class WhatsAppAgentChat:
             new_fields = changes.get("fields") if isinstance(changes.get("fields"), dict) else {}
             fields.update(new_fields)
             proposal["fields"] = fields
-        self.database.save_whatsapp_agent_active_proposal(user_id=self.user_id, proposal=proposal)
+        self.database.save_whatsapp_agent_active_proposal(user_id=self.user_id, thread_id=self.thread_id, proposal=proposal)
 
     def _approve_proposal(self, turn: dict[str, Any], active_proposal: dict[str, Any]) -> str:
         proposal_type = normalize_text(active_proposal.get("type")).lower()
@@ -1906,7 +1926,7 @@ class WhatsAppAgentChat:
             },
         )
         if status == 200 and response.get("ok"):
-            self.database.save_whatsapp_agent_active_proposal(user_id=self.user_id, proposal=None)
+            self.database.save_whatsapp_agent_active_proposal(user_id=self.user_id, thread_id=self.thread_id, proposal=None)
             # The model wrote its reply before anything was scheduled, so it
             # can only promise. The time it is now set for is a fact code
             # holds, and saying it is what turns a promise into a confirmation.
@@ -1963,6 +1983,7 @@ class WhatsAppAgentChat:
         ticked = [normalize_text(cid) for cid in (selected or []) if normalize_text(cid) in shown_ids]
         self.database.save_whatsapp_agent_pending(
             user_id=self.user_id,
+            thread_id=self.thread_id,
             pending={
                 "kind": "calendar_choice",
                 "calendars": [
@@ -1997,7 +2018,7 @@ class WhatsAppAgentChat:
             if toggled:
                 cid = normalize_text(toggled[0].get("id"))
                 selected = [c for c in selected if c != cid] if cid in selected else selected + [cid]
-                self.database.save_whatsapp_agent_pending(user_id=self.user_id, pending={**pending, "selected": selected})
+                self.database.save_whatsapp_agent_pending(user_id=self.user_id, thread_id=self.thread_id, pending={**pending, "selected": selected})
                 if selected:
                     message_id = self._send_calendar_confirm(calendars, selected=selected, question=question)
                 else:
@@ -2024,7 +2045,7 @@ class WhatsAppAgentChat:
             return {"type": "owner", "action": "agent_chat_reply", "outcome": "calendar_choice_failed",
                     "reply_text": reply, "message_id": message_id}
 
-        self.database.save_whatsapp_agent_pending(user_id=self.user_id, pending=None)
+        self.database.save_whatsapp_agent_pending(user_id=self.user_id, thread_id=self.thread_id, pending=None)
         names = ", ".join(_calendar_row_label(entry)[0] for entry in chosen)
         acknowledged = f"Got it - I'll read {names}."
         resumed_question = normalize_text(pending.get("resumeQuestion"))
@@ -2065,6 +2086,7 @@ class WhatsAppAgentChat:
         question = f"Disconnect {_join_names(names)} from Assistyca?"
         self.database.save_whatsapp_agent_pending(
             user_id=self.user_id,
+            thread_id=self.thread_id,
             pending={
                 "kind": "disconnect",
                 "question": question,
@@ -2083,7 +2105,7 @@ class WhatsAppAgentChat:
     def _run_disconnect(self, pending: dict[str, Any]) -> dict[str, Any]:
         """The yes arrived: disconnect each held connection and say what happened."""
 
-        self.database.save_whatsapp_agent_pending(user_id=self.user_id, pending=None)
+        self.database.save_whatsapp_agent_pending(user_id=self.user_id, thread_id=self.thread_id, pending=None)
         ids = [normalize_text(cid) for cid in (pending.get("connectionIds") or []) if normalize_text(cid)]
         names = [normalize_text(name) for name in (pending.get("names") or [])]
         done: list[str] = []
@@ -2138,11 +2160,12 @@ class WhatsAppAgentChat:
         held = normalize_text(text)
         if not held:
             return
-        current = self.database.get_whatsapp_agent_pending(user_id=self.user_id) or {}
+        current = self.database.get_whatsapp_agent_pending(user_id=self.user_id, thread_id=self.thread_id) or {}
         if normalize_text(current.get("kind")) not in HELD_QUESTION_KINDS | {""}:
             return
         self.database.save_whatsapp_agent_pending(
             user_id=self.user_id,
+            thread_id=self.thread_id,
             pending={
                 "kind": "held_question",
                 "text": held[:500],
@@ -2154,7 +2177,7 @@ class WhatsAppAgentChat:
     def _resume_held_question(self, pending: dict[str, Any]) -> dict[str, Any]:
         """The yes arrived: answer the question that was waiting, as asked."""
 
-        self.database.save_whatsapp_agent_pending(user_id=self.user_id, pending=None)
+        self.database.save_whatsapp_agent_pending(user_id=self.user_id, thread_id=self.thread_id, pending=None)
         held = normalize_text(pending.get("text"))
         if not held:
             return self._reply_and_log(
@@ -2192,6 +2215,7 @@ class WhatsAppAgentChat:
             print(f"WhatsApp resume ask could not be written: {exc}", flush=True)
         self.database.save_whatsapp_agent_pending(
             user_id=self.user_id,
+            thread_id=self.thread_id,
             pending={
                 "kind": "resume_question",
                 "text": normalize_text(held)[:500],
@@ -2347,7 +2371,7 @@ class WhatsAppAgentChat:
         a turn runs again for the same message, so the transcript keeps it once.
         """
 
-        history = self.database.list_recent_whatsapp_agent_messages(user_id=self.user_id, limit=AGENT_CHAT_HISTORY_LIMIT)
+        history = self.database.list_recent_whatsapp_agent_messages(user_id=self.user_id, limit=AGENT_CHAT_HISTORY_LIMIT, thread_id=self.thread_id)
         conversation = [{"role": item["role"], "text": item["text"]} for item in history]
         if record_user:
             self._note_message(role="user", text=transcript_text(text, photo, voice=voice))
@@ -2391,13 +2415,13 @@ class WhatsAppAgentChat:
                     # The stored call is still what runs - never a fresh
                     # decision - and the model's reply to the question is
                     # not shown: the turn that runs the call reports it.
-                    held = self.database.get_whatsapp_agent_pending(user_id=self.user_id)
+                    held = self.database.get_whatsapp_agent_pending(user_id=self.user_id, thread_id=self.thread_id)
                     if held and held.get("kind") == "resume_question":
                         if answer == "yes":
                             return self._resume_held_question(held)
-                        self.database.save_whatsapp_agent_pending(user_id=self.user_id, pending=None)
+                        self.database.save_whatsapp_agent_pending(user_id=self.user_id, thread_id=self.thread_id, pending=None)
                     if held and held.get("kind") == "tool_confirmation":
-                        self.database.save_whatsapp_agent_pending(user_id=self.user_id, pending=None)
+                        self.database.save_whatsapp_agent_pending(user_id=self.user_id, thread_id=self.thread_id, pending=None)
                         return self._loop_turn(
                             text,
                             source_message_id=source_message_id,
@@ -2416,6 +2440,7 @@ class WhatsAppAgentChat:
                     outcome = "confirmation_asked"
                     self.database.save_whatsapp_agent_pending(
                         user_id=self.user_id,
+                        thread_id=self.thread_id,
                         pending={
                             "kind": "tool_confirmation",
                             "approvalId": approval_id,
@@ -2636,7 +2661,7 @@ class WhatsAppAgentChat:
         person over it would cost the conversation."""
 
         try:
-            self.database.save_whatsapp_agent_message(user_id=self.user_id, role=role, text=text)
+            self.database.save_whatsapp_agent_message(user_id=self.user_id, role=role, text=text, thread_id=self.thread_id)
         except Exception as exc:  # noqa: BLE001 - bookkeeping never outranks the reply
             print(f"WhatsApp transcript line could not be saved (role={role}): {exc}", flush=True)
 
@@ -2932,13 +2957,13 @@ class WhatsAppAgentChat:
         # A question the conversation is waiting on - which calendars to read -
         # is answered before anything else, by a tap or by words, and then the
         # question that was interrupted is picked straight back up.
-        pending = self.database.get_whatsapp_agent_pending(user_id=self.user_id)
+        pending = self.database.get_whatsapp_agent_pending(user_id=self.user_id, thread_id=self.thread_id)
         if pending and not _pending_is_fresh(pending):
             print(
                 f"WhatsApp pending {normalize_text(pending.get('kind'))} question expired for user {self.user_id}",
                 flush=True,
             )
-            self.database.save_whatsapp_agent_pending(user_id=self.user_id, pending=None)
+            self.database.save_whatsapp_agent_pending(user_id=self.user_id, thread_id=self.thread_id, pending=None)
             pending = None
         pending_choice = pending if pending and pending.get("kind") == "calendar_choice" else None
         pending_disconnect = pending if pending and pending.get("kind") == "disconnect" else None
@@ -2948,7 +2973,7 @@ class WhatsAppAgentChat:
         if pending_call and not interactive_id and whatsapp_agent_loop_enabled():
             answer = parse_yes_no(text)
             if answer in {"yes", "no"}:
-                self.database.save_whatsapp_agent_pending(user_id=self.user_id, pending=None)
+                self.database.save_whatsapp_agent_pending(user_id=self.user_id, thread_id=self.thread_id, pending=None)
                 return self._loop_turn(
                     text,
                     source_message_id=source_message_id,
@@ -2965,7 +2990,7 @@ class WhatsAppAgentChat:
             if answer == "yes":
                 return self._resume_held_question(pending_resume)
             if answer == "no":
-                self.database.save_whatsapp_agent_pending(user_id=self.user_id, pending=None)
+                self.database.save_whatsapp_agent_pending(user_id=self.user_id, thread_id=self.thread_id, pending=None)
                 return self._reply_and_log(
                     "Okay - I've let that one go. Ask me whenever you want it.",
                     outcome="resume_question_declined",
@@ -2977,7 +3002,7 @@ class WhatsAppAgentChat:
             if answer == "yes":
                 return self._run_disconnect(pending_disconnect)
             if answer == "no":
-                self.database.save_whatsapp_agent_pending(user_id=self.user_id, pending=None)
+                self.database.save_whatsapp_agent_pending(user_id=self.user_id, thread_id=self.thread_id, pending=None)
                 return self._reply_and_log("Okay - nothing changed. Everything stays connected.", outcome="disconnect_declined")
         if pending_choice and (
             interactive_id
@@ -3035,7 +3060,7 @@ class WhatsAppAgentChat:
         )
         conversation = [{"role": item["role"], "text": item["text"]} for item in history]
         self._note_message(role="user", text=transcript_text(text, photo, voice=voice_note))
-        active_proposal = self.database.get_whatsapp_agent_active_proposal(user_id=self.user_id)
+        active_proposal = self.database.get_whatsapp_agent_active_proposal(user_id=self.user_id, thread_id=self.thread_id)
 
         turn_payload: dict[str, Any] = {
             "userMessage": text,
@@ -3090,7 +3115,7 @@ class WhatsAppAgentChat:
             elif outcome == "approve_proposal" and active_proposal:
                 reply = self._approve_proposal(turn, active_proposal)
             elif outcome == "reject_proposal":
-                self.database.save_whatsapp_agent_active_proposal(user_id=self.user_id, proposal=None)
+                self.database.save_whatsapp_agent_active_proposal(user_id=self.user_id, thread_id=self.thread_id, proposal=None)
                 reply = normalize_text(turn.get("reply")) or "Okay, I dropped that plan."
             elif outcome == "disconnect_command":
                 targets = [t for t in (turn.get("disconnectTargets") or []) if isinstance(t, str)]
@@ -3098,7 +3123,7 @@ class WhatsAppAgentChat:
             elif outcome == "confirm" and pending_disconnect:
                 return self._run_disconnect(pending_disconnect)
             elif outcome == "decline" and pending_disconnect:
-                self.database.save_whatsapp_agent_pending(user_id=self.user_id, pending=None)
+                self.database.save_whatsapp_agent_pending(user_id=self.user_id, thread_id=self.thread_id, pending=None)
                 reply = normalize_text(turn.get("reply")) or "Okay - nothing changed. Everything stays connected."
             elif outcome == "calendar_choice" and pending_choice:
                 # The model read a pick the words parser could not. It hands back
