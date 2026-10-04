@@ -14,6 +14,8 @@ from packages.infrastructure.family_week_nudges import FamilyWeekNudgeConfig
 from packages.infrastructure.family_week_nudges import FamilyWeekNudger
 from packages.infrastructure.family_week_nudges import describe_activity_line
 from packages.infrastructure.family_week_nudges import gap_lines
+from packages.infrastructure.family_week_nudges import owner_is_driving
+from packages.infrastructure.family_week_nudges import ride_clashes
 from packages.infrastructure.family_week_nudges import rides_due
 from packages.infrastructure.family_week_nudges import rides_due_for_anyone
 from packages.infrastructure.family_week_nudges import rides_leaving_together
@@ -39,6 +41,48 @@ class RulesTests(unittest.TestCase):
         line = describe_activity_line(self.football, ["Dana Levi"])
         self.assertEqual(line, "17:00-18:00 Football (Tom), takes: you, nobody collects them yet")
         self.assertEqual(gap_lines([self.football]), ["Football (Tom) at 18:00: nobody is down for the pickup"])
+
+    def test_a_grown_ups_own_week_has_nobody_to_collect_them(self) -> None:
+        # The owner's work hours sit in the same week so the pickups can be
+        # told apart; the morning line says them plainly and never that
+        # nobody is collecting them.
+        members = [{"name": "Tom", "role": "child"}, {"name": "Yoav", "role": "partner"}]
+        work = {"id": 2, "title": "Work", "who": ["me"], "days": ["sun"], "startTime": "09:00", "endTime": "17:00", "dropOffBy": "", "pickUpBy": ""}
+        self.assertEqual(describe_activity_line(work, ["Dana Levi"], members), "09:00-17:00 Work (you)")
+        self.assertEqual(gap_lines([work, self.football], members, ["Dana Levi"]), ["Football (Tom) at 18:00: nobody is down for the pickup"])
+        # Without the family it cannot tell, and says what it always said.
+        self.assertEqual(gap_lines([work]), ["Work (you) at 17:00: nobody is down for the drop-off and the pickup"])
+        # Nobody drives a grown-up anywhere, so it is never a ride due.
+        self.assertEqual(rides_due([work], owner_names=["Dana"], local_now=at(SUNDAY, 8, 40), lead_minutes=30), [])
+
+    def test_a_drive_that_lands_in_a_meeting_is_a_clash(self) -> None:
+        # Everyone is named for Sunday, and Dana's own calendar has her in a
+        # meeting when she is down to take Tom. That is the evening's other
+        # question: not who is missing, but who can take it instead.
+        from zoneinfo import ZoneInfo
+
+        zone = ZoneInfo("UTC")
+        day = SUNDAY.date()
+        meeting = {"title": "Team meeting", "start": "2026-09-20T16:45:00+00:00", "end": "2026-09-20T17:30:00+00:00", "allDay": False}
+        self.assertEqual(
+            ride_clashes([self.football], owner_names=["Dana Levi"], day=day, zone=zone, events=[meeting], lead_minutes=30),
+            ["Football (Tom), the drop-off at 17:00: you are down for it, but your calendar has Team meeting 16:45-17:30"],
+        )
+        # Leaving takes the half hour before: a meeting that ends inside it still clashes.
+        early = {**meeting, "start": "2026-09-20T15:30:00+00:00", "end": "2026-09-20T16:40:00+00:00"}
+        self.assertEqual(len(ride_clashes([self.football], owner_names=["Dana"], day=day, zone=zone, events=[early], lead_minutes=30)), 1)
+        self.assertEqual(ride_clashes([self.football], owner_names=["Dana"], day=day, zone=zone, events=[early], lead_minutes=10), [])
+        # A birthday or a holiday is all day and takes nobody out of the car;
+        # a drive someone else does is not theirs to clash with; the pickup
+        # nobody has taken is a gap, not a clash.
+        birthday = {"title": "Grandma's birthday", "start": "2026-09-20T00:00:00+00:00", "end": "2026-09-21T00:00:00+00:00", "allDay": True}
+        self.assertEqual(ride_clashes([self.football], owner_names=["Dana"], day=day, zone=zone, events=[birthday], lead_minutes=30), [])
+        theirs = {**self.football, "dropOffBy": "Yoav"}
+        self.assertEqual(ride_clashes([theirs], owner_names=["Dana"], day=day, zone=zone, events=[meeting], lead_minutes=30), [])
+        self.assertFalse(owner_is_driving([theirs], ["Dana"]))
+        self.assertTrue(owner_is_driving([self.football], ["Dana"]))
+        # Another day's meeting is another day's problem.
+        self.assertEqual(ride_clashes([self.football], owner_names=["Dana"], day=day.replace(day=21), zone=zone, events=[meeting], lead_minutes=30), [])
 
     def test_a_drive_is_due_only_in_the_minutes_before_it(self) -> None:
         def due(hour: int, minute: int) -> list:
@@ -147,6 +191,78 @@ class NudgerTests(unittest.TestCase):
         self.assertEqual(summary["evening"], 1)
         [action] = self.queued()
         self.assertIn("Ballet (Noa) at 16:30: nobody is down for the drop-off", action["payload"]["instruction"])
+
+    def test_the_evening_before_holds_the_owners_drives_up_against_her_calendar(self) -> None:
+        # Monday: Dana collects Noa from ballet at 17:30, and her calendar has
+        # a meeting then. Sunday evening says so, in the same message as the
+        # drop-off nobody has taken, and the calendar is read once.
+        calls: list[tuple] = []
+
+        def reader(user_id: int, day, timezone_name: str) -> list[dict]:
+            calls.append((user_id, day, timezone_name))
+            return [{"title": "Team meeting", "start": "2026-09-21T17:00:00+00:00", "end": "2026-09-21T18:00:00+00:00", "allDay": False}]
+
+        nudger = FamilyWeekNudger(
+            self.database, config=FamilyWeekNudgeConfig(morning_hour=7, evening_hour=20, ride_lead_minutes=30),
+            calendar_reader=reader,
+        )
+        summary = nudger.run_pending(now=at(SUNDAY, 20, 15))
+        self.assertEqual(summary["evening"], 1)
+        self.assertEqual(calls, [(self.user_id, SUNDAY.date().replace(day=21), "UTC")])
+        [action] = self.queued()
+        instruction = action["payload"]["instruction"]
+        self.assertIn("Ballet (Noa) at 16:30: nobody is down for the drop-off", instruction)
+        self.assertIn("CLASHES WITH YOUR CALENDAR:\nBallet (Noa), the pickup at 17:30: you are down for it, but your calendar has Team meeting 17:00-18:00", instruction)
+        self.assertIn("ask who could take that drive instead", instruction)
+        self.assertIn("Tomorrow clashes with your calendar:\n• Ballet (Noa), the pickup at 17:30", action["payload"]["fallbackText"])
+        # The next poll neither reads the calendar again nor says it twice.
+        nudger.run_pending(now=at(SUNDAY, 20, 20))
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(len(self.queued()), 1)
+
+    def test_a_clash_alone_is_worth_an_evening_message(self) -> None:
+        # Every ride on Monday is taken, so without the calendar the evening
+        # would be quiet. The meeting is the only reason to write.
+        activities = self.database.list_household_activities(user_id=self.user_id)
+        ballet = next(activity for activity in activities if activity["title"] == "Ballet")
+        self.database.save_household_activity(user_id=self.user_id, activity_id=int(ballet["id"]), drop_off_by="Yoav")
+        reader = lambda user_id, day, timezone_name: [  # noqa: E731
+            {"title": "Dentist", "start": "2026-09-21T17:15:00+00:00", "end": "2026-09-21T17:45:00+00:00", "allDay": False},
+        ]
+        quiet = FamilyWeekNudger(self.database, config=FamilyWeekNudgeConfig(morning_hour=7, evening_hour=20, ride_lead_minutes=30))
+        self.assertEqual(quiet.run_pending(now=at(SUNDAY, 20, 15))["evening"], 0)
+        self.assertEqual(self.queued(), [])
+        nudger = FamilyWeekNudger(
+            self.database, config=FamilyWeekNudgeConfig(morning_hour=7, evening_hour=20, ride_lead_minutes=30),
+            calendar_reader=reader,
+        )
+        self.assertEqual(nudger.run_pending(now=at(SUNDAY, 20, 15))["evening"], 1)
+        [action] = self.queued()
+        self.assertNotIn("TOMORROW:", action["payload"]["instruction"])
+        self.assertIn("Dentist 17:15-17:45", action["payload"]["instruction"])
+        self.assertTrue(action["payload"]["fallbackText"].startswith("Tomorrow clashes with your calendar:"))
+
+    def test_the_calendar_is_not_read_when_the_owner_is_not_driving_and_never_holds_the_evening_up(self) -> None:
+        calls: list[tuple] = []
+
+        def reader(user_id: int, day, timezone_name: str) -> list[dict]:
+            calls.append((user_id, day))
+            raise RuntimeError("calendar down")
+
+        nudger = FamilyWeekNudger(
+            self.database, config=FamilyWeekNudgeConfig(morning_hour=7, evening_hour=20, ride_lead_minutes=30),
+            calendar_reader=reader,
+        )
+        # Monday evening, about Tuesday: nothing on, nobody driving, no read.
+        nudger.run_pending(now=at(SUNDAY.replace(day=21), 20, 15))
+        self.assertEqual(calls, [])
+        # Sunday evening, about Monday: the read fails, and the gap still goes.
+        summary = nudger.run_pending(now=at(SUNDAY, 20, 15))
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(summary["evening"], 1)
+        [action] = self.queued()
+        self.assertIn("nobody is down for the drop-off", action["payload"]["instruction"])
+        self.assertNotIn("CLASHES", action["payload"]["instruction"])
 
     def test_the_owner_is_told_before_their_own_drive(self) -> None:
         monday = SUNDAY.replace(day=21)

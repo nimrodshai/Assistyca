@@ -1835,6 +1835,24 @@ def week_scope(context: LoopContext) -> str:
     return str((context.group or {}).get("id") or "") if context.in_group else ""
 
 
+def _owner_names(context: LoopContext) -> list[str]:
+    """What the account holder is called, so a week saved under their own
+    name is read as theirs the way "me" is."""
+
+    try:
+        user = context.database.get_user_by_id(context.user_id) or {}
+    except Exception:  # noqa: BLE001
+        user = {}
+    names = [str(user.get("displayName") or user.get("display_name") or "").strip()]
+    try:
+        for fact in context.database.list_account_facts(user_id=context.user_id):
+            if fact.get("key") == "name":
+                names.append(str(fact.get("fact") or "").strip().removeprefix("Their name is ").rstrip("."))
+    except Exception:  # noqa: BLE001
+        pass
+    return [name for name in names if name]
+
+
 def _household_payload(context: LoopContext) -> dict[str, Any]:
     database = context.database
     scope = week_scope(context)
@@ -1844,6 +1862,8 @@ def _household_payload(context: LoopContext) -> dict[str, Any]:
         activities=database.list_household_activities(user_id=context.user_id, group_id=scope),
         today=_household_today(context),
         group_name=str((context.group or {}).get("name") or "this group") if scope else "",
+        calendar_connected="calendar" in connected_sources(context.tool_context),
+        owner_names=[] if scope else _owner_names(context),
     )
 
 
@@ -1973,7 +1993,12 @@ def _tool_save_week_activity(context: LoopContext, args: dict[str, Any]) -> dict
         key: activity.get(key)
         for key in ("id", "title", "who", "days", "startTime", "endTime", "place", "dropOffBy", "pickUpBy", "notes")
     }
-    saved["nobodyDownFor"] = household.activity_gaps(activity)
+    scope = week_scope(context)
+    members = context.database.list_household_members(user_id=context.user_id, group_id=scope)
+    owners = [] if scope else _owner_names(context)
+    if household.is_grown_up_activity(activity, members, owners):
+        saved["grownUp"] = True
+    saved["nobodyDownFor"] = household.activity_gaps(activity, members, owners)
     return _ok({"saved": saved})
 
 
@@ -3536,6 +3561,9 @@ TOOLS: list[ToolSpec] = [
             "themselves, the name as they say it otherwise, 'the bus' / 'walks' / 'on their own' when the child "
             "gets there with nobody driving (that is settled, not a gap), an empty string when nobody is down "
             "for it yet. "
+            "A grown-up's own week goes here too - the person's work hours with who ['me'], or the partner's "
+            "under their name - with drop_off_by and pick_up_by left empty: nobody collects a grown-up, and it "
+            "is kept so you know when they cannot do a pickup. "
             "When changing one, pass null (or an empty array) for what stays as it is."
         ),
         parameters=_params({

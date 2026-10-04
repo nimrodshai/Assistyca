@@ -2,7 +2,9 @@
 
 A family account is about the people in it and the afternoons they share:
 who the partner is and how to reach them, the children and where they are
-each day, which activity is on which day and who drives to it. None of that
+each day, which activity is on which day and who drives to it - and the
+grown-ups' own weeks, their work above all, which say when they cannot be
+the one driving. None of that
 is a passing fact. It is kept in its own tables, apart from the short
 remembered facts that give way to newer ones, and it goes only when the
 person says so.
@@ -271,9 +273,79 @@ def current_age(age: Any, noted_on: Any, today: date, birthday: Any = "") -> int
     return years + max(0, passed)
 
 
-def activity_gaps(activity: dict[str, Any]) -> list[str]:
-    """What an activity still has nobody down for."""
+def grown_up_names(members: Iterable[dict[str, Any]] | None) -> set[str]:
+    """The name keys of everyone in the family who is not a child."""
 
+    return {
+        name_key(member.get("name"))
+        for member in members or ()
+        if name_key(member.get("name")) and normalize_role(member.get("role")) != "child"
+    }
+
+
+def is_grown_up_activity(
+    activity: dict[str, Any],
+    members: Iterable[dict[str, Any]] | None,
+    owner_names: Iterable[str] = (),
+) -> bool:
+    """Whether this is a grown-up's own week rather than a child's.
+
+    The person's work hours, the partner's shift, the evening class one of
+    them goes to: these are kept in the same week because they say when that
+    grown-up cannot do a pickup, but nobody takes a grown-up anywhere and
+    nobody collects them. An activity is theirs when everyone it is for is
+    the account holder ("me") or someone in the family who is not a child; a
+    name nobody knows is taken to be a child's, so the asking carries on.
+    """
+
+    who = [name for name in (activity.get("who") or ()) if name_key(name)]
+    if not who:
+        return False
+    adults = grown_up_names(members)
+    return all(is_self(name, owner_names) or name_key(name) in adults for name in who)
+
+
+def own_week_gaps(
+    members: Iterable[dict[str, Any]] | None,
+    activities: Iterable[dict[str, Any]] | None,
+    *,
+    calendar_connected: bool = False,
+    owner_names: Iterable[str] = (),
+) -> list[dict[str, Any]]:
+    """Whether the person has been asked about their own week yet.
+
+    Once the children are placed, the question that tells the pickups apart
+    is the parent's own: when they work, and the regular things of their
+    week, which is when they cannot be the one collecting. Nothing of it is
+    in the week until they put it there - or until their calendar is
+    connected, which holds the same answer and is offered as the other way
+    to give it. Like the afternoons, this is a question and never a hole: a
+    "no thanks" is a whole answer, so it never makes the week unready.
+    """
+
+    if calendar_connected:
+        return []
+    owners = list(owner_names)
+    for activity in activities or ():
+        if any(is_self(name, owners) for name in (activity.get("who") or ())):
+            return []
+    if not any(name_key(member.get("name")) for member in members or ()):
+        return []
+    return [{"missing": "own_week", "who": "me"}]
+
+
+def activity_gaps(
+    activity: dict[str, Any],
+    members: Iterable[dict[str, Any]] | None = None,
+    owner_names: Iterable[str] = (),
+) -> list[str]:
+    """What an activity still has nobody down for.
+
+    With the family given, a grown-up's own week has no gaps: nobody is
+    down to collect them, and nobody should be."""
+
+    if members is not None and is_grown_up_activity(activity, members, owner_names):
+        return []
     gaps = []
     if not clean(activity.get("dropOffBy")):
         gaps.append("drop_off")
@@ -287,9 +359,11 @@ def activity_gaps(activity: dict[str, Any]) -> list[str]:
 # has to be there. So a child nobody has told us anything about, an activity
 # with no day or no finishing time, and above all a pickup with nobody down
 # for it are each something still to ask about - in that order, because a
-# person answers the big thing before the small one. "afternoons" sits among
-# them without being one of them: see afternoon_gaps.
-WEEK_GAP_KINDS = ("people", "week", "days", "times", "afternoons", "drop_off", "pick_up")
+# person answers the big thing before the small one. "afternoons" and
+# "own_week" sit among them without being one of them: see afternoon_gaps
+# and own_week_gaps. The parent's own week comes last, once the children's
+# are in, because that is when the pickups it bears on are known.
+WEEK_GAP_KINDS = ("people", "week", "days", "times", "afternoons", "drop_off", "pick_up", "own_week")
 
 
 def _activity_time(activity: dict[str, Any], *keys: str) -> str:
@@ -336,9 +410,10 @@ def week_setup_gaps(
         if not _activity_time(activity, "end", "endTime"):
             gaps.append({"missing": "times", **where})
         for missing in activity_gaps({
+            "who": activity.get("who") or (),
             "dropOffBy": _activity_time(activity, "dropOffBy"),
             "pickUpBy": _activity_time(activity, "pickUpBy"),
-        }):
+        }, people):
             gaps.append({"missing": missing, **where})
 
     return in_ask_order(gaps)
@@ -414,6 +489,8 @@ def describe_household(
     today: date,
     group_name: str = "",
     calendar: list[dict[str, Any]] | None = None,
+    calendar_connected: bool = False,
+    owner_names: Iterable[str] = (),
 ) -> dict[str, Any]:
     """The family as the assistant reads it on every turn.
 
@@ -425,9 +502,15 @@ def describe_household(
     calendar is what the school calendar says about today or tomorrow where
     they live, for a day that is not an ordinary one: the week is the usual
     week, and this is what says a holiday has closed the school.
+
+    calendar_connected says their own calendar is in, which answers the
+    question of their own week without them typing it out. owner_names is
+    what the account holder is called, so a week saved under their name
+    rather than as "me" is still read as theirs.
     """
 
     profile = profile or {}
+    owners = [name for name in owner_names if clean(name)]
     described: dict[str, Any] = {} if group_name else {
         "accountKind": normalize_account_kind(profile.get("accountKind")),
         "gettingToKnow": {
@@ -470,7 +553,8 @@ def describe_household(
                     "dropOffBy": activity.get("dropOffBy") or None,
                     "pickUpBy": activity.get("pickUpBy") or None,
                     "notes": activity.get("notes") or None,
-                    "nobodyDownFor": activity_gaps(activity) or None,
+                    "grownUp": is_grown_up_activity(activity, members, owners) or None,
+                    "nobodyDownFor": activity_gaps(activity, members, owners) or None,
                 }.items()
                 if value not in (None, "", [])
             }
@@ -478,16 +562,21 @@ def describe_household(
         ],
     })
     gaps = week_setup_gaps(members, activities)
-    # weekReady is whether the week can be run, and the afternoons question
-    # does not bear on that: a family who says there is nothing after school
-    # has a whole week. It travels with the gaps only while they are still
-    # being got to know, so it is asked once and never becomes a nag - and
-    # never in a group, whose week is kept between adults who already know
-    # their own afternoons.
+    # weekReady is whether the week can be run, and neither the afternoons
+    # question nor the one about the parent's own week bears on that: a
+    # family who says there is nothing after school, or who would rather not
+    # put their work hours in, has a whole week. They travel with the gaps
+    # only while the family is still being got to know, so each is asked
+    # once and never becomes a nag - and never in a group, whose week is
+    # kept between adults who already know their own afternoons.
     described["weekReady"] = not gaps
     still_asking = not group_name and clean(profile.get("gettingToKnow")).lower() != "done"
     if still_asking:
-        gaps = in_ask_order(gaps + afternoon_gaps(members, activities))
+        gaps = in_ask_order(
+            gaps
+            + afternoon_gaps(members, activities)
+            + own_week_gaps(members, activities, calendar_connected=calendar_connected, owner_names=owners)
+        )
     if gaps:
         described["weekGaps"] = gaps
     if calendar:
@@ -519,7 +608,9 @@ __all__ = [
     "clean",
     "current_age",
     "describe_household",
+    "grown_up_names",
     "in_ask_order",
+    "is_grown_up_activity",
     "is_self",
     "nobody_drives",
     "name_key",
@@ -530,6 +621,7 @@ __all__ = [
     "normalize_email_address",
     "normalize_role",
     "normalize_time",
+    "own_week_gaps",
     "should_describe_household",
     "weekday_code",
     "week_is_ready",

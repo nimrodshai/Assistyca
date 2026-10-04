@@ -234,7 +234,9 @@ from packages.infrastructure.inbox_watch_polls import load_inbox_watch_config
 from packages.infrastructure.mailbox_finding_scans import FindingScanScheduler
 from packages.infrastructure.mailbox_finding_scans import account_timezone
 from packages.infrastructure.mailbox_finding_scans import load_finding_scan_config
+from packages.infrastructure.family_week_nudges import CALENDAR_DAY_ENDPOINT as FAMILY_CALENDAR_DAY_ENDPOINT
 from packages.infrastructure.family_week_nudges import FamilyWeekNudger
+from packages.infrastructure.family_week_nudges import LoopbackCalendarReader
 from packages.infrastructure.family_week_nudges import load_family_week_nudge_config
 from packages.infrastructure.school_days import SchoolCalendar
 from packages.infrastructure.school_days import normalize_day_status
@@ -4613,6 +4615,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             or path.startswith("/api/household/")
             or path == "/api/findings/scan"
             or path == "/api/inbox-watch/poll"
+            or path == FAMILY_CALENDAR_DAY_ENDPOINT
         ):
             try:
                 self._handle_api_post(parsed)
@@ -5023,6 +5026,9 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             return
         if path == "/api/inbox-watch/poll":
             self._handle_inbox_watch_poll_post()
+            return
+        if path == FAMILY_CALENDAR_DAY_ENDPOINT:
+            self._handle_family_week_calendar_day_post()
             return
         if path == "/api/scheduled-actions":
             self._handle_scheduled_actions_post()
@@ -10223,36 +10229,96 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             **stored,
         }
 
+    def _calendar_events_between(self, session: Any, *, start: datetime, end: datetime, label: str) -> list[dict[str, Any]]:
+        """What the person's chosen calendars hold between two moments, as
+        the calendar summary reads them: title, start, end, allDay. Nothing
+        connected is an empty list, not an error."""
+
+        vault = self.credential_vault
+        records = self.database.list_platform_connection_secret_records(
+            session.email, CALENDAR_PLATFORM, include_statuses=("connected",),
+        )
+        if vault is None or not records:
+            return []
+        secret = vault.decrypt(records[0].get("secretCiphertext") or "")
+        access_token, _ = self._resolve_calendar_access_token(secret)
+        selection = connection_calendar_selection(self._calendar_connection_record(session.email))
+        calendar_ids = [normalize_text(entry.get("id")) for entry in selection if normalize_text(entry.get("id"))][:5] or ["primary"]
+        date_range = CalendarDateRange(label=label, start=start, end=end)
+        events, _skipped = CalendarSummaryRunner().fetch_calendar_events(access_token, calendar_ids=calendar_ids, date_range=date_range)
+        return [event for event in events if isinstance(event, dict)]
+
     def _upcoming_calendar_events(self, session: Any, *, zone: ZoneInfo, days: int) -> list[dict[str, Any]]:
         """The next days of the person's chosen calendars as title and day,
         for telling an invitation already accepted from one still waiting.
         Best effort: a calendar that cannot be read reads as empty."""
 
         try:
-            vault = self.credential_vault
-            records = self.database.list_platform_connection_secret_records(
-                session.email, CALENDAR_PLATFORM, include_statuses=("connected",),
-            )
-            if vault is None or not records:
-                return []
-            secret = vault.decrypt(records[0].get("secretCiphertext") or "")
-            access_token, _ = self._resolve_calendar_access_token(secret)
-            selection = connection_calendar_selection(self._calendar_connection_record(session.email))
-            calendar_ids = [normalize_text(entry.get("id")) for entry in selection if normalize_text(entry.get("id"))][:5] or ["primary"]
             start = datetime.now(zone)
-            date_range = CalendarDateRange(label="inbox watch", start=start, end=start + timedelta(days=max(1, int(days))))
-            events, _skipped = CalendarSummaryRunner().fetch_calendar_events(access_token, calendar_ids=calendar_ids, date_range=date_range)
+            events = self._calendar_events_between(
+                session, start=start, end=start + timedelta(days=max(1, int(days))), label="inbox watch",
+            )
             return [
                 {
                     "title": normalize_text(event.get("title")),
                     "start": event["start"].isoformat() if isinstance(event.get("start"), datetime) else normalize_text(event.get("start")),
                 }
                 for event in events
-                if isinstance(event, dict)
             ]
         except Exception as exc:  # noqa: BLE001 - the calendar is a courtesy check, never a blocker
             print(f"Inbox watch could not read the calendar: {exc}", flush=True)
             return []
+
+    def _handle_family_week_calendar_day_post(self) -> None:
+        """One day of the account holder's own calendar, for the family week
+        nudger to hold tomorrow's drives up against. Run over loopback with
+        a short-lived session for the account, like the inbox watch poll.
+        A calendar that cannot be read is an empty day, said as such."""
+
+        authenticated = self._require_authenticated_user()
+        if authenticated is None:
+            return
+        session, user = authenticated
+        if not self._require_active_trial(user):
+            return
+        user_id = int(user.get("id") or 0)
+        if not account_feature_allowed(self.database, user_id=user_id, feature_id="family_week"):
+            json_response(self, HTTPStatus.FORBIDDEN, {"ok": False, "error": "feature_disabled", "message": "The family week is not available for this account."})
+            return
+        try:
+            payload = parse_json_body(self, max_bytes=MAX_JSON_BODY_BYTES)
+        except ValueError as exc:
+            json_response(self, HTTPStatus.BAD_REQUEST, {"ok": False, "error": "invalid_json", "message": str(exc)})
+            return
+        timezone_name = normalize_contact_single_line(payload.get("timezone"), 120) or "UTC"
+        try:
+            zone = ZoneInfo(timezone_name)
+        except (ZoneInfoNotFoundError, ValueError):
+            zone = ZoneInfo("UTC")
+        try:
+            day = date.fromisoformat(normalize_text(payload.get("day"))[:10])
+        except ValueError:
+            json_response(self, HTTPStatus.BAD_REQUEST, {"ok": False, "error": "invalid_day", "message": "day is YYYY-MM-DD."})
+            return
+        start = datetime.combine(day, datetime.min.time(), tzinfo=zone)
+        try:
+            events = self._calendar_events_between(session, start=start, end=start + timedelta(days=1), label="family week")
+        except Exception as exc:  # noqa: BLE001 - the calendar is a courtesy check, never a blocker
+            print(f"Family week could not read the calendar for user {user_id}: {exc}", flush=True)
+            events = []
+        json_response(self, HTTPStatus.OK, {
+            "ok": True,
+            "day": day.isoformat(),
+            "events": [
+                {
+                    "title": normalize_text(event.get("title")),
+                    "start": event["start"].isoformat() if isinstance(event.get("start"), datetime) else normalize_text(event.get("start")),
+                    "end": event["end"].isoformat() if isinstance(event.get("end"), datetime) else normalize_text(event.get("end")),
+                    "allDay": bool(event.get("allDay")),
+                }
+                for event in events
+            ],
+        })
 
     def _keep_search_receipts(self, session: Any, *, answers: list[dict[str, Any]]) -> dict[str, Any]:
         """Keep what a receipt search read, on the receipts page.
@@ -11416,7 +11482,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             if declined is not None:
                 declined_call = {"tool": declined["tool"], "arguments": declined["arguments"]}
         facts = self.database.list_account_facts(user_id=user_id) if user_id > 0 else []
-        household_block = self._household_block(user_id, timezone_name)
+        household_block = self._household_block(user_id, timezone_name, tool_context)
         account_type = self.database.get_account_type(user_id=user_id, email=session.email)
         chat_flow = self._chat_flow_block(
             user_id, account_type, tool_context, household_block, resolve_local_today(timezone_name),
@@ -11625,11 +11691,15 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             "newsFound": result.news_found,
         })
 
-    def _household_block(self, user_id: int, timezone_name: str) -> dict[str, Any] | None:
+    def _household_block(
+        self, user_id: int, timezone_name: str, tool_context: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
         """The family as the assistant reads it, for an account that has one.
 
         A family account always carries it, so getting to know them can begin
-        from an empty one; any other account once it keeps someone."""
+        from an empty one; any other account once it keeps someone.
+        tool_context says what is connected: a calendar already in answers
+        the question of the person's own week."""
 
         if user_id <= 0:
             return None
@@ -11645,6 +11715,8 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         return household.describe_household(
             profile=profile, members=members, activities=activities, today=self._household_today(timezone_name),
             calendar=self._school_calendar_days(timezone_name),
+            calendar_connected="calendar" in connected_sources(tool_context),
+            owner_names=[self._household_owner_name(user_id)],
         )
 
     def _group_week_block(self, user_id: int, timezone_name: str, group: dict[str, Any]) -> dict[str, Any] | None:
@@ -19159,6 +19231,11 @@ def main() -> int:
             server.database,  # type: ignore[attr-defined]
             config=family_nudge_config,
             school_calendar=SchoolCalendar(server.database) if family_nudge_config.school_calendar else None,  # type: ignore[attr-defined]
+            calendar_reader=LoopbackCalendarReader(
+                server.database,  # type: ignore[attr-defined]
+                base_url=f"http://127.0.0.1:{int(server.server_address[1])}",
+                session_token_factory=lambda email: mint_agent_session_token(server.store, email),  # type: ignore[attr-defined]
+            ),
         )
         family_nudge_thread = threading.Thread(
             target=family_nudger.serve_forever,

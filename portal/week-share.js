@@ -29,13 +29,14 @@
       const title = owner ? `${owner}'s family week` : "Our week";
       $("pageTitle").textContent = title;
       document.title = title;
-      const gaps = countGaps(activities);
+      const members = data.members || [];
+      const gaps = countGaps(activities, members, owner);
       $("gapsText").textContent = gaps === 1
         ? "One drop-off or pickup this week has nobody down for it yet."
         : `${gaps} drop-offs and pickups this week have nobody down for them yet.`;
       $("gapsCard").classList.toggle("is-hidden", gaps === 0);
       $("emptyWeek").classList.toggle("is-hidden", activities.length > 0);
-      renderDays($("days"), activities, { ownerName: owner, selfLabel: owner.split(" ")[0] || "Them", onOpen: null });
+      renderDays($("days"), activities, { ownerName: owner, selfLabel: owner.split(" ")[0] || "Them", onOpen: null, members });
       show("weekView");
       const today = document.getElementById(`day-${todayCode()}`);
       if (today && activities.length) {

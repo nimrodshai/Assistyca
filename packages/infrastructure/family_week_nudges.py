@@ -7,7 +7,10 @@ Three moments, each once, on the person's own clock:
   and nowhere else - the facts go to the model once, so they come back
   once;
 * the evening before: a drop-off or pickup tomorrow that still has nobody,
-  while there is time to sort it out;
+  while there is time to sort it out - and a drive the account holder is
+  down for that lands inside something already in their own calendar, which
+  is the other way tomorrow goes wrong: everyone is named, and one of them
+  is in a meeting;
 * the ride: shortly before the account holder is the one driving, a word
   that it is time to leave - and only then: a drive someone else does, or a
   child who comes home on the bus, is in the morning plan and is not
@@ -31,11 +34,15 @@ once, lightly, on the day they were told it would come back.
 
 from __future__ import annotations
 
+import json
 import os
 import threading
+import urllib.error as urllib_error
+import urllib.request as urllib_request
 from dataclasses import dataclass
 from datetime import date
 from datetime import datetime
+from datetime import time as dt_time
 from datetime import timedelta
 from datetime import timezone
 from typing import Any
@@ -68,6 +75,16 @@ EVENING_WINDOW_HOURS = 2
 # A birthday is raised a month ahead. One learned later is still raised
 # while there is a little time, but not in its last days.
 BIRTHDAY_EARLIEST_DAYS = 3
+# Where one day of the account holder's own calendar is read from, over the
+# server's own API, the way the inbox watch polls: a short-lived session for
+# that account, and every usual check applied by the handler.
+CALENDAR_DAY_ENDPOINT = "/api/family-week/calendar-day"
+CALENDAR_READ_TIMEOUT_SECONDS = 60
+
+# How a day of their calendar reaches the nudger: given the account, the day
+# and where they live, the timed entries of that day, each with a title and
+# a start and end. None means no calendar is read.
+CalendarDayReader = Callable[[int, date, str], list[dict[str, Any]]]
 
 
 @dataclass(frozen=True)
@@ -112,16 +129,22 @@ def activities_on(activities: list[dict[str, Any]], day: date) -> list[dict[str,
     return [activity for activity in activities if code in (activity.get("days") or [])]
 
 
-def _who(activity: dict[str, Any]) -> str:
-    return ", ".join(activity.get("who") or [])
+def _who(activity: dict[str, Any], owner_names: list[str] | None = None) -> str:
+    return ", ".join(_ride_word(name, owner_names or []) for name in activity.get("who") or [])
 
 
 def _ride_word(value: Any, owner_names: list[str]) -> str:
     return "you" if household.is_self(value, owner_names) else normalize_text(value)
 
 
-def describe_activity_line(activity: dict[str, Any], owner_names: list[str]) -> str:
-    """One activity as a plain line: time, what, for whom, who takes and collects."""
+def describe_activity_line(
+    activity: dict[str, Any],
+    owner_names: list[str],
+    members: list[dict[str, Any]] | None = None,
+) -> str:
+    """One activity as a plain line: time, what, for whom, who takes and
+    collects. A grown-up's own week - their work - is the line alone: nobody
+    takes them and nobody collects them, so neither is said to be missing."""
 
     parts = []
     times = normalize_text(activity.get("startTime"))
@@ -129,8 +152,10 @@ def describe_activity_line(activity: dict[str, Any], owner_names: list[str]) -> 
         times = f"{times}-{activity['endTime']}"
     head = f"{times} {activity.get('title')}".strip()
     if _who(activity):
-        head += f" ({_who(activity)})"
+        head += f" ({_who(activity, owner_names)})"
     parts.append(head)
+    if members is not None and household.is_grown_up_activity(activity, members, owner_names):
+        return head
     takes = _ride_word(activity.get("dropOffBy"), owner_names)
     collects = _ride_word(activity.get("pickUpBy"), owner_names)
     parts.append(f"takes: {takes}" if takes else "nobody takes them yet")
@@ -138,10 +163,14 @@ def describe_activity_line(activity: dict[str, Any], owner_names: list[str]) -> 
     return ", ".join(parts)
 
 
-def gap_lines(activities: list[dict[str, Any]]) -> list[str]:
+def gap_lines(
+    activities: list[dict[str, Any]],
+    members: list[dict[str, Any]] | None = None,
+    owner_names: list[str] | None = None,
+) -> list[str]:
     lines = []
     for activity in activities:
-        gaps = household.activity_gaps(activity)
+        gaps = household.activity_gaps(activity, members, owner_names or [])
         if not gaps:
             continue
         what = f"{activity.get('title')}" + (f" ({_who(activity)})" if _who(activity) else "")
@@ -176,6 +205,92 @@ def rides_due_for_anyone(
             if moment - timedelta(minutes=lead_minutes) <= local_now < moment:
                 due.append({"activity": activity, "leg": leg, "at": clock, "driver": driver})
     return due
+
+
+def owner_is_driving(activities: list[dict[str, Any]], owner_names: list[str]) -> bool:
+    """Whether the account holder is down for any drive among these, at a
+    time that is known - the only case their calendar is worth reading for."""
+
+    for activity in activities:
+        for who_key, time_key in (("dropOffBy", "startTime"), ("pickUpBy", "endTime")):
+            if household.is_self(activity.get(who_key), owner_names) and household.normalize_time(activity.get(time_key)):
+                return True
+    return False
+
+
+def _event_moment(value: Any, zone: ZoneInfo) -> datetime | None:
+    """An event's start or end as the reader handed it over - a datetime, or
+    the ISO text one becomes on the way through the API - in the person's zone."""
+
+    if isinstance(value, datetime):
+        moment = value
+    else:
+        text = normalize_text(value)
+        if not text:
+            return None
+        try:
+            moment = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=zone)
+    return moment.astimezone(zone)
+
+
+def ride_clashes(
+    activities: list[dict[str, Any]],
+    *,
+    owner_names: list[str],
+    day: date,
+    zone: ZoneInfo,
+    events: list[dict[str, Any]],
+    lead_minutes: int,
+) -> list[str]:
+    """The drives that day the account holder is down for which land inside
+    something in their own calendar.
+
+    A drive takes the time around its moment, not the moment alone: they have
+    to leave lead_minutes before and are on the road for a while after, so an
+    entry anywhere in that stretch is the clash. All-day entries are not: a
+    birthday or a holiday takes nobody out of the car. Each clash is one plain
+    line with the entry named, so the evening message can ask who else can
+    take it rather than letting the morning find out.
+    """
+
+    lead = timedelta(minutes=max(0, int(lead_minutes)))
+    timed = []
+    for event in events or ():
+        if not isinstance(event, dict) or event.get("allDay"):
+            continue
+        start = _event_moment(event.get("start"), zone)
+        if start is None:
+            continue
+        end = _event_moment(event.get("end"), zone) or start
+        if end <= start:
+            end = start + timedelta(minutes=1)
+        timed.append((start, end, normalize_text(event.get("title")) or "something in your calendar"))
+    if not timed:
+        return []
+    lines = []
+    for activity in activities_on(activities, day):
+        for leg, who_key, time_key in (("drop_off", "dropOffBy", "startTime"), ("pick_up", "pickUpBy", "endTime")):
+            if not household.is_self(activity.get(who_key), owner_names):
+                continue
+            clock = household.normalize_time(activity.get(time_key))
+            if not clock:
+                continue
+            hour, minute = (int(part) for part in clock.split(":"))
+            moment = datetime.combine(day, dt_time(hour=hour, minute=minute), tzinfo=zone)
+            window_start, window_end = moment - lead, moment + lead
+            for start, end, title in timed:
+                if start < window_end and end > window_start:
+                    what = f"{activity.get('title')}" + (f" ({_who(activity, owner_names)})" if _who(activity) else "")
+                    which = "the drop-off" if leg == "drop_off" else "the pickup"
+                    lines.append(
+                        f"{what}, {which} at {clock}: you are down for it, but your calendar has "
+                        f"{title} {start:%H:%M}-{end:%H:%M}"
+                    )
+    return lines
 
 
 def _owner_rides_today(
@@ -246,6 +361,47 @@ def rides_leaving_together(
     return [ride for moment, ride in rides if first <= moment <= first + timedelta(minutes=merge_minutes)]
 
 
+# -- the account holder's own calendar -----------------------------------------
+
+
+class LoopbackCalendarReader:
+    """One day of the account holder's own calendar, read through the server's
+    own API with a short-lived session for that account - the way the inbox
+    watch polls - so the handler applies every usual check and the nudger
+    never holds a credential. A calendar that cannot be read reads as empty:
+    the evening message is never held up by it."""
+
+    def __init__(self, database: Any, *, base_url: str, session_token_factory: Callable[[str], str]) -> None:
+        self.database = database
+        self.base_url = str(base_url or "").rstrip("/")
+        self.session_token_factory = session_token_factory
+
+    def __call__(self, user_id: int, day: date, timezone_name: str) -> list[dict[str, Any]]:
+        if not self.base_url:
+            return []
+        user = self.database.get_user_by_id(user_id) or {}
+        email = normalize_text(user.get("email"))
+        if not email:
+            return []
+        request = urllib_request.Request(
+            f"{self.base_url}{CALENDAR_DAY_ENDPOINT}",
+            data=json.dumps({"day": day.isoformat(), "timezone": timezone_name}).encode("utf-8"),
+            method="POST",
+            headers={
+                "Authorization": f"Bearer {self.session_token_factory(email)}",
+                "Content-Type": "application/json",
+            },
+        )
+        try:
+            with urllib_request.urlopen(request, timeout=CALENDAR_READ_TIMEOUT_SECONDS) as response:
+                body = json.loads(response.read().decode("utf-8") or "{}")
+        except (urllib_error.HTTPError, urllib_error.URLError, OSError, ValueError) as exc:
+            print(f"Family week nudger could not read the calendar for user {user_id}: {exc}", flush=True)
+            return []
+        events = body.get("events") if isinstance(body, dict) and body.get("ok") else None
+        return [event for event in (events or []) if isinstance(event, dict)]
+
+
 # -- the nudger ----------------------------------------------------------------
 
 
@@ -256,13 +412,26 @@ class FamilyWeekNudger:
         *,
         config: FamilyWeekNudgeConfig | None = None,
         school_calendar: SchoolCalendar | None = None,
+        calendar_reader: CalendarDayReader | None = None,
     ) -> None:
         """school_calendar is what says whether a day is really on. Without
-        one every day is the usual week, which is what a test wants."""
+        one every day is the usual week, which is what a test wants.
+        calendar_reader is how the account holder's own calendar is read for
+        tomorrow's drives; without one, no clash is ever looked for."""
 
         self.database = database
         self.config = config or load_family_week_nudge_config()
         self.school_calendar = school_calendar
+        self.calendar_reader = calendar_reader
+
+    def _calendar_day(self, user_id: int, day: date, timezone_name: str) -> list[dict[str, Any]]:
+        if self.calendar_reader is None:
+            return []
+        try:
+            return list(self.calendar_reader(user_id, day, timezone_name) or [])
+        except Exception as exc:  # noqa: BLE001 - the calendar is a courtesy check, never a blocker
+            print(f"Family week nudger could not read the calendar for user {user_id}: {exc}", flush=True)
+            return []
 
     def _on_day(
         self,
@@ -399,6 +568,7 @@ class FamilyWeekNudger:
             today = local_now.date()
             group_name = self._group_name(user_id, group_id)
             activities = self.database.list_household_activities(user_id=user_id, group_id=group_id)
+            members = self.database.list_household_members(user_id=user_id, group_id=group_id)
             exceptions = self.database.list_schedule_exceptions(
                 user_id=user_id, group_id=group_id, ending_on_or_after=today.isoformat(),
             )
@@ -409,12 +579,12 @@ class FamilyWeekNudger:
             tomorrow = today + timedelta(days=1)
             in_evening = self.config.evening_hour <= local_now.hour < self.config.evening_hour + EVENING_WINDOW_HOURS
             tomorrow_gaps = []
-            if in_evening and gap_lines(activities_on(activities, tomorrow)):
+            if in_evening and gap_lines(activities_on(activities, tomorrow), members):
                 tomorrow_on, _ = self._on_day(
                     user_id=user_id, group_id=group_id, timezone_name=timezone_name, day=tomorrow,
                     activities=activities, exceptions=exceptions,
                 )
-                tomorrow_gaps = gap_lines(tomorrow_on)
+                tomorrow_gaps = gap_lines(tomorrow_on, members)
             if tomorrow_gaps:
                 if claim(f"evening:{tomorrow.isoformat()}"):
                     self._queue_group(
@@ -478,6 +648,7 @@ class FamilyWeekNudger:
             local_now = reference.astimezone(zone)
             today = local_now.date()
             activities = self.database.list_household_activities(user_id=user_id)
+            members = self.database.list_household_members(user_id=user_id)
             exceptions = self.database.list_schedule_exceptions(user_id=user_id, ending_on_or_after=today.isoformat())
             # The whole week on hold - a trip, a holiday at home - is quiet
             # about the family altogether, birthdays and all; they come back
@@ -493,7 +664,7 @@ class FamilyWeekNudger:
             )
             if todays and self.config.morning_hour <= local_now.hour < self.config.morning_hour + MORNING_WINDOW_HOURS:
                 if claim(f"morning:{today.isoformat()}"):
-                    lines = [describe_activity_line(activity, owner_names) for activity in todays]
+                    lines = [describe_activity_line(activity, owner_names, members) for activity in todays]
                     self._queue(
                         user_id=user_id, now=reference, timezone_name=timezone_name,
                         title="Today in your family's week",
@@ -517,24 +688,51 @@ class FamilyWeekNudger:
 
             tomorrow = today + timedelta(days=1)
             in_evening = self.config.evening_hour <= local_now.hour < self.config.evening_hour + EVENING_WINDOW_HOURS
-            tomorrow_gaps = []
-            if in_evening and gap_lines(activities_on(activities, tomorrow)):
-                tomorrow_on, _ = self._on_day(
-                    user_id=user_id, timezone_name=timezone_name, day=tomorrow, activities=activities,
-                    exceptions=exceptions,
-                )
-                tomorrow_gaps = gap_lines(tomorrow_on)
-            if tomorrow_gaps:
+            tomorrow_gaps: list[str] = []
+            tomorrow_clashes: list[str] = []
+            if in_evening:
+                usual_tomorrow = activities_on(activities, tomorrow)
+                # The calendar is read once an evening, and only when they are
+                # the one driving tomorrow: nobody else's meetings are theirs
+                # to see, and a day they are not on the road needs no reading.
+                wants_calendar = self.calendar_reader is not None and owner_is_driving(usual_tomorrow, owner_names)
+                if gap_lines(usual_tomorrow, members, owner_names) or wants_calendar:
+                    tomorrow_on, _ = self._on_day(
+                        user_id=user_id, timezone_name=timezone_name, day=tomorrow, activities=activities,
+                        exceptions=exceptions,
+                    )
+                    tomorrow_gaps = gap_lines(tomorrow_on, members, owner_names)
+                    if wants_calendar and owner_is_driving(tomorrow_on, owner_names) and claim(f"evening-calendar:{tomorrow.isoformat()}"):
+                        tomorrow_clashes = ride_clashes(
+                            tomorrow_on, owner_names=owner_names, day=tomorrow, zone=zone,
+                            events=self._calendar_day(user_id, tomorrow, timezone_name),
+                            lead_minutes=self.config.ride_lead_minutes,
+                        )
+            if tomorrow_gaps or tomorrow_clashes:
                 if claim(f"evening:{tomorrow.isoformat()}"):
+                    about = []
+                    if tomorrow_gaps:
+                        about.append("what tomorrow still has nobody down for")
+                    if tomorrow_clashes:
+                        about.append(
+                            "which drive of theirs tomorrow lands inside something already in their calendar - "
+                            "name the entry, and ask who could take that drive instead"
+                        )
                     self._queue(
                         user_id=user_id, now=reference, timezone_name=timezone_name,
                         title="Tomorrow still needs someone",
                         instruction=(
                             "It is the evening. In one or two short sentences, in the language the person writes to you "
-                            "in, tell them what tomorrow still has nobody down for, so there is time to sort it out. The "
-                            "facts are exact; add none, and use no tool.\nTOMORROW:\n" + "\n".join(tomorrow_gaps)
+                            "in, tell them " + ", and ".join(about) + ", so there is time to sort it out. 'you' is the "
+                            "person. The facts are exact; add none, and use no tool."
+                            + ("\nTOMORROW:\n" + "\n".join(tomorrow_gaps) if tomorrow_gaps else "")
+                            + ("\nCLASHES WITH YOUR CALENDAR:\n" + "\n".join(tomorrow_clashes) if tomorrow_clashes else "")
                         ),
-                        fallback="Tomorrow still needs someone:\n" + "\n".join(f"• {line}" for line in tomorrow_gaps),
+                        fallback=(
+                            ("Tomorrow still needs someone:\n" + "\n".join(f"• {line}" for line in tomorrow_gaps) if tomorrow_gaps else "")
+                            + ("\n" if tomorrow_gaps and tomorrow_clashes else "")
+                            + ("Tomorrow clashes with your calendar:\n" + "\n".join(f"• {line}" for line in tomorrow_clashes) if tomorrow_clashes else "")
+                        ),
                     )
                     counts["evening"] += 1
 
