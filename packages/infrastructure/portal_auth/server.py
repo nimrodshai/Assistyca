@@ -293,6 +293,8 @@ from packages.infrastructure.whatsapp_agent_chat import build_resume_ask_prompt
 from packages.infrastructure.whatsapp_agent_chat import guard_resume_ask
 from packages.infrastructure.whatsapp_agent_chat import held_for_seconds
 from packages.infrastructure.whatsapp_agent_chat import build_whatsapp_claim_link
+from packages.infrastructure.whatsapp_agent_chat import build_whatsapp_join_link
+from packages.infrastructure.whatsapp_agent_chat import infer_timezone_from_wa_id
 from packages.infrastructure.whatsapp_agent_chat import extract_whatsapp_claim_code
 from packages.infrastructure.whatsapp_agent_chat import find_email_in_text
 from packages.infrastructure.whatsapp_agent_chat import is_whatsapp_account_email
@@ -1071,6 +1073,10 @@ LISTS_HANDOFF_PREFIX = "/lists/open/"
 # only says whose account signs in; the page comes from the address.
 RECEIPTS_HANDOFF_PREFIX = "/receipts/open/"
 WEEK_HANDOFF_PREFIX = "/week/open/"
+# The link a parent forwards to bring the other parent or a grandparent onto
+# the family's account. It carries the invitation code and opens WhatsApp on
+# the Assistyca number with the code already written in the message.
+JOIN_PAGE_PREFIX = "/join/"
 # The read-only week the other parent opens from a link.
 WEEK_SHARE_PAGE_PREFIX = "/w/"
 WEEK_SHARE_PAGE = Path("portal/week-share.html")
@@ -4545,6 +4551,9 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             return
         if path.startswith(WEEK_HANDOFF_PREFIX):
             self._handle_page_handoff(parsed, prefix=WEEK_HANDOFF_PREFIX, page="/week")
+            return
+        if path.startswith(JOIN_PAGE_PREFIX):
+            self._handle_family_join_page(parsed)
             return
         if path.startswith(LISTS_HANDOFF_PREFIX):
             self._handle_lists_handoff(parsed)
@@ -11537,6 +11546,11 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             "name": normalize_text(group_block.get("name")),
             "speaker": normalize_text(group_block.get("speaker")),
         } if normalize_text(group_block.get("id")) else {}
+        # Who is writing, when the phone is a family member's rather than the
+        # account holder's: the week is theirs to read, and to change only
+        # when they are a parent. Nothing else on the account is theirs.
+        speaker = {} if group else self._household_speaker(user_id, sender_wa_id, conversation)
+        full_access = not speaker or bool(speaker.get("canChangeWeek"))
         context = LoopContext(
             api=loopback,
             database=self.database,
@@ -11546,12 +11560,14 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             tool_context=tool_context,
             connect_links={} if group else dict(tool_context.get("connectLinks") or {}),
             channel="whatsapp" if channel == "whatsapp" else "portal",
-            list_link=None if group else self._lists_link_builder(session.email, channel),
-            receipts_link=None if group else self._receipts_link_builder(session.email, channel),
+            list_link=None if group or not full_access else self._lists_link_builder(session.email, channel),
+            receipts_link=None if group or not full_access else self._receipts_link_builder(session.email, channel),
             week_link=(
-                None if group or not household_block
+                None if group or not household_block or not full_access
                 else self._page_link_builder(session.email, channel, page="/week", prefix=WEEK_HANDOFF_PREFIX)
             ),
+            join_link=None if group else self._join_link_builder(),
+            speaker=speaker,
             sender_wa_id="" if group else sender_wa_id,
             attached_photo=photo_context,
             blocked_tools=blocked_tools(self.database.get_account_type_permissions(), account_type),
@@ -14779,6 +14795,186 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             "phone_number_id": normalize_text(phone_number_id),
         }
 
+    def _handle_household_invite(
+        self,
+        phone_number_id: str,
+        event: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        """Join a family's account from a phone nobody knows yet, by the
+        invitation code the parent's link put in the message.
+
+        Returns None when the message carries no invitation code, so the
+        caller goes on to signup. The phone becomes the member's the
+        invitation was made for, on the same account, and the message is then
+        answered by the assistant itself as the first thing they said - that
+        is how the welcome is written, in the assistant's own voice and with
+        the family's week in front of it. The account holder is told in a
+        line that the person is in.
+        """
+
+        if normalize_text(phone_number_id) != resolve_whatsapp_sender_phone_number_id():
+            return None
+        if not whatsapp_agent_chat_enabled():
+            return None
+        sender_wa_id = normalize_whatsapp_number(event.get("sender_wa_id"))
+        code = extract_whatsapp_claim_code(event.get("message_text"))
+        if not sender_wa_id or not code:
+            return None
+        invite = self.database.get_household_invite(code)
+        if invite is None:
+            return None
+
+        outcome = self.database.claim_household_invite(
+            code=code, wa_id=sender_wa_id, label=normalize_text(event.get("sender_name")),
+        )
+        reason = normalize_text(outcome.get("reason"))
+        print(
+            json.dumps(
+                {
+                    "event": "household_invite_claim",
+                    "senderWaId": self._mask_whatsapp_log_identifier(sender_wa_id),
+                    "userId": int(invite.get("userId") or 0),
+                    "ok": bool(outcome.get("ok")),
+                    "reason": reason,
+                },
+                ensure_ascii=True,
+                sort_keys=True,
+            ),
+            flush=True,
+        )
+        if outcome.get("ok"):
+            member = outcome.get("member") if isinstance(outcome.get("member"), dict) else {}
+            self._tell_owner_someone_joined(int(outcome.get("userId") or 0), member)
+            return {
+                "type": "family_join",
+                "action": "member_joined",
+                "member_id": int(member.get("id") or 0),
+                "role": household.normalize_role(member.get("role")),
+                "phone_number_id": normalize_text(phone_number_id),
+                "open_conversation": True,
+            }
+
+        if reason == "expired":
+            reply = "That invitation has run out. Ask whoever sent it for a fresh link and I'll bring you in."
+        elif reason == "already_claimed":
+            reply = "That invitation has already been used. Ask whoever sent it for a fresh link."
+        elif reason == "number_taken":
+            reply = "This phone already has its own Assistyca account, so I can't add it to another family from here."
+        else:
+            reply = "I couldn't bring you in with that invitation. Ask whoever sent it for a fresh link."
+        message_id = ""
+        try:
+            message_id = send_assistyca_text(recipient_wa_id=sender_wa_id, text=reply)
+        except Exception as exc:  # noqa: BLE001 - the refusal stands whether or not the note went
+            print(f"Family invitation reply could not be sent: {exc}", flush=True)
+        return {
+            "type": "family_join",
+            "action": "join_rejected",
+            "reason": reason,
+            "message_id": message_id,
+            "phone_number_id": normalize_text(phone_number_id),
+        }
+
+    def _answer_invite_code_from_known_phone(
+        self, connection: dict[str, Any], event: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        """An invitation code sent from a phone that is already on an account.
+
+        The parent who tapped their own link, or someone with an account of
+        their own: neither joins anything, and the words are not for the
+        assistant to puzzle over. Returns None for any ordinary message.
+        """
+
+        code = extract_whatsapp_claim_code(event.get("message_text"))
+        if not code:
+            return None
+        invite = self.database.get_household_invite(code)
+        if invite is None or invite.get("status") != "live":
+            return None
+        sender_wa_id = normalize_whatsapp_number(event.get("sender_wa_id"))
+        name = normalize_text(invite.get("memberName")) or "them"
+        if int(invite.get("userId") or 0) == int(connection.get("userId") or 0):
+            reply = f"That link is for {name} to open on their own phone - forward it to them and they're in."
+        else:
+            reply = "This phone already has its own Assistyca account, so I can't add it to another family from here."
+        message_id = ""
+        try:
+            message_id = send_assistyca_text(recipient_wa_id=sender_wa_id, text=reply)
+        except Exception as exc:  # noqa: BLE001
+            print(f"Family invitation reply could not be sent: {exc}", flush=True)
+        return {"type": "family_join", "action": "join_link_not_for_this_phone", "message_id": message_id}
+
+    def _tell_owner_someone_joined(self, user_id: int, member: dict[str, Any]) -> None:
+        """One line to the account holder that the person they invited is in,
+        written by the assistant when it runs and sent to their own phone."""
+
+        name = normalize_text(member.get("name")) or "Someone"
+        role = household.normalize_role(member.get("role"))
+        if user_id <= 0:
+            return
+        try:
+            owner_wa_id = self.database.get_owner_whatsapp_number(user_id=user_id)
+            self.database.create_scheduled_action(
+                user_id=user_id,
+                action_type=STANDING_TASK_ACTION_TYPE,
+                channel="whatsapp" if owner_wa_id else "portal",
+                recipient_ref="owner",
+                run_at=datetime.now(timezone.utc),
+                timezone_name=infer_timezone_from_wa_id(owner_wa_id) if owner_wa_id else "UTC",
+                payload={
+                    "title": f"{name} joined",
+                    "instruction": (
+                        f"{name} ({role}) has just joined this family's account from their own phone, through the "
+                        "invitation link. In one short, warm line, in the language the person writes to you in, tell "
+                        f"them {name} is in"
+                        + (
+                            " and will get the week on their own phone too - mornings, the evening before, and their own drives."
+                            if role == "partner" else
+                            " and will be reminded before the pickups that are theirs."
+                        )
+                        + " No question, no list, and use no tool."
+                    ),
+                    "fallbackText": f"{name} is in 👍",
+                    "oneOff": True,
+                    "source": "family_week",
+                },
+            )
+        except Exception as exc:  # noqa: BLE001 - the join stands whether or not the note is queued
+            print(f"Could not queue the note that {name} joined for user {user_id}: {exc}", flush=True)
+
+    def _handle_family_join_page(self, parsed: urllib_parse.ParseResult) -> None:
+        """The link a parent forwarded: a live invitation opens WhatsApp on the
+        Assistyca number with the code written in; anything else says so."""
+
+        if not self._enforce_rate_limit(
+            f"list-open-ip:{self._client_ip()}",
+            LIST_OPEN_PER_IP,
+            message="Too many attempts. Wait a moment and try again.",
+        ):
+            return
+        code = urllib_parse.unquote(parsed.path[len(JOIN_PAGE_PREFIX):]).strip("/").upper()
+        invite = self.database.get_household_invite(code) if code else None
+        link = build_whatsapp_join_link(code) if invite and invite.get("status") == "live" else ""
+        if link:
+            self.send_response(HTTPStatus.FOUND)
+            self.send_header("Location", link)
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        if invite and invite.get("status") == "live":
+            words = f"Open WhatsApp and send Assistyca this message: Assistyca family {html.escape(code)}"
+        else:
+            words = "This invitation is no longer valid. Ask the person who sent it for a fresh link."
+        self._send_html(
+            HTTPStatus.GONE if invite else HTTPStatus.NOT_FOUND,
+            "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" "
+            "content=\"width=device-width, initial-scale=1\"><title>Assistyca</title></head>"
+            "<body style=\"font-family: -apple-system, system-ui, sans-serif; margin: 0; padding: 48px 16px; "
+            "color: #26332c; background: #f6f4ee; text-align: center;\">"
+            f"<p style=\"max-width: 32rem; margin: 0 auto; line-height: 1.6;\">{words}</p></body></html>",
+        )
+
     def _handle_whatsapp_signup(
         self,
         phone_number_id: str,
@@ -15573,18 +15769,26 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             return None
 
         user = self.database.get_user_by_id(resolved_user_id)
+        # A phone that joined the family from the account holder's invitation
+        # is a family member's, and has a conversation of its own.
+        member = self.database.get_household_member_by_wa_id(number, user_id=resolved_user_id)
+        thread: dict[str, Any] = (
+            {"agentThreadId": household.member_thread_id(number), "memberId": int(member.get("id") or 0)}
+            if member else {}
+        )
         saved = self.database.get_whatsapp_connection_by_user_id(resolved_user_id)
         if saved:
             # A real connection already carries what the service needs. Only
             # the number it answers to is replaced, because the phone that just
             # wrote in is the one this conversation belongs to.
-            return {**saved, "ownerWaId": number}
+            return {**saved, "ownerWaId": number, **thread}
 
         email = normalize_email((user or {}).get("email"))
         if not email:
             return None
 
         return {
+            **thread,
             "userId": resolved_user_id,
             "email": email,
             "displayName": normalize_text((user or {}).get("displayName")),
@@ -15704,6 +15908,34 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             return f"{base}{RECEIPTS_HANDOFF_PREFIX}{code}"
 
         return build
+
+    def _join_link_builder(self) -> Callable[[str], str]:
+        """The link a parent forwards to bring someone onto the account: the
+        join page on the public address, carrying the invitation code."""
+
+        base = self._public_base_url()
+        return lambda code: f"{base}{JOIN_PAGE_PREFIX}{normalize_text(code).upper()}" if normalize_text(code) else ""
+
+    def _household_speaker(self, user_id: int, sender_wa_id: str, conversation: list[dict[str, Any]]) -> dict[str, Any]:
+        """Who is writing from this phone when it is not the account holder:
+        the family member who joined from it, with what they are here for.
+        Empty for the account holder's own phone and for the portal."""
+
+        if user_id <= 0 or not sender_wa_id:
+            return {}
+        try:
+            member = self.database.get_household_member_by_wa_id(sender_wa_id, user_id=user_id)
+        except Exception:  # noqa: BLE001 - a store that cannot say treats the phone as the owner's
+            return {}
+        if not member:
+            return {}
+        speaker = household.describe_speaker(member, owner_name=self._household_owner_name(user_id))
+        speaker["theyGet"] = list(household.member_nudges(member.get("role")))
+        if not conversation:
+            # Nothing said on this phone before: they have just come in
+            # through the invitation, and this is the welcome.
+            speaker["firstConversation"] = True
+        return speaker
 
     def _page_link_builder(self, email: str, channel: str, *, page: str, prefix: str) -> Callable[[], str]:
         """A portal page as a link: the page itself in the browser, a short
@@ -18475,7 +18707,13 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 if claim_result is not None:
                     results.append(claim_result)
                     continue
-                signup_result = self._handle_whatsapp_signup(phone_number_id, event)
+                # A phone nobody knows sending a family invitation code is
+                # someone joining an account that exists, not a stranger
+                # opening one: tried before signup, which would otherwise
+                # read the code as the first thing a stranger said.
+                signup_result = self._handle_household_invite(phone_number_id, event)
+                if signup_result is None:
+                    signup_result = self._handle_whatsapp_signup(phone_number_id, event)
                 if signup_result is not None:
                     results.append(signup_result)
                     if signup_result.get("open_conversation"):
@@ -18546,6 +18784,12 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                         event,
                         phone_number_id=phone_number_id,
                     )
+                    invite_reply = self._answer_invite_code_from_known_phone(connection, event)
+                    if invite_reply is not None:
+                        invite_reply["route"] = route_source
+                        invite_reply["phone_number_id"] = phone_number_id
+                        results.append(invite_reply)
+                        continue
                     agent_result = self._handle_whatsapp_agent_chat_message(connection, event)
                     agent_result["route"] = route_source
                     agent_result["phone_number_id"] = phone_number_id

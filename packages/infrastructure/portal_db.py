@@ -507,8 +507,29 @@ CREATE TABLE IF NOT EXISTS household_members (
     email TEXT NOT NULL DEFAULT '',
     phone TEXT NOT NULL DEFAULT '',
     notes TEXT NOT NULL DEFAULT '',
+    -- The WhatsApp number this person joined the account from, once they
+    -- have: it is how a message from that phone is known to be theirs. The
+    -- phone column above is what the parent typed and is never read for it.
+    wa_id TEXT NOT NULL DEFAULT '',
+    wa_linked_at TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
+    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+-- An invitation for someone in the family to join the account from their own
+-- phone: the partner, a grandparent. The parent is given a link carrying
+-- the code and forwards it; the phone that sends the code back is the one
+-- that joins, as the member the invitation was made for, on the same
+-- account and at no extra charge. One live invitation per person.
+CREATE TABLE IF NOT EXISTS household_invites (
+    code TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    member_id INTEGER NOT NULL,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    claimed_at TEXT,
+    claimed_wa_id TEXT NOT NULL DEFAULT '',
     FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
@@ -684,6 +705,8 @@ USER_OWNED_TABLES = (
     "whatsapp_reengagement_runs",
     "whatsapp_agent_messages",
     "whatsapp_agent_state",
+    "whatsapp_agent_thread_state",
+    "household_invites",
     "whatsapp_claim_codes",
     "user_whatsapp_numbers",
     "whatsapp_conversation_messages",
@@ -1008,6 +1031,19 @@ CREATE TABLE IF NOT EXISTS whatsapp_agent_state (
     active_proposal_json TEXT NOT NULL DEFAULT '',
     pending_json TEXT NOT NULL DEFAULT '',
     updated_at TEXT NOT NULL,
+    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+-- The same, for a conversation on the account that is not the account
+-- holder's own: a family member's phone. A question held for the partner
+-- is answered by the partner, never by the next "yes" from the owner.
+CREATE TABLE IF NOT EXISTS whatsapp_agent_thread_state (
+    user_id INTEGER NOT NULL,
+    thread_id TEXT NOT NULL,
+    active_proposal_json TEXT NOT NULL DEFAULT '',
+    pending_json TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY(user_id, thread_id),
     FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
@@ -1718,6 +1754,11 @@ class PortalDatabase:
             # two groups each knowing a Dana. The new one is in the index
             # script that runs below, once every column it reads exists.
             conn.execute("DROP INDEX IF EXISTS idx_household_members_name")
+        if "wa_id" not in member_columns:
+            # The phone a member joined from. Older rows have none: nobody had
+            # joined before the column existed.
+            conn.execute("ALTER TABLE household_members ADD COLUMN wa_id TEXT NOT NULL DEFAULT ''")
+            conn.execute("ALTER TABLE household_members ADD COLUMN wa_linked_at TEXT NOT NULL DEFAULT ''")
         activity_columns = {row["name"] for row in conn.execute("PRAGMA table_info(household_activities)").fetchall()}
         if "group_id" not in activity_columns:
             conn.execute("ALTER TABLE household_activities ADD COLUMN group_id TEXT NOT NULL DEFAULT ''")
@@ -6209,6 +6250,32 @@ class PortalDatabase:
             for row in rows
         ]
 
+    def get_owner_whatsapp_number(self, *, user_id: int) -> str:
+        """The newest phone linked to the account that is the account
+        holder's own - never one a family member joined from. What reaches
+        "the owner" goes here, so a grandparent who joined last is not handed
+        the account holder's messages."""
+
+        resolved_user_id = int(user_id or 0)
+        if resolved_user_id <= 0:
+            return ""
+        with self._connection() as conn:
+            row = conn.execute(
+                """
+                SELECT n.wa_id
+                FROM user_whatsapp_numbers AS n
+                WHERE n.user_id = ?
+                  AND NOT EXISTS (
+                    SELECT 1 FROM household_members AS m
+                    WHERE m.user_id = n.user_id AND m.wa_id = n.wa_id AND m.wa_id <> ''
+                  )
+                ORDER BY n.created_at DESC
+                LIMIT 1
+                """,
+                (resolved_user_id,),
+            ).fetchone()
+        return str(row["wa_id"] or "") if row else ""
+
     def delete_user_whatsapp_number(self, *, user_id: int, wa_id: str) -> bool:
         """Unlink a phone from an account. Only its own owner may do this."""
 
@@ -6222,6 +6289,17 @@ class PortalDatabase:
                 "DELETE FROM user_whatsapp_numbers WHERE wa_id = ? AND user_id = ?",
                 (number, resolved_user_id),
             )
+            if int(cursor.rowcount or 0) > 0:
+                # A family member who joined from this phone stays in the
+                # family; only the phone stops being theirs to write from.
+                conn.execute(
+                    "UPDATE household_members SET wa_id = '', wa_linked_at = '', updated_at = ? WHERE user_id = ? AND wa_id = ?",
+                    (now_iso(), resolved_user_id, number),
+                )
+                conn.execute(
+                    "DELETE FROM whatsapp_agent_thread_state WHERE user_id = ? AND thread_id = ?",
+                    (resolved_user_id, household.member_thread_id(number)),
+                )
             conn.commit()
             return int(cursor.rowcount or 0) > 0
 
@@ -6404,18 +6482,53 @@ class PortalDatabase:
             )
             conn.commit()
 
-    def get_whatsapp_agent_pending(self, *, user_id: int) -> dict[str, Any] | None:
-        """A question the conversation is waiting on before it can continue."""
+    def _read_agent_state(self, conn: sqlite3.Connection, column: str, user_id: int, thread_id: str) -> str:
+        """One column of a conversation's state: the owner's own row, or the
+        row of the thread a family member's phone has."""
+
+        if thread_id:
+            row = conn.execute(
+                f"SELECT {column} FROM whatsapp_agent_thread_state WHERE user_id = ? AND thread_id = ?",
+                (user_id, thread_id),
+            ).fetchone()
+        else:
+            row = conn.execute(f"SELECT {column} FROM whatsapp_agent_state WHERE user_id = ?", (user_id,)).fetchone()
+        return str(row[column] or "") if row else ""
+
+    def _write_agent_state(self, conn: sqlite3.Connection, column: str, user_id: int, thread_id: str, value: str) -> None:
+        if thread_id:
+            conn.execute(
+                f"""
+                INSERT INTO whatsapp_agent_thread_state (user_id, thread_id, {column}, updated_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(user_id, thread_id) DO UPDATE SET
+                    {column} = excluded.{column},
+                    updated_at = excluded.updated_at
+                """,
+                (user_id, thread_id, value, now_iso()),
+            )
+        else:
+            conn.execute(
+                f"""
+                INSERT INTO whatsapp_agent_state (user_id, {column}, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    {column} = excluded.{column},
+                    updated_at = excluded.updated_at
+                """,
+                (user_id, value, now_iso()),
+            )
+
+    def get_whatsapp_agent_pending(self, *, user_id: int, thread_id: str = "") -> dict[str, Any] | None:
+        """A question the conversation is waiting on before it can continue.
+        thread_id is empty for the account holder's own conversation and a
+        family member's thread for theirs: each waits on its own question."""
 
         resolved_user_id = int(user_id or 0)
         if resolved_user_id <= 0:
             return None
         with self._connection() as conn:
-            row = conn.execute(
-                "SELECT pending_json FROM whatsapp_agent_state WHERE user_id = ?",
-                (resolved_user_id,),
-            ).fetchone()
-        raw = str(row["pending_json"] or "") if row else ""
+            raw = self._read_agent_state(conn, "pending_json", resolved_user_id, normalize_text(thread_id))
         if not raw:
             return None
         try:
@@ -6424,22 +6537,13 @@ class PortalDatabase:
             return None
         return parsed if isinstance(parsed, dict) and parsed else None
 
-    def save_whatsapp_agent_pending(self, *, user_id: int, pending: dict[str, Any] | None) -> None:
+    def save_whatsapp_agent_pending(self, *, user_id: int, pending: dict[str, Any] | None, thread_id: str = "") -> None:
         resolved_user_id = int(user_id or 0)
         if resolved_user_id <= 0:
             return
         serialized = json.dumps(pending, ensure_ascii=False, separators=(",", ":")) if isinstance(pending, dict) and pending else ""
         with self._connection() as conn:
-            conn.execute(
-                """
-                INSERT INTO whatsapp_agent_state (user_id, active_proposal_json, pending_json, updated_at)
-                VALUES (?, '', ?, ?)
-                ON CONFLICT(user_id) DO UPDATE SET
-                    pending_json = excluded.pending_json,
-                    updated_at = excluded.updated_at
-                """,
-                (resolved_user_id, serialized, now_iso()),
-            )
+            self._write_agent_state(conn, "pending_json", resolved_user_id, normalize_text(thread_id), serialized)
             conn.commit()
 
     # -- approvals --------------------------------------------------------
@@ -6742,7 +6846,7 @@ class PortalDatabase:
             for row in reversed(rows)
         ]
 
-    def get_whatsapp_agent_active_proposal(self, *, user_id: int) -> dict[str, Any] | None:
+    def get_whatsapp_agent_active_proposal(self, *, user_id: int, thread_id: str = "") -> dict[str, Any] | None:
         """The proposal the WhatsApp conversation is currently discussing, if any."""
 
         resolved_user_id = int(user_id or 0)
@@ -6750,13 +6854,7 @@ class PortalDatabase:
             return None
 
         with self._connection() as conn:
-            row = conn.execute(
-                "SELECT active_proposal_json FROM whatsapp_agent_state WHERE user_id = ?",
-                (resolved_user_id,),
-            ).fetchone()
-        if row is None:
-            return None
-        raw = str(row["active_proposal_json"] or "")
+            raw = self._read_agent_state(conn, "active_proposal_json", resolved_user_id, normalize_text(thread_id))
         if not raw:
             return None
         try:
@@ -6770,6 +6868,7 @@ class PortalDatabase:
         *,
         user_id: int,
         proposal: dict[str, Any] | None,
+        thread_id: str = "",
     ) -> None:
         """Hold, replace, or clear (with None) the conversation's open proposal."""
 
@@ -6783,16 +6882,7 @@ class PortalDatabase:
             else ""
         )
         with self._connection() as conn:
-            conn.execute(
-                """
-                INSERT INTO whatsapp_agent_state (user_id, active_proposal_json, updated_at)
-                VALUES (?, ?, ?)
-                ON CONFLICT(user_id) DO UPDATE SET
-                    active_proposal_json = excluded.active_proposal_json,
-                    updated_at = excluded.updated_at
-                """,
-                (resolved_user_id, serialized, now_iso()),
-            )
+            self._write_agent_state(conn, "active_proposal_json", resolved_user_id, normalize_text(thread_id), serialized)
             conn.commit()
 
     def update_whatsapp_connection_metadata(
@@ -9835,9 +9925,41 @@ class PortalDatabase:
             "email": str(row["email"] or ""),
             "phone": str(row["phone"] or ""),
             "notes": str(row["notes"] or ""),
+            "waId": str(row["wa_id"] or "") if "wa_id" in row.keys() else "",
+            "waLinkedAt": str(row["wa_linked_at"] or "") if "wa_linked_at" in row.keys() else "",
             "createdAt": str(row["created_at"] or ""),
             "updatedAt": str(row["updated_at"] or ""),
         }
+
+    def get_household_member(self, *, user_id: int, member_id: int) -> dict[str, Any] | None:
+        if int(user_id or 0) <= 0 or int(member_id or 0) <= 0:
+            return None
+        with self._connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM household_members WHERE user_id = ? AND id = ?",
+                (int(user_id), int(member_id)),
+            ).fetchone()
+        return self._household_member_row(row)
+
+    def get_household_member_by_wa_id(self, wa_id: str, *, user_id: int = 0) -> dict[str, Any] | None:
+        """The family member who joined from this phone, on this account when
+        one is given, or on whichever account the phone joined."""
+
+        number = normalize_whatsapp_lookup_id(wa_id)
+        if not number:
+            return None
+        with self._connection() as conn:
+            if int(user_id or 0) > 0:
+                row = conn.execute(
+                    "SELECT * FROM household_members WHERE user_id = ? AND wa_id = ? AND group_id = ''",
+                    (int(user_id), number),
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    "SELECT * FROM household_members WHERE wa_id = ? AND group_id = '' ORDER BY id LIMIT 1",
+                    (number,),
+                ).fetchone()
+        return self._household_member_row(row)
 
     def list_household_members(self, *, user_id: int, group_id: str = "") -> list[dict[str, Any]]:
         """Partner first, then the children, then anyone else, each in the
@@ -9960,15 +10082,217 @@ class PortalDatabase:
         return self._household_member_row(row) or {}
 
     def remove_household_member(self, *, user_id: int, name: str, group_id: str = "") -> bool:
+        """Take someone out of the family. A phone they joined from goes with
+        them: it no longer reaches the account, and an invitation still
+        standing for them is withdrawn."""
+
         key = household.name_key(name)
         if int(user_id or 0) <= 0 or not key:
             return False
+        scope = normalize_text(group_id)
         with self._connection() as conn:
-            cursor = conn.execute(
-                "DELETE FROM household_members WHERE user_id = ? AND group_id = ? AND name_key = ?",
-                (int(user_id), normalize_text(group_id), key),
+            existing = conn.execute(
+                "SELECT id, wa_id FROM household_members WHERE user_id = ? AND group_id = ? AND name_key = ?",
+                (int(user_id), scope, key),
+            ).fetchone()
+            if existing is None:
+                return False
+            number = str(existing["wa_id"] or "")
+            if number:
+                conn.execute(
+                    "DELETE FROM user_whatsapp_numbers WHERE wa_id = ? AND user_id = ?",
+                    (number, int(user_id)),
+                )
+                conn.execute(
+                    "DELETE FROM whatsapp_agent_thread_state WHERE user_id = ? AND thread_id = ?",
+                    (int(user_id), household.member_thread_id(number)),
+                )
+            conn.execute(
+                "DELETE FROM household_invites WHERE user_id = ? AND member_id = ?",
+                (int(user_id), int(existing["id"])),
             )
-        return cursor.rowcount > 0
+            conn.execute("DELETE FROM household_members WHERE id = ?", (int(existing["id"]),))
+            conn.commit()
+        return True
+
+    # -- joining the account from another phone ------------------------------
+
+    def create_household_invite(
+        self, *, user_id: int, member_id: int, code: str, expires_at: datetime,
+    ) -> dict[str, Any]:
+        """An invitation for one member, replacing any still standing for
+        them: one live link per person, so a link that travelled too far is
+        retired by asking for a fresh one."""
+
+        normalized_code = normalize_text(code).upper()
+        if int(user_id or 0) <= 0 or int(member_id or 0) <= 0 or not normalized_code:
+            raise ValueError("An invitation needs an account, a family member and a code.")
+        member = self.get_household_member(user_id=int(user_id), member_id=int(member_id))
+        if member is None:
+            raise LookupError("Nobody by that id is in the family.")
+        if household.normalize_role(member.get("role")) == "child":
+            raise ValueError("A child is not invited onto the account.")
+        created_at = now_iso()
+        expiry = expires_at.astimezone(timezone.utc).isoformat()
+        with self._connection() as conn:
+            conn.execute(
+                "DELETE FROM household_invites WHERE user_id = ? AND member_id = ? AND claimed_at IS NULL",
+                (int(user_id), int(member_id)),
+            )
+            conn.execute(
+                """
+                INSERT INTO household_invites (code, user_id, member_id, created_at, expires_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(code) DO UPDATE SET
+                    user_id = excluded.user_id,
+                    member_id = excluded.member_id,
+                    created_at = excluded.created_at,
+                    expires_at = excluded.expires_at,
+                    claimed_at = NULL,
+                    claimed_wa_id = ''
+                """,
+                (normalized_code, int(user_id), int(member_id), created_at, expiry),
+            )
+            conn.commit()
+        return {
+            "code": normalized_code,
+            "userId": int(user_id),
+            "memberId": int(member_id),
+            "memberName": member.get("name"),
+            "role": household.normalize_role(member.get("role")),
+            "createdAt": created_at,
+            "expiresAt": expiry,
+        }
+
+    def get_household_invite(self, code: str, *, now: datetime | None = None) -> dict[str, Any] | None:
+        """One invitation by its code, with where it stands: live, expired or
+        claimed. None for a code nobody issued."""
+
+        normalized_code = normalize_text(code).upper()
+        if not normalized_code:
+            return None
+        with self._connection() as conn:
+            row = conn.execute(
+                """
+                SELECT i.*, m.name AS member_name, m.role AS member_role, m.wa_id AS member_wa_id, u.is_active
+                FROM household_invites AS i
+                INNER JOIN users AS u ON u.id = i.user_id
+                LEFT JOIN household_members AS m ON m.id = i.member_id
+                WHERE i.code = ?
+                """,
+                (normalized_code,),
+            ).fetchone()
+        if row is None:
+            return None
+        moment = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+        try:
+            expires_at = datetime.fromisoformat(str(row["expires_at"]))
+        except ValueError:
+            expires_at = moment
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        if row["claimed_at"]:
+            status = "claimed"
+        elif not bool(row["is_active"]) or row["member_name"] is None:
+            status = "withdrawn"
+        elif moment > expires_at:
+            status = "expired"
+        else:
+            status = "live"
+        return {
+            "code": normalized_code,
+            "userId": int(row["user_id"]),
+            "memberId": int(row["member_id"]),
+            "memberName": str(row["member_name"] or ""),
+            "role": household.normalize_role(row["member_role"]),
+            "status": status,
+            "expiresAt": expires_at.isoformat(),
+            "claimedAt": str(row["claimed_at"] or "") or None,
+        }
+
+    def claim_household_invite(
+        self, *, code: str, wa_id: str, label: str = "", now: datetime | None = None,
+    ) -> dict[str, Any]:
+        """Join the account from this phone, as the member the invitation was
+        made for. One transaction: the phone is linked to the account, the
+        member is marked as writing from it, and the code is spent. Each
+        reason it cannot happen is named, because each needs its own sentence
+        back to the sender."""
+
+        normalized_code = normalize_text(code).upper()
+        number = normalize_whatsapp_lookup_id(wa_id)
+        if not normalized_code or not number:
+            return {"ok": False, "reason": "invalid_request"}
+        moment = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+        with self._connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                """
+                SELECT i.*, m.name AS member_name, m.role AS member_role, u.is_active
+                FROM household_invites AS i
+                INNER JOIN users AS u ON u.id = i.user_id
+                LEFT JOIN household_members AS m ON m.id = i.member_id
+                WHERE i.code = ?
+                """,
+                (normalized_code,),
+            ).fetchone()
+            if row is None or row["member_name"] is None:
+                conn.rollback()
+                return {"ok": False, "reason": "unknown_code"}
+            if row["claimed_at"]:
+                conn.rollback()
+                return {"ok": False, "reason": "already_claimed"}
+            if not bool(row["is_active"]):
+                conn.rollback()
+                return {"ok": False, "reason": "inactive_account"}
+            try:
+                expires_at = datetime.fromisoformat(str(row["expires_at"]))
+            except ValueError:
+                conn.rollback()
+                return {"ok": False, "reason": "unknown_code"}
+            if expires_at.tzinfo is None:
+                expires_at = expires_at.replace(tzinfo=timezone.utc)
+            if moment > expires_at:
+                conn.rollback()
+                return {"ok": False, "reason": "expired"}
+            user_id = int(row["user_id"])
+            existing = conn.execute(
+                "SELECT user_id FROM user_whatsapp_numbers WHERE wa_id = ?", (number,),
+            ).fetchone()
+            if existing is not None and int(existing["user_id"]) != user_id:
+                # The phone already answers for another account. Joining a
+                # family must never take someone's own conversation from them.
+                conn.rollback()
+                return {"ok": False, "reason": "number_taken"}
+            stamp = moment.isoformat()
+            conn.execute(
+                """
+                INSERT INTO user_whatsapp_numbers (wa_id, user_id, label, verified_at, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(wa_id) DO UPDATE SET
+                    label = excluded.label,
+                    verified_at = excluded.verified_at,
+                    updated_at = excluded.updated_at
+                """,
+                (number, user_id, normalize_text(label or row["member_name"])[:120], stamp, stamp, stamp),
+            )
+            # One phone is one person: if this number was another member's
+            # before (a shared phone, a correction), it is this member's now.
+            conn.execute(
+                "UPDATE household_members SET wa_id = '', wa_linked_at = '', updated_at = ? WHERE user_id = ? AND wa_id = ?",
+                (stamp, user_id, number),
+            )
+            conn.execute(
+                "UPDATE household_members SET wa_id = ?, wa_linked_at = ?, updated_at = ? WHERE id = ?",
+                (number, stamp, stamp, int(row["member_id"])),
+            )
+            conn.execute(
+                "UPDATE household_invites SET claimed_at = ?, claimed_wa_id = ? WHERE code = ?",
+                (stamp, number, normalized_code),
+            )
+            conn.commit()
+        member = self.get_household_member(user_id=user_id, member_id=int(row["member_id"])) or {}
+        return {"ok": True, "userId": user_id, "waId": number, "member": member, "claimedAt": stamp}
 
     def _household_activity_row(self, row: sqlite3.Row | None) -> dict[str, Any] | None:
         if row is None:

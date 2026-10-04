@@ -354,6 +354,68 @@ class NudgerTests(unittest.TestCase):
         return [a for a in self.queued() if a["payload"]["title"] == "A birthday is coming"]
 
 
+    def test_the_family_on_their_own_phones_each_hear_about_what_is_theirs(self) -> None:
+        # Shirly, the partner, joined from her phone; Rina, a grandmother,
+        # from hers. Shirly collects Tom at 16:00; Rina takes Noa to ballet
+        # on Monday. The morning plan goes to both parents, worded for each;
+        # Rina hears only about her own drive, when it is time to leave.
+        from datetime import datetime, timedelta, timezone as tz
+
+        shirly = self.database.save_household_member(user_id=self.user_id, name="Shirly", role="partner")
+        rina = self.database.save_household_member(user_id=self.user_id, name="Rina", role="other")
+        for member, code, phone in ((shirly, "SHR222", "972500000002"), (rina, "RNA333", "972500000003")):
+            self.database.create_household_invite(
+                user_id=self.user_id, member_id=int(member["id"]), code=code,
+                expires_at=datetime.now(tz.utc) + timedelta(days=14),
+            )
+            self.assertTrue(self.database.claim_household_invite(code=code, wa_id=phone)["ok"])
+        activities = self.database.list_household_activities(user_id=self.user_id)
+        ballet = next(activity for activity in activities if activity["title"] == "Ballet")
+        self.database.save_household_activity(user_id=self.user_id, activity_id=int(ballet["id"]), drop_off_by="Rina")
+        # Monday's swimming has nobody down for it yet: the evening's question.
+        self.database.save_household_activity(
+            user_id=self.user_id, title="Swimming", who=["Tom"], days=["mon"],
+            start_time="17:00", end_time="18:00", drop_off_by="", pick_up_by="",
+        )
+
+        summary = self.nudger.run_pending(now=at(SUNDAY, 7, 5))
+        self.assertEqual(summary["morning"], 2)
+        mornings = {a["recipientRef"]: a["payload"] for a in self.queued() if a["payload"]["title"] == "Today in your family's week"}
+        self.assertEqual(set(mornings), {"owner", "972500000002"})
+        self.assertIn("07:30-16:00 Kindergarten (Tom), takes: you, collects: Shirly", mornings["owner"]["instruction"])
+        self.assertIn("07:30-16:00 Kindergarten (Tom), takes: Dana, collects: you", mornings["972500000002"]["instruction"])
+        self.assertIn("'you' is Shirly", mornings["972500000002"]["instruction"])
+        self.assertEqual(mornings["972500000002"]["recipientWaId"], "972500000002")
+        # The next poll says nothing twice to either of them.
+        self.nudger.run_pending(now=at(SUNDAY, 7, 10))
+        self.assertEqual(len([a for a in self.queued() if a["payload"]["title"] == "Today in your family's week"]), 2)
+
+        # Shirly's pickup at 16:00: her phone, nobody else's.
+        self.assertEqual(self.nudger.run_pending(now=at(SUNDAY, 15, 35))["rides"], 1)
+        [ride] = [a for a in self.queued() if a["payload"]["title"] == "Time to leave soon" and a["recipientRef"] != "owner"]
+        self.assertEqual(ride["recipientRef"], "972500000002")
+        self.assertIn("DRIVE: collect Tom - Kindergarten at 16:00", ride["payload"]["instruction"])
+        self.assertIn("for Shirly", ride["payload"]["instruction"])
+
+        # Monday: Rina takes Noa at 16:30, and Dana collects her at 17:30.
+        monday = SUNDAY.replace(day=21)
+        self.nudger.run_pending(now=at(monday, 16, 5))
+        rides = [a for a in self.queued() if a["payload"]["title"] == "Time to leave soon"]
+        self.assertEqual([r["recipientRef"] for r in rides], ["owner", "972500000002", "972500000003"])
+        self.assertIn("take Noa - Ballet at 16:30", rides[-1]["payload"]["instruction"])
+        self.nudger.run_pending(now=at(monday, 17, 5))
+        rides = [a for a in self.queued() if a["payload"]["title"] == "Time to leave soon"]
+        self.assertEqual(rides[-1]["recipientRef"], "owner")
+        self.assertIn("collect Noa - Ballet at 17:30", rides[-1]["payload"]["instruction"])
+        # The grandmother never gets the morning plan or the evening before.
+        self.nudger.run_pending(now=at(SUNDAY, 20, 15))
+        evenings = [a for a in self.queued() if a["payload"]["title"] == "Tomorrow still needs someone"]
+        self.assertEqual(sorted(a["recipientRef"] for a in evenings), ["972500000002", "owner"])
+        for evening in evenings:
+            self.assertIn("Swimming (Tom) at 18:00: nobody is down for the drop-off and the pickup", evening["payload"]["instruction"])
+        self.assertFalse(any(a["recipientRef"] == "972500000003" for a in self.queued() if a["payload"]["title"] != "Time to leave soon"))
+
+
 if __name__ == "__main__":
     unittest.main()
 
