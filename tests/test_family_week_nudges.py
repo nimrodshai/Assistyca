@@ -116,6 +116,35 @@ class RulesTests(unittest.TestCase):
         # When only the later ones are left, they go with whatever is due then.
         self.assertEqual(together(8, 20), ["Music 08:25", "Dentist 08:45"])
 
+    def test_a_drive_the_morning_message_already_names_is_not_said_again_beside_it(self) -> None:
+        # Leaving at 07:00, 07:10 and 06:45 is within twenty minutes of the
+        # 07:00 message either side: those drives are in it and get no word
+        # of their own. Leaving at 07:20 or 06:40 is far enough off to be told.
+        def drive(number: int, title: str, start: str) -> dict:
+            return {"id": number, "title": title, "who": ["Noa"], "days": ["sun"], "startTime": start, "endTime": "13:00", "dropOffBy": "me", "pickUpBy": ""}
+
+        drives = [drive(1, "Gan", "07:30"), drive(2, "School", "07:40"), drive(3, "Early", "07:15"), drive(4, "Later", "07:50"), drive(5, "Dawn", "07:10")]
+
+        def together(hour: int, minute: int, digest: bool = True) -> list[str]:
+            return [
+                f"{ride['activity']['title']} {ride['at']}" for ride in rides_leaving_together(
+                    drives, owner_names=["Dana"], local_now=at(SUNDAY, hour, minute), lead_minutes=30, merge_minutes=30,
+                    digest_at=at(SUNDAY, 7, 0) if digest else None, digest_gap_minutes=20,
+                )
+            ]
+
+        self.assertEqual(together(6, 41), ["Dawn 07:10"])
+        # Still due at 06:46 - and nothing nearer the message rides along with it.
+        self.assertEqual(together(6, 46), ["Dawn 07:10"])
+        # At 07:02 the dawn run is still ahead; the ones leaving within
+        # twenty minutes of the message never are. By 07:12 nothing is due.
+        self.assertEqual(together(7, 2), ["Dawn 07:10"])
+        self.assertEqual(together(7, 12), [])
+        # Exactly twenty minutes after is far enough, and nothing nearer rides along with it.
+        self.assertEqual(together(7, 21), ["Later 07:50"])
+        # Without a morning message, every drive gets its word.
+        self.assertEqual(together(7, 2, digest=False), ["Dawn 07:10", "Early 07:15", "Gan 07:30", "School 07:40"])
+
     def test_a_child_on_the_bus_is_in_the_plan_and_is_nobodys_drive(self) -> None:
         # The big one comes home on the bus: the morning says so, nobody is
         # asked to cover it, and through the day nothing is said about it -
@@ -266,56 +295,77 @@ class NudgerTests(unittest.TestCase):
 
     def test_the_owner_is_told_before_their_own_drive(self) -> None:
         monday = SUNDAY.replace(day=21)
-        # Dana takes Tom at 07:30 (named, not "me"), and collects Noa at 17:30.
-        self.assertEqual(self.nudger.run_pending(now=at(monday, 7, 5))["rides"], 1)
+        # Dana takes Tom at 07:30 (named, not "me") - that one the morning
+        # message names, so no word goes beside it - and collects Noa at 17:30.
+        self.assertEqual(self.nudger.run_pending(now=at(monday, 7, 5))["rides"], 0)
         self.assertEqual(self.nudger.run_pending(now=at(monday, 7, 10))["rides"], 0)
         self.assertEqual(self.nudger.run_pending(now=at(monday, 17, 5))["rides"], 1)
-        rides = [a for a in self.queued() if a["payload"]["title"] == "Time to leave soon"]
-        self.assertEqual(len(rides), 2)
-        self.assertIn("collect Noa - Ballet at 17:30", rides[-1]["payload"]["instruction"])
+        [ride] = [a for a in self.queued() if a["payload"]["title"] == "Time to leave soon"]
+        self.assertIn("collect Noa - Ballet at 17:30", ride["payload"]["instruction"])
+
+    def test_a_drive_right_after_the_morning_message_is_in_it_and_not_said_again(self) -> None:
+        # Dana takes Tom to kindergarten at 07:30: leaving at 07:00, the very
+        # minute the morning message goes. Two messages at once saying the
+        # same thing look like a fault, so the morning message carries it
+        # and no "time to leave" follows. A drive leaving twenty minutes
+        # later still gets its own word.
+        self.database.save_household_activity(
+            user_id=self.user_id, title="Gymnastics", who=["Noa"], days=["sun"],
+            start_time="07:50", end_time="08:30", drop_off_by="me", pick_up_by="Shirly",
+        )
+        first = self.nudger.run_pending(now=at(SUNDAY, 7, 0))
+        self.assertEqual((first["morning"], first["rides"]), (1, 0))
+        for hour, minute in ((7, 5), (7, 12), (7, 19)):
+            self.assertEqual(self.nudger.run_pending(now=at(SUNDAY, hour, minute))["rides"], 0, f"{hour}:{minute}")
+        [morning] = [a for a in self.queued() if a["payload"]["title"] == "Today in your family's week"]
+        self.assertIn("07:30-16:00 Kindergarten (Tom), takes: you", morning["payload"]["instruction"])
+        self.assertEqual(self.nudger.run_pending(now=at(SUNDAY, 7, 21))["rides"], 1)
+        [ride] = [a for a in self.queued() if a["payload"]["title"] == "Time to leave soon"]
+        self.assertIn("DRIVE: take Noa - Gymnastics at 07:50", ride["payload"]["instruction"])
+        self.assertNotIn("Kindergarten", ride["payload"]["instruction"])
 
     def test_two_drives_close_together_are_one_word_planned_as_one_trip(self) -> None:
-        # Sunday: Dana takes Tom at 07:30 and, from now, Noa to school at
-        # 07:45 - one trip, said once at 07:00 and never again; and a third
-        # run at 08:40 is far enough off to wait for its own word.
+        # Sunday: Dana takes Tom at 07:50 this week and, from now, Noa to
+        # school at 08:05 - one trip, said once at 07:20 and never again;
+        # and a third run at 09:00 is far enough off to wait for its own word.
+        kindergarten = next(a for a in self.database.list_household_activities(user_id=self.user_id) if a["title"] == "Kindergarten")
+        self.database.save_household_activity(user_id=self.user_id, activity_id=int(kindergarten["id"]), start_time="07:50")
         self.database.save_household_activity(
             user_id=self.user_id, title="School", who=["Noa"], days=["sun"],
-            start_time="07:45", end_time="13:30", drop_off_by="me", pick_up_by="Shirly", place="Shaked",
+            start_time="08:05", end_time="13:30", drop_off_by="me", pick_up_by="Shirly", place="Shaked",
         )
         self.database.save_household_activity(
             user_id=self.user_id, title="Physio", who=["Tom"], days=["sun"],
-            start_time="08:40", end_time="09:20", drop_off_by="me", pick_up_by="me",
+            start_time="09:00", end_time="09:40", drop_off_by="me", pick_up_by="me",
         )
-        self.nudger.run_pending(now=at(SUNDAY, 6, 50))
-        self.assertEqual(self.nudger.run_pending(now=at(SUNDAY, 7, 2))["rides"], 1)
-        for hour, minute in ((7, 20), (7, 35), (7, 44)):
+        self.nudger.run_pending(now=at(SUNDAY, 7, 10))
+        self.assertEqual(self.nudger.run_pending(now=at(SUNDAY, 7, 22))["rides"], 1)
+        for hour, minute in ((7, 40), (7, 55), (8, 4)):
             self.assertEqual(self.nudger.run_pending(now=at(SUNDAY, hour, minute))["rides"], 0, f"{hour}:{minute}")
         [trip] = [a for a in self.queued() if a["payload"]["title"] == "Time to leave soon"]
         self.assertIn("one trip", trip["payload"]["instruction"])
-        self.assertIn("DRIVES:\ntake Tom - Kindergarten at 07:30\ntake Noa - School at 07:45, Shaked", trip["payload"]["instruction"])
+        self.assertIn("DRIVES:\ntake Tom - Kindergarten at 07:50\ntake Noa - School at 08:05, Shaked", trip["payload"]["instruction"])
         self.assertNotIn("Physio", trip["payload"]["instruction"])
         self.assertTrue(trip["payload"]["fallbackText"].startswith("Soon, one trip:\n• take Tom"))
-        # The 08:40 run comes on its own, worded as the single drive it is.
-        self.assertEqual(self.nudger.run_pending(now=at(SUNDAY, 8, 12))["rides"], 1)
+        # The 09:00 run comes on its own, worded as the single drive it is.
+        self.assertEqual(self.nudger.run_pending(now=at(SUNDAY, 8, 32))["rides"], 1)
         later = [a for a in self.queued() if a["payload"]["title"] == "Time to leave soon"]
         self.assertEqual(len(later), 2)
         single = next(a for a in later if "Physio" in a["payload"]["instruction"])
-        self.assertIn("DRIVE: take Tom - Physio at 08:40", single["payload"]["instruction"])
+        self.assertIn("DRIVE: take Tom - Physio at 09:00", single["payload"]["instruction"])
         self.assertNotIn("DRIVES", single["payload"]["instruction"])
 
     def test_nothing_is_said_through_the_day_about_a_drive_that_is_not_theirs(self) -> None:
-        # Sunday: the morning plan lists everything, as it should, and Dana
-        # is told before taking Tom at 07:30. Then the bus takes Lotan at
-        # 08:00 and brings them home at 14:30, and Shirly collects Tom at
-        # 16:00 - none of it the owner's drive, so the rest of the day is quiet.
+        # Sunday: the morning plan lists everything, as it should, Dana's
+        # 07:30 run with Tom among it. Then the bus takes Lotan at 08:00 and
+        # brings them home at 14:30, and Shirly collects Tom at 16:00 - none
+        # of it the owner's drive, so the rest of the day is quiet.
         first = self.nudger.run_pending(now=at(SUNDAY, 7, 5))
-        self.assertEqual((first["morning"], first["rides"]), (1, 1))
+        self.assertEqual((first["morning"], first["rides"]), (1, 0))
         for hour, minute in ((7, 35), (7, 50), (14, 5), (14, 20), (15, 35), (15, 50)):
             self.assertEqual(self.nudger.run_pending(now=at(SUNDAY, hour, minute))["rides"], 0, f"{hour}:{minute}")
         titles = sorted(a["payload"]["title"] for a in self.queued())
-        self.assertEqual(titles, ["Time to leave soon", "Today in your family's week"])
-        [ride] = [a for a in self.queued() if a["payload"]["title"] == "Time to leave soon"]
-        self.assertIn("take Tom - Kindergarten at 07:30", ride["payload"]["instruction"])
+        self.assertEqual(titles, ["Today in your family's week"])
 
     def test_nothing_goes_when_the_family_week_is_switched_off(self) -> None:
         self.database.set_account_type_feature(account_type="family", feature_id="family_week", allowed=False)
@@ -397,11 +447,27 @@ class NudgerTests(unittest.TestCase):
         self.assertIn("DRIVE: collect Tom - Kindergarten at 16:00", ride["payload"]["instruction"])
         self.assertIn("for Shirly", ride["payload"]["instruction"])
 
+        # Rina, who gets no morning plan, is still told before a run of hers
+        # that leaves as the plan goes out; Shirly, who got the plan, is not.
+        self.database.save_household_activity(
+            user_id=self.user_id, title="Chess", who=["Noa"], days=["sun"],
+            start_time="07:30", end_time="08:30", drop_off_by="Rina", pick_up_by="Shirly",
+        )
+        self.database.save_household_activity(
+            user_id=self.user_id, title="Choir", who=["Tom"], days=["sun"],
+            start_time="07:35", end_time="08:30", drop_off_by="Shirly", pick_up_by="Rina",
+        )
+        early = self.nudger.run_pending(now=at(SUNDAY, 7, 1))
+        self.assertEqual(early["rides"], 1)
+        [chess] = [a for a in self.queued() if a["payload"]["title"] == "Time to leave soon" and "Chess" in a["payload"]["instruction"]]
+        self.assertEqual(chess["recipientRef"], "972500000003")
+        self.assertFalse(any("Choir" in a["payload"]["instruction"] for a in self.queued() if a["payload"]["title"] == "Time to leave soon"))
+
         # Monday: Rina takes Noa at 16:30, and Dana collects her at 17:30.
         monday = SUNDAY.replace(day=21)
         self.nudger.run_pending(now=at(monday, 16, 5))
         rides = [a for a in self.queued() if a["payload"]["title"] == "Time to leave soon"]
-        self.assertEqual([r["recipientRef"] for r in rides], ["owner", "972500000002", "972500000003"])
+        self.assertEqual([r["recipientRef"] for r in rides], ["972500000003", "972500000002", "972500000003"])
         self.assertIn("take Noa - Ballet at 16:30", rides[-1]["payload"]["instruction"])
         self.nudger.run_pending(now=at(monday, 17, 5))
         rides = [a for a in self.queued() if a["payload"]["title"] == "Time to leave soon"]
@@ -614,8 +680,10 @@ class HolidayNudgeTests(unittest.TestCase):
         self.assertNotIn("Kindergarten", action["payload"]["fallbackText"])
 
     def test_an_ordinary_day_goes_as_it_always_did(self) -> None:
+        # 07:05 in Israel: the morning plan goes, with the 07:30 kindergarten
+        # run in it, and no second word about that run beside it.
         summary = self.nudger.run_pending(now=at(SUNDAY, 4, 5))
-        self.assertEqual((summary["morning"], summary["rides"]), (1, 1))
+        self.assertEqual((summary["morning"], summary["rides"]), (1, 0))
         [action] = self.queued("Today in your family's week")
         self.assertIn("Kindergarten", action["payload"]["instruction"])
         self.assertNotIn("CALENDAR", action["payload"]["instruction"])
