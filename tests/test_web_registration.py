@@ -633,7 +633,23 @@ class RegistrationWelcomeTextTests(unittest.TestCase):
         self.assertIn("do not explain how the address will be read", prompt)
 
     def test_a_template_parameter_is_one_line(self) -> None:
-        self.assertEqual(flatten_for_template("Hi\n\nthere\t  friend  "), "Hi there friend")
+        self.assertEqual(flatten_for_template("Hi\t  friend  "), "Hi friend")
+
+    def test_a_template_parameter_folds_lines_into_sentences(self) -> None:
+        # A morning plan written one run per line once reached the phone as a
+        # single line with bullets stranded in the middle of it. Each line
+        # becomes a sentence instead; a line already closed keeps its ending.
+        plan = (
+            "Today:\n"
+            "- 08:00 Lahav — Shaked; you take, nobody collects yet\n"
+            "• 08:15 Laor — gan. Gan is open.\n"
+            "\n"
+            "Have a great day 🙂"
+        )
+        self.assertEqual(
+            flatten_for_template(plan),
+            "Today: 08:00 Lahav — Shaked; you take, nobody collects yet. 08:15 Laor — gan. Gan is open. Have a great day 🙂",
+        )
 
 
 if __name__ == "__main__":

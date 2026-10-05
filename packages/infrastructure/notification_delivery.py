@@ -43,10 +43,40 @@ def normalize_text(value: Any) -> str:
     return str(value or "").strip()
 
 
-def flatten_template_parameter(value: Any) -> str:
-    """One line: a template variable may carry no newline and no tab."""
+# A line that ends mid-thought gets a full stop when it is folded into the
+# next one; a line already closed (".", "!", "?", ":", an emoji) is left as
+# it is, and so is the last line, whatever it ends with.
+_LINE_NEEDS_A_STOP = re.compile(r"[\w)\]]$")
 
-    return re.sub(r"\s+", " ", normalize_text(value)).strip()
+
+def flatten_template_parameter(value: Any) -> str:
+    """One line: a template variable may carry no newline and no tab.
+
+    Meta refuses a template variable with a line break in it, so a message
+    written as lines - a morning plan, a list, one item per line - has to be
+    folded before it rides the template. Folding is by sentence, not by
+    whitespace: each line loses its bullet and ends with a full stop, so the
+    phone reads "Lahav at 08:00. Laor at 08:15." rather than a single line
+    with bullets stranded in the middle of it. A value that is one line
+    already - a first name, a fixed sentence - is only tidied of stray
+    whitespace. The in-window plain-text send keeps the lines as they are;
+    this is only for the template.
+    """
+
+    lines: list[str] = []
+    for raw_line in normalize_text(value).splitlines():
+        line = re.sub(r"\s+", " ", raw_line).strip()
+        if line:
+            lines.append(line)
+    if len(lines) <= 1:
+        return " ".join(lines)
+    folded: list[str] = []
+    for index, line in enumerate(lines):
+        line = re.sub(r"^(?:[-*•]|\d+[.)])\s+", "", line)
+        if index < len(lines) - 1 and _LINE_NEEDS_A_STOP.search(line):
+            line += "."
+        folded.append(line)
+    return " ".join(folded)
 
 
 def normalize_email(value: Any) -> str:
