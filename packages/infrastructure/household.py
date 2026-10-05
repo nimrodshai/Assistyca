@@ -442,6 +442,109 @@ def activity_gaps(
     return gaps
 
 
+DRIVE_LEGS = ("drop_off", "pick_up")
+_LEG_KEYS = {"drop_off": ("dropOffBy", "startTime"), "pick_up": ("pickUpBy", "endTime")}
+_LEG_WORDS = {"dropoff": "drop_off", "drop_off": "drop_off", "pickup": "pick_up", "pick_up": "pick_up", "collect": "pick_up", "take": "drop_off"}
+
+
+def normalize_legs(values: Iterable[Any] | None) -> list[str]:
+    """The legs of a drive, as code names: drop_off and pick_up, in that
+    order, however they were spelt."""
+
+    found = []
+    for value in values or ():
+        key = _LEG_WORDS.get(clean(value).lower().replace("-", "_").replace(" ", "_"))
+        if key and key not in found:
+            found.append(key)
+    return [leg for leg in DRIVE_LEGS if leg in found]
+
+
+def own_work_hours(
+    activities: Iterable[dict[str, Any]] | None,
+    members: Iterable[dict[str, Any]] | None,
+    owner_names: Iterable[str] = (),
+) -> list[dict[str, Any]]:
+    """The account holder's own week - the grown-up activities that are
+    theirs, with a start and an end - which is when they are not free to
+    drive. The partner's hours are not here: they say when the partner is
+    busy, not the person."""
+
+    owners = list(owner_names)
+    hours = []
+    for activity in activities or ():
+        if not is_grown_up_activity(activity, members, owners):
+            continue
+        if not any(is_self(name, owners) for name in (activity.get("who") or ())):
+            continue
+        if normalize_time(activity.get("startTime")) and normalize_time(activity.get("endTime")):
+            hours.append(activity)
+    return hours
+
+
+def drives_during_work(
+    activities: Iterable[dict[str, Any]] | None,
+    members: Iterable[dict[str, Any]] | None,
+    owner_names: Iterable[str] = (),
+    *,
+    day: date | None = None,
+    include_accepted: bool = False,
+) -> list[dict[str, Any]]:
+    """The drives the account holder is down for that fall inside their own
+    work hours - a pickup at 13:30 on a day they work 09:00-17:00.
+
+    Both come from the same week, so this is a question the week can ask
+    itself, and it is asked the evening before and again in the morning
+    until it is settled. Settled is one of two things: somebody else is put
+    down for the drive, or the person says it is fine as it is - they work
+    round the corner, or leave early that day - which is kept on the
+    activity (fineDuringWork) so it is never raised again. The hours' ends
+    are not inside: a pickup when work finishes is their drive home.
+
+    day narrows it to one weekday; otherwise every day the two share.
+    Each record is one drive: the activity, its leg, the clock, the work it
+    falls inside, and the days it does.
+    """
+
+    owners = list(owner_names)
+    work = own_work_hours(activities, members, owners)
+    if not work:
+        return []
+    wanted = weekday_code(day) if day is not None else None
+    found = []
+    for activity in activities or ():
+        if is_grown_up_activity(activity, members, owners):
+            continue
+        accepted = set(normalize_legs(activity.get("fineDuringWork")))
+        for leg in DRIVE_LEGS:
+            who_key, time_key = _LEG_KEYS[leg]
+            if not is_self(activity.get(who_key), owners):
+                continue
+            if leg in accepted and not include_accepted:
+                continue
+            clock = normalize_time(activity.get(time_key))
+            if not clock:
+                continue
+            days = [code for code in (activity.get("days") or ()) if wanted is None or code == wanted]
+            for hours in work:
+                shared = [code for code in days if code in (hours.get("days") or ())]
+                if not shared:
+                    continue
+                if normalize_time(hours["startTime"]) < clock < normalize_time(hours["endTime"]):
+                    found.append({
+                        "activity": activity, "leg": leg, "at": clock, "work": hours,
+                        "days": [code for code in WEEKDAY_CODES if code in shared],
+                        "accepted": leg in accepted,
+                    })
+    return found
+
+
+def describe_work_hours(hours: dict[str, Any]) -> str:
+    """A grown-up's hours as a few words: "Work at the office 09:00-17:00"."""
+
+    place = clean(hours.get("place"))
+    return f"{clean(hours.get('title'), MAX_TITLE_LENGTH)}{' at ' + place if place else ''} {hours.get('startTime')}-{hours.get('endTime')}"
+
+
 # What a week has to hold before it can be run for a family. The point of
 # the week is the afternoons: a child ends somewhere at a time, and somebody
 # has to be there. So a child nobody has told us anything about, an activity
@@ -599,6 +702,14 @@ def describe_household(
 
     profile = profile or {}
     owners = [name for name in owner_names if clean(name)]
+    # A drive of theirs inside their own work hours, still to settle: said
+    # on the activity so a "that's fine" in the conversation can be kept.
+    during_work: dict[int, dict[str, Any]] = {}
+    if not group_name:
+        for found in drives_during_work(activities, members, owners):
+            during_work.setdefault(int(found["activity"].get("id") or 0), {})[found["leg"]] = {
+                "at": found["at"], "inside": describe_work_hours(found["work"]), "days": found["days"],
+            }
     described: dict[str, Any] = {} if group_name else {
         "accountKind": normalize_account_kind(profile.get("accountKind")),
         "gettingToKnow": {
@@ -644,8 +755,10 @@ def describe_household(
                     "notes": activity.get("notes") or None,
                     "grownUp": is_grown_up_activity(activity, members, owners) or None,
                     "nobodyDownFor": activity_gaps(activity, members, owners) or None,
+                    "fineDuringWork": normalize_legs(activity.get("fineDuringWork")) or None,
+                    "driveDuringWork": during_work.get(int(activity.get("id") or 0)) or None,
                 }.items()
-                if value not in (None, "", [])
+                if value not in (None, "", [], {})
             }
             for activity in activities
         ],

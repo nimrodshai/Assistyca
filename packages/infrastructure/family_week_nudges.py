@@ -178,12 +178,16 @@ def describe_activity_line(
     owner_names: list[str],
     members: list[dict[str, Any]] | None = None,
     viewer_names: list[str] | None = None,
+    during_work: dict[str, str] | None = None,
 ) -> str:
     """One activity as a plain line: time, what, for whom, who takes and
     collects. A grown-up's own week - their work - is the line alone: nobody
     takes them and nobody collects them, so neither is said to be missing.
     viewer_names is who is reading when it is a family member on their own
-    phone rather than the account holder: "you" is then them."""
+    phone rather than the account holder: "you" is then them. during_work
+    is, by leg, the person's own work hours a drive of theirs falls inside
+    and has not been settled: the morning says so in the same bullet, so a
+    pickup they cannot make is not read as sorted."""
 
     parts = []
     times = normalize_text(activity.get("startTime"))
@@ -197,9 +201,55 @@ def describe_activity_line(
         return head
     takes = _ride_word(activity.get("dropOffBy"), owner_names, viewer_names)
     collects = _ride_word(activity.get("pickUpBy"), owner_names, viewer_names)
-    parts.append(f"takes: {takes}" if takes else "nobody takes them yet")
-    parts.append(f"collects: {collects}" if collects else "nobody collects them yet")
+    inside = during_work or {}
+    parts.append(
+        (f"takes: {takes}" + (f" (inside your own {inside['drop_off']}, not settled yet)" if inside.get("drop_off") else ""))
+        if takes else "nobody takes them yet"
+    )
+    parts.append(
+        (f"collects: {collects}" + (f" (inside your own {inside['pick_up']}, not settled yet)" if inside.get("pick_up") else ""))
+        if collects else "nobody collects them yet"
+    )
     return ", ".join(parts)
+
+
+def during_work_by_activity(
+    activities: list[dict[str, Any]],
+    members: list[dict[str, Any]] | None,
+    owner_names: list[str],
+    day: date,
+) -> dict[int, dict[str, str]]:
+    """For one day, the account holder's drives that fall inside their own
+    work hours and are not settled, by activity id and leg, each as the
+    hours they fall inside."""
+
+    found: dict[int, dict[str, str]] = {}
+    for record in household.drives_during_work(activities, members, owner_names, day=day):
+        found.setdefault(int(record["activity"]["id"]), {})[record["leg"]] = household.describe_work_hours(record["work"])
+    return found
+
+
+def work_clash_lines(
+    activities: list[dict[str, Any]],
+    members: list[dict[str, Any]] | None,
+    owner_names: list[str],
+    day: date,
+) -> list[str]:
+    """The drives that day the account holder is down for which fall inside
+    their own work hours, one plain line each, for the evening before. The
+    hours are their own week, so unlike the calendar nothing is read for
+    this - and once they have said a drive is fine as it is, it is not here."""
+
+    lines = []
+    for record in household.drives_during_work(activities, members, owner_names, day=day):
+        activity = record["activity"]
+        what = f"{activity.get('title')}" + (f" ({_who(activity, owner_names)})" if _who(activity) else "")
+        which = "the drop-off" if record["leg"] == "drop_off" else "the pickup"
+        lines.append(
+            f"{what}, {which} at {record['at']}: you are down for it, but it falls inside your own "
+            f"{household.describe_work_hours(record['work'])}"
+        )
+    return lines
 
 
 def gap_lines(
@@ -731,7 +781,11 @@ class FamilyWeekNudger:
             )
             if todays and self.config.morning_hour <= local_now.hour < self.config.morning_hour + MORNING_WINDOW_HOURS:
                 if claim(f"morning:{today.isoformat()}"):
-                    lines = [describe_activity_line(activity, owner_names, members) for activity in todays]
+                    inside_work = during_work_by_activity(todays, members, owner_names, today)
+                    lines = [
+                        describe_activity_line(activity, owner_names, members, during_work=inside_work.get(int(activity.get("id") or 0)))
+                        for activity in todays
+                    ]
                     self._queue(
                         user_id=user_id, now=reference, timezone_name=timezone_name,
                         title="Today in your family's week",
@@ -742,6 +796,11 @@ class FamilyWeekNudger:
                             "for a drop-off or pickup yet, say so in that bullet. Say each fact once: no opening line, "
                             "no sign-off, and no closing line that repeats what the bullets already say. 'you' is the "
                             "person. "
+                            + (
+                                "Where a drive of theirs is marked as falling inside their own work hours and not "
+                                "settled yet, say so in that bullet in a few words and, at the end, ask in one line "
+                                "who could take it or whether it is fine as it is. " if inside_work else ""
+                            )
                             + (
                                 "CALENDAR is what the school calendar says about today: mention it in a few words only "
                                 "where it bears on what is listed, such as an earlier finish. " if today_calendar else ""
@@ -757,25 +816,34 @@ class FamilyWeekNudger:
             in_evening = self.config.evening_hour <= local_now.hour < self.config.evening_hour + EVENING_WINDOW_HOURS
             tomorrow_gaps: list[str] = []
             tomorrow_clashes: list[str] = []
+            tomorrow_work: list[str] = []
             if in_evening:
                 usual_tomorrow = activities_on(activities, tomorrow)
                 # The calendar is read once an evening, and only when they are
                 # the one driving tomorrow: nobody else's meetings are theirs
                 # to see, and a day they are not on the road needs no reading.
                 wants_calendar = self.calendar_reader is not None and owner_is_driving(usual_tomorrow, owner_names)
-                if gap_lines(usual_tomorrow, members, owner_names) or wants_calendar:
+                if (
+                    gap_lines(usual_tomorrow, members, owner_names)
+                    or work_clash_lines(usual_tomorrow, members, owner_names, tomorrow)
+                    or wants_calendar
+                ):
                     tomorrow_on, _ = self._on_day(
                         user_id=user_id, timezone_name=timezone_name, day=tomorrow, activities=activities,
                         exceptions=exceptions,
                     )
                     tomorrow_gaps = gap_lines(tomorrow_on, members, owner_names)
+                    # A drive inside their own working day is the same question
+                    # as a meeting, asked from the week itself: every evening
+                    # until somebody else takes it or they say it is fine.
+                    tomorrow_work = work_clash_lines(tomorrow_on, members, owner_names, tomorrow)
                     if wants_calendar and owner_is_driving(tomorrow_on, owner_names) and claim(f"evening-calendar:{tomorrow.isoformat()}"):
                         tomorrow_clashes = ride_clashes(
                             tomorrow_on, owner_names=owner_names, day=tomorrow, zone=zone,
                             events=self._calendar_day(user_id, tomorrow, timezone_name),
                             lead_minutes=self.config.ride_lead_minutes,
                         )
-            if tomorrow_gaps or tomorrow_clashes:
+            if tomorrow_gaps or tomorrow_clashes or tomorrow_work:
                 if claim(f"evening:{tomorrow.isoformat()}"):
                     about = []
                     if tomorrow_gaps:
@@ -785,6 +853,19 @@ class FamilyWeekNudger:
                             "which drive of theirs tomorrow lands inside something already in their calendar - "
                             "name the entry, and ask who could take that drive instead"
                         )
+                    if tomorrow_work:
+                        about.append(
+                            "which drive of theirs tomorrow falls inside their own work hours as they gave them - "
+                            "name the hours, and ask who could take it or whether it is fine as it is, since they "
+                            "may work close by"
+                        )
+                    fallback_parts = [
+                        part for part in (
+                            "Tomorrow still needs someone:\n" + "\n".join(f"• {line}" for line in tomorrow_gaps) if tomorrow_gaps else "",
+                            "Tomorrow clashes with your calendar:\n" + "\n".join(f"• {line}" for line in tomorrow_clashes) if tomorrow_clashes else "",
+                            "Tomorrow, inside your own work hours:\n" + "\n".join(f"• {line}" for line in tomorrow_work) if tomorrow_work else "",
+                        ) if part
+                    ]
                     self._queue(
                         user_id=user_id, now=reference, timezone_name=timezone_name,
                         title="Tomorrow still needs someone",
@@ -794,12 +875,9 @@ class FamilyWeekNudger:
                             "person. The facts are exact; add none, and use no tool."
                             + ("\nTOMORROW:\n" + "\n".join(tomorrow_gaps) if tomorrow_gaps else "")
                             + ("\nCLASHES WITH YOUR CALENDAR:\n" + "\n".join(tomorrow_clashes) if tomorrow_clashes else "")
+                            + ("\nINSIDE YOUR OWN WORK HOURS:\n" + "\n".join(tomorrow_work) if tomorrow_work else "")
                         ),
-                        fallback=(
-                            ("Tomorrow still needs someone:\n" + "\n".join(f"• {line}" for line in tomorrow_gaps) if tomorrow_gaps else "")
-                            + ("\n" if tomorrow_gaps and tomorrow_clashes else "")
-                            + ("Tomorrow clashes with your calendar:\n" + "\n".join(f"• {line}" for line in tomorrow_clashes) if tomorrow_clashes else "")
-                        ),
+                        fallback="\n".join(fallback_parts),
                     )
                     counts["evening"] += 1
 

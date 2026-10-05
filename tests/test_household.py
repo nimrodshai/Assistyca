@@ -410,6 +410,30 @@ class ToolTests(unittest.TestCase):
         self.assertNotIn("grownUp", added["saved"])
         self.assertNotIn("nobodyDownFor", self.run_tool("show_family_week")["byDay"]["sun"][0])
 
+    def test_saving_work_hours_names_the_drive_they_swallow_until_she_says_it_is_fine(self) -> None:
+        self.run_tool("save_family_member", name="Noa", previous_name=None, role="child", age=7, school=None, email=None, phone=None, notes=None)
+        school = self.run_tool(
+            "save_week_activity", id=None, title="Gretz school", who=["Noa"], days=["mon"], start_time="08:00",
+            end_time="13:30", place=None, drop_off_by="Yoav", pick_up_by="me", notes=None,
+        )
+        self.assertEqual(school["saved"]["driveDuringWork"], [])
+        work = self.run_tool(
+            "save_week_activity", id=None, title="Work", who=["me"], days=["mon"], start_time="09:00",
+            end_time="17:00", place="the office", drop_off_by="", pick_up_by="", notes=None,
+        )
+        self.assertEqual(work["saved"]["driveDuringWork"], [{
+            "id": school["saved"]["id"], "title": "Gretz school", "leg": "pick_up", "at": "13:30",
+            "inside": "Work at the office 09:00-17:00", "days": ["mon"],
+        }])
+        shown = self.run_tool("show_family_week")["byDay"]["mon"]
+        self.assertIn("driveDuringWork", next(entry for entry in shown if entry["title"] == "Gretz school"))
+        accepted = self.run_tool("accept_drive_during_work", id=school["saved"]["id"], leg="pick_up")
+        self.assertEqual(accepted["accepted"], {"id": school["saved"]["id"], "title": "Gretz school", "leg": "pick_up", "fineDuringWork": ["pick_up"]})
+        shown = self.run_tool("show_family_week")["byDay"]["mon"]
+        self.assertNotIn("driveDuringWork", next(entry for entry in shown if entry["title"] == "Gretz school"))
+        self.assertEqual(self.run_tool("accept_drive_during_work", id=999, leg="pick_up")["error"]["code"], "not_found")
+        self.assertEqual(self.run_tool("accept_drive_during_work", id=school["saved"]["id"], leg="lunch")["error"]["code"], "choice_required")
+
     def test_a_bad_email_or_unknown_activity_is_explained_not_saved(self) -> None:
         refused = self.run_tool("save_family_member", name="Shirly", previous_name=None, role="partner", age=None, school=None, email="shirly at gmail", phone=None, notes=None)
         self.assertEqual(refused["error"]["code"], "choice_required")
@@ -884,3 +908,58 @@ class JoinPageTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DrivesDuringWorkTests(unittest.TestCase):
+    members = [{"name": "Noa", "role": "child"}, {"name": "Yoav", "role": "partner"}]
+    work = {"id": 1, "title": "Work", "who": ["me"], "days": ["mon", "tue"], "startTime": "09:00", "endTime": "17:00", "place": "the office"}
+    school = {
+        "id": 2, "title": "Gretz school", "who": ["Noa"], "days": ["mon", "tue", "wed"], "startTime": "08:00",
+        "endTime": "13:30", "dropOffBy": "Yoav", "pickUpBy": "me", "fineDuringWork": [],
+    }
+
+    def test_a_pickup_inside_the_owners_work_hours_is_found_for_the_days_they_share(self) -> None:
+        [found] = household.drives_during_work([self.work, self.school], self.members, ["Dana Levi"])
+        self.assertEqual((found["leg"], found["at"], found["days"], found["accepted"]), ("pick_up", "13:30", ["mon", "tue"], False))
+        self.assertEqual(household.describe_work_hours(found["work"]), "Work at the office 09:00-17:00")
+        # Wednesday she does not work, so that day has nothing to say.
+        self.assertEqual(household.drives_during_work([self.work, self.school], self.members, ["Dana"], day=date(2026, 9, 23)), [])
+        self.assertEqual(len(household.drives_during_work([self.work, self.school], self.members, ["Dana"], day=date(2026, 9, 21))), 1)
+
+    def test_the_ends_of_the_day_and_other_drivers_are_not_inside(self) -> None:
+        # Dropping off at 08:00 before work, and a pickup exactly when work ends, are her drives home and in.
+        at_the_edges = dict(self.school, dropOffBy="me", endTime="17:00")
+        self.assertEqual(household.drives_during_work([self.work, at_the_edges], self.members, ["Dana"]), [])
+        # The partner's pickup is theirs, not hers, and the partner's own hours say nothing about her.
+        yoav_works = dict(self.work, id=3, who=["Yoav"])
+        theirs = dict(self.school, pickUpBy="Yoav")
+        self.assertEqual(household.drives_during_work([yoav_works, theirs], self.members, ["Dana"]), [])
+        self.assertEqual(household.drives_during_work([yoav_works, self.school], self.members, ["Dana"]), [])
+        # Her own name on the week counts as her.
+        self.assertEqual(len(household.drives_during_work([dict(self.work, who=["Dana"]), self.school], self.members, ["Dana Levi"])), 1)
+
+    def test_a_drive_she_has_said_is_fine_is_settled(self) -> None:
+        settled = dict(self.school, fineDuringWork=["pick_up"])
+        self.assertEqual(household.drives_during_work([self.work, settled], self.members, ["Dana"]), [])
+        [kept] = household.drives_during_work([self.work, settled], self.members, ["Dana"], include_accepted=True)
+        self.assertTrue(kept["accepted"])
+        self.assertEqual(household.normalize_legs(["pickup", "Drop-off", "pick_up", "lunch"]), ["drop_off", "pick_up"])
+
+    def test_the_block_marks_the_drive_and_what_was_accepted(self) -> None:
+        described = household.describe_household(
+            profile={"accountKind": "family"}, members=self.members, activities=[self.work, self.school],
+            today=date(2026, 9, 20), owner_names=["Dana"],
+        )
+        school = next(entry for entry in described["week"] if entry["id"] == 2)
+        self.assertEqual(school["driveDuringWork"], {"pick_up": {"at": "13:30", "inside": "Work at the office 09:00-17:00", "days": ["mon", "tue"]}})
+        self.assertNotIn("fineDuringWork", school)
+        settled = household.describe_household(
+            profile={"accountKind": "family"}, members=self.members,
+            activities=[self.work, dict(self.school, fineDuringWork=["pick_up"])], today=date(2026, 9, 20), owner_names=["Dana"],
+        )
+        school = next(entry for entry in settled["week"] if entry["id"] == 2)
+        self.assertNotIn("driveDuringWork", school)
+        self.assertEqual(school["fineDuringWork"], ["pick_up"])
+        # A group's week has no owner, so it is never marked.
+        group = household.describe_household(profile=None, members=self.members, activities=[self.work, self.school], today=date(2026, 9, 20), group_name="Class")
+        self.assertNotIn("driveDuringWork", next(entry for entry in group["week"] if entry["id"] == 2))
