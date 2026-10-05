@@ -252,6 +252,35 @@ class ScheduledActionTests(unittest.TestCase):
         self.assertEqual(send.call_args.kwargs["template_name"], "notification_message")
         self.assertEqual(saved["payload"]["whatsappSendMode"], "template")
 
+    def test_a_message_written_as_lines_rides_the_template_as_sentences(self) -> None:
+        # The template variable cannot carry a line break, so the lines are
+        # folded into sentences rather than squashed onto one line with the
+        # bullets still in it. A morning plan once reached the phone as
+        # "... collects yet. • 08:00-16:15 Laor ..." this way.
+        from packages.infrastructure.notification_delivery import send_whatsapp_notification
+
+        plan = "Today:\n• 08:00 Lahav — Shaked; you take\n• Lotan — Rimon; the bus takes him.\n\nHave a great day 🙂"
+        with mock.patch(
+            "packages.tools.whatsapp_reply_approval.server.send_whatsapp_message",
+            return_value="wamid.template-lines",
+        ) as send:
+            send_whatsapp_notification(
+                phone_number_id="123",
+                recipient_wa_id="972507322341",
+                message_text=plan,
+                access_token="token",
+                template_name="notification_message",
+                template_language="en",
+            )
+
+        template = send.call_args.kwargs["template"]
+        body = [component for component in template["components"] if component["type"] == "body"][0]
+        self.assertEqual(
+            body["parameters"],
+            [{"type": "text", "text": "Today: 08:00 Lahav — Shaked; you take. Lotan — Rimon; the bus takes him. Have a great day 🙂"}],
+        )
+        self.assertIsNone(send.call_args.kwargs["message_text"])
+
     def test_a_reminder_at_the_edge_of_the_window_uses_the_template(self) -> None:
         self.database.save_whatsapp_agent_message(user_id=int(self.user["id"]), role="user", text="Remind me")
         self._backdate_last_message(hours=23.95)

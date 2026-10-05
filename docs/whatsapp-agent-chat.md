@@ -231,7 +231,8 @@ talking to. Reopening a stale signup keeps the registration.
 
 We speak first, outside Meta's 24-hour window, so the welcome goes out as the
 approved `notification_message` template on one line (a template parameter
-may carry no newline). If it cannot be sent — no sender token, a bad number —
+may carry no newline; a message written as lines is folded into sentences,
+see `flatten_template_parameter`). If it cannot be sent — no sender token, a bad number —
 the registration still stands and the page shows the public `wa.me` link, so
 saying hi from that phone lands in the same signup. The link is returned in
 every case as the "didn't get it?" fallback.

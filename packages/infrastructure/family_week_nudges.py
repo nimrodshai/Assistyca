@@ -861,7 +861,7 @@ class FamilyWeekNudger:
                         )
                     fallback_parts = [
                         part for part in (
-                            "Tomorrow still needs someone:\n" + "\n".join(f"• {line}" for line in tomorrow_gaps) if tomorrow_gaps else "",
+                            "Tomorrow still needs someone - who will do it?\n" + "\n".join(f"• {line}" for line in tomorrow_gaps) if tomorrow_gaps else "",
                             "Tomorrow clashes with your calendar:\n" + "\n".join(f"• {line}" for line in tomorrow_clashes) if tomorrow_clashes else "",
                             "Tomorrow, inside your own work hours:\n" + "\n".join(f"• {line}" for line in tomorrow_work) if tomorrow_work else "",
                         ) if part
@@ -871,8 +871,13 @@ class FamilyWeekNudger:
                         title="Tomorrow still needs someone",
                         instruction=(
                             "It is the evening. In one or two short sentences, in the language the person writes to you "
-                            "in, tell them " + ", and ".join(about) + ", so there is time to sort it out. 'you' is the "
-                            "person. The facts are exact; add none, and use no tool."
+                            "in, tell them " + ", and ".join(about) + ". "
+                            + (
+                                "This is a question, not a report: end by asking them to decide now who does each "
+                                "drop-off or pickup still open - them, their partner, or somebody else - and leave it "
+                                "easy to answer with a name. " if tomorrow_gaps else ""
+                            )
+                            + "'you' is the person. The facts are exact; add none, and use no tool."
                             + ("\nTOMORROW:\n" + "\n".join(tomorrow_gaps) if tomorrow_gaps else "")
                             + ("\nCLASHES WITH YOUR CALENDAR:\n" + "\n".join(tomorrow_clashes) if tomorrow_clashes else "")
                             + ("\nINSIDE YOUR OWN WORK HOURS:\n" + "\n".join(tomorrow_work) if tomorrow_work else "")
@@ -1044,10 +1049,12 @@ class FamilyWeekNudger:
                         instruction=(
                             f"It is the evening, and this message is for {first}, a parent in this family writing from "
                             "their own phone. In one or two short sentences, in the language the family writes to you "
-                            "in, tell them what tomorrow still has nobody down for, so there is time to sort it out. "
-                            f"'you' is {first}. The facts are exact; add none, and use no tool.\nTOMORROW:\n" + "\n".join(gaps)
+                            "in, tell them what tomorrow still has nobody down for. This is a question, not a report: "
+                            "end by asking them to decide now who does each drop-off or pickup still open - them, "
+                            f"the other parent, or somebody else - and leave it easy to answer with a name. 'you' is "
+                            f"{first}. The facts are exact; add none, and use no tool.\nTOMORROW:\n" + "\n".join(gaps)
                         ),
-                        fallback="Tomorrow still needs someone:\n" + "\n".join(f"• {line}" for line in gaps),
+                        fallback="Tomorrow still needs someone - who will do it?\n" + "\n".join(f"• {line}" for line in gaps),
                     )
                     counts["evening"] += 1
             if "rides" not in wants:

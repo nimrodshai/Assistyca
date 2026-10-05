@@ -31,6 +31,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from packages.infrastructure.account_types import account_feature_allowed
 from packages.infrastructure.notification_delivery import DEFAULT_WHATSAPP_API_VERSION
+from packages.infrastructure.notification_delivery import flatten_template_parameter
 from packages.infrastructure.notification_delivery import normalize_email
 from packages.infrastructure.notification_delivery import normalize_text
 from packages.infrastructure.notification_delivery import parse_bool
@@ -879,9 +880,12 @@ def build_registration_welcome_prompt(*, name: str, business: str, kind: str = "
 
 
 def flatten_for_template(text: Any) -> str:
-    """One line: a template body parameter may carry no newline or tab."""
+    """One line: a template body parameter may carry no newline or tab.
 
-    return re.sub(r"\s+", " ", normalize_text(text)).strip()
+    The folding itself lives with the template send, so every template
+    variable is folded the same way: lines become sentences."""
+
+    return flatten_template_parameter(text)
 
 
 CALENDAR_PICK_PREFIX = "calpick:"
