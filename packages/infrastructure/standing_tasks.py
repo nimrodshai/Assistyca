@@ -192,8 +192,34 @@ def is_standing_task(action: dict[str, Any] | None) -> bool:
     )
 
 
+# How the message can be laid out where it is going. Plain text keeps line
+# breaks, and a plan with several items reads far better as bullets. The
+# WhatsApp template outside Meta's 24-hour window carries one line and
+# loses every line break, so the same plan has to be short, organised prose
+# - told to the model up front, rather than written as bullets and folded.
+MESSAGE_SHAPE_LINES = "lines"
+MESSAGE_SHAPE_SINGLE_LINE = "single_line"
+_SHAPE_GUIDANCE = {
+    MESSAGE_SHAPE_LINES: (
+        " Their phone shows line breaks: when there is more than one thing to tell - runs, pickups, "
+        "meetings, items - put each on its own line as a bullet, one short line per item."
+    ),
+    MESSAGE_SHAPE_SINGLE_LINE: (
+        " This message travels as a single line of text and every line break is lost on the way, so "
+        "no bullets and no lists: write short, organised prose - one tight sentence per item, in order, "
+        "only what they need - so it reads cleanly as one short paragraph."
+    ),
+}
+
+
 def build_task_run_message(
-    *, title: str, instruction: str, schedule_text: str, standing: bool = True, may_offer: bool = False,
+    *,
+    title: str,
+    instruction: str,
+    schedule_text: str,
+    standing: bool = True,
+    may_offer: bool = False,
+    shape: str = MESSAGE_SHAPE_LINES,
 ) -> str:
     """What the loop is asked when a standing action fires.
 
@@ -204,6 +230,8 @@ def build_task_run_message(
     claiming a schedule it does not have. may_offer is for a one-off whose
     instruction proposes one action for a yes (an alert offering to put an
     event in the diary): the person may answer, so that question is allowed.
+    shape says whether the message keeps its line breaks (bullets) or has
+    to travel as one line (prose).
     """
 
     name = normalize_text(title) or ("standing action" if standing else "action")
@@ -213,11 +241,12 @@ def build_task_run_message(
         if standing
         else f"The one-off action \"{name}\" is running now."
     )
+    layout = _SHAPE_GUIDANCE.get(normalize_text(shape), _SHAPE_GUIDANCE[MESSAGE_SHAPE_LINES])
     if may_offer:
         return (
             f"{opening} The person is not writing; they will read your reply as a message on its own and may "
             "answer it. Write it as the finished result, with no question and no offer except the one the "
-            "instruction allows, and nothing set up or scheduled. Do this now: "
+            f"instruction allows, and nothing set up or scheduled.{layout} Do this now: "
             f"{normalize_text(instruction)}"
         )
     quiet = (
@@ -229,7 +258,7 @@ def build_task_run_message(
     return (
         f"{opening} The person is not writing; "
         "they will read your reply as a message on its own, so write it as the finished result and "
-        f"nothing else: no questions, no offers, nothing set up or scheduled.{quiet} Do this now: "
+        f"nothing else: no questions, no offers, nothing set up or scheduled.{quiet}{layout} Do this now: "
         f"{normalize_text(instruction)}"
     )
 
@@ -326,6 +355,7 @@ class StandingTaskRunner:
                 schedule_text=describe_task_schedule(payload.get("schedule")),
                 standing=is_standing_task(action),
                 may_offer=may_offer,
+                shape=normalize_text(action.get("messageShape")) or MESSAGE_SHAPE_LINES,
             ),
             "conversation": conversation,
             "timezone": timezone_name,
