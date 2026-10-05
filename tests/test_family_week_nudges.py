@@ -221,6 +221,17 @@ class NudgerTests(unittest.TestCase):
         [action] = self.queued()
         self.assertIn("Ballet (Noa) at 16:30: nobody is down for the drop-off", action["payload"]["instruction"])
 
+    def test_the_evening_before_asks_her_to_decide_not_just_tells_her(self) -> None:
+        # The evening before is the moment to settle tomorrow: a message that
+        # only reports the gap was read and left, and the morning still said
+        # "nobody collects yet". So it ends on the question, with a name as
+        # the easy answer.
+        self.nudger.run_pending(now=at(SUNDAY, 20, 15))
+        [action] = self.queued()
+        self.assertIn("asking them to decide now who does each drop-off or pickup still open", action["payload"]["instruction"])
+        self.assertIn("easy to answer with a name", action["payload"]["instruction"])
+        self.assertTrue(action["payload"]["fallbackText"].startswith("Tomorrow still needs someone - who will do it?\n• "))
+
     def test_the_evening_before_holds_the_owners_drives_up_against_her_calendar(self) -> None:
         # Monday: Dana collects Noa from ballet at 17:30, and her calendar has
         # a meeting then. Sunday evening says so, in the same message as the
