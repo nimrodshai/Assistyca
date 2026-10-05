@@ -111,6 +111,23 @@ class ScheduleMathTests(unittest.TestCase):
         one_off = build_task_run_message(title="Today", instruction="write the plan", schedule_text="", standing=False)
         self.assertNotIn("nothingToSend", one_off)
 
+    def test_the_run_message_says_how_the_message_may_be_laid_out(self) -> None:
+        # Plain text keeps line breaks, so a plan is asked for as bullets; the
+        # template outside the window loses them, so the same plan is asked
+        # for as short prose. The assistant writes for the shape rather than
+        # having its bullets folded afterwards.
+        lines = build_task_run_message(title="Plan", instruction="write today's plan", schedule_text="every day at 07:00")
+        self.assertIn("put each on its own line as a bullet", lines)
+        self.assertTrue(lines.endswith("Do this now: write today's plan"))
+        one_line = build_task_run_message(
+            title="Plan", instruction="write today's plan", schedule_text="every day at 07:00", shape="single_line",
+        )
+        self.assertIn("no bullets and no lists", one_line)
+        self.assertNotIn("as a bullet", one_line)
+        self.assertTrue(one_line.endswith("Do this now: write today's plan"))
+        offer = build_task_run_message(title="Inbox", instruction="offer it", schedule_text="", standing=False, may_offer=True, shape="single_line")
+        self.assertIn("no bullets and no lists", offer)
+
     def test_a_run_that_may_offer_allows_only_the_offer_its_instruction_names(self) -> None:
         text = build_task_run_message(title="Inbox", instruction="offer the event", schedule_text="", standing=False, may_offer=True)
         self.assertIn("may answer it", text)
@@ -177,6 +194,32 @@ class StandingTaskSchedulerTests(unittest.TestCase):
         # It is due again once that time comes, under the same id.
         due_later = self.database.list_due_scheduled_actions(now=now + timedelta(days=2))
         self.assertEqual([entry["id"] for entry in due_later], [action["id"]])
+
+    def test_the_runner_is_told_the_shape_the_phone_can_show(self) -> None:
+        # Nobody has written to the number lately, so the plan will ride the
+        # template and has to be one line; the assistant is told so before it
+        # writes. Once the person has written, plain text carries lines.
+        action = self._task()
+        runner = mock.Mock(return_value="One run today.")
+        scheduler = ScheduledActionScheduler(self.database, config=self.config, task_runner=runner)
+        with mock.patch("packages.infrastructure.scheduled_actions.send_whatsapp_notification", return_value="wamid.shape-1"):
+            scheduler.run_pending(now=datetime.now(timezone.utc))
+        self.assertEqual(runner.call_args.args[0]["messageShape"], "single_line")
+
+        self.database.save_whatsapp_agent_message(user_id=int(self.user["id"]), role="user", text="Thanks")
+        self.database.reschedule_scheduled_action(
+            action_id=int(action["id"]), run_at=datetime.now(timezone.utc) - timedelta(seconds=1), payload={**action["payload"]}, last_error="",
+        )
+        runner.reset_mock()
+        with mock.patch("packages.infrastructure.scheduled_actions.send_whatsapp_notification", return_value="wamid.shape-2"):
+            scheduler.run_pending(now=datetime.now(timezone.utc))
+        self.assertEqual(runner.call_args.args[0]["messageShape"], "lines")
+
+    def test_a_portal_run_is_written_in_lines(self) -> None:
+        self._task(channel="portal")
+        runner = mock.Mock(return_value="One run today.")
+        ScheduledActionScheduler(self.database, config=self.config, task_runner=runner).run_pending(now=datetime.now(timezone.utc))
+        self.assertEqual(runner.call_args.args[0]["messageShape"], "lines")
 
     def test_a_failed_run_keeps_the_action_alive(self) -> None:
         action = self._task()

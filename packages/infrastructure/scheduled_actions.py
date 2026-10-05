@@ -20,6 +20,8 @@ from packages.infrastructure.portal_db import normalize_text
 from packages.infrastructure.schedule_exceptions import action_exception
 from packages.infrastructure.schedule_exceptions import held_until
 from packages.infrastructure.standing_tasks import STANDING_TASK_ACTION_TYPE
+from packages.infrastructure.standing_tasks import MESSAGE_SHAPE_LINES
+from packages.infrastructure.standing_tasks import MESSAGE_SHAPE_SINGLE_LINE
 from packages.infrastructure.standing_tasks import NothingNewToSend
 from packages.infrastructure import household
 from packages.infrastructure.family_week_nudges import owner_phone
@@ -49,6 +51,11 @@ GROUP_RECIPIENT_PREFIX = "group:"
 # keeps a reminder due at the very edge of the window on the template.
 WHATSAPP_SERVICE_WINDOW = timedelta(hours=24)
 WHATSAPP_SERVICE_WINDOW_MARGIN = timedelta(minutes=5)
+# The shape a message can take where it is going is decided here, before the
+# assistant writes it (MESSAGE_SHAPE_LINES / MESSAGE_SHAPE_SINGLE_LINE in
+# standing_tasks): plain text and the in-app feed keep line breaks, so a plan
+# reads as bullets; the template carries one line and no more, so the same
+# plan has to be short, organised prose.
 
 
 @dataclass(frozen=True)
@@ -353,6 +360,7 @@ class ScheduledActionScheduler:
         if action_type == STANDING_TASK_ACTION_TYPE:
             if self.task_runner is None:
                 raise RuntimeError("Standing actions are not enabled on this server.")
+            action["messageShape"] = self._message_shape(action) if channel == "whatsapp" else MESSAGE_SHAPE_LINES
             try:
                 message_text = normalize_text(self.task_runner(action))
                 if not message_text:
@@ -468,27 +476,15 @@ class ScheduledActionScheduler:
         elapsed = reference - written_at
         return timedelta(0) <= elapsed < WHATSAPP_SERVICE_WINDOW - WHATSAPP_SERVICE_WINDOW_MARGIN
 
-    def _deliver_whatsapp(self, action: dict[str, Any], message_text: str) -> str:
-        """Send the scheduled message to the owner over WhatsApp.
-
-        Inside Meta's 24-hour service window the message goes as plain text,
-        exactly like the chat's own replies. Outside it, or when plain text
-        is refused, the approved scheduled-notification template carries it.
-        Every refusal is kept, so a message that reaches neither says why.
-        """
+    def _whatsapp_recipient(self, action: dict[str, Any]) -> str:
+        """The phone a scheduled WhatsApp message goes to: the group reference
+        as given, or the owner's own number resolved from the account."""
 
         payload = action.get("payload") if isinstance(action.get("payload"), dict) else {}
         user_id = int(action.get("userId") or 0)
         recipient_ref = normalize_text(payload.get("recipientWaId") or action.get("recipientRef"))
         if recipient_ref.startswith(GROUP_RECIPIENT_PREFIX):
-            from packages.infrastructure.whatsapp_agent_chat import send_assistyca_group_text
-
-            group_id = recipient_ref[len(GROUP_RECIPIENT_PREFIX):]
-            if not group_id:
-                raise RuntimeError("Scheduled group message is missing the group.")
-            provider_message_id = send_assistyca_group_text(group_id=group_id, text=message_text)
-            payload["whatsappSendMode"] = "group_text"
-            return provider_message_id
+            return recipient_ref
         if recipient_ref.lower() in OWNER_RECIPIENT_REFS:
             if user_id <= 0:
                 raise RuntimeError("Scheduled WhatsApp message is missing a user id.")
@@ -501,9 +497,48 @@ class ScheduledActionScheduler:
                 recipient_ref = owner_phone(self.database, user_id)
             if not recipient_ref:
                 raise RuntimeError("No WhatsApp notification recipient is configured for this account.")
-
         if not recipient_ref:
             raise RuntimeError("WhatsApp recipient is missing.")
+        return recipient_ref
+
+    def _message_shape(self, action: dict[str, Any]) -> str:
+        """Lines when the message will go as plain text (a group, or a phone
+        still inside the window), a single line when only the template can
+        carry it. A recipient that cannot be resolved is left to the send,
+        which says why; the assistant then writes in lines."""
+
+        try:
+            recipient_ref = self._whatsapp_recipient(action)
+        except Exception:  # noqa: BLE001 - the send reports the missing recipient
+            return MESSAGE_SHAPE_LINES
+        if recipient_ref.startswith(GROUP_RECIPIENT_PREFIX):
+            return MESSAGE_SHAPE_LINES
+        user_id = int(action.get("userId") or 0)
+        if self._service_window_open(user_id, thread_id=self._thread_for_phone(user_id, recipient_ref)):
+            return MESSAGE_SHAPE_LINES
+        return MESSAGE_SHAPE_SINGLE_LINE
+
+    def _deliver_whatsapp(self, action: dict[str, Any], message_text: str) -> str:
+        """Send the scheduled message to the owner over WhatsApp.
+
+        Inside Meta's 24-hour service window the message goes as plain text,
+        exactly like the chat's own replies. Outside it, or when plain text
+        is refused, the approved scheduled-notification template carries it.
+        Every refusal is kept, so a message that reaches neither says why.
+        """
+
+        payload = action.get("payload") if isinstance(action.get("payload"), dict) else {}
+        user_id = int(action.get("userId") or 0)
+        recipient_ref = self._whatsapp_recipient(action)
+        if recipient_ref.startswith(GROUP_RECIPIENT_PREFIX):
+            from packages.infrastructure.whatsapp_agent_chat import send_assistyca_group_text
+
+            group_id = recipient_ref[len(GROUP_RECIPIENT_PREFIX):]
+            if not group_id:
+                raise RuntimeError("Scheduled group message is missing the group.")
+            provider_message_id = send_assistyca_group_text(group_id=group_id, text=message_text)
+            payload["whatsappSendMode"] = "group_text"
+            return provider_message_id
 
         refusals: list[str] = []
         if self._service_window_open(user_id, thread_id=self._thread_for_phone(user_id, recipient_ref)):
@@ -594,6 +629,8 @@ __all__ = [
     "DEFAULT_SCHEDULED_ACTION_POLL_SECONDS",
     "DEFAULT_SCHEDULED_WHATSAPP_TEMPLATE_LANGUAGE",
     "DEFAULT_SCHEDULED_WHATSAPP_TEMPLATE_NAME",
+    "MESSAGE_SHAPE_LINES",
+    "MESSAGE_SHAPE_SINGLE_LINE",
     "ScheduledActionConfig",
     "ScheduledActionScheduler",
     "describe_list_for_message",
