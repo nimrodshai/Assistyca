@@ -19,7 +19,12 @@ Three moments, each once, on the person's own clock:
   trip, not two messages a minute apart. A drive whose leaving time falls
   within twenty minutes of the morning message, either side, is in that
   message and is not said again: two messages at once saying the same
-  thing read as a glitch, not as care;
+  thing read as a glitch, not as care. A pickup nobody is down for yet is
+  the parents' to settle, so it gets the same word at the same time, to
+  the account holder and to a partner on their own phone - and that word
+  asks who is doing it rather than telling anyone to leave. The evening
+  before asked, the morning said so; this is the last word before the
+  child is standing at the gate;
 * a birthday a month away, with an offer of the ready-made list to get
   ready for it.
 
@@ -398,23 +403,32 @@ def _owner_rides_today(
     owner_names: list[str],
     local_now: datetime,
     driver_names: list[str] | None = None,
+    members: list[dict[str, Any]] | None = None,
+    open_legs: bool = False,
 ) -> list[tuple[datetime, dict[str, Any]]]:
     """Every leg today the account holder drives - or, with driver_names, a
     family member - with its moment, in time order. Only theirs: a leg
-    somebody else or the bus takes is in the morning plan and nowhere else."""
+    somebody else or the bus takes is in the morning plan and nowhere else.
+
+    With open_legs, a leg nobody is down for yet (household.activity_gaps:
+    empty, not the bus, and never a grown-up's own hours) is theirs too,
+    marked "open": nobody else is going to be told, and a child with no one
+    coming is the one thing the week is kept for."""
 
     is_driver = _is_driver(owner_names, driver_names)
     rides = []
     for activity in activities_on(activities, local_now.date()):
+        gaps = household.activity_gaps(activity, members, owner_names) if open_legs else []
         for leg, who_key, time_key in (("drop_off", "dropOffBy", "startTime"), ("pick_up", "pickUpBy", "endTime")):
-            if not is_driver(activity.get(who_key)):
+            is_open = leg in gaps
+            if not is_open and not is_driver(activity.get(who_key)):
                 continue
             clock = household.normalize_time(activity.get(time_key))
             if not clock:
                 continue
             hour, minute = (int(part) for part in clock.split(":"))
             moment = local_now.replace(hour=hour, minute=minute, second=0, microsecond=0)
-            rides.append((moment, {"activity": activity, "leg": leg, "at": clock}))
+            rides.append((moment, {"activity": activity, "leg": leg, "at": clock, "open": is_open}))
     # Two at the same time keep the week's own order.
     rides.sort(key=lambda pair: (pair[0], int(pair[1]["activity"].get("id") or 0)))
     return rides
@@ -449,6 +463,8 @@ def rides_leaving_together(
     driver_names: list[str] | None = None,
     digest_at: datetime | None = None,
     digest_gap_minutes: int = 0,
+    members: list[dict[str, Any]] | None = None,
+    open_legs: bool = False,
 ) -> list[dict[str, Any]]:
     """The owner's drives that go out as one word: those due now, and any
     other of theirs that follows within merge_minutes of the earliest of
@@ -462,9 +478,16 @@ def rides_leaving_together(
     leaving time - lead_minutes before it - is nearer than digest_gap_minutes
     to that moment, before or after, is in the morning message already and
     is left out here: it is not said again a minute later. A reader who
-    gets no morning message passes nothing, and hears about every drive."""
+    gets no morning message passes nothing, and hears about every drive.
 
-    rides = _owner_rides_today(activities, owner_names=owner_names, local_now=local_now, driver_names=driver_names)
+    open_legs adds the legs nobody is down for yet, for a reader who is to
+    settle them (see _owner_rides_today); they are due, merge and are kept
+    out of the morning's shadow exactly like a drive of their own."""
+
+    rides = _owner_rides_today(
+        activities, owner_names=owner_names, local_now=local_now, driver_names=driver_names,
+        members=members, open_legs=open_legs,
+    )
     lead = timedelta(minutes=lead_minutes)
     if digest_at is not None and digest_gap_minutes > 0:
         gap = timedelta(minutes=digest_gap_minutes)
@@ -474,6 +497,71 @@ def rides_leaving_together(
         return []
     first = min(due)
     return [ride for moment, ride in rides if first <= moment <= first + timedelta(minutes=merge_minutes)]
+
+
+def ride_fact(ride: dict[str, Any], who: str) -> str:
+    """One drive as a plain fact for the message: "collect Tom - Swimming at
+    18:00, the pool", or, for a leg nobody is down for yet, the same with
+    "nobody is down yet to" in front, so the model and the fallback both
+    know which line is a question."""
+
+    verb = "take" if ride["leg"] == "drop_off" else "collect"
+    activity = ride["activity"]
+    place = normalize_text(activity.get("place"))
+    fact = f"{verb} {who} - {activity.get('title')} at {ride['at']}" + (f", {place}" if place else "")
+    return f"nobody is down yet to {fact}" if ride.get("open") else fact
+
+
+def leave_words(facts: list[str], open_count: int, *, reader: str = "") -> dict[str, str]:
+    """The title, instruction and fallback for the word before a drive -
+    or before a pickup nobody has taken, which asks instead of reminding.
+    reader is a family member's first name when the message is for their
+    phone; empty for the account holder."""
+
+    language = "the language the family writes to you in" if reader else "the language they write to you in"
+    them = "them"
+    if open_count == len(facts):
+        # Nothing here is anyone's drive yet: a question, not a reminder.
+        whose = f"This message is for {reader}, a parent in this family, who is to settle it." if reader else "The person is the one to settle it."
+        one = len(facts) == 1
+        return {
+            "title": "Still needs someone",
+            "instruction": (
+                ("Nobody is down yet for a drive of the family's that is coming up shortly. " if one else
+                 "Nobody is down yet for these drives of the family's, which are coming up shortly. ")
+                + whose
+                + f" In one or two short sentences, in {language}, say what "
+                + ("it is and when" if one else "they are and when")
+                + f", and end by asking who is doing it - {them} or somebody else - easy to answer with a name. "
+                + ("The fact is exact; add nothing, and use no tool.\nOPEN: " + facts[0] if one else
+                   "The facts are exact; add nothing, and use no tool.\nOPEN:\n" + "\n".join(facts))
+            ),
+            "fallback": (f"Soon: {facts[0]}. Who will do it?" if one else
+                         "Soon, still open - who will do it?\n" + "\n".join(f"• {fact}" for fact in facts)),
+        }
+    whose = f"This message is for {reader}, who is in this family and is the one driving shortly. " if reader else "The person is the one driving shortly. "
+    open_note = (
+        f" A line that starts 'nobody is down yet' is a run with no one on it: say so, and end by asking who does it - {them} or "
+        "somebody else - easy to answer with a name."
+        if open_count else ""
+    )
+    if len(facts) == 1:
+        instruction = (
+            whose + f"In one short sentence, in {language}, remind them what it is and when. "
+            "The fact is exact; add nothing, and use no tool." + open_note + "\nDRIVE: " + facts[0]
+        )
+        fallback = f"Soon: {facts[0]}."
+    else:
+        instruction = (
+            whose + "These runs of theirs fall close together, so they are one trip. In one or two short sentences, "
+            f"in {language}, remind them of all of them in time order as one plan"
+            + (" - at the same time means taking everyone together and dropping one, then the other" if not reader else "")
+            + ". Say each once. The facts are exact; add nothing, and use no tool." + open_note + "\nDRIVES:\n" + "\n".join(facts)
+        )
+        fallback = "Soon, one trip:\n" + "\n".join(f"• {fact}" for fact in facts)
+    if open_count:
+        fallback += " Who will do the open one?" if open_count == 1 else " Who will do the open ones?"
+    return {"title": "Time to leave soon", "instruction": instruction, "fallback": fallback}
 
 
 # -- the account holder's own calendar -----------------------------------------
@@ -886,44 +974,25 @@ class FamilyWeekNudger:
                     )
                     counts["evening"] += 1
 
+            # Their own drives, and the legs nobody is down for yet: the
+            # account holder is the one who settles those.
             together = rides_leaving_together(
-                todays, owner_names=owner_names, local_now=local_now,
+                todays, owner_names=owner_names, local_now=local_now, members=members, open_legs=True,
                 lead_minutes=self.config.ride_lead_minutes, merge_minutes=self.config.ride_merge_minutes,
                 digest_at=self._morning_moment(local_now), digest_gap_minutes=self.config.ride_digest_gap_minutes,
             )
-            facts = []
+            facts, open_count = [], 0
             for ride in together:
                 activity = ride["activity"]
                 if not claim(f"ride:{today.isoformat()}:{activity['id']}:{ride['leg']}"):
                     continue
-                verb = "take" if ride["leg"] == "drop_off" else "collect"
-                who = _who(activity) or "them"
-                place = normalize_text(activity.get("place"))
-                facts.append(f"{verb} {who} - {activity.get('title')} at {ride['at']}" + (f", {place}" if place else ""))
-            if len(facts) == 1:
+                facts.append(ride_fact(ride, _who(activity) or "them"))
+                open_count += 1 if ride.get("open") else 0
+            if facts:
+                words = leave_words(facts, open_count)
                 self._queue(
                     user_id=user_id, now=reference, timezone_name=timezone_name,
-                    title="Time to leave soon",
-                    instruction=(
-                        "The person is the one driving shortly. In one short sentence, in the language they write to "
-                        "you in, remind them what it is and when. The fact is exact; add nothing, and use no tool.\n"
-                        f"DRIVE: {facts[0]}"
-                    ),
-                    fallback=f"Soon: {facts[0]}.",
-                )
-                counts["rides"] += 1
-            elif facts:
-                self._queue(
-                    user_id=user_id, now=reference, timezone_name=timezone_name,
-                    title="Time to leave soon",
-                    instruction=(
-                        "The person is the one driving shortly, and these runs of theirs fall close together, so they "
-                        "are one trip. In one or two short sentences, in the language they write to you in, remind "
-                        "them of all of them in time order as one plan - at the same time means taking everyone "
-                        "together and dropping one, then the other. Say each once. The facts are exact; add nothing, "
-                        "and use no tool.\nDRIVES:\n" + "\n".join(facts)
-                    ),
-                    fallback="Soon, one trip:\n" + "\n".join(f"• {fact}" for fact in facts),
+                    title=words["title"], instruction=words["instruction"], fallback=words["fallback"],
                 )
                 counts["rides"] += 1
 
@@ -1062,38 +1131,29 @@ class FamilyWeekNudger:
             # A parent who got the morning plan is not told again, a minute
             # after it, about a drive that plan already named; a grandparent
             # who hears only about their own drives is told about each one.
+            # A leg nobody has taken is a parent's to settle, so a parent
+            # hears about it like the account holder does; a grandparent on
+            # their own phone is never asked to cover it.
             together = rides_leaving_together(
                 todays, owner_names=owner_names, local_now=local_now, driver_names=names,
+                members=members, open_legs="evening" in wants,
                 lead_minutes=self.config.ride_lead_minutes, merge_minutes=self.config.ride_merge_minutes,
                 digest_at=self._morning_moment(local_now) if "morning" in wants else None,
                 digest_gap_minutes=self.config.ride_digest_gap_minutes,
             )
-            facts = []
+            facts, open_count = [], 0
             for ride in together:
                 activity = ride["activity"]
                 if not claim(f"ride:{today.isoformat()}:{activity['id']}:{ride['leg']}{suffix}"):
                     continue
-                verb = "take" if ride["leg"] == "drop_off" else "collect"
-                who = _who(activity, owner_names, names) or "them"
-                place = normalize_text(activity.get("place"))
-                facts.append(f"{verb} {who} - {activity.get('title')} at {ride['at']}" + (f", {place}" if place else ""))
+                facts.append(ride_fact(ride, _who(activity, owner_names, names) or "them"))
+                open_count += 1 if ride.get("open") else 0
             if not facts:
                 continue
+            words = leave_words(facts, open_count, reader=first)
             self._queue(
                 user_id=user_id, now=reference, timezone_name=timezone_name, recipient_wa_id=wa_id,
-                title="Time to leave soon",
-                instruction=(
-                    f"This message is for {first}, who is in this family and is the one driving shortly. "
-                    + (
-                        "In one short sentence, in the language the family writes to you in, remind them what it is "
-                        "and when. The fact is exact; add nothing, and use no tool.\nDRIVE: " + facts[0]
-                        if len(facts) == 1 else
-                        "These runs of theirs fall close together, so they are one trip. In one or two short sentences, "
-                        "in the language the family writes to you in, remind them of all of them in time order as one "
-                        "plan. Say each once. The facts are exact; add nothing, and use no tool.\nDRIVES:\n" + "\n".join(facts)
-                    )
-                ),
-                fallback=f"Soon: {facts[0]}." if len(facts) == 1 else "Soon, one trip:\n" + "\n".join(f"• {fact}" for fact in facts),
+                title=words["title"], instruction=words["instruction"], fallback=words["fallback"],
             )
             counts["rides"] += 1
 
@@ -1123,7 +1183,9 @@ __all__ = [
     "activities_on",
     "describe_activity_line",
     "gap_lines",
+    "leave_words",
     "load_family_week_nudge_config",
+    "ride_fact",
     "rides_due",
     "rides_due_for_anyone",
     "rides_leaving_together",
