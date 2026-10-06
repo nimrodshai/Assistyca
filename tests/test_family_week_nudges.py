@@ -796,3 +796,144 @@ class HolidayNudgeTests(unittest.TestCase):
         # 15:40 local, twenty minutes before Yonatan's 16:00 run.
         self.assertEqual(self.nudger.run_pending_for_groups(now=at(monday, 12, 40))["groupRides"], 0)
         self.assertEqual(self.nudger.run_pending_for_groups(now=at(SUNDAY, 17, 15))["groupEvening"], 0)
+
+
+class OpenPickupTests(unittest.TestCase):
+    """Nimrod's Tuesday, 2026-10-06: Lahav at school until 12:45 with nobody
+    down to collect, Laor at gan until 16:15 collected by Stav, Lotan on the
+    bus. The evening before asked, the morning said so, and then the day
+    went quiet right up to the gate. An open pickup is the parents' to
+    settle, so it gets a word before its time, and that word asks."""
+
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.database = PortalDatabase(Path(self.temp_dir.name) / "portal.db")
+        self.database.register_user("dana@example.com", display_name="Dana Levi")
+        self.database.update_user_account_type("dana@example.com", account_type="family")
+        self.user_id = int((self.database.get_user("dana@example.com") or {})["id"])
+        for name in ("Lahav", "Laor", "Lotan"):
+            self.database.save_household_member(user_id=self.user_id, name=name, role="child")
+        self.database.save_household_member(user_id=self.user_id, name="Stav", role="partner")
+        self.school = self.database.save_household_activity(
+            user_id=self.user_id, title="Shaked Elementary", who=["Lahav"], days=["tue"],
+            start_time="08:00", end_time="12:45", drop_off_by="me", pick_up_by="",
+        )
+        self.database.save_household_activity(
+            user_id=self.user_id, title="Gan", who=["Laor"], days=["tue"],
+            start_time="08:00", end_time="16:15", drop_off_by="me", pick_up_by="Stav",
+        )
+        self.database.save_household_activity(
+            user_id=self.user_id, title="Rimon junior high", who=["Lotan"], days=["tue"],
+            start_time="08:00", end_time="14:00", drop_off_by="the bus", pick_up_by="the bus",
+        )
+        self.nudger = FamilyWeekNudger(self.database, config=FamilyWeekNudgeConfig(morning_hour=7, evening_hour=20, ride_lead_minutes=30))
+        self.tuesday = SUNDAY.replace(day=22)
+
+    def tearDown(self) -> None:
+        self.temp_dir.cleanup()
+
+    def queued(self, title: str | None = None) -> list[dict]:
+        return [
+            action for action in self.database.list_scheduled_actions_for_user(self.user_id, limit=50)
+            if (action.get("payload") or {}).get("source") == "family_week"
+            and (title is None or action["payload"]["title"] == title)
+        ]
+
+    def test_an_open_leg_is_the_owners_to_hear_about_and_the_bus_is_not(self) -> None:
+        activities = self.database.list_household_activities(user_id=self.user_id)
+        members = self.database.list_household_members(user_id=self.user_id)
+        work = {"id": 99, "title": "Work", "who": ["me"], "days": ["tue"], "startTime": "09:00", "endTime": "17:00", "dropOffBy": "", "pickUpBy": ""}
+
+        def together(hour: int, minute: int, open_legs: bool) -> list[tuple[str, str, bool]]:
+            return [
+                (ride["activity"]["title"], ride["leg"], bool(ride.get("open"))) for ride in rides_leaving_together(
+                    activities + [work], owner_names=["Dana"], local_now=at(self.tuesday, hour, minute),
+                    lead_minutes=30, merge_minutes=30, members=members, open_legs=open_legs,
+                )
+            ]
+
+        # As before, the pickup nobody has taken is nobody's drive...
+        self.assertEqual(together(12, 20, open_legs=False), [])
+        # ...and with open legs asked for, it is the owner's to hear about, marked as open.
+        self.assertEqual(together(12, 20, open_legs=True), [("Shaked Elementary", "pick_up", True)])
+        # The bus is not open, Stav's pickup is Stav's, and the owner's own
+        # hours have nobody to take or collect them.
+        self.assertEqual(together(13, 40, open_legs=True), [])
+        self.assertEqual(together(15, 50, open_legs=True), [])
+        self.assertEqual(together(8, 40, open_legs=True), [])
+        self.assertEqual(together(16, 40, open_legs=True), [])
+
+    def test_the_owner_is_asked_before_the_pickup_nobody_has_taken(self) -> None:
+        self.assertEqual(self.nudger.run_pending(now=at(self.tuesday, 7, 2))["morning"], 1)
+        # 07:32: the two drop-offs, one trip, as before.
+        self.assertEqual(self.nudger.run_pending(now=at(self.tuesday, 7, 32))["rides"], 1)
+        [trip] = self.queued("Time to leave soon")
+        self.assertIn("DRIVES:\ntake Lahav - Shaked Elementary at 08:00\ntake Laor - Gan at 08:00", trip["payload"]["instruction"])
+        self.assertNotIn("nobody", trip["payload"]["instruction"])
+        # Nothing between the morning run and the open pickup.
+        for hour, minute in ((9, 0), (11, 0), (12, 10)):
+            self.assertEqual(self.nudger.run_pending(now=at(self.tuesday, hour, minute))["rides"], 0, f"{hour}:{minute}")
+        # 12:16: half an hour before Lahav's pickup, which still has nobody - a question, once.
+        self.assertEqual(self.nudger.run_pending(now=at(self.tuesday, 12, 16))["rides"], 1)
+        [ask] = self.queued("Still needs someone")
+        self.assertEqual(ask["recipientRef"], "owner")
+        self.assertIn("Nobody is down yet for a drive of the family's that is coming up shortly.", ask["payload"]["instruction"])
+        self.assertIn("asking who is doing it - them or somebody else", ask["payload"]["instruction"])
+        self.assertTrue(ask["payload"]["instruction"].endswith("\nOPEN: nobody is down yet to collect Lahav - Shaked Elementary at 12:45"))
+        self.assertEqual(ask["payload"]["fallbackText"], "Soon: nobody is down yet to collect Lahav - Shaked Elementary at 12:45. Who will do it?")
+        self.assertEqual(self.nudger.run_pending(now=at(self.tuesday, 12, 30))["rides"], 0)
+        # Stav's pickup at 16:15 and the bus at 14:00 are not the owner's: quiet.
+        for hour, minute in ((13, 40), (15, 50)):
+            self.assertEqual(self.nudger.run_pending(now=at(self.tuesday, hour, minute))["rides"], 0, f"{hour}:{minute}")
+        self.assertEqual(len(self.queued()), 3)
+
+    def test_a_pickup_settled_in_time_asks_nobody(self) -> None:
+        self.database.save_household_activity(user_id=self.user_id, activity_id=int(self.school["id"]), pick_up_by="Stav")
+        self.assertEqual(self.nudger.run_pending(now=at(self.tuesday, 12, 16))["rides"], 0)
+        self.assertEqual(self.queued("Still needs someone"), [])
+        # Taken by the owner, it is their ordinary drive.
+        self.database.save_household_activity(user_id=self.user_id, activity_id=int(self.school["id"]), pick_up_by="me")
+        self.assertEqual(self.nudger.run_pending(now=at(self.tuesday, 12, 20))["rides"], 1)
+        [ride] = self.queued("Time to leave soon")
+        self.assertIn("DRIVE: collect Lahav - Shaked Elementary at 12:45", ride["payload"]["instruction"])
+        self.assertNotIn("nobody", ride["payload"]["instruction"])
+
+    def test_an_open_pickup_beside_the_owners_own_drive_rides_in_the_same_word(self) -> None:
+        # Dana collects Laor at 12:30 herself; Lahav's 12:45 pickup is still
+        # open and falls within the same trip - one message, naming both,
+        # and asking about the open one.
+        gan = next(a for a in self.database.list_household_activities(user_id=self.user_id) if a["title"] == "Gan")
+        self.database.save_household_activity(user_id=self.user_id, activity_id=int(gan["id"]), end_time="12:30", pick_up_by="me")
+        self.assertEqual(self.nudger.run_pending(now=at(self.tuesday, 12, 5))["rides"], 1)
+        [trip] = self.queued("Time to leave soon")
+        self.assertIn("one trip", trip["payload"]["instruction"])
+        self.assertIn("A line that starts 'nobody is down yet' is a run with no one on it", trip["payload"]["instruction"])
+        self.assertTrue(trip["payload"]["instruction"].endswith(
+            "DRIVES:\ncollect Laor - Gan at 12:30\nnobody is down yet to collect Lahav - Shaked Elementary at 12:45"
+        ))
+        self.assertEqual(
+            trip["payload"]["fallbackText"],
+            "Soon, one trip:\n• collect Laor - Gan at 12:30\n• nobody is down yet to collect Lahav - Shaked Elementary at 12:45 Who will do the open one?",
+        )
+        self.assertEqual(self.nudger.run_pending(now=at(self.tuesday, 12, 20))["rides"], 0)
+
+    def test_the_partner_is_asked_on_her_own_phone_and_a_grandparent_is_not(self) -> None:
+        from datetime import datetime, timedelta, timezone as tz
+
+        stav = next(m for m in self.database.list_household_members(user_id=self.user_id) if m["name"] == "Stav")
+        rina = self.database.save_household_member(user_id=self.user_id, name="Rina", role="other")
+        for member, code, phone in ((stav, "STV222", "972500000002"), (rina, "RNA333", "972500000003")):
+            self.database.create_household_invite(
+                user_id=self.user_id, member_id=int(member["id"]), code=code,
+                expires_at=datetime.now(tz.utc) + timedelta(days=14),
+            )
+            self.assertTrue(self.database.claim_household_invite(code=code, wa_id=phone)["ok"])
+        self.assertEqual(self.nudger.run_pending(now=at(self.tuesday, 12, 16))["rides"], 2)
+        asks = {a["recipientRef"]: a["payload"] for a in self.queued("Still needs someone")}
+        self.assertEqual(set(asks), {"owner", "972500000002"})
+        self.assertIn("This message is for Stav, a parent in this family, who is to settle it.", asks["972500000002"]["instruction"])
+        self.assertIn("OPEN: nobody is down yet to collect Lahav - Shaked Elementary at 12:45", asks["972500000002"]["instruction"])
+        self.assertEqual(asks["972500000002"]["recipientWaId"], "972500000002")
+        # Once each; and the grandmother, who hears only about her own drives, hears nothing.
+        self.assertEqual(self.nudger.run_pending(now=at(self.tuesday, 12, 25))["rides"], 0)
+        self.assertFalse(any(a["recipientRef"] == "972500000003" for a in self.queued()))
