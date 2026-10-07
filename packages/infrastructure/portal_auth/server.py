@@ -11726,11 +11726,21 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         activities = self.database.list_household_activities(user_id=user_id)
         if not household.should_describe_household(profile, members, activities):
             return None
+        today = self._household_today(timezone_name)
         return household.describe_household(
-            profile=profile, members=members, activities=activities, today=self._household_today(timezone_name),
+            profile=profile, members=members, activities=activities, today=today,
             calendar=self._school_calendar_days(timezone_name),
             calendar_connected="calendar" in connected_sources(tool_context),
             owner_names=[self._household_owner_name(user_id)],
+            day_drives=self._day_drives(user_id, "", today),
+        )
+
+    def _day_drives(self, user_id: int, group_id: str, today: date, days_ahead: int = 14) -> list[dict[str, Any]]:
+        """The answers about single days from today on: who collects tomorrow."""
+
+        return self.database.list_household_day_drives(
+            user_id=user_id, group_id=group_id, from_day=today.isoformat(),
+            to_day=(today + timedelta(days=days_ahead)).isoformat(),
         )
 
     def _group_week_block(self, user_id: int, timezone_name: str, group: dict[str, Any]) -> dict[str, Any] | None:
@@ -11748,13 +11758,15 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             return None
         if not account_feature_allowed(self.database, user_id=user_id, feature_id="family_week"):
             return None
+        today = self._household_today(timezone_name)
         return household.describe_household(
             profile=None,
             members=self.database.list_household_members(user_id=user_id, group_id=group_id),
             activities=self.database.list_household_activities(user_id=user_id, group_id=group_id),
-            today=self._household_today(timezone_name),
+            today=today,
             group_name=normalize_text((group or {}).get("name")) or "this group",
             calendar=self._school_calendar_days(timezone_name),
+            day_drives=self._day_drives(user_id, group_id, today),
         )
 
     def _school_calendar_days(self, timezone_name: str) -> list[dict[str, Any]]:
@@ -15984,11 +15996,24 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 {key: value for key, value in activity.items() if key != "userId"}
                 for activity in self.database.list_household_activities(user_id=user_id)
             ],
+            "dayDrives": self._page_day_drives(user_id),
             "share": {
                 "enabled": bool(token),
                 "url": f"{self._public_base_url()}{WEEK_SHARE_PAGE_PREFIX}{token}" if token else "",
             },
         }
+
+    def _page_day_drives(self, user_id: int) -> list[dict[str, Any]]:
+        """The single-day answers the week page shows on their day: the
+        coming week's, with a day either side so no browser clock misses one."""
+
+        today = datetime.now(timezone.utc).date()
+        return [
+            {key: drive[key] for key in ("id", "activityId", "day", "leg", "who")}
+            for drive in self.database.list_household_day_drives(
+                user_id=user_id, from_day=(today - timedelta(days=1)).isoformat(), to_day=(today + timedelta(days=8)).isoformat(),
+            )
+        ]
 
     def _handle_household_get(self) -> None:
         authenticated = self._require_authenticated_user()
@@ -16093,6 +16118,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 {key: activity[key] for key in ("id", "title", "who", "days", "startTime", "endTime", "place", "dropOffBy", "pickUpBy")}
                 for activity in self.database.list_household_activities(user_id=user_id)
             ],
+            "dayDrives": self._page_day_drives(user_id),
         })
 
     def _handle_lists_handoff(self, parsed: urllib_parse.ParseResult) -> None:

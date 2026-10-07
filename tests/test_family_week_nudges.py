@@ -31,6 +31,72 @@ def at(day: datetime, hour: int, minute: int = 0) -> datetime:
     return day.replace(hour=hour, minute=minute)
 
 
+class DayDrivesTests(unittest.TestCase):
+    """The answer to "who collects tomorrow?" is kept for that day: the
+    reminder goes to whoever said it, the evening stops asking, and the
+    usual week is not changed."""
+
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.database = PortalDatabase(Path(self.temp_dir.name) / "portal.db")
+        self.database.register_user("nimrod@example.com")
+        self.user_id = int((self.database.get_user("nimrod@example.com") or {})["id"])
+        self.database.save_household_member(user_id=self.user_id, name="Stav", role="partner")
+        self.database.save_household_member(user_id=self.user_id, name="Lahav", role="child")
+        self.database.save_household_member(user_id=self.user_id, name="Laor", role="child")
+        self.school = self.database.save_household_activity(
+            user_id=self.user_id, title="School", who=["Lahav"], days=["sun", "mon"],
+            start_time="08:00", end_time="12:45", place="Shaked", drop_off_by="me", pick_up_by="",
+        )
+        self.gan = self.database.save_household_activity(
+            user_id=self.user_id, title="Gan", who=["Laor"], days=["sun", "mon"],
+            start_time="08:00", end_time="16:15", drop_off_by="me", pick_up_by="Stav",
+        )
+        self.nudger = FamilyWeekNudger(self.database, config=FamilyWeekNudgeConfig(morning_hour=7, evening_hour=20, ride_lead_minutes=30))
+
+    def tearDown(self) -> None:
+        self.temp_dir.cleanup()
+
+    def queued(self) -> list[dict]:
+        return [
+            action["payload"] for action in self.database.list_scheduled_actions_for_user(self.user_id, limit=50)
+            if (action.get("payload") or {}).get("source") == "family_week"
+        ]
+
+    def test_i_will_collect_him_tomorrow_is_his_drive_that_day_and_nobodys_the_next(self) -> None:
+        # Saturday evening: "I'll pick up Lahav" about Sunday. The week still
+        # says nobody, so Sunday evening asks about Monday as before.
+        self.database.save_household_day_drive(user_id=self.user_id, activity_id=self.school["id"], day="2026-09-20", leg="pick_up", who="me")
+        saturday = SUNDAY.replace(day=19)
+        self.assertEqual(self.nudger.run_pending(now=at(saturday, 20, 10))["evening"], 0)
+        self.nudger.run_pending(now=at(SUNDAY, 7, 5))
+        [morning] = self.queued()
+        self.assertIn("08:00-12:45 School (Lahav), takes: you, collects: you (today only)", morning["instruction"])
+        self.assertEqual(self.nudger.run_pending(now=at(SUNDAY, 12, 10))["rides"], 0)
+        self.assertEqual(self.nudger.run_pending(now=at(SUNDAY, 12, 16))["rides"], 1)
+        word = self.queued()[-1]
+        self.assertEqual(word["title"], "Time to leave soon")
+        self.assertIn("DRIVE: collect Lahav - School at 12:45, Shaked", word["instruction"])
+        self.assertEqual(self.nudger.run_pending(now=at(SUNDAY, 12, 20))["rides"], 0)
+        # Sunday evening: Monday's pickup is nobody's again.
+        self.assertEqual(self.nudger.run_pending(now=at(SUNDAY, 20, 10))["evening"], 1)
+        self.assertIn("School (Lahav) at 12:45: nobody is down for the pickup", self.queued()[-1]["instruction"])
+        self.assertEqual(self.database.get_household_activity(user_id=self.user_id, activity_id=self.school["id"])["pickUpBy"], "")
+
+    def test_stav_cannot_tomorrow_opens_that_day_though_the_week_says_her(self) -> None:
+        self.database.save_household_day_drive(user_id=self.user_id, activity_id=self.gan["id"], day="2026-09-20", leg="pick_up", who="")
+        saturday = SUNDAY.replace(day=19)
+        self.assertEqual(self.nudger.run_pending(now=at(saturday, 20, 10))["evening"], 1)
+        evening = self.queued()[-1]
+        self.assertIn("Gan (Laor) at 16:15: nobody is down for the pickup", evening["instruction"])
+        self.assertIn("School (Lahav) at 12:45: nobody is down for the pickup", evening["instruction"])
+        self.nudger.run_pending(now=at(SUNDAY, 7, 5))
+        self.assertIn("08:00-16:15 Gan (Laor), takes: you, nobody collects them today", self.queued()[-1]["instruction"])
+        self.assertEqual(self.nudger.run_pending(now=at(SUNDAY, 15, 50))["rides"], 1)
+        self.assertEqual(self.queued()[-1]["title"], "Still needs someone")
+        self.assertEqual(self.database.get_household_activity(user_id=self.user_id, activity_id=self.gan["id"])["pickUpBy"], "Stav")
+
+
 class RulesTests(unittest.TestCase):
     football = {
         "id": 1, "title": "Football", "who": ["Tom"], "days": ["sun"], "startTime": "17:00", "endTime": "18:00",

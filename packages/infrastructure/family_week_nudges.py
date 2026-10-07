@@ -157,6 +157,16 @@ def activities_on(activities: list[dict[str, Any]], day: date) -> list[dict[str,
     return [activity for activity in activities if code in (activity.get("days") or [])]
 
 
+def activities_on_date(
+    activities: list[dict[str, Any]], day_drives: list[dict[str, Any]] | None, day: date,
+) -> list[dict[str, Any]]:
+    """The usual week on that date with the day's own answers over it: who
+    said they would collect tomorrow is who collects tomorrow, and nobody
+    else is told."""
+
+    return household.apply_day_drives(activities_on(activities, day), day_drives, day)
+
+
 def _who(activity: dict[str, Any], owner_names: list[str] | None = None, viewer_names: list[str] | None = None) -> str:
     return ", ".join(_ride_word(name, owner_names or [], viewer_names) for name in activity.get("who") or [])
 
@@ -207,13 +217,17 @@ def describe_activity_line(
     takes = _ride_word(activity.get("dropOffBy"), owner_names, viewer_names)
     collects = _ride_word(activity.get("pickUpBy"), owner_names, viewer_names)
     inside = during_work or {}
+    # A leg the day decided is said as today's answer, not the week's.
+    decided = set(activity.get("dayDriveLegs") or ())
     parts.append(
-        (f"takes: {takes}" + (f" (inside your own {inside['drop_off']}, not settled yet)" if inside.get("drop_off") else ""))
-        if takes else "nobody takes them yet"
+        (f"takes: {takes}" + (" (today only)" if "drop_off" in decided else "")
+         + (f" (inside your own {inside['drop_off']}, not settled yet)" if inside.get("drop_off") else ""))
+        if takes else ("nobody takes them today" if "drop_off" in decided else "nobody takes them yet")
     )
     parts.append(
-        (f"collects: {collects}" + (f" (inside your own {inside['pick_up']}, not settled yet)" if inside.get("pick_up") else ""))
-        if collects else "nobody collects them yet"
+        (f"collects: {collects}" + (" (today only)" if "pick_up" in decided else "")
+         + (f" (inside your own {inside['pick_up']}, not settled yet)" if inside.get("pick_up") else ""))
+        if collects else ("nobody collects them today" if "pick_up" in decided else "nobody collects them yet")
     )
     return ", ".join(parts)
 
@@ -645,22 +659,37 @@ class FamilyWeekNudger:
         day: date,
         activities: list[dict[str, Any]],
         exceptions: list[dict[str, Any]],
+        day_drives: list[dict[str, Any]] | None = None,
     ) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
         """What of the usual week is really on that day, and what the school
         calendar said about the day when it is not an ordinary one.
 
         What the family said is off goes first and costs nothing; the
-        calendar is only asked about what is left."""
+        calendar is only asked about what is left. The day's own drives -
+        who said they would collect that day - go over the result last."""
 
         usual = activities_not_excepted(activities_on(activities, day), exceptions, day)
         if not usual or self.school_calendar is None:
-            return usual, None
+            return household.apply_day_drives(usual, day_drives, day), None
         user = self.database.get_user_by_id(user_id) or {}
         still_on, status = self.school_calendar.activities_still_on(
             user_id=user_id, scope=group_id, place=timezone_name, day=day, activities=usual,
             billing_email=normalize_text(user.get("email")),
         )
-        return still_on, (status if status and not status.get("ordinary") else None)
+        return household.apply_day_drives(still_on, day_drives, day), (status if status and not status.get("ordinary") else None)
+
+    def _day_drives(self, user_id: int, group_id: str, first: date, last: date) -> list[dict[str, Any]]:
+        """The day drives of this week's scope between two dates. A store
+        that keeps none (an older one, a test double) has none."""
+
+        lister = getattr(self.database, "list_household_day_drives", None)
+        if not callable(lister):
+            return []
+        try:
+            return list(lister(user_id=user_id, group_id=group_id, from_day=first.isoformat(), to_day=last.isoformat()))
+        except Exception as exc:  # noqa: BLE001 - the usual week stands
+            print(f"[family-week] day drives unreadable user={user_id} error={exc!r}", flush=True)
+            return []
 
     def _timezone_for_user(self, user_id: int) -> str:
         try:
@@ -782,12 +811,13 @@ class FamilyWeekNudger:
             )
 
             tomorrow = today + timedelta(days=1)
+            day_drives = self._day_drives(user_id, group_id, today, tomorrow)
             in_evening = self.config.evening_hour <= local_now.hour < self.config.evening_hour + EVENING_WINDOW_HOURS
             tomorrow_gaps = []
-            if in_evening and gap_lines(activities_on(activities, tomorrow), members):
+            if in_evening and gap_lines(activities_on_date(activities, day_drives, tomorrow), members):
                 tomorrow_on, _ = self._on_day(
                     user_id=user_id, group_id=group_id, timezone_name=timezone_name, day=tomorrow,
-                    activities=activities, exceptions=exceptions,
+                    activities=activities, exceptions=exceptions, day_drives=day_drives,
                 )
                 tomorrow_gaps = gap_lines(tomorrow_on, members)
             if tomorrow_gaps:
@@ -809,7 +839,7 @@ class FamilyWeekNudger:
 
             todays, _ = self._on_day(
                 user_id=user_id, group_id=group_id, timezone_name=timezone_name, day=today,
-                activities=activities, exceptions=exceptions,
+                activities=activities, exceptions=exceptions, day_drives=day_drives,
             )
             for ride in rides_due_for_anyone(
                 todays, local_now=local_now, lead_minutes=self.config.ride_lead_minutes,
@@ -861,11 +891,14 @@ class FamilyWeekNudger:
             week_paused = family_week_paused(exceptions, today)
             owner_names = self._owner_names(user_id)
             claim = lambda key: self.database.claim_household_nudge(user_id=user_id, nudge_key=key)  # noqa: E731
+            tomorrow = today + timedelta(days=1)
+            day_drives = self._day_drives(user_id, "", today, tomorrow)
 
             # Held up against the school calendar every poll: the day is looked
             # up once and kept, so this is the first poll of the day's cost.
             todays, today_calendar = self._on_day(
                 user_id=user_id, timezone_name=timezone_name, day=today, activities=activities, exceptions=exceptions,
+                day_drives=day_drives,
             )
             if todays and self.config.morning_hour <= local_now.hour < self.config.morning_hour + MORNING_WINDOW_HOURS:
                 if claim(f"morning:{today.isoformat()}"):
@@ -900,13 +933,12 @@ class FamilyWeekNudger:
                     )
                     counts["morning"] += 1
 
-            tomorrow = today + timedelta(days=1)
             in_evening = self.config.evening_hour <= local_now.hour < self.config.evening_hour + EVENING_WINDOW_HOURS
             tomorrow_gaps: list[str] = []
             tomorrow_clashes: list[str] = []
             tomorrow_work: list[str] = []
             if in_evening:
-                usual_tomorrow = activities_on(activities, tomorrow)
+                usual_tomorrow = activities_on_date(activities, day_drives, tomorrow)
                 # The calendar is read once an evening, and only when they are
                 # the one driving tomorrow: nobody else's meetings are theirs
                 # to see, and a day they are not on the road needs no reading.
@@ -918,7 +950,7 @@ class FamilyWeekNudger:
                 ):
                     tomorrow_on, _ = self._on_day(
                         user_id=user_id, timezone_name=timezone_name, day=tomorrow, activities=activities,
-                        exceptions=exceptions,
+                        exceptions=exceptions, day_drives=day_drives,
                     )
                     tomorrow_gaps = gap_lines(tomorrow_on, members, owner_names)
                     # A drive inside their own working day is the same question
@@ -998,6 +1030,7 @@ class FamilyWeekNudger:
 
             self._nudge_members(
                 user_id=user_id, members=members, activities=activities, exceptions=exceptions, todays=todays,
+                day_drives=day_drives,
                 local_now=local_now, reference=reference, timezone_name=timezone_name, owner_names=owner_names,
                 claim=claim, counts=counts,
             )
@@ -1069,6 +1102,7 @@ class FamilyWeekNudger:
         self, *, user_id: int, members: list[dict[str, Any]], activities: list[dict[str, Any]],
         exceptions: list[dict[str, Any]], todays: list[dict[str, Any]], local_now: datetime, reference: datetime,
         timezone_name: str, owner_names: list[str], claim: Callable[[str], bool], counts: dict[str, int],
+        day_drives: list[dict[str, Any]] | None = None,
     ) -> None:
         """The same week, on the phones of the family members who joined the
         account. A parent gets the morning plan, the evening before and a
@@ -1106,9 +1140,10 @@ class FamilyWeekNudger:
                     fallback="Today:\n" + "\n".join(f"• {line}" for line in lines),
                 )
                 counts["morning"] += 1
-            if "evening" in wants and in_evening and gap_lines(activities_on(activities, tomorrow), members, owner_names):
+            if "evening" in wants and in_evening and gap_lines(activities_on_date(activities, day_drives, tomorrow), members, owner_names):
                 tomorrow_on, _ = self._on_day(
                     user_id=user_id, timezone_name=timezone_name, day=tomorrow, activities=activities, exceptions=exceptions,
+                    day_drives=day_drives,
                 )
                 gaps = gap_lines(tomorrow_on, members, owner_names)
                 if gaps and claim(f"evening:{tomorrow.isoformat()}{suffix}"):
@@ -1178,6 +1213,7 @@ class FamilyWeekNudger:
 
 
 __all__ = [
+    "activities_on_date",
     "FamilyWeekNudgeConfig",
     "FamilyWeekNudger",
     "activities_on",

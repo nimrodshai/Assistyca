@@ -75,7 +75,7 @@
 
     $("emptyWeek").classList.toggle("is-hidden", activities.length > 0);
     $("days").classList.toggle("is-hidden", activities.length === 0);
-    renderDays($("days"), activities, { ownerName: data.ownerName, selfLabel: "You", onOpen: openEditor, members });
+    renderDays($("days"), activities, { ownerName: data.ownerName, selfLabel: "You", onOpen: openEditor, members, dayDrives: data.dayDrives || [] });
 
     const share = data.share || {};
     $("shareRow").classList.toggle("is-hidden", !share.enabled);

@@ -1871,6 +1871,27 @@ def _owner_names(context: LoopContext) -> list[str]:
     return [name for name in names if name]
 
 
+DAY_DRIVES_AHEAD_DAYS = 14
+
+
+def _day_drives(context: LoopContext, *, first: date | None = None, last: date | None = None) -> list[dict[str, Any]]:
+    """The answers about single days from today on, for this week's scope.
+    A store that keeps none (an older one, a test double) has none."""
+
+    lister = getattr(context.database, "list_household_day_drives", None)
+    if not callable(lister):
+        return []
+    today = _household_today(context)
+    try:
+        return list(lister(
+            user_id=context.user_id, group_id=week_scope(context),
+            from_day=(first or today).isoformat(), to_day=(last or today + timedelta(days=DAY_DRIVES_AHEAD_DAYS)).isoformat(),
+        ))
+    except Exception as exc:  # noqa: BLE001
+        print(f"agent.loop.day_drives_unreadable user={context.user_id} error={exc!r}", flush=True)
+        return []
+
+
 def _household_payload(context: LoopContext) -> dict[str, Any]:
     database = context.database
     scope = week_scope(context)
@@ -1882,6 +1903,35 @@ def _household_payload(context: LoopContext) -> dict[str, Any]:
         group_name=str((context.group or {}).get("name") or "this group") if scope else "",
         calendar_connected="calendar" in connected_sources(context.tool_context),
         owner_names=[] if scope else _owner_names(context),
+        day_drives=_day_drives(context),
+    )
+
+
+def _checked_driver(context: LoopContext, value: str | None, *, members: list[dict[str, Any]], owners: list[str]) -> tuple[str | None, dict[str, Any] | None]:
+    """A "who drives" word as the week keeps it, or the refusal to give back.
+
+    The week reminds only the people it knows, so a word that is none of
+    them - "Dad", "varies", a neighbour never added - is not kept: it would
+    file the drive under a stranger and the pickup would go quiet."""
+
+    if value is None:
+        return None, None
+    in_group = bool(week_scope(context))
+    kept, problem = household.resolve_driver(value, members, owners, in_group=in_group)
+    if not problem or in_group:
+        # A group's runs are announced to the room with the driver's name,
+        # whoever they are, so a name the store does not hold goes quiet
+        # nowhere there: the people in the room are the drivers.
+        return kept, None
+    names = sorted({str(member.get("name")) for member in members if str(member.get("name") or "")})
+    return None, _error(
+        "choice_required",
+        f"{value!r} is not anyone the week knows, so it was not kept: a drive is done by the person themselves "
+        "('me'), a family member by name, or nobody ('the bus', 'walks', or empty while nobody is down for it). "
+        "If it is the person, use 'me'. If it is somebody else - a grandparent, a neighbour - save them with "
+        "save_family_member first (role 'other') and then name them. If they are saying it changes from day to "
+        "day, leave it empty here and keep each day's answer with assign_day_drive.",
+        family=names,
     )
 
 
@@ -1986,6 +2036,15 @@ def _tool_save_week_activity(context: LoopContext, args: dict[str, Any]) -> dict
         return _error("choice_required", "id is the number of an activity from household.week, or null for a new one.")
     who = args.get("who")
     days = args.get("days")
+    scope = week_scope(context)
+    members = context.database.list_household_members(user_id=context.user_id, group_id=scope)
+    owners = [] if scope else _owner_names(context)
+    drop_off_by, refused = _checked_driver(context, _optional_text(args, "drop_off_by"), members=members, owners=owners)
+    if refused:
+        return refused
+    pick_up_by, refused = _checked_driver(context, _optional_text(args, "pick_up_by"), members=members, owners=owners)
+    if refused:
+        return refused
     try:
         activity = context.database.save_household_activity(
             user_id=context.user_id,
@@ -1996,10 +2055,10 @@ def _tool_save_week_activity(context: LoopContext, args: dict[str, Any]) -> dict
             start_time=_optional_text(args, "start_time"),
             end_time=_optional_text(args, "end_time"),
             place=_optional_text(args, "place"),
-            drop_off_by=_optional_text(args, "drop_off_by"),
-            pick_up_by=_optional_text(args, "pick_up_by"),
+            drop_off_by=drop_off_by,
+            pick_up_by=pick_up_by,
             notes=_optional_text(args, "notes"),
-            group_id=week_scope(context),
+            group_id=scope,
         )
     except LookupError as exc:
         return _error("not_found", str(exc))
@@ -2011,9 +2070,6 @@ def _tool_save_week_activity(context: LoopContext, args: dict[str, Any]) -> dict
         key: activity.get(key)
         for key in ("id", "title", "who", "days", "startTime", "endTime", "place", "dropOffBy", "pickUpBy", "notes")
     }
-    scope = week_scope(context)
-    members = context.database.list_household_members(user_id=context.user_id, group_id=scope)
-    owners = [] if scope else _owner_names(context)
     if household.is_grown_up_activity(activity, members, owners):
         saved["grownUp"] = True
     saved["nobodyDownFor"] = household.activity_gaps(activity, members, owners)
@@ -2032,6 +2088,73 @@ def _tool_save_week_activity(context: LoopContext, args: dict[str, Any]) -> dict
             if int(found["activity"]["id"]) == int(activity["id"]) or int(found["work"]["id"]) == int(activity["id"])
         ]
     return _ok({"saved": saved})
+
+
+def _tool_assign_day_drive(context: LoopContext, args: dict[str, Any]) -> dict[str, Any]:
+    """Who takes or collects for one activity on one date: the answer to
+    "who collects tomorrow?", kept for that day and never written into the
+    usual week."""
+
+    try:
+        activity_id = int(args.get("id"))
+    except (TypeError, ValueError):
+        return _error("choice_required", "id is the number of an activity from household.week.")
+    day = household.parse_day(args.get("day"))
+    if day is None:
+        return _error("choice_required", "day is the date it is about, YYYY-MM-DD.")
+    today = _household_today(context)
+    if day < today:
+        return _error("choice_required", f"{day.isoformat()} is over: today is {today.isoformat()}.")
+    if (day - today).days > schedule_exceptions.MAX_EXCEPTION_DAYS:
+        return _error("choice_required", "That is too far ahead for a day's answer; a lasting change goes in the week itself.")
+    leg = household.normalize_leg(args.get("leg"))
+    if not leg:
+        return _error("choice_required", "leg is drop_off or pick_up.")
+    scope = week_scope(context)
+    activity = context.database.get_household_activity(user_id=context.user_id, activity_id=activity_id, group_id=scope)
+    if activity is None:
+        return _error("not_found", f"There is no activity {activity_id} in the week.")
+    if household.weekday_code(day) not in (activity.get("days") or []):
+        return _error(
+            "choice_required",
+            f"{activity.get('title')} is not on {day.strftime('%A')}s; its days are {', '.join(activity.get('days') or [])}.",
+        )
+    members = context.database.list_household_members(user_id=context.user_id, group_id=scope)
+    owners = [] if scope else _owner_names(context)
+    who, refused = _checked_driver(context, str(args.get("who") or ""), members=members, owners=owners)
+    if refused:
+        return refused
+    try:
+        saved = context.database.save_household_day_drive(
+            user_id=context.user_id, activity_id=activity_id, day=day.isoformat(), leg=leg, who=who or "", group_id=scope,
+        )
+    except LookupError as exc:
+        return _error("not_found", str(exc))
+    except ValueError as exc:
+        return _error("choice_required", str(exc))
+    except Exception as exc:  # noqa: BLE001
+        return _error("internal", f"That could not be saved: {exc}", can_retry=True)
+    usual = household.clean(activity.get(household._LEG_KEYS[leg][0]))
+    described = household.describe_day_drives([saved], [activity], today)
+    note = (
+        f"Kept for {day.isoformat()} only; the week still says "
+        + (f"{usual!r}" if usual else "nobody")
+        + f" for this {'drop-off' if leg == 'drop_off' else 'pickup'} on other {day.strftime('%A')}s."
+    )
+    if not who:
+        note += " With nobody on it that day, it is raised again until someone takes it."
+    return _ok({"saved": described[0] if described else saved, "note": note})
+
+
+def _tool_remove_day_drive(context: LoopContext, args: dict[str, Any]) -> dict[str, Any]:
+    try:
+        drive_id = int(args.get("id"))
+    except (TypeError, ValueError):
+        return _error("choice_required", "id is the number of a day drive from household.dayDrives.")
+    remover = getattr(context.database, "remove_household_day_drive", None)
+    if not callable(remover) or not remover(user_id=context.user_id, drive_id=drive_id, group_id=week_scope(context)):
+        return _error("not_found", f"There is no day drive {drive_id}.", dayDrives=_household_payload(context).get("dayDrives") or [])
+    return _ok({"removed": drive_id, "note": "That day is back to the usual week."})
 
 
 def _tool_accept_drive_during_work(context: LoopContext, args: dict[str, Any]) -> dict[str, Any]:
@@ -2075,6 +2198,8 @@ def _tool_show_family_week(context: LoopContext, args: dict[str, Any]) -> dict[s
         for code in household.WEEKDAY_CODES
     }
     data = {"members": payload["members"], "byDay": {code: items for code, items in by_day.items() if items}}
+    if payload.get("dayDrives"):
+        data["dayDrives"] = payload["dayDrives"]
     link = _week_page_link(context)
     if link:
         data["weekPage"] = link
@@ -3688,9 +3813,12 @@ TOOLS: list[ToolSpec] = [
             "change one. title is what it is, in the person's words. who is the family members it is for, by "
             "name. days is the weekdays it runs. start_time and end_time are HH:MM. place is where. "
             "drop_off_by and pick_up_by are who takes them and who collects them: 'me' when it is the person "
-            "themselves, the name as they say it otherwise, 'the bus' / 'walks' / 'on their own' when the child "
-            "gets there with nobody driving (that is settled, not a gap), an empty string when nobody is down "
-            "for it yet. "
+            "themselves, a family member's name otherwise (someone not in the family yet is saved with "
+            "save_family_member first), 'the bus' / 'walks' / 'on their own' when the child gets there with "
+            "nobody driving (that is settled, not a gap), an empty string when nobody is down for it yet or it "
+            "changes from day to day - never a word like 'varies' or 'ask me'. This is the usual week, every "
+            "week: an answer about one day ('I'll collect him tomorrow', 'Stav can't today') is assign_day_drive, "
+            "not this. "
             "A grown-up's own week goes here too - the person's work hours with who ['me'], or the partner's "
             "under their name - with drop_off_by and pick_up_by left empty: nobody collects a grown-up, and it "
             "is kept so you know when they cannot do a pickup. "
@@ -3710,6 +3838,36 @@ TOOLS: list[ToolSpec] = [
         }),
         side_effect=True,
         run=_tool_save_week_activity,
+    ),
+    ToolSpec(
+        name="assign_day_drive",
+        description=(
+            "Who takes or collects for one activity on one date, and that date only: the answer to 'who "
+            "collects Lahav tomorrow?' - 'I will', 'Stav will', 'my mother' - or 'Stav can't do Thursday'. It "
+            "sits over the usual week for that day and is gone with it; the week itself is untouched, so it "
+            "is never save_week_activity, which is every week. id is the activity from household.week. day "
+            "is the date, YYYY-MM-DD: 'tomorrow' and 'today' are worked out from CONTEXT.today. leg is drop_off "
+            "or pick_up. who is 'me' for the person, a family member's name, or an empty string when the usual "
+            "person is off that day and nobody has taken it yet, so it is raised again."
+        ),
+        parameters=_params({
+            "id": {"type": "integer"},
+            "day": {"type": "string"},
+            "leg": {"type": "string", "enum": list(household.DRIVE_LEGS)},
+            "who": {"type": "string"},
+        }),
+        side_effect=True,
+        run=_tool_assign_day_drive,
+    ),
+    ToolSpec(
+        name="remove_day_drive",
+        description=(
+            "Take back an answer about one day so that day follows the usual week again: 'actually Stav "
+            "collects as usual'. id is from household.dayDrives."
+        ),
+        parameters=_params({"id": {"type": "integer"}}),
+        side_effect=True,
+        run=_tool_remove_day_drive,
     ),
     ToolSpec(
         name="accept_drive_during_work",
@@ -4221,6 +4379,14 @@ _FAMILY = (
     "Something not happening for a while - a sick day, a trip, a holiday, football off this week - is an "
     "exception: add_exception, never save_week_activity or remove_week_activity, and say in a line when it "
     "is all back on.\n"
+    "One day is not the week: when they answer about a single day - 'I'll pick up Lahav' to the question of "
+    "who collects tomorrow, 'Stav takes him today', 'my mother collects on Thursday' (a date), 'Stav can't "
+    "tomorrow' - keep it with assign_day_drive for that date, never save_week_activity, which would make it "
+    "every week. 'Every Tuesday', 'from now on', 'usually' is the week. household.dayDrives is what has been "
+    "decided for single days; read it before asking about a day, and treat a day with nobodyYet as still "
+    "open. A 'who drives' word the week does not know - not them, not a family member, not the bus - is "
+    "refused: ask who that is, save them as a family member if they are someone, or keep the day's answer "
+    "instead when it changes from day to day.\n"
     "A drive inside their own work hours: when a week activity carries driveDuringWork, a drop-off or pickup "
     "the person is down for falls inside their own working day as they gave it, and nobody has settled it. "
     "Raise it once, plainly, when it comes up - the evening before, the morning of, or the moment the hours "
