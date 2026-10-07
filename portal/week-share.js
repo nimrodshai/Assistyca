@@ -36,7 +36,7 @@
         : `${gaps} drop-offs and pickups this week have nobody down for them yet.`;
       $("gapsCard").classList.toggle("is-hidden", gaps === 0);
       $("emptyWeek").classList.toggle("is-hidden", activities.length > 0);
-      renderDays($("days"), activities, { ownerName: owner, selfLabel: owner.split(" ")[0] || "Them", onOpen: null, members });
+      renderDays($("days"), activities, { ownerName: owner, selfLabel: owner.split(" ")[0] || "Them", onOpen: null, members, dayDrives: data.dayDrives || [] });
       show("weekView");
       const today = document.getElementById(`day-${todayCode()}`);
       if (today && activities.length) {

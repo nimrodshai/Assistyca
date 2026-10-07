@@ -554,6 +554,125 @@ def describe_work_hours(hours: dict[str, Any]) -> str:
 # "own_week" sit among them without being one of them: see afternoon_gaps
 # and own_week_gaps. The parent's own week comes last, once the children's
 # are in, because that is when the pickups it bears on are known.
+# -- who drives ----------------------------------------------------------------
+
+# Why a "who drives" word was not kept as it was.
+DRIVER_PROBLEMS = ("unknown",)
+
+
+def resolve_driver(
+    who: Any,
+    members: Iterable[dict[str, Any]] | None,
+    owner_names: Iterable[str] = (),
+    *,
+    in_group: bool = False,
+) -> tuple[str, str]:
+    """The "who drives" word as the week keeps it, and what is wrong with it.
+
+    The week only ever reminds the people it knows: the account holder, a
+    member of the family, or nobody (the bus, their own feet, or nobody down
+    for it yet). Any other word - "Dad", "varies", "ask me on Friday", a
+    neighbour never added - would be filed as a stranger's drive, and the
+    pickup would go quiet: no reminder, no question. So the word is checked
+    here before it is kept. The result is the kept form and a problem code,
+    or "" when there is none: the account holder is kept as "me" (except in
+    a group, where there is no "me"), a family member as the name they were
+    saved under, a bus word as said, empty as empty, and anything else as
+    said with the problem "unknown", for the caller to refuse.
+    """
+
+    text = clean(who)
+    if not text:
+        return "", ""
+    if nobody_drives(text):
+        return text, ""
+    owners = list(owner_names)
+    if is_self(text, owners):
+        return text if in_group else "me", ""
+    for member in members or ():
+        name = clean(member.get("name"), MAX_NAME_LENGTH)
+        if name and is_named(text, [name]):
+            return name, ""
+    return text, "unknown"
+
+
+def parse_day(value: Any) -> date | None:
+    try:
+        return date.fromisoformat(clean(value)[:10])
+    except ValueError:
+        return None
+
+
+def normalize_leg(value: Any) -> str:
+    legs = normalize_legs([value])
+    return legs[0] if legs else ""
+
+
+def apply_day_drives(
+    activities: Iterable[dict[str, Any]],
+    day_drives: Iterable[dict[str, Any]] | None,
+    day: date,
+) -> list[dict[str, Any]]:
+    """The activities as they stand on one date: the usual week with that
+    day's drives written over it.
+
+    "I'll collect Lahav tomorrow" is an answer about one day, and the usual
+    week is not where it goes - every Tuesday would then say so. A day drive
+    is that answer kept for its date alone: it replaces who takes or who
+    collects for that one day and is gone with it. An empty one is the
+    reverse - "Stav can't tomorrow" - and leaves the leg open that day so it
+    is asked about. Each changed activity carries dayDriveLegs, the legs the
+    day decided, so a line about it can say "today only"."""
+
+    on_day = [drive for drive in day_drives or () if clean(drive.get("day")) == day.isoformat()]
+    if not on_day:
+        return [dict(activity) for activity in activities]
+    by_activity: dict[int, dict[str, str]] = {}
+    for drive in on_day:
+        leg = normalize_leg(drive.get("leg"))
+        if leg:
+            by_activity.setdefault(int(drive.get("activityId") or 0), {})[leg] = clean(drive.get("who"))
+    applied = []
+    for activity in activities:
+        copy = dict(activity)
+        legs = by_activity.get(int(activity.get("id") or 0))
+        if legs:
+            for leg, who in legs.items():
+                copy[_LEG_KEYS[leg][0]] = who
+            copy["dayDriveLegs"] = [leg for leg in DRIVE_LEGS if leg in legs]
+        applied.append(copy)
+    return applied
+
+
+def describe_day_drives(
+    day_drives: Iterable[dict[str, Any]] | None,
+    activities: Iterable[dict[str, Any]] | None,
+    today: date,
+) -> list[dict[str, Any]]:
+    """The day drives from today on, as the assistant reads them: each one
+    the date, the activity it is about, the leg and who is on it."""
+
+    titles = {int(activity.get("id") or 0): activity for activity in activities or ()}
+    described = []
+    for drive in sorted(day_drives or (), key=lambda entry: (clean(entry.get("day")), int(entry.get("id") or 0))):
+        day = parse_day(drive.get("day"))
+        activity = titles.get(int(drive.get("activityId") or 0))
+        if day is None or day < today or activity is None:
+            continue
+        described.append({
+            "id": drive.get("id"),
+            "day": day.isoformat(),
+            "weekday": day.strftime("%A"),
+            "activityId": activity.get("id"),
+            "activity": activity.get("title"),
+            "who": activity.get("who") or None,
+            "leg": normalize_leg(drive.get("leg")),
+            "driver": clean(drive.get("who")) or None,
+            "nobodyYet": True if not clean(drive.get("who")) else None,
+        })
+    return [{key: value for key, value in entry.items() if value is not None} for entry in described]
+
+
 WEEK_GAP_KINDS = ("people", "week", "days", "times", "afternoons", "drop_off", "pick_up", "own_week")
 
 
@@ -682,6 +801,7 @@ def describe_household(
     calendar: list[dict[str, Any]] | None = None,
     calendar_connected: bool = False,
     owner_names: Iterable[str] = (),
+    day_drives: Iterable[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """The family as the assistant reads it on every turn.
 
@@ -697,7 +817,9 @@ def describe_household(
     calendar_connected says their own calendar is in, which answers the
     question of their own week without them typing it out. owner_names is
     what the account holder is called, so a week saved under their name
-    rather than as "me" is still read as theirs.
+    rather than as "me" is still read as theirs. day_drives are the answers
+    about single days - who collects tomorrow - which sit beside the usual
+    week as dayDrives and never change it.
     """
 
     profile = profile or {}
@@ -783,6 +905,9 @@ def describe_household(
         described["weekGaps"] = gaps
     if calendar:
         described["calendar"] = list(calendar)
+    one_offs = describe_day_drives(day_drives, activities, today)
+    if one_offs:
+        described["dayDrives"] = one_offs
     return described
 
 
@@ -813,6 +938,11 @@ __all__ = [
     "BIRTHDAY_REMINDER_DAYS",
     "activity_gaps",
     "afternoon_gaps",
+    "apply_day_drives",
+    "describe_day_drives",
+    "normalize_leg",
+    "parse_day",
+    "resolve_driver",
     "age_from_birthday",
     "birthday_list_items",
     "birthday_template_kind",

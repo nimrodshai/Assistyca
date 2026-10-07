@@ -54,6 +54,49 @@ class RulesTests(unittest.TestCase):
         on_the_bus = {"title": "School", "who": ["Lotan"], "dropOffBy": "the bus", "pickUpBy": "the bus"}
         self.assertEqual(household.activity_gaps(on_the_bus), [])
 
+    def test_a_who_drives_word_is_kept_only_when_the_week_knows_who_it_is(self) -> None:
+        # On 2026-10-07 "It differs", said about a Friday pickup, could have
+        # been kept as the collector: a word that is nobody the week knows
+        # files the drive under a stranger, and the pickup goes quiet - no
+        # reminder, no question. So the word is checked before it is kept.
+        family = [{"name": "Stav", "role": "partner"}, {"name": "Lahav", "role": "child"}, {"name": "Grandma Rina", "role": "other"}]
+        owners = ["Nimrod Shai"]
+        self.assertEqual(household.resolve_driver("me", family, owners), ("me", ""))
+        self.assertEqual(household.resolve_driver("Nimrod", family, owners), ("me", ""))
+        self.assertEqual(household.resolve_driver("stav", family, owners), ("Stav", ""))
+        self.assertEqual(household.resolve_driver("Grandma", family, owners), ("Grandma Rina", ""))
+        self.assertEqual(household.resolve_driver("the bus", family, owners), ("the bus", ""))
+        self.assertEqual(household.resolve_driver("", family, owners), ("", ""))
+        for word in ("Dad", "אבא", "varies", "differs", "ask me on Friday", "the neighbour"):
+            self.assertEqual(household.resolve_driver(word, family, owners), (word, "unknown"), word)
+        # A group has no "me": the word stays as said, so the room reads a name.
+        self.assertEqual(household.resolve_driver("me", family, [], in_group=True), ("me", ""))
+
+    def test_a_days_answer_sits_over_the_usual_week_for_that_day_alone(self) -> None:
+        # "I'll pick up Lahav" answered the evening's question about one day.
+        # The usual week keeps saying nobody; that Wednesday says him.
+        school = {"id": 10, "title": "School", "who": ["Lahav"], "days": ["sun", "mon", "tue", "wed", "thu"], "dropOffBy": "me", "pickUpBy": ""}
+        gan = {"id": 12, "title": "Gan", "who": ["Laor"], "days": ["sun", "mon", "tue", "wed", "thu"], "dropOffBy": "me", "pickUpBy": "Stav"}
+        drives = [
+            {"id": 1, "activityId": 10, "day": "2026-10-07", "leg": "pick_up", "who": "me"},
+            {"id": 2, "activityId": 12, "day": "2026-10-07", "leg": "pick_up", "who": ""},
+        ]
+        wednesday = household.apply_day_drives([school, gan], drives, date(2026, 10, 7))
+        self.assertEqual([(a["pickUpBy"], a.get("dayDriveLegs")) for a in wednesday], [("me", ["pick_up"]), ("", ["pick_up"])])
+        thursday = household.apply_day_drives([school, gan], drives, date(2026, 10, 8))
+        self.assertEqual([(a["pickUpBy"], a.get("dayDriveLegs")) for a in thursday], [("", None), ("Stav", None)])
+        # The originals are untouched.
+        self.assertEqual((school["pickUpBy"], gan["pickUpBy"]), ("", "Stav"))
+        # The assistant reads them as a list from today on, each saying what and who.
+        described = household.describe_day_drives(drives + [{"id": 0, "activityId": 10, "day": "2026-10-01", "leg": "pick_up", "who": "me"}], [school, gan], date(2026, 10, 7))
+        self.assertEqual(
+            [(d["id"], d["day"], d["weekday"], d["activity"], d["leg"], d.get("driver"), d.get("nobodyYet")) for d in described],
+            [(1, "2026-10-07", "Wednesday", "School", "pick_up", "me", None), (2, "2026-10-07", "Wednesday", "Gan", "pick_up", None, True)],
+        )
+        block = household.describe_household(profile=None, members=[{"name": "Lahav", "role": "child"}], activities=[school, gan], today=date(2026, 10, 7), day_drives=drives)
+        self.assertEqual([d["id"] for d in block["dayDrives"]], [1, 2])
+        self.assertNotIn("dayDrives", household.describe_household(profile=None, members=[], activities=[school], today=date(2026, 10, 7)))
+
     def test_an_age_keeps_counting_from_when_it_was_said(self) -> None:
         self.assertEqual(household.current_age(4, "2024-10-01", date(2026, 9, 17)), 5)
         self.assertEqual(household.current_age(4, "2024-09-01", date(2026, 9, 17)), 6)
@@ -233,6 +276,33 @@ class StoreTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.temp_dir.cleanup()
 
+    def test_a_days_answer_is_kept_for_its_date_and_replaced_by_the_next_one(self) -> None:
+        school = self.database.save_household_activity(
+            user_id=self.user_id, title="School", who=["Lahav"], days=["wed"], start_time="08:00", end_time="12:45",
+            drop_off_by="me", pick_up_by="",
+        )
+        first = self.database.save_household_day_drive(user_id=self.user_id, activity_id=school["id"], day="2026-10-07", leg="pickup", who="me")
+        self.assertEqual((first["day"], first["leg"], first["who"]), ("2026-10-07", "pick_up", "me"))
+        again = self.database.save_household_day_drive(user_id=self.user_id, activity_id=school["id"], day="2026-10-07", leg="pick_up", who="Stav")
+        self.assertEqual((again["id"], again["who"]), (first["id"], "Stav"))
+        self.database.save_household_day_drive(user_id=self.user_id, activity_id=school["id"], day="2026-10-14", leg="pick_up", who="")
+        listed = self.database.list_household_day_drives(user_id=self.user_id, from_day="2026-10-07", to_day="2026-10-07")
+        self.assertEqual([(d["day"], d["who"]) for d in listed], [("2026-10-07", "Stav")])
+        self.assertEqual(len(self.database.list_household_day_drives(user_id=self.user_id)), 2)
+        # Another scope's week is another store; a wrong day, leg or activity is refused.
+        self.assertEqual(self.database.list_household_day_drives(user_id=self.user_id, group_id="g"), [])
+        with self.assertRaises(ValueError):
+            self.database.save_household_day_drive(user_id=self.user_id, activity_id=school["id"], day="tomorrow", leg="pick_up", who="me")
+        with self.assertRaises(ValueError):
+            self.database.save_household_day_drive(user_id=self.user_id, activity_id=school["id"], day="2026-10-07", leg="sideways", who="me")
+        with self.assertRaises(LookupError):
+            self.database.save_household_day_drive(user_id=self.user_id, activity_id=school["id"] + 9, day="2026-10-07", leg="pick_up", who="me")
+        self.assertTrue(self.database.remove_household_day_drive(user_id=self.user_id, drive_id=first["id"]))
+        self.assertFalse(self.database.remove_household_day_drive(user_id=self.user_id, drive_id=first["id"]))
+        # The activity going takes its days with it.
+        self.database.remove_household_activity(user_id=self.user_id, activity_id=school["id"])
+        self.assertEqual(self.database.list_household_day_drives(user_id=self.user_id), [])
+
     def test_a_database_from_before_groups_opens_and_catches_up(self) -> None:
         # What a deploy meets: a database written by the previous build. On
         # 2026-09-24 production would not start on one - the schema script
@@ -410,8 +480,63 @@ class ToolTests(unittest.TestCase):
         self.assertNotIn("grownUp", added["saved"])
         self.assertNotIn("nobodyDownFor", self.run_tool("show_family_week")["byDay"]["sun"][0])
 
+    def test_a_collector_the_week_does_not_know_is_refused_not_kept(self) -> None:
+        self.run_tool("save_family_member", name="Lahav", previous_name=None, role="child", age=8, school=None, email=None, phone=None, notes=None)
+        self.run_tool("save_family_member", name="Stav", previous_name=None, role="partner", age=None, school=None, email=None, phone=None, notes=None)
+        refused = self.run_tool(
+            "save_week_activity", id=None, title="School", who=["Lahav"], days=["sun"], start_time="08:00",
+            end_time="12:45", place=None, drop_off_by="me", pick_up_by="varies", notes=None,
+        )
+        self.assertFalse(refused["ok"])
+        self.assertEqual(refused["error"]["code"], "choice_required")
+        self.assertIn("'varies' is not anyone the week knows", refused["error"]["whatHappened"])
+        self.assertIn("assign_day_drive", refused["error"]["whatHappened"])
+        self.assertEqual(refused["error"]["family"], ["Lahav", "Stav"])
+        self.assertEqual(self.run_tool("show_family_week")["byDay"], {})
+        # A member by first name, however spelt, is kept under their name.
+        kept = self.run_tool(
+            "save_week_activity", id=None, title="School", who=["Lahav"], days=["sun"], start_time="08:00",
+            end_time="12:45", place=None, drop_off_by="me", pick_up_by="stav", notes=None,
+        )
+        self.assertEqual(kept["saved"]["pickUpBy"], "Stav")
+
+    def test_an_answer_about_one_day_is_kept_for_that_day_and_the_week_is_untouched(self) -> None:
+        from datetime import timedelta
+        from packages.infrastructure.agent_loop import _household_payload
+        from packages.infrastructure.agent_loop import _household_today
+
+        self.run_tool("save_family_member", name="Lahav", previous_name=None, role="child", age=8, school=None, email=None, phone=None, notes=None)
+        self.run_tool("save_family_member", name="Stav", previous_name=None, role="partner", age=None, school=None, email=None, phone=None, notes=None)
+        school = self.run_tool(
+            "save_week_activity", id=None, title="School", who=["Lahav"], days=list(household.WEEKDAY_CODES), start_time="08:00",
+            end_time="12:45", place="Shaked", drop_off_by="me", pick_up_by="", notes=None,
+        )["saved"]
+        today = _household_today(self.context)
+        tomorrow = (today + timedelta(days=1)).isoformat()
+        saved = self.run_tool("assign_day_drive", id=school["id"], day=tomorrow, leg="pick_up", who="me")
+        self.assertTrue(saved["ok"], saved)
+        self.assertEqual((saved["saved"]["day"], saved["saved"]["leg"], saved["saved"]["driver"]), (tomorrow, "pick_up", "me"))
+        self.assertIn("the week still says nobody", saved["note"])
+        # The week itself still has nobody, and the day's answer rides beside it.
+        block = _household_payload(self.context)
+        self.assertEqual(block["week"][0]["nobodyDownFor"], ["pick_up"])
+        self.assertEqual([(d["day"], d["driver"]) for d in block["dayDrives"]], [(tomorrow, "me")])
+        self.assertEqual(self.run_tool("show_family_week")["dayDrives"][0]["activity"], "School")
+        # "Stav can't tomorrow" leaves the day open; a stranger is refused here too.
+        opened = self.run_tool("assign_day_drive", id=school["id"], day=tomorrow, leg="pick_up", who="")
+        self.assertTrue(opened["saved"]["nobodyYet"])
+        self.assertIn("raised again", opened["note"])
+        self.assertFalse(self.run_tool("assign_day_drive", id=school["id"], day=tomorrow, leg="pick_up", who="Dad")["ok"])
+        self.assertEqual(self.run_tool("assign_day_drive", id=school["id"], day="2020-01-01", leg="pick_up", who="me")["error"]["code"], "choice_required")
+        self.assertEqual(self.run_tool("assign_day_drive", id=school["id"] + 9, day=tomorrow, leg="pick_up", who="me")["error"]["code"], "not_found")
+        removed = self.run_tool("remove_day_drive", id=opened["saved"]["id"])
+        self.assertTrue(removed["ok"])
+        self.assertNotIn("dayDrives", _household_payload(self.context))
+        self.assertEqual(self.run_tool("remove_day_drive", id=opened["saved"]["id"])["error"]["code"], "not_found")
+
     def test_saving_work_hours_names_the_drive_they_swallow_until_she_says_it_is_fine(self) -> None:
         self.run_tool("save_family_member", name="Noa", previous_name=None, role="child", age=7, school=None, email=None, phone=None, notes=None)
+        self.run_tool("save_family_member", name="Yoav", previous_name=None, role="partner", age=None, school=None, email=None, phone=None, notes=None)
         school = self.run_tool(
             "save_week_activity", id=None, title="Gretz school", who=["Noa"], days=["mon"], start_time="08:00",
             end_time="13:30", place=None, drop_off_by="Yoav", pick_up_by="me", notes=None,

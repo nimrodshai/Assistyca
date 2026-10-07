@@ -298,6 +298,11 @@ button.activity:focus-visible,
   color: var(--gap);
 }
 
+/* A day's own answer, shown on that weekday only. */
+.ride.is-one-off {
+  color: var(--ink);
+}
+
 .button {
   display: inline-flex;
   align-items: center;

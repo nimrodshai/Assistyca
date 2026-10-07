@@ -561,6 +561,25 @@ CREATE TABLE IF NOT EXISTS household_activities (
     FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
+-- An answer about one day: who takes or collects for one activity on one
+-- date, written over the usual week for that day alone. "I'll collect
+-- Lahav tomorrow" lives here, never on the activity, which is every week.
+-- An empty who is the reverse: the usual person is off that day and the
+-- leg is open again.
+CREATE TABLE IF NOT EXISTS household_day_drives (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    group_id TEXT NOT NULL DEFAULT '',
+    activity_id INTEGER NOT NULL,
+    day TEXT NOT NULL,
+    leg TEXT NOT NULL,
+    who TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(user_id, group_id, activity_id, day, leg),
+    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
 -- Each nudge about the week once: this morning's plan, tomorrow's gaps, a
 -- drive. The row is the claim, so two polls never send the same one.
 CREATE TABLE IF NOT EXISTS household_nudges (
@@ -10446,6 +10465,96 @@ class PortalDatabase:
             row = conn.execute("SELECT * FROM household_activities WHERE id = ?", (int(activity_id),)).fetchone()
         return self._household_activity_row(row) or {}
 
+    @staticmethod
+    def _household_day_drive_row(row: sqlite3.Row | None) -> dict[str, Any] | None:
+        if row is None:
+            return None
+        return {
+            "id": int(row["id"]),
+            "userId": int(row["user_id"]),
+            "groupId": str(row["group_id"] or ""),
+            "activityId": int(row["activity_id"]),
+            "day": str(row["day"] or ""),
+            "leg": str(row["leg"] or ""),
+            "who": str(row["who"] or ""),
+            "createdAt": str(row["created_at"] or ""),
+            "updatedAt": str(row["updated_at"] or ""),
+        }
+
+    def save_household_day_drive(
+        self, *, user_id: int, activity_id: int, day: str, leg: str, who: str, group_id: str = "",
+    ) -> dict[str, Any]:
+        """Keep who takes or collects for one activity on one date. A second
+        answer about the same leg of the same day replaces the first. Ones
+        from more than a month ago are cleared: they are over."""
+
+        if int(user_id or 0) <= 0:
+            raise ValueError("A day drive belongs to an account.")
+        when = household.parse_day(day)
+        if when is None:
+            raise ValueError("day is a date, YYYY-MM-DD.")
+        which = household.normalize_leg(leg)
+        if not which:
+            raise ValueError("leg is drop_off or pick_up.")
+        scope = normalize_text(group_id)
+        now = datetime.now(timezone.utc)
+        with self._connection() as conn:
+            exists = conn.execute(
+                "SELECT id FROM household_activities WHERE id = ? AND user_id = ? AND group_id = ?",
+                (int(activity_id), int(user_id), scope),
+            ).fetchone()
+            if exists is None:
+                raise LookupError(f"There is no activity {activity_id} in this week.")
+            conn.execute(
+                "DELETE FROM household_day_drives WHERE user_id = ? AND day < ?",
+                (int(user_id), (now - timedelta(days=30)).date().isoformat()),
+            )
+            conn.execute(
+                """
+                INSERT INTO household_day_drives (user_id, group_id, activity_id, day, leg, who, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(user_id, group_id, activity_id, day, leg)
+                DO UPDATE SET who = excluded.who, updated_at = excluded.updated_at
+                """,
+                (int(user_id), scope, int(activity_id), when.isoformat(), which, household.clean(who), now.isoformat(), now.isoformat()),
+            )
+            row = conn.execute(
+                "SELECT * FROM household_day_drives WHERE user_id = ? AND group_id = ? AND activity_id = ? AND day = ? AND leg = ?",
+                (int(user_id), scope, int(activity_id), when.isoformat(), which),
+            ).fetchone()
+        return self._household_day_drive_row(row) or {}
+
+    def list_household_day_drives(
+        self, *, user_id: int, group_id: str = "", from_day: str = "", to_day: str = "",
+    ) -> list[dict[str, Any]]:
+        """The day drives of one scope between two dates, both included,
+        soonest first. No dates means all of them."""
+
+        if int(user_id or 0) <= 0:
+            return []
+        clauses, params = ["user_id = ?", "group_id = ?"], [int(user_id), normalize_text(group_id)]
+        if normalize_text(from_day):
+            clauses.append("day >= ?")
+            params.append(normalize_text(from_day)[:10])
+        if normalize_text(to_day):
+            clauses.append("day <= ?")
+            params.append(normalize_text(to_day)[:10])
+        with self._connection() as conn:
+            rows = conn.execute(
+                f"SELECT * FROM household_day_drives WHERE {' AND '.join(clauses)} ORDER BY day ASC, id ASC", params,
+            ).fetchall()
+        return [drive for drive in (self._household_day_drive_row(row) for row in rows) if drive]
+
+    def remove_household_day_drive(self, *, user_id: int, drive_id: int, group_id: str = "") -> bool:
+        if int(user_id or 0) <= 0:
+            return False
+        with self._connection() as conn:
+            cursor = conn.execute(
+                "DELETE FROM household_day_drives WHERE id = ? AND user_id = ? AND group_id = ?",
+                (int(drive_id), int(user_id), normalize_text(group_id)),
+            )
+        return cursor.rowcount > 0
+
     def list_household_nudge_accounts(self) -> list[int]:
         """Accounts the week nudger has something to look at: a week with
         anything in it, a birthday to remember, or getting to know them put
@@ -10614,6 +10723,12 @@ class PortalDatabase:
                 "DELETE FROM household_activities WHERE id = ? AND user_id = ? AND group_id = ?",
                 (int(activity_id), int(user_id), normalize_text(group_id)),
             )
+            if cursor.rowcount > 0:
+                # Its day drives were about it and nothing else.
+                conn.execute(
+                    "DELETE FROM household_day_drives WHERE activity_id = ? AND user_id = ? AND group_id = ?",
+                    (int(activity_id), int(user_id), normalize_text(group_id)),
+                )
         return cursor.rowcount > 0
 
     # -- lists -------------------------------------------------------------

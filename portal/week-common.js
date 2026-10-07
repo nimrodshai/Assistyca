@@ -24,6 +24,31 @@
     return DAYS[new Date().getDay()][0];
   }
 
+  function isoDate(date) {
+    const pad = (n) => String(n).padStart(2, "0");
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+  }
+
+  // The page is the usual week, one column per weekday. A day drive is an
+  // answer about one date - "I'll collect him tomorrow" - so it shows on
+  // that weekday only while the date is within the coming week, and reads
+  // as that day's answer, not the week's.
+  function dateForCode(code) {
+    const today = new Date();
+    const offset = (DAYS.findIndex(([c]) => c === code) - today.getDay() + 7) % 7;
+    const date = new Date(today.getFullYear(), today.getMonth(), today.getDate() + offset);
+    return isoDate(date);
+  }
+
+  function dayDrivesFor(dayDrives, activityId, code) {
+    const date = dateForCode(code);
+    const legs = {};
+    for (const drive of dayDrives || []) {
+      if (Number(drive.activityId) === Number(activityId) && drive.day === date) legs[drive.leg] = String(drive.who || "").trim();
+    }
+    return legs;
+  }
+
   function el(tag, className, text) {
     const node = document.createElement(tag);
     if (className) node.className = className;
@@ -68,7 +93,7 @@
     return time;
   }
 
-  function renderActivity(activity, { ownerName, selfLabel, onOpen, members }) {
+  function renderActivity(activity, { ownerName, selfLabel, onOpen, members, decided = {}, dayName = "" }) {
     const node = onOpen ? el("button", "activity") : el("div", "activity");
     if (onOpen) {
       node.type = "button";
@@ -81,10 +106,16 @@
     if (meta) node.append(el("div", "activity-meta", meta));
     if (isGrownUp(activity, members, ownerName)) return node;
     const rides = el("div", "activity-rides");
-    const takes = rideLabel(activity.dropOffBy, ownerName, selfLabel);
-    const collects = rideLabel(activity.pickUpBy, ownerName, selfLabel);
-    rides.append(el("span", `ride${takes ? "" : " is-gap"}`, takes ? `Takes: ${takes}` : "Nobody takes them yet"));
-    rides.append(el("span", `ride${collects ? "" : " is-gap"}`, collects ? `Collects: ${collects}` : "Nobody collects them yet"));
+    const justThisDay = dayName ? ` (just this ${dayName})` : " (just this day)";
+    const ride = (leg, word, usual) => {
+      const settled = Object.prototype.hasOwnProperty.call(decided, leg);
+      const who = rideLabel(settled ? decided[leg] : usual, ownerName, selfLabel);
+      if (who) return el("span", `ride${settled ? " is-one-off" : ""}`, `${word}: ${who}${settled ? justThisDay : ""}`);
+      const nobody = leg === "drop_off" ? "Nobody takes them" : "Nobody collects them";
+      return el("span", "ride is-gap", settled ? `${nobody}${justThisDay}` : `${nobody} yet`);
+    };
+    rides.append(ride("drop_off", "Takes", activity.dropOffBy));
+    rides.append(ride("pick_up", "Collects", activity.pickUpBy));
     node.append(rides);
     return node;
   }
@@ -103,7 +134,8 @@
         section.append(el("p", "day-empty", "Nothing on"));
       }
       for (const activity of items) {
-        section.append(renderActivity(activity, options));
+        const decided = dayDrivesFor(options.dayDrives, activity.id, code);
+        section.append(renderActivity(activity, { ...options, decided, dayName: name }));
       }
       return section;
     });
@@ -121,5 +153,5 @@
     return gaps;
   }
 
-  window.AssistycaWeek = { DAYS, countGaps, el, isGrownUp, isSelf, renderDays, todayCode };
+  window.AssistycaWeek = { DAYS, countGaps, dateForCode, dayDrivesFor, el, isGrownUp, isSelf, renderDays, todayCode };
 })();
