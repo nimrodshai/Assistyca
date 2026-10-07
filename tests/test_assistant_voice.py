@@ -88,6 +88,17 @@ class AssistantVoiceTests(unittest.TestCase):
         self.assertIn("turns a conversation into a form", ASSISTANT_VOICE)
         self.assertIn("never at the head of every message", ASSISTANT_VOICE)
 
+    def test_the_voice_can_answer_a_joke_with_one(self) -> None:
+        # "Can you collect him for me?" got "I can't collect Lahav myself" and
+        # the rota. True, and deaf. One light line back is allowed, then the
+        # help; the rule keeps it to a reply, never a routine.
+        self.assertIn("When they are plainly joking with you", ASSISTANT_VOICE)
+        self.assertIn("one light line back in the same spirit", ASSISTANT_VOICE)
+        self.assertIn("dry rather than wacky", ASSISTANT_VOICE)
+        self.assertIn("then the real help in the next breath", ASSISTANT_VOICE)
+        self.assertIn("never a habit of your own", ASSISTANT_VOICE)
+        self.assertIn("none at all when the thing under the joke is a real problem", ASSISTANT_VOICE)
+
     def test_the_whatsapp_channel_no_longer_asks_for_playful(self) -> None:
         # Warmth stays; the cheerfulness that talked over the answer does not.
         self.assertNotIn("playful", _CHANNEL_RULES["whatsapp"])
@@ -118,6 +129,12 @@ class JudgedForCalmTests(unittest.TestCase):
         self.assertIn("A single small emoji is not performance either", JUDGE_INSTRUCTIONS)
         self.assertIn("several in one reply", JUDGE_INSTRUCTIONS)
         self.assertNotIn("emoji the person did not use first", JUDGE_INSTRUCTIONS)
+
+    def test_the_judge_does_not_dock_the_joke_the_prompt_allows(self) -> None:
+        # Same shape as the emoji: let through by the prompt, it must not be
+        # scored as performance, or the next sample trains it back out.
+        self.assertIn("One light line answering a joke the person made is not performance", JUDGE_INSTRUCTIONS)
+        self.assertIn("a joke nobody set up, or one that stands in for the help, does", JUDGE_INSTRUCTIONS)
 
     def test_a_reply_that_fails_only_on_calm_is_caught(self) -> None:
         scores = {key: 5 for key in RUBRIC}
