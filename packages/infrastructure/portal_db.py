@@ -482,6 +482,10 @@ CREATE TABLE IF NOT EXISTS household_profiles (
     -- account is offered it; a family only once its week is in.
     connect_offer TEXT NOT NULL DEFAULT 'not_started',
     connect_ask_again_on TEXT NOT NULL DEFAULT '',
+    -- The day the person was asked whether to put their own week in: the
+    -- question belongs to the first getting to know and is put once, so
+    -- a later change to the week never brings it back. Empty until asked.
+    own_week_asked_on TEXT NOT NULL DEFAULT '',
     share_token TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
@@ -1791,6 +1795,23 @@ class PortalDatabase:
         if "connect_offer" not in profile_columns:
             conn.execute("ALTER TABLE household_profiles ADD COLUMN connect_offer TEXT NOT NULL DEFAULT 'not_started'")
             conn.execute("ALTER TABLE household_profiles ADD COLUMN connect_ask_again_on TEXT NOT NULL DEFAULT ''")
+        if "own_week_asked_on" not in profile_columns:
+            conn.execute("ALTER TABLE household_profiles ADD COLUMN own_week_asked_on TEXT NOT NULL DEFAULT ''")
+            # Before this column, the question was put whenever the week was
+            # ready, so a family whose getting to know has begun and whose
+            # week already holds something has had it. Marking them asked is
+            # what keeps the question from coming back to them one more time.
+            conn.execute(
+                """
+                UPDATE household_profiles SET own_week_asked_on = ?
+                WHERE getting_to_know <> 'not_started'
+                  AND EXISTS (
+                    SELECT 1 FROM household_activities a
+                    WHERE a.user_id = household_profiles.user_id AND a.group_id = ''
+                  )
+                """,
+                (now_iso()[:10],),
+            )
         columns = {row["name"] for row in conn.execute("PRAGMA table_info(account_facts)").fetchall()}
         if "pinned" not in columns:
             conn.execute("ALTER TABLE account_facts ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0")
@@ -9836,7 +9857,7 @@ class PortalDatabase:
     # profile's own account_kind column predates that and is no longer read.
     _HOUSEHOLD_PROFILE_SELECT = """
         SELECT u.id AS user_id, u.account_type, p.getting_to_know, p.ask_again_on,
-               p.connect_offer, p.connect_ask_again_on, p.share_token,
+               p.connect_offer, p.connect_ask_again_on, p.own_week_asked_on, p.share_token,
                p.created_at, p.updated_at
         FROM users u LEFT JOIN household_profiles p ON p.user_id = u.id
     """
@@ -9851,6 +9872,7 @@ class PortalDatabase:
             "askAgainOn": str(row["ask_again_on"] or ""),
             "connectOffer": str(row["connect_offer"] or "not_started"),
             "connectAskAgainOn": str(row["connect_ask_again_on"] or ""),
+            "ownWeekAskedOn": str(row["own_week_asked_on"] or ""),
             "shareToken": str(row["share_token"] or ""),
             "createdAt": str(row["created_at"] or ""),
             "updatedAt": str(row["updated_at"] or ""),
@@ -9874,6 +9896,7 @@ class PortalDatabase:
         ask_again_on: str | None = None,
         connect_offer: str | None = None,
         connect_ask_again_on: str | None = None,
+        own_week_asked_on: str | None = None,
     ) -> dict[str, Any]:
         """Set what is given and keep the rest."""
 
@@ -9906,6 +9929,9 @@ class PortalDatabase:
             if connect_ask_again_on is not None:
                 updates.append("connect_ask_again_on = ?")
                 values.append(normalize_text(connect_ask_again_on)[:10])
+            if own_week_asked_on is not None:
+                updates.append("own_week_asked_on = ?")
+                values.append(normalize_text(own_week_asked_on)[:10])
             if updates:
                 conn.execute(
                     f"UPDATE household_profiles SET {', '.join(updates)}, updated_at = ? WHERE user_id = ?",
