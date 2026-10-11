@@ -11494,6 +11494,8 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         chat_flow = self._chat_flow_block(
             user_id, account_type, tool_context, household_block, resolve_local_today(timezone_name),
         )
+        if not isinstance(payload.get("standingTask"), dict):
+            self._note_own_week_asked(user_id, chat_flow, resolve_local_today(timezone_name))
         authorization = normalize_text(self.headers.get("Authorization"))
         port = int(self.server.server_address[1])  # type: ignore[attr-defined]
 
@@ -11822,6 +11824,28 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             family_flow_allowed=bool(household_block),
             household_block=household_block,
         )
+
+    def _note_own_week_asked(self, user_id: int, chat_flow: dict[str, Any] | None, today: str) -> None:
+        """Write down that the person is being asked about their own week.
+
+        The question is the last of the first getting to know, and it is put
+        once: it is a question, not a hole, so nothing in the week says
+        whether it was answered. When it is the next thing to ask in a turn
+        that will speak to them, that turn asks it, and the mark keeps it
+        from coming back - not after they say no, and not when they add a
+        club to a finished week a month on. A quiet scheduled run asks
+        nothing, so it marks nothing either."""
+
+        flow = chat_flow or {}
+        if flow.get("goal") != "family" or not flow.get("askNow"):
+            return
+        gaps = flow.get("weekGaps") or []
+        if not gaps or (gaps[0] or {}).get("missing") != "own_week":
+            return
+        try:
+            self.database.save_household_profile(user_id=user_id, own_week_asked_on=today)
+        except Exception as exc:  # noqa: BLE001 - the question is still asked; it may come once more
+            print(f"portal.household.own_week_mark_failed user={user_id} error={exc!r}", flush=True)
 
     def _open_agent_approval(self, user_id: int, pending: dict[str, Any] | None) -> dict[str, Any] | None:
         """Write a proposed action down, and hand back only its name and id.

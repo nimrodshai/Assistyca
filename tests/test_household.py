@@ -12,12 +12,14 @@ import urllib.error as urllib_error
 import urllib.request as urllib_request
 from datetime import date
 from pathlib import Path
+from types import SimpleNamespace
 
 from packages.infrastructure import household
 from packages.infrastructure.agent_loop import LoopContext
 from packages.infrastructure.agent_loop import TOOLS_BY_NAME
 from packages.infrastructure.agent_loop import build_loop_context_text
 from packages.infrastructure.portal_db import ACCOUNT_FACT_LIMIT
+from packages.infrastructure.portal_auth.server import PortalAuthHandler
 from packages.infrastructure.portal_auth.server import PortalConfig
 from packages.infrastructure.portal_auth.server import create_server
 from packages.infrastructure.portal_db import PortalDatabase
@@ -247,6 +249,22 @@ class RulesTests(unittest.TestCase):
         )
         self.assertNotIn("weekGaps", with_calendar)
 
+        # It is put once, in the first getting to know, and the profile
+        # remembers that it was. A no, a later or no answer at all leaves
+        # the week without their hours, and adding a chess club to it a
+        # month on - with its own questions of who collects - never brings
+        # the question of their own week back with it.
+        self.assertEqual(household.own_week_gaps(members, week, asked=True), [])
+        already_asked = {"accountKind": "family", "gettingToKnow": "in_progress", "ownWeekAskedOn": "2026-09-10"}
+        self.assertNotIn("weekGaps", household.describe_household(
+            profile=already_asked, members=members, activities=week, today=date(2026, 9, 24),
+        ))
+        chess = {"id": 6, "title": "Chess", "who": ["Lahav"], "days": ["mon"], "endTime": "17:15", "dropOffBy": "Stav"}
+        later = household.describe_household(
+            profile=already_asked, members=members, activities=week + [chess], today=date(2026, 10, 11),
+        )
+        self.assertEqual([gap["missing"] for gap in later["weekGaps"]], ["pick_up"])
+
     def test_a_group_is_not_asked_the_afternoons_question(self) -> None:
         # A room of parents is keeping a rota, not being got to know.
         block = household.describe_household(
@@ -302,6 +320,51 @@ class StoreTests(unittest.TestCase):
         # The activity going takes its days with it.
         self.database.remove_household_activity(user_id=self.user_id, activity_id=school["id"])
         self.assertEqual(self.database.list_household_day_drives(user_id=self.user_id), [])
+
+    def test_the_own_week_question_is_written_down_when_it_is_the_next_thing_to_ask(self) -> None:
+        # The turn handler marks the profile at the moment the question is
+        # the first gap in a turn that will speak to the person: that turn
+        # asks it, and from then on the gap logic reads the mark and never
+        # raises it again. A quiet "not now" (askNow false), another gap
+        # ahead of it, or an account past getting to know marks nothing.
+        handler = SimpleNamespace(database=self.database)
+        own_week = {"goal": "family", "askNow": True, "weekGaps": [{"missing": "own_week", "who": "me"}]}
+        pickup_first = {"goal": "family", "askNow": True, "weekGaps": [{"missing": "pick_up", "activity": 1}, {"missing": "own_week", "who": "me"}]}
+        not_now = {"goal": "family", "askNow": False, "weekGaps": [{"missing": "own_week", "who": "me"}]}
+        connecting = {"goal": "connect", "askNow": True, "weekGaps": [{"missing": "own_week", "who": "me"}]}
+        for flow in (pickup_first, not_now, connecting, None):
+            PortalAuthHandler._note_own_week_asked(handler, self.user_id, flow, "2026-10-11")
+            self.assertEqual((self.database.get_household_profile(user_id=self.user_id) or {}).get("ownWeekAskedOn"), "")
+        PortalAuthHandler._note_own_week_asked(handler, self.user_id, own_week, "2026-10-11")
+        profile = self.database.get_household_profile(user_id=self.user_id) or {}
+        self.assertEqual(profile["ownWeekAskedOn"], "2026-10-11")
+
+        # And the mark is read back by the block the assistant sees.
+        members = [{"name": "Lahav", "role": "child"}]
+        week = [{"id": 1, "title": "School", "who": ["Lahav"], "days": ["sun"], "endTime": "13:45", "dropOffBy": "me", "pickUpBy": "me"},
+                {"id": 2, "title": "Chess", "who": ["Lahav"], "days": ["mon"], "endTime": "17:15", "dropOffBy": "me", "pickUpBy": "me"}]
+        self.assertNotIn("weekGaps", household.describe_household(profile=profile, members=members, activities=week, today=date(2026, 10, 11)))
+
+    def test_a_database_from_before_the_mark_treats_a_week_already_begun_as_asked(self) -> None:
+        # Before the mark existed the question was put whenever the week was
+        # ready, so a family mid-way or further - getting to know begun, a
+        # week with something in it - has had it. Catching up marks them,
+        # which is what keeps the question from coming to them once more
+        # after the deploy. A family who has not started is left to be asked.
+        self.database.save_household_profile(user_id=self.user_id, getting_to_know="in_progress")
+        self.database.save_household_activity(
+            user_id=self.user_id, title="School", who=["Lahav"], days=["sun"], end_time="13:45", drop_off_by="me", pick_up_by="me",
+        )
+        self.database.register_user("new@example.com")
+        new_user = int((self.database.get_user("new@example.com") or {})["id"])
+        self.database.save_household_profile(user_id=new_user)
+        with self.database._connection() as conn:
+            conn.execute("ALTER TABLE household_profiles DROP COLUMN own_week_asked_on")
+
+        reopened = PortalDatabase(self.path)
+
+        self.assertRegex((reopened.get_household_profile(user_id=self.user_id) or {})["ownWeekAskedOn"], r"^\d{4}-\d{2}-\d{2}$")
+        self.assertEqual((reopened.get_household_profile(user_id=new_user) or {})["ownWeekAskedOn"], "")
 
     def test_a_database_from_before_groups_opens_and_catches_up(self) -> None:
         # What a deploy meets: a database written by the previous build. On

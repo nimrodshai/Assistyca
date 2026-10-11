@@ -399,6 +399,7 @@ def own_week_gaps(
     *,
     calendar_connected: bool = False,
     owner_names: Iterable[str] = (),
+    asked: bool = False,
 ) -> list[dict[str, Any]]:
     """Whether the person has been asked about their own week yet.
 
@@ -409,9 +410,15 @@ def own_week_gaps(
     connected, which holds the same answer and is offered as the other way
     to give it. Like the afternoons, this is a question and never a hole: a
     "no thanks" is a whole answer, so it never makes the week unready.
+
+    It belongs to the first getting to know and is put once. asked says it
+    has been, whatever came back: a no, a later, or nothing at all leaves
+    the week without their hours, and that is theirs to add any time. It is
+    never asked again - not when the week is finished and not when a club
+    is added to it a month on.
     """
 
-    if calendar_connected:
+    if asked or calendar_connected:
         return []
     owners = list(owner_names)
     for activity in activities or ():
@@ -899,7 +906,10 @@ def describe_household(
         gaps = in_ask_order(
             gaps
             + afternoon_gaps(members, activities)
-            + own_week_gaps(members, activities, calendar_connected=calendar_connected, owner_names=owners)
+            + own_week_gaps(
+                members, activities, calendar_connected=calendar_connected, owner_names=owners,
+                asked=bool(clean(profile.get("ownWeekAskedOn"))),
+            )
         )
     if gaps:
         described["weekGaps"] = gaps
