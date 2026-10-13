@@ -66,6 +66,11 @@ from typing import Callable
 from zoneinfo import ZoneInfo
 from zoneinfo import ZoneInfoNotFoundError
 
+from packages.infrastructure.notification_templates import TEMPLATE_KIND_EVENING_GLANCE
+from packages.infrastructure.notification_templates import TEMPLATE_KIND_MORNING_DIGEST
+from packages.infrastructure.notification_templates import TEMPLATE_KIND_PAYLOAD_KEY
+from packages.infrastructure.notification_templates import TEMPLATE_KIND_WEEK_AHEAD
+from packages.infrastructure.notification_templates import normalize_template_kind
 from packages.infrastructure import household
 from packages.infrastructure.account_types import account_feature_allowed
 from packages.infrastructure.portal_db import normalize_text
@@ -741,11 +746,13 @@ class FamilyWeekNudger:
 
     def _queue(
         self, *, user_id: int, now: datetime, timezone_name: str, title: str, instruction: str, fallback: str,
-        offer: str = "", recipient_wa_id: str = "", image_url: str = "",
+        offer: str = "", recipient_wa_id: str = "", image_url: str = "", kind: str = "",
     ) -> None:
         """Queue one message for the account holder, or - with recipient_wa_id
         - for a family member's own phone on the same account. image_url is
-        a picture the message carries, which the worker sends as one."""
+        a picture the message carries, which the worker sends as one. kind
+        names the template that carries it outside the service window
+        (notification_templates); unnamed, it goes as a reminder."""
 
         connection = self.database.get_whatsapp_connection_by_user_id(user_id) or {}
         owner_wa_id = normalize_text(connection.get("ownerWaId")) or owner_phone(self.database, user_id)
@@ -755,6 +762,7 @@ class FamilyWeekNudger:
             "fallbackText": fallback,
             "oneOff": True,
             "source": NUDGE_SOURCE,
+            TEMPLATE_KIND_PAYLOAD_KEY: normalize_template_kind(kind),
         }
         if offer:
             payload["offerInstruction"] = offer
@@ -944,7 +952,7 @@ class FamilyWeekNudger:
                     ]
                     self._queue(
                         user_id=user_id, now=reference, timezone_name=timezone_name,
-                        title="Today in your family's week",
+                        title="Today in your family's week", kind=TEMPLATE_KIND_MORNING_DIGEST,
                         instruction=(
                             "It is the morning. Write the person one short WhatsApp message with what today holds for "
                             "their family, in the language they write to you in: one bullet per thing, each a few words "
@@ -1023,7 +1031,7 @@ class FamilyWeekNudger:
                     ]
                     self._queue(
                         user_id=user_id, now=reference, timezone_name=timezone_name,
-                        title="Tomorrow still needs someone",
+                        title="Tomorrow still needs someone", kind=TEMPLATE_KIND_EVENING_GLANCE,
                         instruction=(
                             "It is the evening. In one or two short sentences, in the language the person writes to you "
                             "in, tell them " + ", and ".join(about) + ". "
@@ -1234,7 +1242,7 @@ class FamilyWeekNudger:
         if claim(key):
             self._queue(
                 user_id=user_id, now=reference, timezone_name=timezone_name, title="Your family's week ahead",
-                instruction=instruction, fallback=fallback, image_url=image_url,
+                instruction=instruction, fallback=fallback, image_url=image_url, kind=TEMPLATE_KIND_WEEK_AHEAD,
             )
             sent += 1
         for member in members:
@@ -1246,6 +1254,7 @@ class FamilyWeekNudger:
             self._queue(
                 user_id=user_id, now=reference, timezone_name=timezone_name, title="Your family's week ahead",
                 instruction=instruction, fallback=fallback, image_url=image_url, recipient_wa_id=wa_id,
+                kind=TEMPLATE_KIND_WEEK_AHEAD,
             )
             sent += 1
         return sent
@@ -1279,7 +1288,7 @@ class FamilyWeekNudger:
                 lines = [describe_activity_line(activity, owner_names, members, viewer_names=names) for activity in todays]
                 self._queue(
                     user_id=user_id, now=reference, timezone_name=timezone_name, recipient_wa_id=wa_id,
-                    title="Today in your family's week",
+                    title="Today in your family's week", kind=TEMPLATE_KIND_MORNING_DIGEST,
                     instruction=(
                         f"It is the morning, and this message is for {first}, a parent in this family writing from "
                         "their own phone. Write them one short WhatsApp message with what today holds for their "
@@ -1301,7 +1310,7 @@ class FamilyWeekNudger:
                 if gaps and claim(f"evening:{tomorrow.isoformat()}{suffix}"):
                     self._queue(
                         user_id=user_id, now=reference, timezone_name=timezone_name, recipient_wa_id=wa_id,
-                        title="Tomorrow still needs someone",
+                        title="Tomorrow still needs someone", kind=TEMPLATE_KIND_EVENING_GLANCE,
                         instruction=(
                             f"It is the evening, and this message is for {first}, a parent in this family writing from "
                             "their own phone. In one or two short sentences, in the language the family writes to you "

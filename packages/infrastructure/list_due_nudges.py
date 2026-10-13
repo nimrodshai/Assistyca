@@ -197,6 +197,7 @@ class ListDueNudger:
                     "messageText": text,
                     "title": "Your to-dos for today",
                     "source": NUDGE_SOURCE,
+                    "templateKind": "morning_digest",
                     "localDate": today.isoformat(),
                 },
             )

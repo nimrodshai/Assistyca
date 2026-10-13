@@ -486,6 +486,10 @@ CREATE TABLE IF NOT EXISTS household_profiles (
     -- question belongs to the first getting to know and is put once, so
     -- a later change to the week never brings it back. Empty until asked.
     own_week_asked_on TEXT NOT NULL DEFAULT '',
+    -- The language the person writes in ('he' or 'en'), kept from the
+    -- script of each message they send; empty until they have written.
+    -- Their scheduled messages go out in it (message_language).
+    language TEXT NOT NULL DEFAULT '',
     share_token TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
@@ -1809,6 +1813,8 @@ class PortalDatabase:
         if "connect_offer" not in profile_columns:
             conn.execute("ALTER TABLE household_profiles ADD COLUMN connect_offer TEXT NOT NULL DEFAULT 'not_started'")
             conn.execute("ALTER TABLE household_profiles ADD COLUMN connect_ask_again_on TEXT NOT NULL DEFAULT ''")
+        if "language" not in profile_columns:
+            conn.execute("ALTER TABLE household_profiles ADD COLUMN language TEXT NOT NULL DEFAULT ''")
         if "own_week_asked_on" not in profile_columns:
             conn.execute("ALTER TABLE household_profiles ADD COLUMN own_week_asked_on TEXT NOT NULL DEFAULT ''")
             # Before this column, the question was put whenever the week was
@@ -9871,7 +9877,7 @@ class PortalDatabase:
     # profile's own account_kind column predates that and is no longer read.
     _HOUSEHOLD_PROFILE_SELECT = """
         SELECT u.id AS user_id, u.account_type, p.getting_to_know, p.ask_again_on,
-               p.connect_offer, p.connect_ask_again_on, p.own_week_asked_on, p.share_token,
+               p.connect_offer, p.connect_ask_again_on, p.own_week_asked_on, p.language, p.share_token,
                p.created_at, p.updated_at
         FROM users u LEFT JOIN household_profiles p ON p.user_id = u.id
     """
@@ -9887,6 +9893,7 @@ class PortalDatabase:
             "connectOffer": str(row["connect_offer"] or "not_started"),
             "connectAskAgainOn": str(row["connect_ask_again_on"] or ""),
             "ownWeekAskedOn": str(row["own_week_asked_on"] or ""),
+            "language": str(row["language"] or ""),
             "shareToken": str(row["share_token"] or ""),
             "createdAt": str(row["created_at"] or ""),
             "updatedAt": str(row["updated_at"] or ""),
@@ -9911,6 +9918,7 @@ class PortalDatabase:
         connect_offer: str | None = None,
         connect_ask_again_on: str | None = None,
         own_week_asked_on: str | None = None,
+        language: str | None = None,
     ) -> dict[str, Any]:
         """Set what is given and keep the rest."""
 
@@ -9920,6 +9928,8 @@ class PortalDatabase:
             raise ValueError(f"getting_to_know must be one of: {', '.join(household.GETTING_TO_KNOW_STATUSES)}.")
         if connect_offer is not None and connect_offer not in household.GETTING_TO_KNOW_STATUSES:
             raise ValueError(f"connect_offer must be one of: {', '.join(household.GETTING_TO_KNOW_STATUSES)}.")
+        if language is not None and normalize_text(language).lower() not in {"", "he", "en"}:
+            raise ValueError("language must be 'he', 'en' or empty.")
         now = now_iso()
         with self._connection() as conn:
             conn.execute(
@@ -9946,6 +9956,9 @@ class PortalDatabase:
             if own_week_asked_on is not None:
                 updates.append("own_week_asked_on = ?")
                 values.append(normalize_text(own_week_asked_on)[:10])
+            if language is not None:
+                updates.append("language = ?")
+                values.append(normalize_text(language).lower())
             if updates:
                 conn.execute(
                     f"UPDATE household_profiles SET {', '.join(updates)}, updated_at = ? WHERE user_id = ?",

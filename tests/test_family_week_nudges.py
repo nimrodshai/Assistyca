@@ -276,6 +276,7 @@ class NudgerTests(unittest.TestCase):
         self.assertIn("Say each fact once", payload["instruction"])
         self.assertNotIn("NOBODY DOWN FOR", payload["instruction"])
         self.assertTrue(payload["fallbackText"].startswith("Today:\n• "))
+        self.assertEqual(payload["templateKind"], "morning_digest")
         self.assertNotIn("offerInstruction", payload)
 
     def test_a_morning_missed_by_hours_is_not_sent_late(self) -> None:
@@ -607,6 +608,7 @@ class WeekAheadTests(unittest.TestCase):
         self.assertEqual(action["channel"], "whatsapp")
         self.assertRegex(payload["imageUrl"], r"^https://assistyca\.example/week/image/[a-z0-9]{20}\.png$")
         self.assertEqual(payload["resultUrl"], payload["imageUrl"])
+        self.assertEqual(payload["templateKind"], "week_ahead")
         self.assertIn("Sunday 2026-09-20: 08:00–12:45 School · Lahav", payload["instruction"])
         self.assertIn("collects: nobody", payload["instruction"])
         self.assertIn("ask who takes them", payload["instruction"])

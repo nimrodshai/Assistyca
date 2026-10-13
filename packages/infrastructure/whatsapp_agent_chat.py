@@ -30,6 +30,7 @@ from typing import Any, Callable
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from packages.infrastructure.account_types import account_feature_allowed
+from packages.infrastructure.message_language import remember_message_language
 from packages.infrastructure.notification_delivery import DEFAULT_WHATSAPP_API_VERSION
 from packages.infrastructure.notification_delivery import flatten_template_parameter
 from packages.infrastructure.notification_delivery import normalize_email
@@ -2957,6 +2958,16 @@ class WhatsAppAgentChat:
                 }
             text = spoken
             voice_note = True
+
+        # The language they write in is the language their scheduled messages
+        # come in. Words only: a photo with no caption and a button tap say
+        # nothing about it, and a language that could not be kept never
+        # stops the turn.
+        if text and (kind == "text" or voice_note):
+            try:
+                remember_message_language(self.database, user_id=self.user_id, text=text)
+            except Exception as exc:  # noqa: BLE001
+                print(f"WhatsApp message language for user {self.user_id} could not be kept: {exc}", flush=True)
 
         # A question the conversation is waiting on - which calendars to read -
         # is answered before anything else, by a tap or by words, and then the
