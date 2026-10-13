@@ -77,7 +77,7 @@ class WebRegistrationTests(unittest.TestCase):
         # The welcome goes out as a template through the notification sender;
         # the conversation's replies go out as plain text through the chat sender.
         self.template_patch = mock.patch(
-            "packages.tools.whatsapp_reply_approval.server.send_whatsapp_message",
+            "packages.infrastructure.whatsapp_messaging.send_whatsapp_message",
             return_value="wamid.welcome",
         )
         self.template_sent = self.template_patch.start()

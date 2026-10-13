@@ -10,17 +10,12 @@ The email and Telegram channels are gone. WhatsApp came back for exactly one
 path: a scheduled message the owner asked to receive on WhatsApp -- the
 conversational agent flow (docs/whatsapp-agent-chat.md) made "text me at
 12:40" a promise this module has to keep on WhatsApp, with the in-app feed as
-the fallback when sending is not configured. Two things sometimes confused
-with this fan-out are *not* affected:
+the fallback when sending is not configured. Sign-in codes are not part of
+this: they still go out by email from `portal_auth.server` (`send_otp_email`),
+which has its own mail configuration.
 
-* Sign-in codes still go out by email -- that lives in `portal_auth.server`
-  (`send_otp_email`) and has its own mail configuration.
-* Customer-facing WhatsApp replies still go out over WhatsApp -- that is
-  `packages.tools.whatsapp_reply_approval.server.send_whatsapp_message`, called
-  from `whatsapp_portal_service`.
-
-The two `resolve_whatsapp_sender_*` helpers remain here because both WhatsApp
-send paths resolve the Assistyca-owned sender number through them.
+The two `resolve_whatsapp_sender_*` helpers live here because every WhatsApp
+send path resolves the Assistyca-owned sender number through them.
 """
 
 from __future__ import annotations
@@ -214,8 +209,8 @@ def send_whatsapp_notification(
     """
 
     # Imported here rather than at module top: this module is imported by
-    # nearly everything, and the send client lives beside the approval tool.
-    from packages.tools.whatsapp_reply_approval.server import send_whatsapp_message
+    # nearly everything, and the send client is only needed on this path.
+    from packages.infrastructure.whatsapp_messaging import send_whatsapp_message
 
     resolved_phone_number_id = normalize_text(phone_number_id) or resolve_whatsapp_sender_phone_number_id()
     resolved_recipient = normalize_text(recipient_wa_id)

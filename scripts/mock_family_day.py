@@ -431,9 +431,7 @@ class Run:
 def main() -> int:
     only = set(sys.argv[1:])
     families = [f for f in FAMILIES if not only or f["id"] in only]
-    store_root = Path(tempfile.mkdtemp(prefix="mock-families-")) / "portal-whatsapp"
     environment = {
-        "PORTAL_WHATSAPP_STORE_ROOT": str(store_root),
         "WHATSAPP_APP_SECRET": SIMULATED_APP_SECRET,
         "ASSISTYCA_WHATSAPP_PHONE_NUMBER_ID": SIMULATED_PLATFORM_PHONE_NUMBER_ID,
         "ASSISTYCA_WHATSAPP_ACCESS_TOKEN": "simulator-token",
@@ -443,7 +441,6 @@ def main() -> int:
     }
     patches = [
         mock.patch("packages.infrastructure.whatsapp_agent_chat.send_whatsapp_message", side_effect=capture_send),
-        mock.patch("packages.infrastructure.whatsapp_portal_service.send_whatsapp_message", side_effect=capture_send),
         mock.patch("packages.infrastructure.whatsapp_agent_chat.send_whatsapp_typing_indicator", return_value=None),
         mock.patch("packages.infrastructure.scheduled_actions.send_whatsapp_notification", side_effect=capture_send),
         mock.patch("packages.infrastructure.notification_delivery.send_whatsapp_notification", side_effect=capture_send),

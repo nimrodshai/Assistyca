@@ -61,8 +61,8 @@ from packages.infrastructure.voice_notes import VoiceNoteError
 from packages.infrastructure.voice_notes import normalize_voice_note_mime_type
 from packages.infrastructure.voice_notes import transcribe_voice_note
 from packages.infrastructure.voice_notes import voice_note_transcript_text
-from packages.tools.whatsapp_reply_approval.server import send_whatsapp_message
-from packages.tools.whatsapp_reply_approval.server import send_whatsapp_typing_indicator
+from packages.infrastructure.whatsapp_messaging import send_whatsapp_message
+from packages.infrastructure.whatsapp_messaging import send_whatsapp_typing_indicator
 
 
 AGENT_CHAT_HISTORY_LIMIT = 12

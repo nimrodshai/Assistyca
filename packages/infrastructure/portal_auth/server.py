@@ -258,13 +258,6 @@ from packages.infrastructure.source_actions import SOURCE_ACTION_MIN_INTERVAL_MI
 from packages.infrastructure.source_actions import SourceActionScheduler
 from packages.infrastructure.source_actions import load_source_action_config
 from packages.infrastructure.source_actions import validate_source_url
-from packages.infrastructure.whatsapp_api import DEFAULT_WHATSAPP_API_VERSION
-from packages.infrastructure.whatsapp_api import WhatsAppConnectionError
-from packages.infrastructure.whatsapp_api import exchange_embedded_signup_code
-from packages.infrastructure.whatsapp_api import list_whatsapp_business_phone_numbers
-from packages.infrastructure.whatsapp_api import register_whatsapp_phone_number
-from packages.infrastructure.whatsapp_api import subscribe_whatsapp_business_account
-from packages.infrastructure.whatsapp_api import test_whatsapp_connection
 from packages.infrastructure.agent_loop import ACCOUNT_RIGHTS_TOOLS
 from packages.infrastructure.agent_loop import AGENT_LOOP_INSTRUCTIONS
 from packages.infrastructure.agent_loop import LOOP_MAX_OUTPUT_TOKENS
@@ -325,7 +318,6 @@ from packages.infrastructure.whatsapp_agent_chat import SIGNUP_AFTER_ERASURE_TEX
 from packages.infrastructure.whatsapp_agent_chat import SIGNUP_WELCOME_TEXT
 from packages.infrastructure.whatsapp_agent_chat import build_whatsapp_signup_link
 from packages.infrastructure.whatsapp_agent_chat import build_connect_links_line
-from packages.infrastructure.whatsapp_agent_chat import CALENDAR_PICK_PREFIX
 from packages.infrastructure.whatsapp_agent_chat import SIGNUP_ESCALATION_WINDOW_SECONDS
 from packages.infrastructure.whatsapp_agent_chat import build_calendar_choice_interactive
 from packages.infrastructure.whatsapp_agent_chat import build_calendar_choice_text
@@ -337,26 +329,14 @@ from packages.infrastructure.whatsapp_agent_chat import resolve_whatsapp_signup_
 from packages.infrastructure.whatsapp_agent_chat import whatsapp_signup_enabled
 from packages.infrastructure.registration_welcome import registration_welcome_plan
 from packages.infrastructure.whatsapp_agent_chat import flatten_for_template
-from packages.infrastructure.whatsapp_portal_service import PortalWhatsAppService
-from packages.infrastructure.whatsapp_portal_service import build_portal_service_from_connection
-from packages.infrastructure.whatsapp_portal_service import normalize_portal_owner_wa_id
-from packages.infrastructure.whatsapp_reengagement import REENGAGEMENT_FEATURE_ID
-from packages.infrastructure.whatsapp_reengagement import WhatsAppReengagementScheduler
-from packages.infrastructure.whatsapp_reengagement import load_whatsapp_reengagement_config
-from packages.infrastructure.whatsapp_tool_delivery import normalize_whatsapp_tool_delivery_settings
-from packages.infrastructure.whatsapp_tool_delivery import whatsapp_tool_delivery_uses_telegram
-from packages.infrastructure.whatsapp_tool_delivery import whatsapp_tool_delivery_uses_whatsapp
 from packages.tools.scheduled_monitor.monitor import MONITOR_FEATURE_ID
 from packages.tools.scheduled_monitor.monitor import ScheduledMonitorScheduler
 from packages.tools.scheduled_monitor.monitor import load_scheduled_monitor_config
-from packages.tools.whatsapp_reply_approval.server import extract_inbound_events
-from packages.tools.whatsapp_reply_approval.server import extract_status_events
-from packages.tools.whatsapp_reply_approval.server import normalize_text
-from packages.tools.whatsapp_reply_approval.server import OWNER_DISABLE_CONTACT_ACTION
-from packages.tools.whatsapp_reply_approval.server import parse_owner_command_text
-from packages.tools.whatsapp_reply_approval.server import parse_form_encoded as parse_whatsapp_form_encoded
-from packages.tools.whatsapp_reply_approval.server import parse_json_body as parse_whatsapp_json_body
-from packages.tools.whatsapp_reply_approval.server import verify_whatsapp_signature
+from packages.infrastructure.whatsapp_messaging import extract_inbound_events
+from packages.infrastructure.whatsapp_messaging import extract_status_events
+from packages.infrastructure.whatsapp_messaging import normalize_text
+from packages.infrastructure.whatsapp_messaging import parse_json_body as parse_whatsapp_json_body
+from packages.infrastructure.whatsapp_messaging import verify_whatsapp_signature
 
 
 EMAIL_RE = re.compile(r"^\S+@\S+\.\S+$")
@@ -380,11 +360,9 @@ JSON_CONTENT_TYPE = "application/json; charset=utf-8"
 SESSION_TOKEN_VERSION = 1
 SESSION_COOKIE_NAME = "assistyca_portal_session"
 MANUAL_RUN_REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
-WHATSAPP_REPLY_ASSISTANT_FEATURE_ID = "whatsapp-business-reply-suggestion-assistant"
-# Transport-level cap on any single request body. Generous enough for the largest
-# supported WhatsApp history import, but bounded so a declared Content-Length can
-# no longer be used to exhaust memory on the threading server. Only the history
-# import reads this much; every other route names a cap sized to what it takes.
+# Transport-level cap on any single request body, so a declared Content-Length
+# cannot be used to exhaust memory on the threading server. Every route names a
+# cap sized to what it takes; this is the ceiling none of them passes.
 MAX_REQUEST_BODY_BYTES = 128 * 1024 * 1024
 # What a signed-in request carries unless it says otherwise: a list, a form, a
 # question. Nothing on the portal but files needs more than this.
@@ -1093,8 +1071,6 @@ LISTS_HANDOFF_TTL_SECONDS = 48 * 3600
 # style-src keeps 'unsafe-inline' because the marketing pages carry <style>
 # blocks and GSI injects its own styles; inline CSS is a far weaker vector than
 # inline script.
-EMBEDDED_SIGNUP_APP_ID_ENV = "META_APP_ID"
-EMBEDDED_SIGNUP_CONFIG_ID_ENV = "WHATSAPP_EMBEDDED_SIGNUP_CONFIG_ID"
 
 CONTENT_SECURITY_POLICY = "; ".join(
     (
@@ -3772,383 +3748,6 @@ def merge_mail_digest_results(results: list[dict[str, Any]]) -> dict[str, Any]:
     return merged
 
 
-def normalize_import_text(value: Any) -> str:
-    return normalize_text(value).translate(WHATSAPP_HISTORY_IMPORT_CONTROL_CHARS).strip()
-
-
-def normalize_import_name_key(value: Any) -> str:
-    return re.sub(r"\s+", " ", normalize_import_text(value).lower()).strip()
-
-
-def split_import_owner_names(value: Any) -> list[str]:
-    if isinstance(value, list):
-        raw_items = [normalize_import_text(item) for item in value]
-    else:
-        raw_items = re.split(r"[,;\n]+", normalize_import_text(value))
-    seen: set[str] = set()
-    names: list[str] = []
-    for item in raw_items:
-        name = normalize_import_text(item)
-        key = normalize_import_name_key(name)
-        if name and key not in seen:
-            names.append(name)
-            seen.add(key)
-    return names
-
-
-def derive_import_email_name_candidates(email: str) -> list[str]:
-    local_part = normalize_import_text(str(email or "").split("@", 1)[0])
-    if not local_part:
-        return []
-
-    cleaned = re.sub(r"[^A-Za-z0-9]+", " ", local_part).strip()
-    tokens = [token for token in cleaned.split() if token]
-    candidates = [cleaned] if cleaned else []
-    if len(tokens) > 1:
-        candidates.append(" ".join(reversed(tokens)))
-    return split_import_owner_names(candidates)
-
-
-def list_import_sender_names(messages: list[dict[str, str]]) -> list[str]:
-    seen: set[str] = set()
-    names: list[str] = []
-    for message in messages:
-        sender_name = normalize_import_text(message.get("senderName"))
-        sender_key = normalize_import_name_key(sender_name)
-        if sender_name and sender_key not in seen:
-            names.append(sender_name)
-            seen.add(sender_key)
-    return names
-
-
-def resolve_import_conversation_title(
-    fallback_title: str,
-    *,
-    sender_names: list[str],
-    owner_names: list[str],
-) -> str:
-    normalized_fallback = normalize_import_text(fallback_title)
-    fallback_key = normalize_import_name_key(normalized_fallback)
-    sender_keys = {normalize_import_name_key(name) for name in sender_names if normalize_import_name_key(name)}
-    if fallback_key and fallback_key in sender_keys:
-        return normalized_fallback
-
-    owner_keys = {normalize_import_name_key(name) for name in owner_names if normalize_import_name_key(name)}
-    if owner_keys:
-        other_senders = [
-            sender_name
-            for sender_name in sender_names
-            if normalize_import_name_key(sender_name) not in owner_keys
-        ]
-        if len(other_senders) == 1:
-            return other_senders[0]
-
-    return normalized_fallback or "WhatsApp conversation"
-
-
-def slugify_import_conversation_id(value: str) -> str:
-    slug = re.sub(r"[^a-z0-9]+", "-", normalize_import_text(value).lower()).strip("-")
-    return slug[:54] or "conversation"
-
-
-def derive_import_conversation_title(file_name: str, explicit_title: str = "") -> str:
-    if normalize_import_text(explicit_title):
-        return normalize_import_text(explicit_title)
-
-    stem = Path(normalize_import_text(file_name) or "WhatsApp conversation").stem
-    title = re.sub(r"\s+", " ", stem).strip()
-    title = re.sub(r"^WhatsApp Chat with\s+", "", title, flags=re.IGNORECASE).strip()
-    title = re.sub(r"^Chat with\s+", "", title, flags=re.IGNORECASE).strip()
-    return title or "WhatsApp conversation"
-
-
-def build_import_conversation_id(title: str, explicit_id: str = "") -> str:
-    normalized_id = normalize_import_text(explicit_id)
-    if normalized_id:
-        return normalized_id
-
-    digest = hashlib.sha1(normalize_import_text(title).lower().encode("utf-8")).hexdigest()[:10]
-    return f"manual-{slugify_import_conversation_id(title)}-{digest}"
-
-
-def parse_whatsapp_export_timestamp(
-    date_text: str,
-    time_text: str,
-    *,
-    now: datetime | None = None,
-    date_order: str = "",
-) -> str | None:
-    date_value = normalize_import_text(date_text).replace("-", "/").replace(".", "/")
-    time_value = re.sub(r"\s+", " ", normalize_import_text(time_text).upper().replace(".", "")).strip()
-    time_value = re.sub(r"(?<=\d)([AP]M)\b", r" \1", time_value)
-    if not date_value or not time_value:
-        return None
-
-    day_first_formats = [
-        "%d/%m/%Y %H:%M:%S",
-        "%d/%m/%Y %H:%M",
-        "%d/%m/%y %H:%M:%S",
-        "%d/%m/%y %H:%M",
-        "%d/%m/%Y %I:%M:%S %p",
-        "%d/%m/%Y %I:%M %p",
-        "%d/%m/%y %I:%M:%S %p",
-        "%d/%m/%y %I:%M %p",
-    ]
-    month_first_formats = [
-        "%m/%d/%Y %H:%M:%S",
-        "%m/%d/%Y %H:%M",
-        "%m/%d/%y %H:%M:%S",
-        "%m/%d/%y %H:%M",
-        "%m/%d/%Y %I:%M:%S %p",
-        "%m/%d/%Y %I:%M %p",
-        "%m/%d/%y %I:%M:%S %p",
-        "%m/%d/%y %I:%M %p",
-    ]
-    year_first_formats = [
-        "%Y/%m/%d %H:%M:%S",
-        "%Y/%m/%d %H:%M",
-        "%Y/%m/%d %I:%M:%S %p",
-        "%Y/%m/%d %I:%M %p",
-    ]
-    ordered_formats = [
-        ("day_first", date_format)
-        for date_format in day_first_formats
-    ] + [
-        ("month_first", date_format)
-        for date_format in month_first_formats
-    ] + [
-        ("year_first", date_format)
-        for date_format in year_first_formats
-    ]
-    raw_value = f"{date_value} {time_value}"
-    current_local_time = (
-        now.astimezone()
-        if isinstance(now, datetime) and now.tzinfo is not None
-        else (now.replace(tzinfo=timezone.utc).astimezone() if isinstance(now, datetime) else datetime.now().astimezone())
-    )
-    local_tz = current_local_time.tzinfo or timezone.utc
-    candidates: list[tuple[str, datetime]] = []
-    for format_order, date_format in ordered_formats:
-        try:
-            parsed = datetime.strptime(raw_value, date_format)
-        except ValueError:
-            continue
-        candidates.append((format_order, parsed.replace(tzinfo=local_tz)))
-    if not candidates:
-        return None
-
-    normalized_date_order = normalize_import_text(date_order).lower()
-    if normalized_date_order in {"day_first", "month_first", "year_first"}:
-        ordered_candidates = [
-            candidate
-            for candidate in candidates
-            if candidate[0] == normalized_date_order
-        ]
-        if ordered_candidates:
-            candidates = ordered_candidates
-
-    non_future_candidates = [
-        candidate
-        for _format_order, candidate in candidates
-        if candidate <= current_local_time
-    ]
-    chosen = (non_future_candidates or [candidate for _format_order, candidate in candidates])[0]
-    return chosen.astimezone(timezone.utc).isoformat()
-
-
-WHATSAPP_EXPORT_DATE_FRAGMENT = r"\d{1,4}[./-]\d{1,2}[./-]\d{2,4}"
-WHATSAPP_EXPORT_TIME_FRAGMENT = r"\d{1,2}:\d{2}(?::\d{2})?(?:\s*[APap]\.?[Mm]\.?)?"
-WHATSAPP_EXPORT_TIMESTAMP_RE = re.compile(
-    rf"^\[?(?:"
-    rf"{WHATSAPP_EXPORT_DATE_FRAGMENT}(?:,|\s)\s*{WHATSAPP_EXPORT_TIME_FRAGMENT}"
-    rf"|{WHATSAPP_EXPORT_TIME_FRAGMENT}\s*,\s*{WHATSAPP_EXPORT_DATE_FRAGMENT}"
-    rf")"
-)
-
-WHATSAPP_EXPORT_LINE_RE = re.compile(
-    rf"^\[?(?P<date>{WHATSAPP_EXPORT_DATE_FRAGMENT})(?:,|\s)\s*"
-    rf"(?P<time>{WHATSAPP_EXPORT_TIME_FRAGMENT})\]?"
-    r"\s*(?:[-–—]\s*)?(?P<body>.*)$"
-)
-
-WHATSAPP_EXPORT_TIME_FIRST_LINE_RE = re.compile(
-    rf"^\[?(?P<time>{WHATSAPP_EXPORT_TIME_FRAGMENT})\s*,\s*"
-    rf"(?P<date>{WHATSAPP_EXPORT_DATE_FRAGMENT})\]?"
-    r"\s*(?:[-–—]\s*)?(?P<body>.*)$"
-)
-
-
-def match_whatsapp_export_line(line: str) -> re.Match[str] | None:
-    return WHATSAPP_EXPORT_LINE_RE.match(line) or WHATSAPP_EXPORT_TIME_FIRST_LINE_RE.match(line)
-
-
-def infer_whatsapp_export_date_order(content: str) -> str:
-    month_first_hits = 0
-    day_first_hits = 0
-    year_first_hits = 0
-    for raw_line in str(content or "").splitlines():
-        normalized_line = normalize_import_text(raw_line)
-        match = match_whatsapp_export_line(normalized_line)
-        if match is None:
-            continue
-        date_parts = [
-            part
-            for part in re.split(r"[./-]+", normalize_import_text(match.group("date")))
-            if part
-        ]
-        if len(date_parts) != 3 or not all(part.isdigit() for part in date_parts):
-            continue
-        first, second, _third = [int(part) for part in date_parts]
-        if len(date_parts[0]) == 4:
-            year_first_hits += 1
-        elif first > 12 and second <= 12:
-            day_first_hits += 1
-        elif second > 12 and first <= 12:
-            month_first_hits += 1
-
-    if month_first_hits > day_first_hits and month_first_hits >= year_first_hits:
-        return "month_first"
-    if day_first_hits > month_first_hits and day_first_hits >= year_first_hits:
-        return "day_first"
-    if year_first_hits > 0 and year_first_hits >= month_first_hits and year_first_hits >= day_first_hits:
-        return "year_first"
-    return ""
-
-
-def parse_whatsapp_export_line(line: str, *, date_order: str = "") -> dict[str, str] | None:
-    normalized_line = normalize_import_text(line)
-    if not normalized_line:
-        return None
-
-    match = match_whatsapp_export_line(normalized_line)
-    if not match:
-        return None
-
-    body = normalize_import_text(match.group("body"))
-    if ":" not in body:
-        return None
-
-    sender, message = body.split(":", 1)
-    sender_name = normalize_import_text(sender)
-    message_text = str(message or "").strip()
-    message_at = parse_whatsapp_export_timestamp(match.group("date"), match.group("time"), date_order=date_order)
-    if not sender_name or not message_text or not message_at:
-        return None
-
-    return {
-        "senderName": sender_name,
-        "text": message_text,
-        "messageAt": message_at,
-        "sourceDate": normalize_import_text(match.group("date")),
-        "sourceTime": normalize_import_text(match.group("time")),
-    }
-
-
-def parse_whatsapp_export_messages(content: str) -> list[dict[str, str]]:
-    return analyze_whatsapp_export_messages(content)["messages"]
-
-
-def analyze_whatsapp_export_messages(content: str) -> dict[str, Any]:
-    messages: list[dict[str, str]] = []
-    current: dict[str, str] | None = None
-    date_order = infer_whatsapp_export_date_order(content)
-    line_count = 0
-    blank_line_count = 0
-    message_start_line_count = 0
-    continuation_line_count = 0
-    system_or_unsupported_line_count = 0
-    unsupported_message_line_count = 0
-    orphan_line_count = 0
-    for raw_line in str(content or "").splitlines():
-        line_count += 1
-        normalized_line = normalize_import_text(raw_line)
-        if not normalized_line:
-            blank_line_count += 1
-            continue
-
-        parsed = parse_whatsapp_export_line(raw_line, date_order=date_order)
-        if parsed is not None:
-            if current is not None:
-                messages.append(current)
-            parsed["sourceLine"] = str(line_count)
-            current = parsed
-            message_start_line_count += 1
-            continue
-
-        if WHATSAPP_EXPORT_TIMESTAMP_RE.match(normalized_line):
-            if current is not None:
-                messages.append(current)
-                current = None
-            system_or_unsupported_line_count += 1
-            line_match = match_whatsapp_export_line(normalized_line)
-            body = normalize_import_text(line_match.group("body")) if line_match else ""
-            if ":" in body:
-                unsupported_message_line_count += 1
-            continue
-
-        if current is not None:
-            current["text"] = f'{current["text"]}\n{normalized_line}'
-            continuation_line_count += 1
-            continue
-
-        orphan_line_count += 1
-    if current is not None:
-        messages.append(current)
-    skipped_line_count = system_or_unsupported_line_count + orphan_line_count
-    return {
-        "messages": messages,
-        "diagnostics": {
-            "lineCount": line_count,
-            "blankLineCount": blank_line_count,
-            "messageStartLineCount": message_start_line_count,
-            "continuationLineCount": continuation_line_count,
-            "skippedLineCount": skipped_line_count,
-            "systemOrUnsupportedLineCount": system_or_unsupported_line_count,
-            "unsupportedMessageLineCount": unsupported_message_line_count,
-            "orphanLineCount": orphan_line_count,
-            "dateOrder": date_order,
-        },
-    }
-
-
-def resolve_import_message_direction(
-    *,
-    sender_name: str,
-    conversation_title: str,
-    owner_names: list[str],
-) -> str:
-    sender_key = normalize_import_name_key(sender_name)
-    owner_keys = {normalize_import_name_key(name) for name in owner_names if normalize_import_name_key(name)}
-    conversation_key = normalize_import_name_key(conversation_title)
-
-    if owner_keys:
-        return "outbound" if sender_key in owner_keys else "inbound"
-    if conversation_key:
-        return "inbound" if sender_key == conversation_key else "outbound"
-    return "inbound"
-
-
-def build_import_message_id(
-    *,
-    conversation_id: str,
-    message: dict[str, str],
-    index: int,
-) -> str:
-    fingerprint = "\n".join(
-        [
-            normalize_import_text(conversation_id),
-            normalize_import_text(message.get("sourceLine")),
-            normalize_import_text(message.get("sourceDate")),
-            normalize_import_text(message.get("sourceTime")),
-            normalize_import_text(message.get("senderName")),
-            normalize_import_text(message.get("text")),
-            str(index),
-        ]
-    )
-    digest = hashlib.sha1(fingerprint.encode("utf-8")).hexdigest()
-    return f"manual-import-{digest}"
-
-
 def json_response(
     handler: SimpleHTTPRequestHandler,
     status: int,
@@ -4230,77 +3829,6 @@ def describe_manual_monitor_run(run: dict[str, Any] | None) -> str:
         label = "match" if findings_count == 1 else "matches"
         return f"Manual run finished. Found {findings_count} {label}."
     return "Manual run finished."
-
-
-def format_reengagement_owner_label(run: dict[str, Any]) -> str:
-    owner_wa_id = normalize_text(run.get("ownerWaId"))
-    if not owner_wa_id:
-        return "your WhatsApp"
-    if owner_wa_id.isdigit():
-        return f"+{owner_wa_id}"
-    return owner_wa_id
-
-
-def describe_manual_reengagement_demo_run(run: dict[str, Any] | None) -> str:
-    payload = run if isinstance(run, dict) else {}
-    status = normalize_text(payload.get("status")).lower()
-    delivery_mode = normalize_text(payload.get("deliveryMode")).lower()
-    owner_label = format_reengagement_owner_label(payload)
-    candidates_count = max(0, int(payload.get("candidatesCount") or 0))
-    notifications_sent = max(0, int(payload.get("notificationsSent") or 0))
-    delivery_errors = payload.get("deliveryErrors") if isinstance(payload.get("deliveryErrors"), list) else []
-    if status == "cancelled":
-        if notifications_sent > 0:
-            label = "report" if notifications_sent == 1 else "reports"
-            if delivery_mode == "mock":
-                return f"Demo cancelled after simulating {notifications_sent} WhatsApp {label} for {owner_label}. Customers were not contacted."
-            if delivery_mode == "template_prompt":
-                return f"Demo cancelled after sending a WhatsApp template prompt to {owner_label}. Customers were not contacted."
-            if delivery_mode == "telegram":
-                return f"Demo cancelled after sending {notifications_sent} Telegram {label}. Customers were not contacted."
-            return f"Demo cancelled after sending {notifications_sent} WhatsApp {label}. Customers were not contacted."
-        return "Demo cancelled before any owner report was sent. Customers were not contacted."
-    if delivery_errors and notifications_sent <= 0:
-        if candidates_count == 1:
-            return "Demo found 1 inactive conversation and generated a follow-up draft. Owner delivery failed, so review the finding in the portal."
-        if candidates_count > 1:
-            return f"Demo found {candidates_count} inactive conversations and generated follow-up drafts. Owner delivery failed, so review the findings in the portal."
-        return "Demo found no inactive conversations. Owner delivery failed before a no-results report could be sent."
-    if notifications_sent > 0 and delivery_mode == "mock":
-        if candidates_count == 1:
-            return f"Demo found 1 inactive conversation, generated a follow-up draft, and simulated the WhatsApp report for {owner_label}. Live WhatsApp delivery is not configured."
-        if candidates_count > 1:
-            return f"Demo found {candidates_count} inactive conversations, generated follow-up drafts, and simulated {notifications_sent} WhatsApp reports for {owner_label}. Live WhatsApp delivery is not configured."
-        return f"Demo found no inactive conversations for the current inactivity window and simulated a no-results WhatsApp report for {owner_label}. Live WhatsApp delivery is not configured."
-    if notifications_sent > 0 and delivery_mode == "template_prompt":
-        if candidates_count == 1:
-            return f"Demo found 1 inactive conversation, generated a follow-up draft, and sent a WhatsApp template prompt to {owner_label}. Tap Send details in WhatsApp to receive the report."
-        if candidates_count > 1:
-            return f"Demo found {candidates_count} inactive conversations, generated follow-up drafts, and sent a WhatsApp template prompt to {owner_label}. Tap Send details in WhatsApp to receive the reports."
-        return f"Demo found no inactive conversations and sent a WhatsApp template prompt to {owner_label}. Tap Send details in WhatsApp to receive the no-results report."
-    if notifications_sent > 0 and delivery_mode == "telegram":
-        if candidates_count == 1:
-            return "Demo found 1 inactive conversation, generated a follow-up draft, and sent the report to Telegram."
-        if candidates_count > 1:
-            return f"Demo found {candidates_count} inactive conversations, generated follow-up drafts, and sent {notifications_sent} reports to Telegram."
-        return "Demo found no inactive conversations for the current inactivity window and sent a no-results report to Telegram."
-    if candidates_count == 1:
-        return (
-            f"Demo found 1 inactive conversation, generated a follow-up draft, and sent the report to {owner_label}."
-            if notifications_sent > 0
-            else "Demo found 1 inactive conversation and generated a follow-up draft."
-        )
-    if candidates_count > 1:
-        return (
-            f"Demo found {candidates_count} inactive conversations, generated follow-up drafts, and sent {notifications_sent} reports to {owner_label}."
-            if notifications_sent > 0
-            else f"Demo found {candidates_count} inactive conversations and generated follow-up drafts."
-        )
-    return (
-        f"Demo found no inactive conversations for the current inactivity window and sent a no-results report to {owner_label}."
-        if notifications_sent > 0
-        else "Demo found no inactive conversations for the current inactivity window."
-    )
 
 
 def send_cors_headers(handler: SimpleHTTPRequestHandler) -> None:
@@ -4498,8 +4026,6 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             or path == "/api/source-actions"
             or path.startswith("/api/source-actions/")
             or path.startswith("/api/whatsapp/")
-            or path.startswith("/api/approvals")
-            or path.startswith("/api/threads")
             or path == "/api/lists"
             or path.startswith("/api/lists/")
             or path == "/api/receipts"
@@ -4541,8 +4067,6 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             or path == "/api/notifications"
             or path == "/webhooks/whatsapp"
             or path.startswith("/api/whatsapp/")
-            or path.startswith("/api/approvals")
-            or path.startswith("/api/threads")
             or path == "/api/lists"
             or path.startswith("/api/lists/")
             or path == "/api/receipts"
@@ -4623,7 +4147,6 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             or path.startswith("/api/notifications/")
             or path == "/webhooks/whatsapp"
             or path.startswith("/api/whatsapp/")
-            or path.startswith("/api/approvals")
             or path == "/api/lists"
             or path.startswith("/api/lists/")
             or path == "/api/receipts"
@@ -4655,13 +4178,11 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             or path.startswith("/api/admin/")
             or path.startswith("/api/features/")
             or path.startswith("/api/platform-connections/")
-            or path == "/api/whatsapp/connection"
             or path.startswith("/api/whatsapp/my-numbers/")
             or path.startswith("/api/scheduled-actions/")
             or path.startswith("/api/agent/email/follows/")
             or path.startswith("/api/source-actions/")
             or path.startswith("/api/notifications/")
-            or path.startswith("/api/whatsapp/history/")
             or path.startswith("/api/lists/")
             or path.startswith("/api/receipts/")
             or path.startswith("/api/household/")
@@ -4889,32 +4410,12 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             self._handle_whatsapp_webhook_verification(parsed)
             return
 
-        if path == "/api/whatsapp/embedded-signup/config":
-            self._handle_whatsapp_embedded_signup_config_get()
-            return
-
-        if path == "/api/whatsapp/connection":
-            self._handle_whatsapp_connection_get()
-            return
-
         if path == "/api/whatsapp/my-numbers":
             self._handle_whatsapp_my_numbers_get()
             return
 
         if path == "/api/admin/whatsapp/signup":
             self._handle_admin_whatsapp_signup_get()
-            return
-
-        if path == "/api/whatsapp/history":
-            self._handle_whatsapp_history_get(parsed)
-            return
-
-        if path.startswith("/api/approvals"):
-            self._handle_whatsapp_approvals_get(parsed)
-            return
-
-        if path.startswith("/api/threads"):
-            self._handle_whatsapp_threads_get(parsed)
             return
 
 
@@ -5008,22 +4509,6 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             self._handle_email_follow_post()
             return
 
-        if path == "/api/whatsapp/test":
-            self._handle_whatsapp_test()
-            return
-
-        if path == "/api/whatsapp/embedded-signup/code":
-            self._handle_whatsapp_embedded_signup_code_post()
-            return
-
-        if path == "/api/whatsapp/connection":
-            self._handle_whatsapp_connection_post()
-            return
-
-        if path == "/api/whatsapp/history/import":
-            self._handle_whatsapp_history_import_post()
-            return
-
         if path == "/api/whatsapp/my-numbers/code":
             self._handle_whatsapp_claim_code_post()
             return
@@ -5074,11 +4559,6 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             self._handle_whatsapp_webhook_ingest()
             return
 
-
-        if path.startswith("/api/approvals"):
-            self._handle_whatsapp_approval_api_submit(parsed)
-            return
-
         self.send_error(HTTPStatus.NOT_FOUND)
 
     def _handle_api_delete(self, parsed: urllib_parse.ParseResult) -> None:
@@ -5091,9 +4571,6 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             return
         if path.startswith("/api/platform-connections/"):
             self._handle_platform_connection_delete(parsed)
-            return
-        if path == "/api/whatsapp/connection":
-            self._handle_whatsapp_connection_delete()
             return
         if path.startswith("/api/whatsapp/my-numbers/"):
             self._handle_whatsapp_my_numbers_delete(parsed)
@@ -5115,9 +4592,6 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             return
         if path.startswith("/api/source-actions/"):
             self._handle_source_actions_delete(parsed)
-            return
-        if path.startswith("/api/whatsapp/history/conversations/"):
-            self._handle_whatsapp_history_conversation_delete(parsed)
             return
         if path.startswith("/api/features/"):
             self._handle_feature_run_delete(parsed)
@@ -7266,8 +6740,6 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 root=self.root,
                 receipt_output_root=resolve_runtime_path(self.config.agent_output_dir, root=self.root),
                 receipt_owner_key=build_agent_receipt_owner_key(email),
-                whatsapp_store_cache=self.server.whatsapp_stores,  # type: ignore[attr-defined]
-                whatsapp_store_lock=self.server.whatsapp_store_lock,  # type: ignore[attr-defined]
                 revoke_grant=self._revoke_connection_grant,
                 db_path=self.config.db_path,
             )
@@ -12671,80 +12143,6 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             "action": self._serialize_scheduled_action_for_client(updated),
         })
 
-    def _handle_whatsapp_test(self) -> None:
-        session = self._get_authenticated_session()
-        if session is None:
-            json_response(self, HTTPStatus.UNAUTHORIZED, {
-                "ok": False,
-                "error": "unauthorized",
-                "message": "Sign in again to check the connection.",
-            })
-            return
-
-        try:
-            payload = parse_json_body(self)
-        except ValueError as exc:
-            json_response(self, HTTPStatus.BAD_REQUEST, {
-                "ok": False,
-                "error": "invalid_json",
-                "message": str(exc),
-            })
-            return
-
-        access_token = str(payload.get("access_token", "")).strip()
-        phone_number_id = str(payload.get("phone_number_id", "")).strip()
-
-        if not access_token or not phone_number_id:
-            json_response(self, HTTPStatus.BAD_REQUEST, {
-                "ok": False,
-                "error": "missing_fields",
-                "message": "Provide the access token and Phone Number ID for this WhatsApp Business Account.",
-            })
-            return
-
-        try:
-            result = test_whatsapp_connection(
-                access_token=access_token,
-                phone_number_id=phone_number_id,
-            )
-        except ValueError as exc:
-            json_response(self, HTTPStatus.BAD_REQUEST, {
-                "ok": False,
-                "error": "missing_fields",
-                "message": str(exc),
-            })
-            return
-        except WhatsAppConnectionError as exc:
-            response: dict[str, Any] = {
-                "ok": False,
-                "error": "whatsapp_test_failed",
-                "message": str(exc),
-            }
-            if exc.details:
-                response["details"] = exc.details
-            json_response(self, HTTPStatus.BAD_GATEWAY, response)
-            return
-        except Exception as exc:  # pragma: no cover - surfaced to the UI
-            json_response(self, HTTPStatus.BAD_GATEWAY, {
-                "ok": False,
-                "error": "whatsapp_test_failed",
-                "message": f"WhatsApp could not confirm the connection: {exc}",
-            })
-            return
-
-        display_phone_number = result.get("display_phone_number", "")
-        verified_name = result.get("verified_name", "")
-        success_label = display_phone_number or verified_name or phone_number_id
-
-        json_response(self, HTTPStatus.OK, {
-            "ok": True,
-            "message": "Setup saved. The phone number ID was verified. Send a real WhatsApp message next to confirm Assistyca receives it.",
-            "phoneNumberId": result.get("phone_number_id", phone_number_id),
-            "displayPhoneNumber": display_phone_number,
-            "verifiedName": verified_name,
-            "label": success_label,
-        })
-
     def _read_body(self, *, max_bytes: int = MAX_JSON_BODY_BYTES) -> bytes:
         return read_request_body(self, max_bytes=max_bytes)
 
@@ -13487,8 +12885,6 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 root=self.root,
                 receipt_output_root=resolve_runtime_path(self.config.agent_output_dir, root=self.root),
                 receipt_owner_key=build_agent_receipt_owner_key(email),
-                whatsapp_store_cache=self.server.whatsapp_stores,  # type: ignore[attr-defined]
-                whatsapp_store_lock=self.server.whatsapp_store_lock,  # type: ignore[attr-defined]
                 revoke_grant=self._revoke_connection_grant,
                 db_path=self.config.db_path,
             )
@@ -14612,104 +14008,6 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
     def _normalize_digits(self, value: Any) -> str:
         return re.sub(r"\D+", "", str(value or ""))
 
-    def _resolve_whatsapp_tool_settings(self, connection: dict[str, Any]) -> dict[str, Any]:
-        existing_settings = connection.get("settings") if isinstance(connection.get("settings"), dict) else {}
-        if existing_settings:
-            return existing_settings
-
-        email = normalize_text(connection.get("email"))
-        if not email:
-            return {}
-
-        feature_id = normalize_text(connection.get("featureId")) or WHATSAPP_REPLY_ASSISTANT_FEATURE_ID
-        assignment = self.database.get_feature_assignment(email, feature_id) or {}
-        metadata = assignment.get("metadata") if isinstance(assignment.get("metadata"), dict) else {}
-        settings = metadata.get("settings") if isinstance(metadata.get("settings"), dict) else {}
-        if isinstance(settings, dict) and settings:
-            if feature_id == WHATSAPP_REPLY_ASSISTANT_FEATURE_ID and not any(
-                key in settings
-                for key in ("deliveryChannels", "delivery_channels", "deliveryChannel", "delivery_channel")
-            ):
-                return {**settings, "deliveryChannels": ["portal"]}
-            return settings
-        # Existing workspaces created before portal delivery was available
-        # should receive new review cards in this chat by default.
-        if feature_id == WHATSAPP_REPLY_ASSISTANT_FEATURE_ID:
-            return {"deliveryChannels": ["portal"]}
-        return {}
-
-    def _build_whatsapp_service(self, connection: dict[str, Any]) -> PortalWhatsAppService:
-        service_connection = {
-            **connection,
-            "settings": self._resolve_whatsapp_tool_settings(connection),
-        }
-        return build_portal_service_from_connection(
-            root=self.root,
-            connection=service_connection,
-            base_url=self._public_base_url(),
-            store_cache=self.server.whatsapp_stores,  # type: ignore[attr-defined]
-            store_lock=self.server.whatsapp_store_lock,  # type: ignore[attr-defined]
-            database=self.database,
-            db_path=self.config.db_path,
-        )
-
-    def _subscribe_whatsapp_business_webhook(
-        self,
-        *,
-        access_token: str,
-        business_account_id: str,
-    ) -> tuple[dict[str, Any], dict[str, Any]]:
-        # Production puts a relay in front of the webhook so a message sent
-        # mid-deploy waits for the new server instead of being refused.
-        webhook_url = (
-            normalize_text(os.getenv("WHATSAPP_WEBHOOK_URL"))
-            or f"{self._public_base_url()}/webhooks/whatsapp"
-        )
-        verify_token = normalize_text(os.getenv("WHATSAPP_VERIFY_TOKEN"))
-        subscribe_kwargs: dict[str, Any] = {
-            "access_token": access_token,
-            "business_account_id": business_account_id,
-        }
-        if verify_token:
-            subscribe_kwargs.update({
-                "callback_url": webhook_url,
-                "verify_token": verify_token,
-            })
-
-        result = subscribe_whatsapp_business_account(**subscribe_kwargs)
-        print(
-            json.dumps(
-                {
-                    "event": "whatsapp_webhook_subscription_refreshed",
-                    "wabaId": self._mask_whatsapp_log_identifier(business_account_id),
-                    "callbackUrl": webhook_url,
-                    "callbackOverrideApplied": bool(verify_token),
-                    "verifyTokenConfigured": bool(verify_token),
-                    "subscriptionConfirmed": bool(
-                        not isinstance(result, dict)
-                        or result.get("success") is not False
-                    ),
-                    "baselineSubscriptionConfirmed": bool(
-                        not isinstance(result, dict)
-                        or not isinstance(result.get("baselineSubscription"), dict)
-                        or result.get("baselineSubscription", {}).get("success") is not False
-                    ),
-                },
-                ensure_ascii=True,
-                sort_keys=True,
-            ),
-            flush=True,
-        )
-        return result, {
-            "wabaId": business_account_id,
-            "webhookSubscriptionStatus": "subscribed",
-            "webhookSubscribedAt": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
-            "webhookSubscriptionResult": result if isinstance(result, dict) else {},
-            "webhookCallbackUrl": webhook_url,
-            "webhookCallbackOverrideApplied": bool(verify_token),
-            "webhookVerifyTokenConfigured": bool(verify_token),
-        }
-
     def _resolve_whatsapp_connection_for_webhook(
         self,
         phone_number_id: str,
@@ -14729,24 +14027,15 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             # the group is not one Assistyca opened there is nothing to tie.
             group_connection = self.database.get_whatsapp_connection_by_group_id(normalized_group_id)
             return (group_connection, "group") if group_connection else (None, "")
-        if normalized_phone_number_id == platform_sender_phone_number_id:
-            # A message to the Assistyca number itself is a person writing to
-            # us, so it resolves by who sent it rather than by which client
-            # owns the number. This runs before the client lookup because the
-            # Assistyca number and a client's number can be the same number
-            # while Assistyca is its own first customer, and reading the
-            # operator's own messages as customer traffic would file them for
-            # approval instead of answering them.
-            person_connection = self._resolve_whatsapp_person_connection(owner_wa_id)
-            if person_connection:
-                return person_connection, "platform_owner_alert"
-
-        connection = self.database.get_whatsapp_connection_by_phone_number_id(normalized_phone_number_id)
-        if connection:
-            return connection, "connected_number"
-
         if normalized_phone_number_id != platform_sender_phone_number_id:
+            # The only number anyone writes to is Assistyca's own.
             return None, ""
+
+        # A message to the Assistyca number is a person writing to us, so it
+        # resolves by who sent it.
+        person_connection = self._resolve_whatsapp_person_connection(owner_wa_id)
+        if person_connection:
+            return person_connection, "platform_owner_alert"
 
         owner_connection = self.database.get_whatsapp_connection_by_owner_wa_id(owner_wa_id)
         if owner_connection:
@@ -15849,53 +15138,6 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             "updatedAt": None,
         }
 
-    def _whatsapp_owner_event_targets_approvals(
-        self,
-        service: PortalWhatsAppService,
-        event: dict[str, Any],
-        *,
-        explicit_approval: dict[str, Any] | None,
-        implicit_approval: dict[str, Any] | None,
-    ) -> bool:
-        """Whether an owner message belongs to the reply-approval flow.
-
-        Everything the approval flow can act on stays with it; only a message
-        it would answer with generic help text is a conversation for the
-        agent. docs/whatsapp-backend.md warns that routing ordinary messages
-        into the command parser misreads them as instructions - this is the
-        boundary that keeps that from happening in the other direction too.
-        """
-
-        if explicit_approval is not None or implicit_approval is not None:
-            return True
-
-        interactive_reply = event.get("interactive_reply")
-        if isinstance(interactive_reply, dict) and normalize_text(interactive_reply.get("id")):
-            # A tap on the agent's own calendar picker belongs to the agent.
-            return not normalize_text(interactive_reply.get("id")).startswith(CALENDAR_PICK_PREFIX)
-
-        if service.resolve_reengagement_report_request(event) is not None:
-            return True
-
-        command, argument = parse_owner_command_text(normalize_text(event.get("message_text")))
-        if command == "send_reference_or_custom" and argument:
-            return service.store.find_approval_by_reference(argument) is not None
-        if command in {
-            "send_suggested",
-            "show_suggestion",
-            "edit_request",
-            "skip",
-            "send_custom",
-            OWNER_DISABLE_CONTACT_ACTION,
-        }:
-            # A bare command such as "send" or "skip" only means anything while
-            # an approval is open; with none open it reads as conversation.
-            return bool(
-                service.store.list_approvals(status="pending")
-                or service.store.list_approvals(status="awaiting_edit")
-            )
-        return False
-
     def _lists_link_builder(self, email: str, channel: str) -> Callable[[int], str]:
         """How a list result turns into a link the person can open.
 
@@ -16730,51 +15972,8 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 return normalize_text(entry.get("subject"))
         return ""
 
-    def _serialize_whatsapp_connection(self, connection: dict[str, Any] | None) -> dict[str, Any] | None:
-        if not connection:
-            return None
-
-        serialized = dict(connection)
-        saved_access_token = normalize_text(serialized.pop("accessToken", ""))
-        sender_access_token = resolve_whatsapp_sender_access_token()
-        sender_phone_number_id = resolve_whatsapp_sender_phone_number_id()
-        access_token_configured = bool(saved_access_token)
-        serialized["accessTokenConfigured"] = access_token_configured
-        serialized["workspaceAccessTokenConfigured"] = bool(saved_access_token)
-        serialized["backendAccessTokenConfigured"] = bool(sender_access_token)
-        serialized["configured"] = bool(
-            normalize_text(connection.get("businessAccountId"))
-            and normalize_text(connection.get("phoneNumberId"))
-            and normalize_text(connection.get("ownerWaId"))
-            and access_token_configured
-        )
-        serialized["liveSendEnabled"] = bool(
-            access_token_configured
-            and normalize_text(connection.get("phoneNumberId"))
-        )
-        serialized["ownerAlertSendEnabled"] = bool(sender_access_token and sender_phone_number_id)
-        serialized["webhookUrl"] = f"{self._public_base_url()}/webhooks/whatsapp"
-        return serialized
-
     def _feature_activation_service(self) -> FeatureActivationService:
         return FeatureActivationService.from_env(self.database)
-
-    def _resolve_whatsapp_service_for_session(self, session: PortalSession) -> tuple[dict[str, Any], PortalWhatsAppService] | None:
-        connection = self.database.get_whatsapp_connection(session.email)
-        if not connection:
-            return None
-        return connection, self._build_whatsapp_service(connection)
-
-    def _resolve_whatsapp_service_for_approval(self, approval_id: str) -> tuple[dict[str, Any], PortalWhatsAppService, dict[str, Any]] | None:
-        owner = self.database.get_whatsapp_approval_owner(approval_id)
-        if owner is None:
-            return None
-
-        connection = self.database.get_whatsapp_connection_by_user_id(int(owner.get("userId") or 0))
-        if not connection:
-            return None
-
-        return owner, self._build_whatsapp_service(connection), connection
 
     def _parse_whatsapp_message_timestamp(self, value: Any) -> str | None:
         text = normalize_text(value)
@@ -16792,116 +15991,6 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         if moment.tzinfo is None:
             moment = moment.replace(tzinfo=timezone.utc)
         return moment.astimezone(timezone.utc).isoformat()
-
-    def _record_whatsapp_outbound_approval(
-        self,
-        connection: dict[str, Any],
-        approval: dict[str, Any] | None,
-        sent_message_id: str,
-        reply_text: str,
-    ) -> None:
-        if not isinstance(approval, dict):
-            return
-
-        self.database.save_whatsapp_message(
-            user_id=int(connection.get("userId") or 0),
-            conversation_id=normalize_text(approval.get("thread_id")) or normalize_text(approval.get("sender_wa_id")),
-            direction="outbound",
-            text=normalize_text(reply_text),
-            sender_name=normalize_text(approval.get("sender_name")),
-            sender_wa_id=normalize_text(approval.get("sender_wa_id")),
-            message_id=normalize_text(sent_message_id),
-            message_type="text",
-            message_at=normalize_text(approval.get("sent_at")) or None,
-            metadata={
-                "source": "approval_send",
-                "approvalId": normalize_text(approval.get("approval_id")),
-                "phoneNumberId": normalize_text(connection.get("phoneNumberId")),
-            },
-        )
-
-    def _record_whatsapp_external_outbound_status(
-        self,
-        connection: dict[str, Any],
-        event: dict[str, Any],
-    ) -> dict[str, Any] | None:
-        recipient_wa_id = normalize_text(event.get("recipient_wa_id"))
-        message_id = normalize_text(event.get("message_id"))
-        if not recipient_wa_id or not message_id:
-            return None
-
-        status = normalize_text(event.get("status")).lower()
-        text = "You replied here - but the WhatsApp API doesn't let us read the content"
-
-        return self.database.save_whatsapp_message(
-            user_id=int(connection.get("userId") or 0),
-            conversation_id=recipient_wa_id,
-            direction="outbound",
-            text=text,
-            sender_wa_id=recipient_wa_id,
-            message_id=message_id,
-            message_type="status",
-            message_at=self._parse_whatsapp_message_timestamp(event.get("timestamp")),
-            metadata={
-                "source": "whatsapp_status_webhook",
-                "phoneNumberId": normalize_text(connection.get("phoneNumberId")),
-                "status": status,
-                "contentUnavailable": True,
-                "outsideAssistyca": True,
-                "errorMessage": normalize_text(event.get("error_message")),
-            },
-        )
-
-    def _record_whatsapp_inbound_activity(
-        self,
-        connection: dict[str, Any],
-        event: dict[str, Any],
-        *,
-        phone_number_id: str,
-    ) -> None:
-        received_at = (
-            self._parse_whatsapp_message_timestamp(event.get("timestamp"))
-            or datetime.now(timezone.utc).replace(microsecond=0).isoformat()
-        )
-        self.database.update_whatsapp_connection_metadata(
-            user_id=int(connection.get("userId") or 0),
-            metadata_updates={
-                "lastInboundAt": received_at,
-                "lastInboundSenderName": normalize_text(event.get("sender_name")),
-                "lastInboundSenderWaId": normalize_text(event.get("sender_wa_id")),
-                "lastInboundPreview": normalize_text(event.get("message_text"))[:240],
-                "lastInboundMessageId": normalize_text(event.get("source_message_id")),
-                "lastInboundPhoneNumberId": normalize_text(phone_number_id),
-                "lastWebhookAt": received_at,
-                "lastWebhookEventType": "customer_message",
-                "lastWebhookPhoneNumberId": normalize_text(phone_number_id),
-            },
-        )
-
-    def _record_whatsapp_owner_command_activity(
-        self,
-        connection: dict[str, Any],
-        event: dict[str, Any],
-        *,
-        phone_number_id: str,
-    ) -> None:
-        received_at = (
-            self._parse_whatsapp_message_timestamp(event.get("timestamp"))
-            or datetime.now(timezone.utc).replace(microsecond=0).isoformat()
-        )
-        self.database.update_whatsapp_connection_metadata(
-            user_id=int(connection.get("userId") or 0),
-            metadata_updates={
-                "lastOwnerCommandAt": received_at,
-                "lastOwnerCommandSenderName": normalize_text(event.get("sender_name")),
-                "lastOwnerCommandSenderWaId": normalize_text(event.get("sender_wa_id")),
-                "lastOwnerCommandPreview": normalize_text(event.get("message_text"))[:240],
-                "lastOwnerCommandMessageId": normalize_text(event.get("source_message_id")),
-                "lastWebhookAt": received_at,
-                "lastWebhookEventType": "owner_command",
-                "lastWebhookPhoneNumberId": normalize_text(phone_number_id),
-            },
-        )
 
     def _record_whatsapp_agent_chat_activity(
         self,
@@ -16932,25 +16021,17 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         self,
         connection: dict[str, Any],
         *,
-        approval: dict[str, Any] | None,
         status: str,
         error_message: str = "",
         notification_message_id: str = "",
         event_at: str = "",
     ) -> None:
-        approval_payload = approval if isinstance(approval, dict) else {}
         metadata_updates = {
             "lastOwnerNotificationAt": event_at or datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
             "lastOwnerNotificationStatus": normalize_text(status),
             "lastOwnerNotificationError": normalize_text(error_message),
             "lastOwnerNotificationMessageId": normalize_text(notification_message_id),
         }
-        if approval_payload:
-            metadata_updates["lastApprovalCreatedAt"] = (
-                normalize_text(approval_payload.get("created_at"))
-                or datetime.now(timezone.utc).replace(microsecond=0).isoformat()
-            )
-            metadata_updates["lastApprovalId"] = normalize_text(approval_payload.get("approval_id"))
         self.database.update_whatsapp_connection_metadata(
             user_id=int(connection.get("userId") or 0),
             metadata_updates=metadata_updates,
@@ -16963,7 +16044,6 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
     ) -> None:
         self._record_whatsapp_owner_notification_activity(
             connection,
-            approval=None,
             status=normalize_text(event.get("status")).lower(),
             error_message=normalize_text(event.get("error_message")),
             notification_message_id=normalize_text(event.get("message_id")),
@@ -17034,59 +16114,6 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             ),
             flush=True,
         )
-
-    def _handle_whatsapp_connection_get(self) -> None:
-        session = self._require_authenticated_session()
-        if session is None:
-            return
-
-        connection = self.database.get_whatsapp_connection(session.email)
-        saved_access_token = normalize_text(connection.get("accessToken")) if connection else ""
-        sender_access_token = resolve_whatsapp_sender_access_token()
-        json_response(self, HTTPStatus.OK, {
-            "ok": True,
-            "connection": self._serialize_whatsapp_connection(connection),
-            "configured": bool(
-                connection
-                and normalize_text(connection.get("businessAccountId"))
-                and normalize_text(connection.get("phoneNumberId"))
-                and normalize_text(connection.get("ownerWaId"))
-                and saved_access_token
-            ),
-            "hasAccessToken": bool(saved_access_token),
-            "workspaceAccessTokenConfigured": bool(saved_access_token),
-            "backendAccessTokenConfigured": bool(sender_access_token),
-        })
-
-    def _handle_whatsapp_connection_delete(self) -> None:
-        session = self._require_authenticated_session()
-        if session is None:
-            return
-
-        connection = self.database.get_whatsapp_connection(session.email)
-        if connection is None:
-            json_response(self, HTTPStatus.NOT_FOUND, {
-                "ok": False,
-                "error": "connection_not_found",
-                "message": "WhatsApp is not connected.",
-            })
-            return
-
-        if not self.database.delete_whatsapp_connection(session.email):
-            json_response(self, HTTPStatus.NOT_FOUND, {
-                "ok": False,
-                "error": "connection_not_found",
-                "message": "WhatsApp is not connected.",
-            })
-            return
-
-        json_response(self, HTTPStatus.OK, {
-            "ok": True,
-            "message": (
-                "WhatsApp was disconnected and its saved credentials were removed from Assistyca. "
-                "Revoke the token in Meta too if you no longer need it."
-            ),
-        })
 
     def _handle_whatsapp_claim_code_post(self) -> None:
         """Issue a code this account's phone can send to prove it is theirs."""
@@ -17165,457 +16192,6 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             "numbers": self.database.list_user_whatsapp_numbers(user_id=int(user.get("id") or 0)),
         })
 
-    def _handle_whatsapp_connection_post(self) -> None:
-        session = self._require_authenticated_session()
-        if session is None:
-            return
-
-        try:
-            payload = parse_json_body(self)
-        except ValueError as exc:
-            json_response(self, HTTPStatus.BAD_REQUEST, {
-                "ok": False,
-                "error": "invalid_json",
-                "message": str(exc),
-            })
-            return
-
-        business_account_id = self._normalize_digits(payload.get("business_account_id"))
-        phone_number_id = self._normalize_digits(payload.get("phone_number_id"))
-        access_token_input = normalize_text(payload.get("access_token"))
-        owner_wa_id = normalize_portal_owner_wa_id(payload.get("owner_wa_id"))
-        issues: list[dict[str, str]] = []
-
-        if payload.get("business_account_id") and not business_account_id:
-            issues.append({"field": "business_account_id", "message": "Enter the WhatsApp Business Account ID Meta gave you."})
-        if not business_account_id:
-            issues.append({"field": "business_account_id", "message": "Enter the WhatsApp Business Account ID for this client."})
-        if not phone_number_id:
-            issues.append({"field": "phone_number_id", "message": "Enter the Phone Number ID Meta gave you."})
-        if not owner_wa_id:
-            issues.append({"field": "owner_wa_id", "message": "Enter the phone number that should receive approvals."})
-
-        existing = self.database.get_whatsapp_connection(session.email) or {}
-        metadata = existing.get("metadata") if isinstance(existing.get("metadata"), dict) else {}
-        existing_business_account_id = normalize_text(existing.get("businessAccountId"))
-        existing_phone_number_id = normalize_text(existing.get("phoneNumberId"))
-        existing_access_token = normalize_text(existing.get("accessToken"))
-        existing_connection_status = normalize_text(existing.get("connectionStatus")) or "not_connected"
-        access_token = access_token_input or existing_access_token
-
-        if not access_token:
-            issues.append({"field": "access_token", "message": "Paste a WhatsApp access token for this Business Account."})
-
-        if issues:
-            json_response(self, HTTPStatus.BAD_REQUEST, {
-                "ok": False,
-                "error": "invalid_fields",
-                "issues": issues,
-                "message": "Finish the missing WhatsApp details.",
-            })
-            return
-
-        credentials_unchanged = bool(
-            existing_access_token
-            and not access_token_input
-            and business_account_id == existing_business_account_id
-            and phone_number_id == existing_phone_number_id
-            and existing_connection_status == "connected"
-        )
-        if credentials_unchanged:
-            try:
-                _subscription_result, subscription_metadata = self._subscribe_whatsapp_business_webhook(
-                    access_token=access_token,
-                    business_account_id=business_account_id,
-                )
-            except ValueError as exc:
-                json_response(self, HTTPStatus.BAD_REQUEST, {
-                    "ok": False,
-                    "error": "missing_fields",
-                    "message": str(exc),
-                })
-                return
-            except WhatsAppConnectionError as exc:
-                response = {
-                    "ok": False,
-                    "error": "whatsapp_subscription_failed",
-                    "message": str(exc),
-                }
-                if exc.details:
-                    response["details"] = exc.details
-                json_response(self, HTTPStatus.BAD_GATEWAY, response)
-                return
-            except Exception as exc:  # pragma: no cover - surfaced to UI
-                json_response(self, HTTPStatus.BAD_GATEWAY, {
-                    "ok": False,
-                    "error": "whatsapp_subscription_failed",
-                    "message": f"WhatsApp could not subscribe the webhook: {exc}",
-                })
-                return
-
-            next_metadata = {
-                **metadata,
-                **subscription_metadata,
-            }
-            display_phone_number = normalize_text(existing.get("displayPhoneNumber"))
-            verified_name = normalize_text(existing.get("verifiedName"))
-            number_details_refreshed = False
-            try:
-                number_result = test_whatsapp_connection(
-                    access_token=access_token,
-                    phone_number_id=phone_number_id,
-                )
-            except (ValueError, WhatsAppConnectionError) as exc:
-                next_metadata.update({
-                    "phoneNumberDetailsRefreshStatus": "failed",
-                    "phoneNumberDetailsRefreshError": str(exc),
-                })
-            else:
-                display_phone_number = normalize_text(number_result.get("display_phone_number")) or display_phone_number
-                verified_name = normalize_text(number_result.get("verified_name")) or verified_name
-                number_details_refreshed = True
-                next_metadata.update({
-                    "phoneNumberDetailsRefreshStatus": "refreshed",
-                    "phoneNumberDetailsRefreshedAt": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
-                    "phoneNumberDetailsRefreshError": "",
-                })
-            connection = self.database.save_whatsapp_connection(
-                session.email,
-                business_account_id=business_account_id,
-                phone_number_id=phone_number_id,
-                access_token=None,
-                owner_wa_id=owner_wa_id,
-                display_phone_number=display_phone_number,
-                verified_name=verified_name,
-                connection_status=existing_connection_status,
-                metadata=next_metadata,
-                connected_at=existing.get("connectedAt"),
-                tested_at=existing.get("lastTestedAt"),
-            )
-            json_response(self, HTTPStatus.OK, {
-                "ok": True,
-                "message": "Approval phone saved and the WABA webhook subscription was refreshed. Send a real WhatsApp message next to confirm Assistyca receives it.",
-                "connection": self._serialize_whatsapp_connection(connection),
-                "liveTested": False,
-                "numberDetailsRefreshed": number_details_refreshed,
-                "requiresAccessToken": False,
-                "webhookSubscribed": True,
-            })
-            return
-
-        try:
-            result = test_whatsapp_connection(
-                access_token=access_token,
-                phone_number_id=phone_number_id,
-            )
-        except ValueError as exc:
-            json_response(self, HTTPStatus.BAD_REQUEST, {
-                "ok": False,
-                "error": "missing_fields",
-                "message": str(exc),
-            })
-            return
-        except WhatsAppConnectionError as exc:
-            response: dict[str, Any] = {
-                "ok": False,
-                "error": "whatsapp_test_failed",
-                "message": str(exc),
-            }
-            if exc.details:
-                response["details"] = exc.details
-            json_response(self, HTTPStatus.BAD_GATEWAY, response)
-            return
-        except Exception as exc:  # pragma: no cover - surfaced to UI
-            json_response(self, HTTPStatus.BAD_GATEWAY, {
-                "ok": False,
-                "error": "whatsapp_test_failed",
-                "message": f"WhatsApp could not confirm the connection: {exc}",
-            })
-            return
-
-        try:
-            waba_phone_numbers = list_whatsapp_business_phone_numbers(
-                access_token=access_token,
-                business_account_id=business_account_id,
-            )
-        except ValueError as exc:
-            json_response(self, HTTPStatus.BAD_REQUEST, {
-                "ok": False,
-                "error": "missing_fields",
-                "message": str(exc),
-            })
-            return
-        except WhatsAppConnectionError as exc:
-            response = {
-                "ok": False,
-                "error": "whatsapp_phone_numbers_failed",
-                "message": str(exc),
-            }
-            if exc.details:
-                response["details"] = exc.details
-            json_response(self, HTTPStatus.BAD_GATEWAY, response)
-            return
-        except Exception as exc:  # pragma: no cover - surfaced to UI
-            json_response(self, HTTPStatus.BAD_GATEWAY, {
-                "ok": False,
-                "error": "whatsapp_phone_numbers_failed",
-                "message": f"WhatsApp could not list phone numbers for that Business Account: {exc}",
-            })
-            return
-
-        verified_phone_number_id = normalize_text(result.get("phone_number_id")) or phone_number_id
-        matching_phone_number = next(
-            (
-                item for item in waba_phone_numbers
-                if normalize_text(item.get("id")) == verified_phone_number_id
-            ),
-            None,
-        )
-        if matching_phone_number is None:
-            json_response(self, HTTPStatus.BAD_REQUEST, {
-                "ok": False,
-                "error": "phone_number_not_in_waba",
-                "issues": [
-                    {
-                        "field": "phone_number_id",
-                        "message": "This Phone Number ID is not listed under the WhatsApp Business Account ID.",
-                    }
-                ],
-                "message": "Check that the WABA ID and Phone Number ID belong to the same Meta account.",
-            })
-            return
-
-        try:
-            _subscription_result, subscription_metadata = self._subscribe_whatsapp_business_webhook(
-                access_token=access_token,
-                business_account_id=business_account_id,
-            )
-        except ValueError as exc:
-            json_response(self, HTTPStatus.BAD_REQUEST, {
-                "ok": False,
-                "error": "missing_fields",
-                "message": str(exc),
-            })
-            return
-        except WhatsAppConnectionError as exc:
-            response = {
-                "ok": False,
-                "error": "whatsapp_subscription_failed",
-                "message": str(exc),
-            }
-            if exc.details:
-                response["details"] = exc.details
-            json_response(self, HTTPStatus.BAD_GATEWAY, response)
-            return
-        except Exception as exc:  # pragma: no cover - surfaced to UI
-            json_response(self, HTTPStatus.BAD_GATEWAY, {
-                "ok": False,
-                "error": "whatsapp_subscription_failed",
-                "message": f"WhatsApp could not subscribe the webhook: {exc}",
-            })
-            return
-
-        next_metadata = {
-            **metadata,
-            **subscription_metadata,
-        }
-
-        connection = self.database.save_whatsapp_connection(
-            session.email,
-            business_account_id=business_account_id,
-            phone_number_id=verified_phone_number_id,
-            access_token=access_token_input if access_token_input else None,
-            owner_wa_id=owner_wa_id,
-            display_phone_number=result.get("display_phone_number", "") or matching_phone_number.get("display_phone_number", ""),
-            verified_name=result.get("verified_name", "") or matching_phone_number.get("verified_name", ""),
-            connection_status="connected",
-            metadata=next_metadata,
-        )
-        json_response(self, HTTPStatus.OK, {
-            "ok": True,
-            "message": "Setup saved. The Phone Number ID was verified and the WABA webhook subscription is active. Send a real WhatsApp message next to confirm Assistyca receives it.",
-            "connection": self._serialize_whatsapp_connection(connection),
-            "liveTested": True,
-            "requiresAccessToken": False,
-            "webhookSubscribed": True,
-        })
-
-    def _embedded_signup_settings(self) -> dict[str, str]:
-        return {
-            "appId": normalize_text(os.getenv(EMBEDDED_SIGNUP_APP_ID_ENV)),
-            "configId": normalize_text(os.getenv(EMBEDDED_SIGNUP_CONFIG_ID_ENV)),
-            "appSecret": normalize_text(os.getenv("WHATSAPP_APP_SECRET")),
-        }
-
-    def _handle_whatsapp_embedded_signup_config_get(self) -> None:
-        """Tell the browser whether the popup can run, and which flow to launch.
-
-        Only the two public identifiers are returned. The app secret is checked
-        here so the portal can hide the button rather than open a popup that is
-        guaranteed to fail at the exchange step.
-        """
-
-        session = self._require_authenticated_session()
-        if session is None:
-            return
-
-        settings = self._embedded_signup_settings()
-        configured = bool(settings["appId"] and settings["configId"] and settings["appSecret"])
-        json_response(self, HTTPStatus.OK, {
-            "ok": True,
-            "configured": configured,
-            "appId": settings["appId"],
-            "configId": settings["configId"],
-            "graphVersion": DEFAULT_WHATSAPP_API_VERSION,
-            "message": (
-                ""
-                if configured
-                else "WhatsApp guided setup is not configured on this server yet."
-            ),
-        })
-
-    def _handle_whatsapp_embedded_signup_code_post(self) -> None:
-        """Finish an Embedded Signup run started in the browser.
-
-        The popup hands back a one-time code plus the account and phone ids it
-        created. Everything after that happens here, so the customer's business
-        token is never exposed to the browser.
-        """
-
-        session = self._require_authenticated_session()
-        if session is None:
-            return
-
-        settings = self._embedded_signup_settings()
-        if not (settings["appId"] and settings["configId"] and settings["appSecret"]):
-            json_response(self, HTTPStatus.CONFLICT, {
-                "ok": False,
-                "error": "embedded_signup_not_configured",
-                "message": "WhatsApp guided setup is not configured on this server yet.",
-            })
-            return
-
-        try:
-            payload = parse_json_body(self)
-        except ValueError as exc:
-            json_response(self, HTTPStatus.BAD_REQUEST, {
-                "ok": False,
-                "error": "invalid_json",
-                "message": str(exc),
-            })
-            return
-
-        code = normalize_text(payload.get("code"))
-        business_account_id = self._normalize_digits(payload.get("waba_id") or payload.get("business_account_id"))
-        phone_number_id = self._normalize_digits(payload.get("phone_number_id"))
-        owner_wa_id = normalize_portal_owner_wa_id(payload.get("owner_wa_id"))
-        # Coexistence numbers are already live on the owner's WhatsApp Business
-        # app. The signup flow connects them as-is; registering would be an
-        # attempt to move the number onto the API and take it off the phone.
-        is_coexistence = normalize_text(payload.get("onboarding_type")) == "coexistence"
-
-        if not code or not business_account_id or not phone_number_id:
-            json_response(self, HTTPStatus.BAD_REQUEST, {
-                "ok": False,
-                "error": "invalid_fields",
-                "message": "WhatsApp did not return a complete signup result. Start the connection again.",
-            })
-            return
-
-        existing = self.database.get_whatsapp_connection(session.email) or {}
-        metadata = existing.get("metadata") if isinstance(existing.get("metadata"), dict) else {}
-        owner_wa_id = owner_wa_id or normalize_text(existing.get("ownerWaId"))
-
-        def fail(status: HTTPStatus, error: str, exc: Exception) -> None:
-            response = {"ok": False, "error": error, "message": str(exc)}
-            details = normalize_text(getattr(exc, "details", ""))
-            if details:
-                response["details"] = details
-            json_response(self, status, response)
-
-        try:
-            exchange = exchange_embedded_signup_code(
-                code=code,
-                app_id=settings["appId"],
-                app_secret=settings["appSecret"],
-            )
-        except ValueError as exc:
-            fail(HTTPStatus.BAD_REQUEST, "invalid_fields", exc)
-            return
-        except WhatsAppConnectionError as exc:
-            fail(HTTPStatus.BAD_GATEWAY, "whatsapp_code_exchange_failed", exc)
-            return
-        except Exception as exc:  # pragma: no cover - surfaced to UI
-            fail(HTTPStatus.BAD_GATEWAY, "whatsapp_code_exchange_failed", exc)
-            return
-
-        access_token = normalize_text(exchange.get("accessToken"))
-
-        # A fresh PIN per connection, kept so the number can be re-registered later
-        # without the customer having to invent and remember one.
-        registration_pin = normalize_text(metadata.get("registrationPin")) or f"{secrets.randbelow(1000000):06d}"
-        registration_note = ""
-        if is_coexistence:
-            registration_note = "Coexistence connection: the number stays on the owner's phone."
-        else:
-            try:
-                register_whatsapp_phone_number(
-                    access_token=access_token,
-                    phone_number_id=phone_number_id,
-                    pin=registration_pin,
-                )
-            except (ValueError, WhatsAppConnectionError) as exc:
-                # Numbers already live on the WhatsApp Business app are registered by
-                # the signup flow itself and reject this call. Not fatal.
-                registration_note = str(exc)
-
-        try:
-            number_result = test_whatsapp_connection(
-                access_token=access_token,
-                phone_number_id=phone_number_id,
-            )
-        except (ValueError, WhatsAppConnectionError) as exc:
-            fail(HTTPStatus.BAD_GATEWAY, "whatsapp_connection_failed", exc)
-            return
-
-        try:
-            _subscription, subscription_metadata = self._subscribe_whatsapp_business_webhook(
-                access_token=access_token,
-                business_account_id=business_account_id,
-            )
-        except (ValueError, WhatsAppConnectionError) as exc:
-            fail(HTTPStatus.BAD_GATEWAY, "whatsapp_subscription_failed", exc)
-            return
-        except Exception as exc:  # pragma: no cover - surfaced to UI
-            fail(HTTPStatus.BAD_GATEWAY, "whatsapp_subscription_failed", exc)
-            return
-
-        connection = self.database.save_whatsapp_connection(
-            session.email,
-            business_account_id=business_account_id,
-            phone_number_id=phone_number_id,
-            access_token=access_token,
-            owner_wa_id=owner_wa_id,
-            display_phone_number=normalize_text(number_result.get("display_phone_number")),
-            verified_name=normalize_text(number_result.get("verified_name")),
-            connection_status="connected",
-            metadata={
-                **metadata,
-                **subscription_metadata,
-                "onboarding": "coexistence" if is_coexistence else "embedded_signup",
-                "registrationPin": registration_pin,
-                "registrationNote": registration_note,
-            },
-        )
-
-        json_response(self, HTTPStatus.OK, {
-            "ok": True,
-            "message": "WhatsApp is connected. Send a real message to the number to confirm Assistyca receives it.",
-            "connection": self._serialize_whatsapp_connection(connection),
-            "requiresOwnerWaId": not owner_wa_id,
-            "webhookSubscribed": True,
-        })
-
     def _handle_feature_activation_post(self, parsed: urllib_parse.ParseResult) -> None:
         session = self._require_authenticated_session()
         if session is None:
@@ -17653,153 +16229,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             json_response(self, HTTPStatus.OK, result)
             return
 
-        if action_name == "sample":
-            if feature_id != WHATSAPP_REPLY_ASSISTANT_FEATURE_ID:
-                json_response(self, HTTPStatus.NOT_FOUND, {
-                    "ok": False,
-                    "error": "feature_not_available",
-                    "message": "This tool does not support sample WhatsApp alerts.",
-                })
-                return
-
-            resolved = self._resolve_whatsapp_service_for_session(session)
-            if resolved is None:
-                json_response(self, HTTPStatus.CONFLICT, {
-                    "ok": False,
-                    "error": "setup_required",
-                    "message": "Finish WhatsApp setup before sending a sample.",
-                })
-                return
-
-            connection, whatsapp_service = resolved
-            if normalize_text(connection.get("connectionStatus")) != "connected":
-                json_response(self, HTTPStatus.CONFLICT, {
-                    "ok": False,
-                    "error": "setup_required",
-                    "message": "Finish WhatsApp setup before sending a sample.",
-                })
-                return
-
-            if not whatsapp_service.owner_notification_enabled():
-                json_response(self, HTTPStatus.CONFLICT, {
-                    "ok": False,
-                    "error": "setup_required",
-                    "message": "Finish WhatsApp setup with a saved access token, or choose Telegram with a chat id, before sending a sample.",
-                })
-                return
-
-            sent_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
-            try:
-                owner_message_id, _ = whatsapp_service.send_sample_owner_message()
-            except Exception as exc:  # noqa: BLE001 - surface real WhatsApp failures in the UI
-                updated_connection = self.database.update_whatsapp_connection_metadata(
-                    email=session.email,
-                    metadata_updates={
-                        "lastOwnerNotificationAt": sent_at,
-                        "lastOwnerNotificationStatus": "failed",
-                        "lastOwnerNotificationError": str(exc),
-                        "lastOwnerNotificationMessageId": "",
-                    },
-                ) or connection
-                json_response(self, HTTPStatus.BAD_GATEWAY, {
-                    "ok": False,
-                    "error": "sample_send_failed",
-                    "message": f"Sample owner alert failed: {exc}",
-                    "connection": self._serialize_whatsapp_connection(updated_connection),
-                })
-                return
-
-            updated_connection = self.database.update_whatsapp_connection_metadata(
-                email=session.email,
-                metadata_updates={
-                    "lastOwnerNotificationAt": sent_at,
-                    "lastOwnerNotificationStatus": "requested",
-                    "lastOwnerNotificationError": "",
-                    "lastOwnerNotificationMessageId": owner_message_id,
-                },
-            ) or connection
-            owner_label = normalize_text(connection.get("ownerWaId")) or "your WhatsApp"
-            json_response(self, HTTPStatus.OK, {
-                "ok": True,
-                "message": (
-                    f"Sample alert requested for {owner_label}. "
-                    "We’ll update the status here as soon as the delivery provider confirms delivery. "
-                    "This still does not confirm incoming customer messages are forwarding yet."
-                ),
-                "ownerMessageId": owner_message_id,
-                "connection": self._serialize_whatsapp_connection(updated_connection),
-            })
-            return
-
         if action_name == "run":
-            if feature_id == REENGAGEMENT_FEATURE_ID:
-                run_request_id = normalize_manual_run_request_id(payload.get("runRequestId"))
-                if not run_request_id:
-                    json_response(self, HTTPStatus.BAD_REQUEST, {
-                        "ok": False,
-                        "error": "invalid_run_request_id",
-                        "message": "A valid manual run request id is required.",
-                    })
-                    return
-
-                scheduler = WhatsAppReengagementScheduler(
-                    self.database,
-                    send_owner_message=build_whatsapp_reengagement_sender(self.server, self.root),  # type: ignore[arg-type]
-                    config=load_whatsapp_reengagement_config(),
-                )
-                cancel_event = self._register_manual_feature_run(
-                    email=session.email,
-                    feature_id=feature_id,
-                    request_id=run_request_id,
-                )
-                if cancel_event is None:
-                    json_response(self, HTTPStatus.BAD_REQUEST, {
-                        "ok": False,
-                        "error": "invalid_run_request_id",
-                        "message": "A valid manual run request id is required.",
-                    })
-                    return
-                try:
-                    result = scheduler.run_demo_for_email(
-                        session.email,
-                        cancel_check=cancel_event.is_set,
-                    )
-                except Exception as exc:  # noqa: BLE001 - surface to the UI
-                    json_response(self, HTTPStatus.BAD_GATEWAY, {
-                        "ok": False,
-                        "error": "demo_run_failed",
-                        "message": f"Demo run failed: {exc}",
-                    })
-                    return
-                finally:
-                    self._clear_manual_feature_run(
-                        email=session.email,
-                        feature_id=feature_id,
-                        request_id=run_request_id,
-                    )
-
-                if not result.get("ok"):
-                    error_name = normalize_text(result.get("error"))
-                    status = HTTPStatus.BAD_REQUEST
-                    if error_name == "feature_not_available":
-                        status = HTTPStatus.NOT_FOUND
-                    elif error_name == "disabled":
-                        status = HTTPStatus.SERVICE_UNAVAILABLE
-                    elif error_name == "demo_delivery_failed":
-                        status = HTTPStatus.BAD_GATEWAY
-                    elif error_name in {"activation_required", "setup_required"}:
-                        status = HTTPStatus.CONFLICT
-                    json_response(self, status, result)
-                    return
-
-                run = result.get("run") if isinstance(result.get("run"), dict) else {}
-                json_response(self, HTTPStatus.OK, {
-                    "ok": True,
-                    "message": describe_manual_reengagement_demo_run(run),
-                    "run": run,
-                })
-                return
-
             if feature_id != MONITOR_FEATURE_ID:
                 json_response(self, HTTPStatus.NOT_FOUND, {
                     "ok": False,
@@ -17919,620 +16349,6 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             "message": "Action must be activate or deactivate.",
         })
 
-    def _handle_whatsapp_approvals_get(self, parsed: urllib_parse.ParseResult) -> None:
-        session = self._require_authenticated_session()
-        if session is None:
-            return
-
-        resolved = self._resolve_whatsapp_service_for_session(session)
-        if resolved is None:
-            json_response(self, HTTPStatus.OK, {"ok": True, "approvals": []})
-            return
-
-        _, service = resolved
-        parts = [part for part in parsed.path.rstrip("/").split("/") if part]
-        if len(parts) == 3 and parts[0] == "api" and parts[1] == "approvals":
-            approval = service.get_approval(urllib_parse.unquote(parts[2]))
-            if approval is None:
-                json_response(self, HTTPStatus.NOT_FOUND, {"ok": False, "error": "not_found", "message": "Approval not found."})
-                return
-            json_response(self, HTTPStatus.OK, {"ok": True, "approval": approval})
-            return
-
-        query = urllib_parse.parse_qs(parsed.query)
-        status = query.get("status", [None])[0]
-        delivery = normalize_text(query.get("delivery", [""])[0]).lower()
-        approvals = service.list_approvals(status=status)
-        if delivery == "portal":
-            if not service.owner_portal_delivery_enabled():
-                approvals = []
-            else:
-                approvals = [
-                    approval
-                    for approval in approvals
-                    if not approval.get("owner_notification_delivery_channels")
-                    or "portal" in approval.get("owner_notification_delivery_channels", [])
-                ]
-        json_response(self, HTTPStatus.OK, {
-            "ok": True,
-            "approvals": approvals,
-        })
-
-    def _handle_whatsapp_threads_get(self, parsed: urllib_parse.ParseResult) -> None:
-        session = self._require_authenticated_session()
-        if session is None:
-            return
-
-        resolved = self._resolve_whatsapp_service_for_session(session)
-        if resolved is None:
-            json_response(self, HTTPStatus.OK, {"ok": True, "threads": []})
-            return
-
-        _, service = resolved
-        parts = [part for part in parsed.path.rstrip("/").split("/") if part]
-        if len(parts) == 3 and parts[0] == "api" and parts[1] == "threads":
-            thread = service.get_thread(urllib_parse.unquote(parts[2]))
-            if thread is None:
-                json_response(self, HTTPStatus.NOT_FOUND, {"ok": False, "error": "not_found", "message": "Thread not found."})
-                return
-            json_response(self, HTTPStatus.OK, {"ok": True, "thread": thread})
-            return
-
-        json_response(self, HTTPStatus.OK, {
-            "ok": True,
-            "threads": service.list_threads(),
-        })
-
-    def _resolve_whatsapp_import_owner_names(
-        self,
-        session: PortalSession,
-        payload: dict[str, Any],
-        *,
-        parsed_messages: list[dict[str, str]] | None = None,
-        conversation_title: str = "",
-    ) -> list[str]:
-        explicit_names = split_import_owner_names(payload.get("ownerNames") or payload.get("ownerName"))
-        if explicit_names:
-            return explicit_names
-
-        sender_names = list_import_sender_names(parsed_messages or [])
-        sender_keys = {normalize_import_name_key(name) for name in sender_names if normalize_import_name_key(name)}
-        if not sender_keys:
-            return []
-
-        title_key = normalize_import_name_key(conversation_title)
-        if title_key and title_key in sender_keys:
-            return []
-
-        user = self.database.get_user(session.email) or {}
-        connection = self.database.get_whatsapp_connection(session.email) or {}
-        candidates: list[str] = []
-        candidates.extend(split_import_owner_names(user.get("displayName")))
-        candidates.extend(derive_import_email_name_candidates(session.email))
-        candidates.extend(split_import_owner_names(connection.get("displayName")))
-        candidates.extend(split_import_owner_names(connection.get("verifiedName")))
-        candidates.append("You")
-
-        owner_names: list[str] = []
-        seen: set[str] = set()
-        for candidate in candidates:
-            candidate_key = normalize_import_name_key(candidate)
-            if candidate_key and candidate_key in sender_keys and candidate_key not in seen:
-                owner_names.append(candidate)
-                seen.add(candidate_key)
-        return owner_names
-
-    def _handle_whatsapp_history_import_post(self) -> None:
-        session = self._require_authenticated_session()
-        if session is None:
-            return
-
-        try:
-            payload = parse_json_body(self, max_bytes=MAX_REQUEST_BODY_BYTES)
-        except ValueError as exc:
-            json_response(self, HTTPStatus.BAD_REQUEST, {
-                "ok": False,
-                "error": "invalid_json",
-                "message": str(exc),
-            })
-            return
-
-        files = payload.get("files")
-        if not isinstance(files, list) or not files:
-            json_response(self, HTTPStatus.BAD_REQUEST, {
-                "ok": False,
-                "error": "missing_files",
-                "message": "Choose at least one WhatsApp chat file.",
-            })
-            return
-        if len(files) > WHATSAPP_HISTORY_IMPORT_MAX_FILES:
-            json_response(self, HTTPStatus.BAD_REQUEST, {
-                "ok": False,
-                "error": "too_many_files",
-                "message": f"Upload {WHATSAPP_HISTORY_IMPORT_MAX_FILES} files or fewer at a time.",
-            })
-            return
-
-        explicit_conversation_title = normalize_import_text(payload.get("conversationName"))
-        explicit_conversation_id = normalize_import_text(payload.get("conversationId"))
-        imported_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
-        total_parsed = 0
-        total_saved = 0
-        total_replaced = 0
-        total_duplicates = 0
-        total_source_lines = 0
-        total_blank_lines = 0
-        total_skipped_lines = 0
-        total_system_or_unsupported_lines = 0
-        total_unsupported_message_lines = 0
-        total_continuation_lines = 0
-        import_results: list[dict[str, Any]] = []
-
-        for file_index, file_payload in enumerate(files):
-            source = file_payload if isinstance(file_payload, dict) else {}
-            file_name = normalize_import_text(source.get("name") or f"whatsapp-chat-{file_index + 1}.txt")
-            if not file_name.lower().endswith(".txt"):
-                json_response(self, HTTPStatus.BAD_REQUEST, {
-                    "ok": False,
-                    "error": "unsupported_file_type",
-                    "message": f"{file_name} is not supported. Upload a .txt file exported from WhatsApp.",
-                })
-                return
-            content = str(source.get("content") or "")
-            if len(content) > WHATSAPP_HISTORY_IMPORT_MAX_FILE_CHARS:
-                json_response(self, HTTPStatus.BAD_REQUEST, {
-                    "ok": False,
-                    "error": "file_too_large",
-                    "message": f"{file_name} is too large. Upload a smaller WhatsApp chat file.",
-                })
-                return
-
-            fallback_conversation_title = derive_import_conversation_title(
-                file_name,
-                explicit_conversation_title if len(files) == 1 else "",
-            )
-            conversation_id = build_import_conversation_id(
-                fallback_conversation_title,
-                explicit_conversation_id if len(files) == 1 else "",
-            )
-            parse_result = analyze_whatsapp_export_messages(content)
-            parsed_messages = parse_result["messages"]
-            parse_diagnostics = (
-                parse_result.get("diagnostics")
-                if isinstance(parse_result.get("diagnostics"), dict)
-                else {}
-            )
-            if total_parsed + len(parsed_messages) > WHATSAPP_HISTORY_IMPORT_MAX_MESSAGES:
-                json_response(self, HTTPStatus.BAD_REQUEST, {
-                    "ok": False,
-                    "error": "too_many_messages",
-                    "message": f"Import {WHATSAPP_HISTORY_IMPORT_MAX_MESSAGES} messages or fewer at a time.",
-                })
-                return
-
-            sender_names = list_import_sender_names(parsed_messages)
-            owner_names = self._resolve_whatsapp_import_owner_names(
-                session,
-                payload,
-                parsed_messages=parsed_messages,
-                conversation_title=fallback_conversation_title,
-            )
-            conversation_title = resolve_import_conversation_title(
-                fallback_conversation_title,
-                sender_names=sender_names,
-                owner_names=owner_names,
-            )
-            sender_wa_id = re.sub(r"\D+", "", conversation_title)
-            sender_keys = {normalize_import_name_key(name) for name in sender_names if normalize_import_name_key(name)}
-            direction_conversation_title = (
-                conversation_title
-                if normalize_import_name_key(conversation_title) in sender_keys
-                else ""
-            )
-            records: list[dict[str, Any]] = []
-            for message_index, message in enumerate(parsed_messages):
-                sender_name = normalize_import_text(message.get("senderName"))
-                text = normalize_import_text(message.get("text"))
-                message_at = normalize_import_text(message.get("messageAt"))
-                if not sender_name or not text or not message_at:
-                    continue
-                direction = resolve_import_message_direction(
-                    sender_name=sender_name,
-                    conversation_title=direction_conversation_title,
-                    owner_names=owner_names,
-                )
-                records.append(
-                    {
-                        "conversationId": conversation_id,
-                        "direction": direction,
-                        "text": text,
-                        "senderName": conversation_title,
-                        "senderWaId": sender_wa_id,
-                        "messageId": build_import_message_id(
-                            conversation_id=conversation_id,
-                            message=message,
-                            index=message_index,
-                        ),
-                        "messageType": "text",
-                        "messageAt": message_at,
-                        "metadata": {
-                            "source": "manual_import",
-                            "importedAt": imported_at,
-                            "importFileName": file_name,
-                            "importSenderName": sender_name,
-                            "importConversationTitle": conversation_title,
-                        },
-                    }
-                )
-
-            replacement_result = self.database.delete_whatsapp_manual_import_messages(
-                conversation_id,
-                email=session.email,
-                import_file_name=file_name,
-            )
-            replaced_count = int(replacement_result.get("messagesDeleted") or 0)
-            batch_result = self.database.save_whatsapp_messages_batch(
-                email=session.email,
-                messages=records,
-            )
-            saved_count = int(batch_result.get("messagesSaved") or 0)
-            duplicate_count = int(batch_result.get("duplicates") or 0)
-
-            total_parsed += len(parsed_messages)
-            total_saved += saved_count
-            total_replaced += replaced_count
-            total_duplicates += duplicate_count
-            total_source_lines += int(parse_diagnostics.get("lineCount") or 0)
-            total_blank_lines += int(parse_diagnostics.get("blankLineCount") or 0)
-            total_skipped_lines += int(parse_diagnostics.get("skippedLineCount") or 0)
-            total_system_or_unsupported_lines += int(parse_diagnostics.get("systemOrUnsupportedLineCount") or 0)
-            total_unsupported_message_lines += int(parse_diagnostics.get("unsupportedMessageLineCount") or 0)
-            total_continuation_lines += int(parse_diagnostics.get("continuationLineCount") or 0)
-            import_results.append({
-                "fileName": file_name,
-                "conversationId": conversation_id,
-                "conversationTitle": conversation_title,
-                "messagesParsed": len(parsed_messages),
-                "messagesSaved": saved_count,
-                "messagesReplaced": replaced_count,
-                "duplicates": duplicate_count,
-                "lineCount": int(parse_diagnostics.get("lineCount") or 0),
-                "blankLineCount": int(parse_diagnostics.get("blankLineCount") or 0),
-                "messageStartLineCount": int(parse_diagnostics.get("messageStartLineCount") or 0),
-                "continuationLineCount": int(parse_diagnostics.get("continuationLineCount") or 0),
-                "skippedLineCount": int(parse_diagnostics.get("skippedLineCount") or 0),
-                "systemOrUnsupportedLineCount": int(parse_diagnostics.get("systemOrUnsupportedLineCount") or 0),
-                "unsupportedMessageLineCount": int(parse_diagnostics.get("unsupportedMessageLineCount") or 0),
-                "orphanLineCount": int(parse_diagnostics.get("orphanLineCount") or 0),
-                "dateOrder": normalize_import_text(parse_diagnostics.get("dateOrder")),
-            })
-
-        if total_parsed <= 0:
-            json_response(self, HTTPStatus.BAD_REQUEST, {
-                "ok": False,
-                "error": "no_messages_found",
-                "message": "No WhatsApp messages were found in the uploaded chat file.",
-            })
-            return
-
-        json_response(self, HTTPStatus.OK, {
-            "ok": True,
-            "message": f"Imported {total_saved} message{'s' if total_saved != 1 else ''}.",
-            "messagesParsed": total_parsed,
-            "messagesSaved": total_saved,
-            "messagesReplaced": total_replaced,
-            "duplicates": total_duplicates,
-            "lineCount": total_source_lines,
-            "blankLineCount": total_blank_lines,
-            "skippedLineCount": total_skipped_lines,
-            "systemOrUnsupportedLineCount": total_system_or_unsupported_lines,
-            "unsupportedMessageLineCount": total_unsupported_message_lines,
-            "continuationLineCount": total_continuation_lines,
-            "imports": import_results,
-        })
-
-    def _handle_whatsapp_history_get(self, _parsed: urllib_parse.ParseResult) -> None:
-        session = self._require_authenticated_session()
-        if session is None:
-            return
-
-        connection = self.database.get_whatsapp_connection(session.email)
-        service = self._build_whatsapp_service(connection) if connection else None
-        conversations = self.database.list_whatsapp_conversations(email=session.email)
-        payload_conversations: list[dict[str, Any]] = []
-        total_messages = 0
-
-        for conversation in conversations:
-            conversation_id = normalize_text(conversation.get("conversationId"))
-            if not conversation_id:
-                continue
-
-            messages = self.database.list_whatsapp_conversation_messages(
-                conversation_id,
-                email=session.email,
-            )
-            if service is not None:
-                messages = self._attach_whatsapp_history_suggestions(service, messages)
-            message_count = int(conversation.get("messageCount") or len(messages))
-            total_messages += message_count
-            payload_conversations.append({
-                **conversation,
-                "messageCount": message_count,
-                "messages": messages,
-            })
-
-        json_response(self, HTTPStatus.OK, {
-            "ok": True,
-            "conversationCount": len(payload_conversations),
-            "messageCount": total_messages,
-            "connection": self._serialize_whatsapp_connection(connection),
-            "diagnostics": self._build_whatsapp_history_diagnostics(connection, payload_conversations),
-            "conversations": payload_conversations,
-        })
-
-    def _handle_whatsapp_history_conversation_delete(self, parsed: urllib_parse.ParseResult) -> None:
-        session = self._require_authenticated_session()
-        if session is None:
-            return
-
-        parts = [part for part in parsed.path.rstrip("/").split("/") if part]
-        if len(parts) != 5 or parts[:4] != ["api", "whatsapp", "history", "conversations"]:
-            json_response(self, HTTPStatus.NOT_FOUND, {
-                "ok": False,
-                "error": "not_found",
-                "message": "Conversation not found.",
-            })
-            return
-
-        conversation_id = normalize_text(urllib_parse.unquote(parts[4]))
-        if not conversation_id:
-            json_response(self, HTTPStatus.BAD_REQUEST, {
-                "ok": False,
-                "error": "missing_conversation_id",
-                "message": "Choose a conversation to delete.",
-            })
-            return
-
-        try:
-            deleted = self.database.delete_whatsapp_conversation(
-                conversation_id,
-                email=session.email,
-            )
-        except KeyError:
-            json_response(self, HTTPStatus.NOT_FOUND, {
-                "ok": False,
-                "error": "not_found",
-                "message": "Conversation not found.",
-            })
-            return
-
-        json_response(self, HTTPStatus.OK, {
-            "ok": True,
-            "message": "Conversation deleted.",
-            "conversationId": conversation_id,
-            "messagesDeleted": int(deleted.get("messagesDeleted") or 0),
-            "notificationsDeleted": int(deleted.get("notificationsDeleted") or 0),
-        })
-
-    def _attach_whatsapp_history_suggestions(
-        self,
-        service: PortalWhatsAppService,
-        messages: list[dict[str, Any]],
-    ) -> list[dict[str, Any]]:
-        enriched_messages: list[dict[str, Any]] = []
-        for message in messages:
-            payload = dict(message)
-            if normalize_text(payload.get("direction")).lower() != "inbound":
-                enriched_messages.append(payload)
-                continue
-
-            message_id = normalize_text(payload.get("messageId"))
-            approval = service.store.find_approval_by_message_id(message_id)
-            suggested_reply = normalize_text(approval.get("suggested_reply")) if isinstance(approval, dict) else ""
-            approval_id = normalize_text(approval.get("approval_id")) if isinstance(approval, dict) else ""
-            if not suggested_reply or not approval_id:
-                enriched_messages.append(payload)
-                continue
-
-            metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
-            payload["metadata"] = {
-                **metadata,
-                "approvalId": approval_id,
-                "approvalStatus": normalize_text(approval.get("status")) or "pending",
-                "approvalOwnerState": normalize_text(approval.get("owner_state")),
-                "suggestedReply": suggested_reply,
-            }
-            payload["approvalId"] = approval_id
-            payload["approvalStatus"] = normalize_text(approval.get("status")) or "pending"
-            payload["suggestedReply"] = suggested_reply
-            enriched_messages.append(payload)
-        return enriched_messages
-
-    def _build_whatsapp_history_diagnostics(
-        self,
-        connection: dict[str, Any] | None,
-        conversations: list[dict[str, Any]],
-    ) -> list[dict[str, str]]:
-        if not connection:
-            return [
-                {
-                    "tone": "warning",
-                    "title": "WhatsApp setup is not saved",
-                    "message": "Save the WABA ID, Phone Number ID, access token, and owner phone before expecting customer conversations here.",
-                }
-            ]
-
-        diagnostics: list[dict[str, str]] = []
-        metadata = connection.get("metadata") if isinstance(connection.get("metadata"), dict) else {}
-        webhook_url = f"{self._public_base_url()}/webhooks/whatsapp"
-        connection_status = normalize_text(connection.get("connectionStatus"))
-        last_inbound_at = normalize_text(metadata.get("lastInboundAt"))
-
-        if connection_status and connection_status != "connected":
-            diagnostics.append(
-                {
-                    "tone": "warning",
-                    "title": "WhatsApp number is not fully verified",
-                    "message": "The setup is saved, but the backend has not confirmed the Phone Number ID with Meta yet.",
-                }
-            )
-
-        if not conversations and not last_inbound_at:
-            diagnostics.append(
-                {
-                    "tone": "warning",
-                    "title": "No customer webhook has reached this workspace yet",
-                    "message": f"Meta should send messages to {webhook_url}. If the callback points at another Assistyca URL, this database will stay empty.",
-                }
-            )
-
-        return diagnostics
-
-    def _handle_whatsapp_approval_api_submit(self, parsed: urllib_parse.ParseResult) -> None:
-        parts = [part for part in parsed.path.rstrip("/").split("/") if part]
-        if len(parts) != 4 or parts[0] != "api" or parts[1] != "approvals" or parts[3] not in {"send", "skip"}:
-            self.send_error(HTTPStatus.NOT_FOUND)
-            return
-        if parts[3] == "skip":
-            self._skip_whatsapp_approval(urllib_parse.unquote(parts[2]))
-            return
-        self._send_whatsapp_approval(urllib_parse.unquote(parts[2]))
-
-    def _skip_whatsapp_approval(self, approval_id: str) -> None:
-        resolved = self._resolve_whatsapp_service_for_approval(approval_id)
-        if resolved is None:
-            json_response(self, HTTPStatus.NOT_FOUND, {
-                "ok": False,
-                "error": "not_found",
-                "message": "Approval not found.",
-            })
-            return
-
-        owner, service, connection = resolved
-        session = self._get_authenticated_session()
-        if session is None:
-            json_response(self, HTTPStatus.UNAUTHORIZED, {
-                "ok": False,
-                "error": "unauthorized",
-                "message": "Sign in again to continue.",
-            })
-            return
-        if normalize_email(session.email) != normalize_email(connection.get("email")):
-            json_response(self, HTTPStatus.FORBIDDEN, {
-                "ok": False,
-                "error": "forbidden",
-                "message": "This approval belongs to another workspace.",
-            })
-            return
-
-        approval = service.get_approval(approval_id)
-        if approval is None:
-            json_response(self, HTTPStatus.NOT_FOUND, {
-                "ok": False,
-                "error": "not_found",
-                "message": "Approval not found.",
-            })
-            return
-
-        try:
-            updated = service.skip_approval(approval_id)
-        except ValueError as exc:
-            json_response(self, HTTPStatus.BAD_REQUEST, {
-                "ok": False,
-                "error": "invalid_request",
-                "message": str(exc),
-            })
-            return
-        except Exception as exc:  # pragma: no cover - surfaced to the UI
-            json_response(self, HTTPStatus.BAD_GATEWAY, {
-                "ok": False,
-                "error": "skip_failed",
-                "message": str(exc),
-            })
-            return
-
-        if owner:
-            self.database.map_whatsapp_approval(
-                approval_id,
-                user_id=int(owner.get("userId") or 0),
-                phone_number_id=normalize_text(owner.get("phoneNumberId")),
-            )
-        json_response(self, HTTPStatus.OK, {"ok": True, "approval": updated})
-
-    def _send_whatsapp_approval(self, approval_id: str) -> None:
-        """Send an approved reply to the customer over WhatsApp.
-
-        JSON only. The old public /approval/<id> HTML page is gone; approvals are
-        reviewed in the signed-in portal. The reply itself still goes to the
-        customer over WhatsApp -- that is the product.
-        """
-
-        resolved = self._resolve_whatsapp_service_for_approval(approval_id)
-        if resolved is None:
-            json_response(self, HTTPStatus.NOT_FOUND, {"ok": False, "error": "not_found", "message": "Approval not found."})
-            return
-
-        owner, service, connection = resolved
-        approval = service.get_approval(approval_id)
-        if approval is None:
-            json_response(self, HTTPStatus.NOT_FOUND, {"ok": False, "error": "not_found", "message": "Approval not found."})
-            return
-
-        session = self._get_authenticated_session()
-        if session is None:
-            json_response(self, HTTPStatus.UNAUTHORIZED, {
-                "ok": False,
-                "error": "unauthorized",
-                "message": "Sign in again to continue.",
-            })
-            return
-
-        if normalize_email(session.email) != normalize_email(connection.get("email")):
-            json_response(self, HTTPStatus.FORBIDDEN, {
-                "ok": False,
-                "error": "forbidden",
-                "message": "This approval belongs to another workspace.",
-            })
-            return
-
-        try:
-            payload = parse_whatsapp_json_body(self._read_body())
-        except json.JSONDecodeError:
-            payload = {}
-
-        reply_text = normalize_text(payload.get("reply_text")) or normalize_text(approval.get("suggested_reply"))
-        if not reply_text:
-            json_response(self, HTTPStatus.BAD_REQUEST, {
-                "ok": False,
-                "error": "missing_reply_text",
-                "message": "Reply text is required.",
-            })
-            return
-
-        try:
-            updated, sent_message_id = service.send_approval(approval_id, reply_text)
-        except ValueError as exc:
-            json_response(self, HTTPStatus.BAD_REQUEST, {"ok": False, "error": "invalid_request", "message": str(exc)})
-            return
-        except Exception as exc:  # pragma: no cover - surfaced to the UI
-            json_response(self, HTTPStatus.BAD_GATEWAY, {"ok": False, "error": "send_failed", "message": str(exc)})
-            return
-
-        self._record_whatsapp_outbound_approval(connection, updated, sent_message_id, reply_text)
-
-        if owner:
-            self.database.map_whatsapp_approval(
-                approval_id,
-                user_id=int(owner.get("userId") or 0),
-                phone_number_id=normalize_text(owner.get("phoneNumberId")),
-            )
-
-        json_response(self, HTTPStatus.OK, {
-            "ok": True,
-            "approval": updated,
-            "sentMessageId": sent_message_id,
-        })
-
     def _handle_feature_run_delete(self, parsed: urllib_parse.ParseResult) -> None:
         session = self._require_authenticated_session()
         if session is None:
@@ -18544,7 +16360,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             return
 
         feature_id = urllib_parse.unquote(parts[2])
-        if feature_id not in {MONITOR_FEATURE_ID, REENGAGEMENT_FEATURE_ID}:
+        if feature_id != MONITOR_FEATURE_ID:
             json_response(self, HTTPStatus.NOT_FOUND, {
                 "ok": False,
                 "error": "feature_not_available",
@@ -18585,14 +16401,9 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             return
 
         cancel_event.set()
-        message = (
-            "Cancellation requested. The demo will stop before sending any more WhatsApp reports."
-            if feature_id == REENGAGEMENT_FEATURE_ID
-            else "Cancellation requested. The test will stop after the current search step."
-        )
         json_response(self, HTTPStatus.OK, {
             "ok": True,
-            "message": message,
+            "message": "Cancellation requested. The test will stop after the current search step.",
         })
 
     def _handle_whatsapp_webhook_verification(self, parsed: urllib_parse.ParseResult) -> None:
@@ -18654,7 +16465,6 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
 
         status_events = extract_status_events(payload)
         events = extract_inbound_events(payload)
-        approvals: list[dict[str, Any]] = []
         results: list[dict[str, Any]] = []
         routed_user_ids: set[int] = set()
         claimed_message_ids: list[str] = []
@@ -18818,7 +16628,6 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                     })
                     continue
 
-            service = self._build_whatsapp_service(connection)
             routed_user_ids.add(int(connection.get("userId") or 0))
             if route_source == "group":
                 group_result = self._handle_whatsapp_group_message(connection, event)
@@ -18827,133 +16636,35 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 results.append(group_result)
                 continue
             try:
-                is_owner_sender = service.is_owner_sender(str(event.get("sender_wa_id", "")))
-                explicit_owner_approval = (
-                    service.resolve_explicit_owner_target_approval(event)
-                    if is_owner_sender
-                    else None
-                )
-                implicit_owner_approval = (
-                    service.resolve_owner_target_approval(event)
-                    if is_owner_sender and explicit_owner_approval is None
-                    else explicit_owner_approval
-                )
-                # A message from the owner's own phone to the Assistyca number
-                # that does not target the approval flow is a conversation with
-                # the agent, not a command. The approval flow keeps everything
-                # that is plainly its own: button taps, reply-to targets,
-                # approval refs, and bare commands while something is pending.
-                if (
-                    is_owner_sender
-                    and route_source == "platform_owner_alert"
-                    and whatsapp_agent_chat_enabled()
-                    and not self._whatsapp_owner_event_targets_approvals(
-                        service,
-                        event,
-                        explicit_approval=explicit_owner_approval,
-                        implicit_approval=implicit_owner_approval,
-                    )
-                ):
-                    self._record_whatsapp_agent_chat_activity(
-                        connection,
-                        event,
-                        phone_number_id=phone_number_id,
-                    )
-                    invite_reply = self._answer_invite_code_from_known_phone(connection, event)
-                    if invite_reply is not None:
-                        invite_reply["route"] = route_source
-                        invite_reply["phone_number_id"] = phone_number_id
-                        results.append(invite_reply)
-                        continue
-                    agent_result = self._handle_whatsapp_agent_chat_message(connection, event)
-                    agent_result["route"] = route_source
-                    agent_result["phone_number_id"] = phone_number_id
-                    results.append(agent_result)
+                # A message to the Assistyca number resolved to the account of
+                # whoever sent it, so it is a conversation with the assistant.
+                if not whatsapp_agent_chat_enabled():
+                    results.append({
+                        "type": "agent_chat_disabled",
+                        "thread_id": event.get("thread_id", ""),
+                        "sender_wa_id": event.get("sender_wa_id", ""),
+                        "phone_number_id": phone_number_id,
+                        "route": route_source,
+                    })
                     continue
-
-                is_owner_command = is_owner_sender and (
-                    route_source == "platform_owner_alert"
-                    or explicit_owner_approval is not None
-                    or implicit_owner_approval is not None
-                )
-                if is_owner_command:
-                    self._record_whatsapp_owner_command_activity(
-                        connection,
-                        event,
-                        phone_number_id=phone_number_id,
-                    )
-                    owner_result = service.handle_owner_event(event)
-                    owner_result["route"] = route_source
-                    owner_result["phone_number_id"] = phone_number_id
-                    approval = owner_result.get("approval") if isinstance(owner_result.get("approval"), dict) else None
-                    action = normalize_text(owner_result.get("action"))
-                    if approval is not None and action in {"send_suggested", "send_custom"}:
-                        self._record_whatsapp_outbound_approval(
-                            connection,
-                            approval,
-                            normalize_text(owner_result.get("sent_message_id")),
-                            normalize_text(approval.get("sent_text")) or normalize_text(approval.get("suggested_reply")),
-                        )
-                    results.append(owner_result)
-                    continue
-
-                self._record_whatsapp_inbound_activity(
+                self._record_whatsapp_agent_chat_activity(
                     connection,
                     event,
                     phone_number_id=phone_number_id,
                 )
-                message_record = self.database.save_whatsapp_message(
-                    user_id=int(connection.get("userId") or 0),
-                    conversation_id=normalize_text(event.get("thread_id")) or normalize_text(event.get("sender_wa_id")),
-                    direction="inbound",
-                    text=normalize_text(event.get("message_text")),
-                    sender_name=normalize_text(event.get("sender_name")),
-                    sender_wa_id=normalize_text(event.get("sender_wa_id")),
-                    message_id=normalize_text(event.get("source_message_id")),
-                    message_type=normalize_text(event.get("message_type")) or "text",
-                    message_at=self._parse_whatsapp_message_timestamp(event.get("timestamp")),
-                    metadata={
-                        "source": "whatsapp_webhook",
-                        "phoneNumberId": phone_number_id,
-                    },
-                )
-                if message_record.get("isDuplicate"):
-                    results.append({
-                        "type": "duplicate",
-                        "thread_id": event.get("thread_id", ""),
-                        "sender_wa_id": event.get("sender_wa_id", ""),
-                        "phone_number_id": phone_number_id,
-                        "message_id": event.get("source_message_id", ""),
-                    })
+                invite_reply = self._answer_invite_code_from_known_phone(connection, event)
+                if invite_reply is not None:
+                    invite_reply["route"] = route_source
+                    invite_reply["phone_number_id"] = phone_number_id
+                    results.append(invite_reply)
                     continue
-
-                result = service.handle_customer_event(event)
-                approval = result.get("approval") if isinstance(result.get("approval"), dict) else None
-                if approval is not None:
-                    approvals.append(approval)
-                    self.database.map_whatsapp_approval(
-                        normalize_text(approval.get("approval_id")),
-                        user_id=int(connection.get("userId") or 0),
-                        phone_number_id=phone_number_id,
-                    )
-                    self._record_whatsapp_owner_notification_activity(
-                        connection,
-                        approval=approval,
-                        status=(
-                            "failed"
-                            if normalize_text(result.get("owner_notification_error"))
-                            else "requested"
-                            if normalize_text(result.get("owner_notification_message_id"))
-                            else "pending"
-                        ),
-                        error_message=normalize_text(result.get("owner_notification_error")),
-                        notification_message_id=normalize_text(result.get("owner_notification_message_id")),
-                    )
-                results.append(result)
+                agent_result = self._handle_whatsapp_agent_chat_message(connection, event)
+                agent_result["route"] = route_source
+                agent_result["phone_number_id"] = phone_number_id
+                results.append(agent_result)
             except Exception as exc:  # pragma: no cover - keep webhook resilient
                 self._record_whatsapp_owner_notification_activity(
                     connection,
-                    approval=None,
                     status="failed",
                     error_message=str(exc),
                 )
@@ -18982,7 +16693,6 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             "ok": True,
             "receivedStatuses": len(status_events),
             "received": len(events),
-            "approvals": approvals,
             "results": results,
             "routedUserCount": len([user_id for user_id in routed_user_ids if user_id > 0]),
         })
@@ -19161,8 +16871,6 @@ def create_server(host: str, port: int, root: Path, config: PortalConfig) -> Thr
         session_floor_lookup=server.database.get_session_floor,
     )  # type: ignore[attr-defined]
     server.rate_limiter = SlidingWindowRateLimiter()  # type: ignore[attr-defined]
-    server.whatsapp_stores = {}  # type: ignore[attr-defined]
-    server.whatsapp_store_lock = threading.RLock()  # type: ignore[attr-defined]
     server.manual_feature_run_events = {}  # type: ignore[attr-defined]
     server.manual_feature_run_lock = threading.RLock()  # type: ignore[attr-defined]
     server.manual_monitor_run_events = server.manual_feature_run_events  # type: ignore[attr-defined]
@@ -19259,63 +16967,6 @@ def is_public_static_path(path: str) -> bool:
     return segments[0] in STATIC_ALLOWED_DIRECTORIES
 
 
-def build_whatsapp_reengagement_sender(server: ThreadingHTTPServer, root: Path) -> Callable[[dict[str, Any], str], Any]:
-    """Deliver the weekly re-engagement report to the owner's in-app feed.
-
-    This used to fan out over WhatsApp and Telegram. Both are gone; the report
-    now lands in the notification centre, where it is durable and readable from
-    any device.
-    """
-
-    def send_owner_message(connection: dict[str, Any], message_text: str) -> Any:
-        database = server.database  # type: ignore[attr-defined]
-        user_id = resolve_notification_user_id(
-            database,
-            user_id=int(connection.get("userId") or 0),
-            email=normalize_text(connection.get("email")),
-        )
-        if user_id <= 0:
-            raise RuntimeError("No account was found for this re-engagement report.")
-
-        report = connection.get("reengagementReport") if isinstance(connection.get("reengagementReport"), dict) else {}
-        scheduled_for = normalize_text(report.get("scheduledFor"))
-        candidates_count = int(report.get("candidatesCount") or 0)
-        is_demo = bool(report.get("demo"))
-
-        title = "Follow-up drafts ready"
-        if is_demo:
-            title = "Follow-up demo results"
-        elif candidates_count:
-            title = f"{candidates_count} conversation{'s' if candidates_count != 1 else ''} ready for follow-up"
-
-        notification = deliver_portal_notification(
-            database,
-            user_id=user_id,
-            title=title,
-            body=message_text,
-            kind="reengagement_report",
-            tone="info",
-            source="whatsapp_reengagement",
-            feature_id=REENGAGEMENT_FEATURE_ID,
-            dedupe_key=(
-                f"reengagement:{user_id}:{scheduled_for}" if scheduled_for and not is_demo else ""
-            ),
-            metadata={
-                "candidatesCount": candidates_count,
-                "scheduledFor": scheduled_for,
-                "cutoffAt": normalize_text(report.get("cutoffAt")),
-                "demo": is_demo,
-            },
-        )
-        return {
-            "messageId": f"portal-notification-{int(notification.get('id') or 0)}",
-            "deliveryMode": "portal",
-            "reportId": str(notification.get("id") or ""),
-        }
-
-    return send_owner_message
-
-
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run the portal static server and OTP API.")
     parser.add_argument("--host", default=os.getenv("PORTAL_HOST", "127.0.0.1"), help="Bind address.")
@@ -19409,34 +17060,6 @@ def main() -> int:
         print("Using SMTP for OTP delivery.", flush=True)
     else:
         print("SMTP is not configured yet. Set PORTAL_SMTP_HOST and PORTAL_SMTP_FROM_EMAIL.", flush=True)
-
-    reengagement_config = load_whatsapp_reengagement_config()
-    scheduler_stop_event = threading.Event()
-    scheduler_thread: threading.Thread | None = None
-    if reengagement_config.enabled:
-        scheduler = WhatsAppReengagementScheduler(
-            server.database,  # type: ignore[attr-defined]
-            send_owner_message=build_whatsapp_reengagement_sender(server, repo_root),
-            config=reengagement_config,
-        )
-        scheduler_thread = threading.Thread(
-            target=scheduler.serve_forever,
-            args=(scheduler_stop_event,),
-            kwargs={"log": lambda message: print(message, flush=True)},
-            daemon=True,
-            name="whatsapp-reengagement-scheduler",
-        )
-        scheduler_thread.start()
-        timezone_label = reengagement_config.timezone_name or str(datetime.now().astimezone().tzinfo or "local")
-        print(
-            "WhatsApp re-engagement scheduler enabled. "
-            f"Runs weekly on weekday {reengagement_config.schedule_weekday} at "
-            f"{reengagement_config.schedule_hour:02d}:{reengagement_config.schedule_minute:02d} "
-            f"({timezone_label}) after {reengagement_config.inactivity_months} months of inactivity.",
-            flush=True,
-        )
-    else:
-        print("WhatsApp re-engagement scheduler is disabled.", flush=True)
 
     monitor_config = load_scheduled_monitor_config()
     monitor_stop_event = threading.Event()
@@ -19694,9 +17317,6 @@ def main() -> int:
         print("Stop requested; shutting down portal server.", flush=True)
         drain_in_flight_requests(server, resolve_shutdown_grace_seconds())
     finally:
-        scheduler_stop_event.set()
-        if scheduler_thread is not None:
-            scheduler_thread.join(timeout=1.0)
         monitor_stop_event.set()
         if monitor_thread is not None:
             monitor_thread.join(timeout=1.0)

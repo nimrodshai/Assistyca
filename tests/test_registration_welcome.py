@@ -157,7 +157,7 @@ class RegistrationWelcomeMessageTests(unittest.TestCase):
 class RegistrationWelcomeSendTests(unittest.TestCase):
     def send(self, **kwargs: object) -> dict:
         with mock.patch(
-            "packages.tools.whatsapp_reply_approval.server.send_whatsapp_message",
+            "packages.infrastructure.whatsapp_messaging.send_whatsapp_message",
             return_value="wamid.welcome-1",
         ) as send:
             send_whatsapp_notification(

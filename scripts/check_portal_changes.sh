@@ -38,10 +38,8 @@ python3 -m unittest \
   tests.test_web_search \
   tests.test_agent_web_search \
   tests.test_scheduled_monitor \
-  tests.test_whatsapp_tool_delivery \
   tests.test_portal_manual_run \
   tests.test_scheduled_actions \
   tests.test_source_actions \
-  tests.test_whatsapp_reengagement \
   tests.test_platform_connections \
   tests.test_portal_static_pages

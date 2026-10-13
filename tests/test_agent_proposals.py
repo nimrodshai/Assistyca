@@ -816,7 +816,6 @@ class AgentProposalRevisionTests(unittest.TestCase):
         )
 
         self.assertIn("Never ask for Gmail or mailbox access", prompt)
-        self.assertIn("whatsapp-replies", prompt)
         self.assertIn("web-monitor", prompt)
         self.assertIn("scheduled-message", prompt)
 
@@ -1016,7 +1015,6 @@ class AgentProposalRevisionTests(unittest.TestCase):
             tool_context=context,
         )
         self.assertIn('"toolContext":{"whatsapp":{"ready":true', prompt)
-        self.assertIn("do not ask which WhatsApp number or account", prompt)
         self.assertNotIn("secret", prompt)
 
     def test_agent_tool_context_includes_calendar_health_without_credentials(self) -> None:

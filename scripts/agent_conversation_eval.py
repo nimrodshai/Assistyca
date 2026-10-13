@@ -29,7 +29,6 @@ from __future__ import annotations
 import argparse
 import os
 import sys
-import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -106,7 +105,6 @@ def run_conversation(spec: dict, threshold: int) -> tuple[bool, list[str]]:
     try:
         with (
             mock.patch("packages.infrastructure.whatsapp_agent_chat.send_whatsapp_message", side_effect=simulator._capture_send),
-            mock.patch("packages.infrastructure.whatsapp_portal_service.send_whatsapp_message", side_effect=simulator._capture_send),
             mock.patch("packages.infrastructure.whatsapp_agent_chat.send_whatsapp_typing_indicator", return_value=None),
         ):
             conversation: list[dict] = []
@@ -141,9 +139,7 @@ def main() -> int:
         print("OPENAI_API_KEY is required: the conversations and the judge both run on the real model.")
         return 2
 
-    store_root = Path(tempfile.mkdtemp(prefix="whatsapp-eval-")) / "portal-whatsapp"
     environment = {
-        "PORTAL_WHATSAPP_STORE_ROOT": str(store_root),
         "WHATSAPP_APP_SECRET": SIMULATED_APP_SECRET,
         "ASSISTYCA_WHATSAPP_PHONE_NUMBER_ID": SIMULATED_PLATFORM_PHONE_NUMBER_ID,
         "ASSISTYCA_WHATSAPP_ACCESS_TOKEN": "eval-token",

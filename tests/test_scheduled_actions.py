@@ -321,7 +321,7 @@ class ScheduledActionTests(unittest.TestCase):
 
         plan = "Today:\n• 08:00 Lahav — Shaked; you take\n• Lotan — Rimon; the bus takes him.\n\nHave a great day 🙂"
         with mock.patch(
-            "packages.tools.whatsapp_reply_approval.server.send_whatsapp_message",
+            "packages.infrastructure.whatsapp_messaging.send_whatsapp_message",
             return_value="wamid.template-lines",
         ) as send:
             send_whatsapp_notification(

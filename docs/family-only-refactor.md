@@ -91,7 +91,7 @@ All answered by Nimrod on 2026-10-13.
       scenarios and skill cards `:274,293-326,409-411,614,726-750,817-821,
       1151-1192,1242,5769-5821,10173-10235,10747,10850,12795-12910`.
 - [ ] `notification_delivery.py:18,110,121` comments about customer replies.
-- [ ] `scripts/run_whatsapp_backend.py` and `docs/whatsapp-backend.md`.
+- [x] `scripts/run_whatsapp_backend.py` and `docs/whatsapp-backend.md`.
 - [ ] Env: `WHATSAPP_REPLY_ASSISTANT_*`, `WHATSAPP_SAMPLE_TEMPLATE_*`,
       `WHATSAPP_OWNER_NOTIFICATION_TEMPLATE_NAME`, `META_APP_ID`,
       `WHATSAPP_EMBEDDED_SIGNUP_CONFIG_ID`, `CLIENT_ID`, `CLIENT_NAME`,
@@ -188,19 +188,20 @@ All answered by Nimrod on 2026-10-13.
       ~146 references; feed strings "New lead", "Business:" `server.py:12027,12080`).
 - [ ] Test `test_contact_api.py` (465 lines; workflow line 70).
 
-### 1g. Consulting-client folders, spec workflow and scripts (pending decision)
+### 1g. Consulting-client folders, spec workflow and scripts (done 2026-10-13)
 
-Nothing at runtime reads these. `/clients/` is only on the static-serve denylist
-(`server.py:888,19230`, `test_portal_manual_run.py:2485`).
+Nothing at runtime read these. `/clients/` stays on the static-serve denylist
+(`server.py:888,19230`, `test_portal_manual_run.py:2485`) as a guard; it names a path
+that no longer exists.
 
-- [ ] `clients/{Bisi,CinemaCity,Dor,demo-handyman,_template}` (72 files, ~6 MB).
-- [ ] `scripts/generate_spec_pdf.py`, `generate_tech_product_spec_json.py`,
+- [x] `clients/{Bisi,CinemaCity,Dor,demo-handyman,_template}` (72 files, ~6 MB).
+- [x] `scripts/generate_spec_pdf.py`, `generate_tech_product_spec_json.py`,
       `generate_tech_product_spec_pdf.py`, `validate_site_handoff.py`,
       `check_cinema_city_site.sh`, `download_cinema_city_assets.py`.
-- [ ] `docs/client-config.md`, `docs/spec-generation.md`,
+- [x] `docs/client-config.md`, `docs/spec-generation.md`,
       `docs/technical-spec-generation.md`, `docs/conversational-agent-portal-spec.md`
       (1,972 lines, describes the old catalogue, approvals and re-engagement).
-- [ ] `AGENTS.md`: client-folder rules `:7-8,17,24-35`, "quoting, follow-up,
+- [x] `AGENTS.md`: client-folder rules `:7-8,17,24-35`, "quoting, follow-up,
       handoff" `:41`, Scope Spec Workflow `:81-86`, "more than one client" framing
       `:88-96`. Keep the insurance rule `:44`.
 

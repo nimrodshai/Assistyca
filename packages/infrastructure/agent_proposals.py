@@ -73,8 +73,6 @@ _AGENT_PROPOSAL_TYPES = {
     "email-digest",
     "calendar-summary",
     "web-monitor",
-    "whatsapp-replies",
-    "reengagement",
     "source-action",
     "custom",
 }
@@ -120,8 +118,6 @@ _AGENT_PROPOSAL_FIELD_SCHEMAS = {
     "email-digest": ["mailbox", "schedule", "timeWindow", "deliveryChannel"],
     "calendar-summary": ["calendar", "timeWindow", "deliveryChannel"],
     "web-monitor": ["watchQuery", "location", "timeWindow", "frequency", "deliveryChannel"],
-    "whatsapp-replies": ["whatsappNumber", "approver", "guardrails", "deliveryChannel"],
-    "reengagement": ["inactivityPeriod", "frequency", "deliveryChannel"],
     "source-action": ["sourceType", "sourceUrl", "sourceFileName", "sourceMimeType", "frequency", "timezone"],
     "custom": ["result", "vendor", "manualRunMonth", "outputFolder", "frequency", "deliveryChannel", "calendar"],
     "exchange-rate": ["baseCurrency", "quoteCurrency", "rateDate"],
@@ -1037,7 +1033,7 @@ _TURN_RETURN_KEYS_TAIL = (
     ". reply is required for "
     "every outcome and must be a non-empty natural assistant response, not a form or system status. "
     "proposalType must be one of scheduled-message, email-digest, calendar-summary, web-monitor, "
-    "source-action, whatsapp-replies, reengagement, or custom when outcome is proposal or when outcome is "
+    "source-action, or custom when outcome is proposal or when outcome is "
     "question for a recognizable setup that is missing details.\n"
 )
 
@@ -1061,7 +1057,7 @@ _TURN_VOICE = (
     "tell the user you already have that request or imply they duplicated something. Treat it as continuing "
     "the pending setup unless the user clearly asks for a separate new action; ask for the next missing "
     "decision or whether to set it up or change a detail instead of restating the plan.\n"
-    "For email-digest, web-monitor, whatsapp-replies, reengagement, and custom proposals, prefer "
+    "For email-digest, web-monitor, and custom proposals, prefer "
     "changes.fields over changes.answers. changes.fields must use the exact keys in proposalFieldSchemas. The "
     "reply field is the only assistant text the application should show to the user; the application may "
     "attach action buttons only when they add clear value, and must not add conversational copy. When the "
@@ -1237,18 +1233,6 @@ _TURN_MAILBOXES = (
     "mailbox lookup reads all of them in one run, so when the user asks which mailboxes were read, answer "
     "from that list. Never say a mailbox or a provider is not connected when it appears there; two mailboxes "
     "can report the same address, so name the provider rather than the address when telling them apart.\n"
-)
-
-_TURN_WHATSAPP = (
-    "Use toolContext to understand which integrations are already connected. If toolContext.whatsapp.ready is "
-    "true, use the connected WhatsApp Business connection and do not ask which WhatsApp number or account to "
-    "monitor. If it is false, ask only for the specific WhatsApp details listed in "
-    "toolContext.whatsapp.missingFields; do not invent additional connection fields.\n"
-    "For whatsapp-replies, keep the WhatsApp Business connection (the inbound source) separate from the "
-    "deliveryChannel (where the owner reviews generated replies). Prefer deliveryChannel=portal when the user "
-    "has not chosen another channel, because the Assistyca chat is the review inbox for generated drafts. Ask "
-    "for missing setup details in this conversation, one detail at a time, and never ask the user to paste an "
-    "access token into chat.\n"
 )
 
 # What the assistant can truthfully say it does, in one place, so the signup
@@ -1509,7 +1493,6 @@ def build_agent_turn_prompt(
         # This one is about what the account has rather than what it could set
         # up: with no mailbox listed there is no mailbox to tell apart.
         sections.append(_TURN_MAILBOXES)
-    sections.append(_TURN_WHATSAPP)
     if normalized_channel == "whatsapp":
         sections.append(_TURN_CHANNEL_WHATSAPP)
     sections.append(_TURN_EXAMPLES_HEAD)

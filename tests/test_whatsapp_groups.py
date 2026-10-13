@@ -130,7 +130,7 @@ class CreateGroupTests(unittest.TestCase):
 
 class GroupThreadingTests(unittest.TestCase):
     def test_a_group_message_threads_on_the_group_not_the_speaker(self) -> None:
-        from packages.tools.whatsapp_reply_approval.server import extract_inbound_events
+        from packages.infrastructure.whatsapp_messaging import extract_inbound_events
 
         events = extract_inbound_events(
             group_message_payload(group_id="GROUP1", sender="972500000001", name="Dana", text="who is on pickup?")
@@ -143,7 +143,7 @@ class GroupThreadingTests(unittest.TestCase):
         self.assertEqual(events[0]["sender_name"], "Dana")
 
     def test_a_one_to_one_message_still_threads_on_the_person(self) -> None:
-        from packages.tools.whatsapp_reply_approval.server import extract_inbound_events
+        from packages.infrastructure.whatsapp_messaging import extract_inbound_events
 
         payload = group_message_payload(group_id="", sender="972500000001", name="Dana", text="hello")
         del payload["entry"][0]["changes"][0]["value"]["messages"][0]["group_id"]
@@ -153,7 +153,7 @@ class GroupThreadingTests(unittest.TestCase):
         self.assertEqual(events[0]["group_id"], "")
 
     def test_two_people_in_one_delivery_keep_their_own_names(self) -> None:
-        from packages.tools.whatsapp_reply_approval.server import extract_inbound_events
+        from packages.infrastructure.whatsapp_messaging import extract_inbound_events
 
         payload = group_message_payload(group_id="GROUP1", sender="972500000001", name="Dana", text="who is on pickup?")
         value = payload["entry"][0]["changes"][0]["value"]

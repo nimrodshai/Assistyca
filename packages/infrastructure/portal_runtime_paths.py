@@ -7,7 +7,6 @@ from packages.infrastructure.portal_db import DEFAULT_DB_PATH
 
 
 DEFAULT_BILLING_DATA_PATH = Path("portal/billing.sample.json")
-DEFAULT_PORTAL_WHATSAPP_STORE_DIR = "portal-whatsapp"
 DEFAULT_PORTAL_AGENT_OUTPUT_DIR = "agent-receipts"
 
 
@@ -37,13 +36,6 @@ def resolve_portal_data_root(*, root: Path | None = None, db_path: Path | None =
         resolve_runtime_path(db_path, root=root) if db_path is not None else resolve_portal_db_path(root=root)
     )
     return resolved_db_path.parent
-
-
-def resolve_portal_whatsapp_store_root(*, root: Path | None = None, db_path: Path | None = None) -> Path:
-    configured = os.getenv("PORTAL_WHATSAPP_STORE_ROOT", "").strip()
-    if configured:
-        return resolve_runtime_path(configured, root=root)
-    return resolve_portal_data_root(root=root, db_path=db_path) / DEFAULT_PORTAL_WHATSAPP_STORE_DIR
 
 
 # Receipt bundles are files the portal generated for a customer, so they belong
