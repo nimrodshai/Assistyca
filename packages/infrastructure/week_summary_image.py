@@ -53,20 +53,22 @@ FOOTER = 8.0
 # The hours a day shows when nothing falls outside them.
 DEFAULT_FIRST_HOUR = 7
 DEFAULT_LAST_HOUR = 19
-# An hour is at least this tall, so a one-hour plan holds its title and
-# both its tags; a long day makes the page taller rather than the blocks
-# shorter.
-MIN_HOUR_HEIGHT = 40.0
+# An hour is at least this tall, so a one-hour plan holds its title, its
+# time and both its tags; a long day makes the page taller rather than
+# the blocks shorter.
+MIN_HOUR_HEIGHT = 48.0
 MIN_BLOCK_HEIGHT = 14.0
 BLOCK_INSET = 2.0
 BLOCK_PAD = 3.0
 # The tag a taker's or collector's name is drawn in, in their colour.
-TAG_HEIGHT = 10.0
+TAG_HEIGHT = 9.5
 TAG_PAD = 3.0
 # Two tags on consecutive lines keep this much paper between them.
 TAG_GAP = 1.0
 # The height a band's one line needs clear of other blocks.
-BAND_LABEL_HEIGHT = 10.0
+BAND_LABEL_HEIGHT = 20.0
+# The share of the column a grown-up's hours keep beside a plan over them.
+BAND_SHARE = 1 / 3
 # How far past its room a block's last line may reach: the descenders of
 # a tag sit inside the padding.
 FIT_SLACK = 2.0
@@ -507,6 +509,9 @@ class _Block:
     band: bool = False
     lane: int = 0
     lanes: int = 1
+    # The part of the column the lanes share, as fractions of its width: a
+    # plan inside a grown-up's hours starts a third of the way in.
+    x_from: float = 0.0
 
 
 def _lay_out_lanes(blocks: list[_Block]) -> None:
@@ -582,7 +587,15 @@ def _blocks_for_day(
             end = start + 60
         block.start, block.end = start, end
         timed.append(block)
-    _lay_out_lanes([block for block in timed if not block.band])
+    plans = [block for block in timed if not block.band]
+    _lay_out_lanes(plans)
+    # A plan inside a grown-up's own hours leaves the near third of the
+    # column to those hours, so they stay in view beside it: the parent is
+    # still at work while the child is at ballet, and the picture says both.
+    bands = [block for block in timed if block.band]
+    for block in plans:
+        if block.lanes == 1 and any(band.start < block.end and band.end > block.start for band in bands):
+            block.x_from = BAND_SHARE
     timed.sort(key=lambda block: (not block.band, block.start, block.end))
     return timed, untimed
 
@@ -698,10 +711,10 @@ def render_week_pdf(
                 page.box(column_x + 0.5, top, column_width - 1, bottom - top, _tint(block.colour, BAND_TINT))
                 page.hline(column_x + 0.5, top, column_width - 1, block.colour, line_width=1.2)
                 page.hline(column_x + 0.5, bottom, column_width - 1, block.colour, line_width=1.2)
-                band_labels.append((column_x, top, bottom, block, [b for b in timed if not b.band]))
+                band_labels.append((column_x, top, bottom, block, [b for b in timed if not b.band and b.lane == 0 and not b.x_from]))
                 continue
-            lane_width = (column_width - 2 * BLOCK_INSET) / block.lanes
-            x = column_x + BLOCK_INSET + block.lane * lane_width
+            lane_width = (column_width * (1 - block.x_from) - 2 * BLOCK_INSET) / block.lanes
+            x = column_x + column_width * block.x_from + BLOCK_INSET + block.lane * lane_width
             block_height = max(MIN_BLOCK_HEIGHT, bottom - top - 1.5)
             width = lane_width - 1.5
             page.box(x, top + 0.75, width, block_height, _tint(block.colour), radius=3.5)
@@ -710,14 +723,15 @@ def render_week_pdf(
             text_width = width - 3 - 2 * BLOCK_PAD
             # What, who, when, where, then each leg, every line wrapped to
             # the block's width rather than cut. A block too short for all
-            # of it keeps what matters most: the title and who takes and
-            # collects; the place goes first, then the time (the grid says
-            # it), then the name (the colour says it).
+            # of it keeps what matters most: the title, the time and who
+            # takes and collects; the place goes first, then the name (the
+            # colour says it), then the time - which then joins the title
+            # on its one line, so a half-hour swim still says when.
             groups: list[tuple[int, list[tuple[str, str, float, str] | _Leg]]] = []
             groups.append((0, [(line, "WeekSans-Medium", 8, INK) for line in _wrap(block.head, "WeekSans-Medium", 8, text_width)[:2]]))
             if block.who:
-                groups.append((2, [(line, "WeekSans-Medium", 7.2, INK) for line in _wrap(block.who, "WeekSans-Medium", 7.2, text_width)]))
-            groups.append((3, [(_time_label(block), "WeekSans", 7.2, INK_SOFT)]))
+                groups.append((3, [(line, "WeekSans-Medium", 7.2, INK) for line in _wrap(block.who, "WeekSans-Medium", 7.2, text_width)]))
+            groups.append((2, [(_time_label(block), "WeekSans", 7.2, INK_SOFT)]))
             if block.place:
                 groups.append((4, [(line, "WeekSans", 7.2, INK_SOFT) for line in _wrap(block.place, "WeekSans", 7.2, text_width)]))
             leg_items: list[tuple[str, str, float, str] | _Leg] = []
@@ -743,6 +757,10 @@ def render_week_pdf(
             while total(groups) > room + FIT_SLACK and any(priority > 1 for priority, _items in groups):
                 lowest = max(priority for priority, _items in groups)
                 groups = [(priority, items) for priority, items in groups if priority != lowest]
+            if not any(priority == 2 for priority, _items in groups):
+                title_width = text_width - _width(f" {_time_label(block)}", "WeekSans-Medium", 7.4)
+                head_line = _clip(block.head, "WeekSans-Medium", 7.4, max(20.0, title_width))
+                groups[0] = (0, [(f"{head_line} {_time_label(block)}", "WeekSans-Medium", 7.4, INK)])
             lines: list[tuple[str, str, float, str] | _Leg] = [item for _priority, items in groups for item in items]
             first_line_y = top + 0.75 + BLOCK_PAD + 7
             line_y = first_line_y
@@ -781,9 +799,14 @@ def render_week_pdf(
         # foot for choice, then its head, then the widest clear stretch
         # between blocks. Under a block it would not be read - but a band
         # with no clear stretch at all still says what it is, at the foot.
-        label = _clip(f"{block.head} · {block.who}  {_time_label(block)}", "WeekSans-Medium", 6.8, column_width - 6)
+        # Two lines in the near third of the column, which a plan over the
+        # band leaves clear: what and who, then when.
+        third = column_width * BAND_SHARE - 5
         label_y = _band_label_y(block, others, top=top, bottom=bottom, hour_height=hour_height)
-        page.text(column_x + 3, label_y, label, font="WeekSans-Medium", size=6.8, colour=block.colour)
+        # The name goes when it will not fit: the colour already says whose.
+        name_line = f"{block.head} · {block.who}" if block.who and _width(f"{block.head} · {block.who}", "WeekSans-Medium", 6.4) <= third else block.head
+        page.text(column_x + 3, label_y - 8.5, _clip(name_line, "WeekSans-Medium", 6.4, third), font="WeekSans-Medium", size=6.4, colour=block.colour)
+        page.text(column_x + 3, label_y, _time_label(block), font="WeekSans", size=6.4, colour=block.colour)
 
     page.text(PAGE_WIDTH - MARGIN, height - MARGIN + 3, "Assistyca", font="WeekSans-Medium", size=8, colour=INK_SOFT, align="end")
     c.showPage()
@@ -792,9 +815,10 @@ def render_week_pdf(
 
 
 def _band_label_y(block: _Block, others: list[_Block], *, top: float, bottom: float, hour_height: float) -> float:
-    """The baseline for a band's one line: the lowest clear stretch of the
-    band tall enough for it, the foot when that is clear, the foot anyway
-    when nothing is."""
+    """The baseline for a band's two lines: the lowest clear stretch of the
+    band tall enough for them, the foot when that is clear, the foot anyway
+    when nothing is. others are the blocks in the near half of the column,
+    where the lines go."""
 
     need_minutes = BAND_LABEL_HEIGHT / hour_height * 60
     busy = sorted(
@@ -815,7 +839,7 @@ def _band_label_y(block: _Block, others: list[_Block], *, top: float, bottom: fl
     if gap_end == block.end:
         return bottom - 3
     if gap_start == block.start and len(gaps) == 1:
-        return top + 8.5
+        return top + 17.5
     # Lowest point of the lowest clear stretch, with the gap's own margin.
     return top + (gap_end - block.start) / 60 * hour_height - 3
 
