@@ -3,7 +3,7 @@
 The week a family gives us is their usual week: school Sunday to Friday,
 kindergarten until four, football on Mondays. Whether a particular day is
 usual is the calendar's to say. A holiday, the eve of one, a school break -
-nobody should be told at seven in the morning who is taking the children to
+nobody should be told at six in the morning who is taking the children to
 a school that is shut, or that it is time to leave for it.
 
 What the calendar says is looked up, never kept as a list in code: holidays

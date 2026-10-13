@@ -69,7 +69,7 @@ from packages.infrastructure.standing_tasks import STANDING_TASK_ACTION_TYPE
 from packages.infrastructure.whatsapp_agent_chat import infer_timezone_from_wa_id
 
 NUDGE_SOURCE = "family_week"
-DEFAULT_MORNING_HOUR = 7
+DEFAULT_MORNING_HOUR = 6
 DEFAULT_EVENING_HOUR = 20
 DEFAULT_RIDE_LEAD_MINUTES = 30
 # Drives of the owner's that follow one another within this many minutes
