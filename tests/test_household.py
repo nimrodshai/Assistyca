@@ -11,11 +11,13 @@ import unittest
 import urllib.error as urllib_error
 import urllib.request as urllib_request
 from datetime import date
+from datetime import timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
 from packages.infrastructure import household
 from packages.infrastructure.agent_loop import LoopContext
+from packages.infrastructure.agent_loop import _household_today
 from packages.infrastructure.agent_loop import TOOLS_BY_NAME
 from packages.infrastructure.agent_loop import build_loop_context_text
 from packages.infrastructure.portal_db import ACCOUNT_FACT_LIMIT
@@ -701,6 +703,54 @@ class ToolTests(unittest.TestCase):
         self.assertIn("https://assistyca.com/week/open/abc", self.context.links_offered)
         done = self.run_tool("set_getting_to_know", status="done", ask_again_in_days=None)
         self.assertEqual(done["weekPage"], "https://assistyca.com/week/open/abc")
+
+    def test_asking_to_see_a_day_or_the_week_is_answered_with_the_picture_not_the_page(self) -> None:
+        # "What's on today?" / "show me this week" used to get the week page
+        # link. The page is for changing the week; seeing it is the picture.
+        self.run_tool("save_family_member", name="Tom", previous_name=None, role="child", age=4, school=None, email=None, phone=None, notes=None)
+        self.run_tool(
+            "save_week_activity", id=None, title="Football", who=["Tom"], days=["tue"], start_time="17:00",
+            end_time="18:00", place=None, drop_off_by="me", pick_up_by="", notes=None,
+        )
+        asked: list[tuple] = []
+        self.context.week_link = lambda: "https://assistyca.com/week/open/abc"
+        self.context.week_picture = lambda first, last, title: (
+            asked.append((first, last, title)) or f"https://assistyca.com/week/image/{title}.png"
+        )
+        today = _household_today(self.context)
+        sunday = today - timedelta(days=(today.weekday() + 1) % 7)
+
+        shown = self.run_tool("show_family_week", picture="today")
+        self.assertEqual(shown["picture"]["url"], "https://assistyca.com/week/image/today.png")
+        self.assertIn("Do not offer the week page", shown["picture"]["note"])
+        self.assertNotIn("weekPage", shown)
+        self.assertIn("byDay", shown, "the facts stay, so the caption can say what still has nobody")
+        self.assertEqual(self.context.pictures, ["https://assistyca.com/week/image/today.png"])
+        self.assertEqual(asked[-1], (today, today, "today"))
+
+        self.run_tool("show_family_week", picture="tomorrow")
+        self.assertEqual(asked[-1], (today + timedelta(days=1), today + timedelta(days=1), "tomorrow"))
+        self.run_tool("show_family_week", picture="this_week")
+        self.assertEqual(asked[-1], (sunday, sunday + timedelta(days=6), "this_week"))
+        self.run_tool("show_family_week", picture="next_week")
+        self.assertEqual(asked[-1], (sunday + timedelta(days=7), sunday + timedelta(days=13), "week_ahead"))
+        self.assertEqual(len(self.context.pictures), 4)
+
+        # A question about one thing is not a request to see the day.
+        plain = self.run_tool("show_family_week", picture="none")
+        self.assertNotIn("picture", plain)
+        self.assertEqual(plain["weekPage"], "https://assistyca.com/week/open/abc")
+        self.assertEqual(len(asked), 4)
+
+    def test_a_picture_that_cannot_be_drawn_falls_back_to_words_and_the_page(self) -> None:
+        self.context.week_link = lambda: "https://assistyca.com/week/open/abc"
+        for builder in (None, lambda *a: "", lambda *a: (_ for _ in ()).throw(RuntimeError("no fonts"))):
+            self.context.week_picture = builder
+            shown = self.run_tool("show_family_week", picture="today")
+            self.assertNotIn("picture", shown)
+            self.assertIn("answer in words", shown["pictureNote"])
+            self.assertEqual(shown["weekPage"], "https://assistyca.com/week/open/abc")
+        self.assertEqual(self.context.pictures, [])
 
 
 class _NoRedirect(urllib_request.HTTPRedirectHandler):

@@ -246,6 +246,30 @@ def send_assistyca_text(*, recipient_wa_id: str, text: str, api_version: str = D
     )
 
 
+def send_assistyca_image(
+    *, recipient_wa_id: str, image_url: str, caption: str = "", api_version: str = DEFAULT_WHATSAPP_API_VERSION,
+) -> str:
+    """Send one picture from the Assistyca number, with the words as its
+    caption. The address has to be one Meta can fetch."""
+
+    access_token = resolve_whatsapp_sender_access_token()
+    phone_number_id = resolve_whatsapp_sender_phone_number_id()
+    if access_token and phone_number_id:
+        return send_whatsapp_message(
+            access_token=access_token,
+            phone_number_id=phone_number_id,
+            api_version=api_version,
+            recipient_wa_id=recipient_wa_id,
+            message_text=caption or None,
+            image={"link": image_url},
+        )
+    if parse_bool(os.getenv("WHATSAPP_ALLOW_MOCK_SEND")):
+        return f"mock-{uuid.uuid4().hex}"
+    raise WhatsAppAgentChatError(
+        "Assistyca WhatsApp sending is not configured, so the agent cannot reply on this channel."
+    )
+
+
 def send_assistyca_group_text(*, group_id: str, text: str, api_version: str = DEFAULT_WHATSAPP_API_VERSION) -> str:
     """Say one thing in a group, from the Assistyca number."""
 
@@ -1601,6 +1625,43 @@ def send_with_link_buttons(
     return message_id
 
 
+# What Meta takes under a picture.
+IMAGE_CAPTION_LIMIT = 1024
+
+
+def send_with_picture(
+    reply_text: str,
+    picture_url: str,
+    links: list[dict[str, Any]] | None,
+    *,
+    send_text: Callable[[str], str],
+    send_image: Callable[[str, str], str],
+    send_interactive: Callable[[dict[str, Any]], str],
+) -> str:
+    """Send a reply as the caption of the picture it goes with - a day or a
+    week drawn as a calendar page - then each known link as a button of its
+    own. Words too long for a caption go first, and the picture after them.
+    A picture Meta will not take goes as words with the picture's address
+    under them, so the person still has it."""
+
+    text, used = lift_links_from_reply(reply_text, links)
+    text = text.strip()
+    caption = text if len(text) <= IMAGE_CAPTION_LIMIT else ""
+    if text and not caption:
+        send_text(text)
+    try:
+        message_id = send_image(picture_url, caption)
+    except Exception as exc:  # noqa: BLE001 - the words carry the address instead
+        print(f"WhatsApp picture could not be sent: {exc}", flush=True)
+        message_id = ""
+    if not message_id:
+        message_id = send_text(f"{text}\n{picture_url}".strip() if caption else picture_url)
+    for link in used:
+        if not send_interactive(build_link_button_payload(body=link["label"], label=link["label"], url=link["url"])):
+            send_text(f"{link['label']}:\n{link['url']}")
+    return message_id
+
+
 SIGN_IN_BUTTON_LABELS = {"google": "Sign in with Google", "microsoft": "Microsoft sign-in"}
 
 
@@ -2528,7 +2589,10 @@ class WhatsAppAgentChat:
             conversation,
         )
         links = turn.get("links") if isinstance(turn.get("links"), list) else []
-        message_id = self._send_owner_reply(reply, links if outcome == "message" else [])
+        pictures = [url for url in (turn.get("pictures") or []) if isinstance(url, str) and url.startswith("http")]
+        message_id = self._send_owner_reply(
+            reply, links if outcome == "message" else [], pictures=pictures if outcome == "message" else [],
+        )
         completed = [normalize_text(name) for name in (turn.get("completed") or []) if isinstance(name, str)]
         if "delete_account" in completed:
             # The account is gone, and with it the transcript: the goodbye is
@@ -2711,18 +2775,33 @@ class WhatsAppAgentChat:
             api_version=self.api_version,
         )
 
-    def _send_owner_reply(self, reply_text: str, links: list[dict[str, Any]] | None) -> str:
+    def _send_owner_reply(
+        self, reply_text: str, links: list[dict[str, Any]] | None, *, pictures: list[str] | None = None,
+    ) -> str:
         """Send the reply, with each link the loop handed out as a button under it.
 
         A bare address in a chat bubble is hard to read, so the reply's
         links ride on call-to-action buttons instead. The first button sits
         under the reply itself; any further link gets a small message of
         its own. Should a button not go through, the plain text with the
-        address goes instead, so the person always gets the link.
+        address goes instead, so the person always gets the link. A reply
+        that goes out with a picture - the day or the week as a calendar
+        page - is the picture's caption.
         """
 
+        if pictures:
+            return send_with_picture(
+                reply_text, pictures[0], links,
+                send_text=self._send_owner_text, send_image=self._send_owner_image,
+                send_interactive=self._send_owner_interactive,
+            )
         return send_with_link_buttons(
             reply_text, links, send_text=self._send_owner_text, send_interactive=self._send_owner_interactive,
+        )
+
+    def _send_owner_image(self, image_url: str, caption: str) -> str:
+        return send_assistyca_image(
+            recipient_wa_id=self.owner_wa_id, image_url=image_url, caption=caption, api_version=self.api_version,
         )
 
     # -- the whole loop ----------------------------------------------------

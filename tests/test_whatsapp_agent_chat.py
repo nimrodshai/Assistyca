@@ -32,6 +32,7 @@ from packages.infrastructure.whatsapp_agent_chat import (
     lift_links_from_reply,
     infer_timezone_from_wa_id,
     resolve_scheduled_message_run_at,
+    send_with_picture,
 )
 
 
@@ -913,6 +914,57 @@ class LinkButtonTests(unittest.TestCase):
         self.assertEqual(payload["action"]["parameters"]["url"], "https://assistyca.com/lists/open/abc")
 
 
+class PictureReplyTests(unittest.TestCase):
+    """A reply that goes with a picture of the day or the week is its caption."""
+
+    PICTURE = "https://assistyca.com/week/image/abcdefghij1234567890.png"
+
+    def _sends(self, *, image_result="wamid.pic", image_error=None):
+        calls: list[tuple] = []
+
+        def send_text(text):
+            calls.append(("text", text))
+            return "wamid.text"
+
+        def send_image(url, caption):
+            calls.append(("image", url, caption))
+            if image_error:
+                raise image_error
+            return image_result
+
+        def send_interactive(payload):
+            calls.append(("button", payload["action"]["parameters"]["url"]))
+            return "wamid.button"
+
+        return calls, dict(send_text=send_text, send_image=send_image, send_interactive=send_interactive)
+
+    def test_the_reply_is_the_pictures_caption(self) -> None:
+        calls, sends = self._sends()
+        message_id = send_with_picture("Here's today. Nobody collects Tom yet - who takes it?", self.PICTURE, [], **sends)
+        self.assertEqual(message_id, "wamid.pic")
+        self.assertEqual(calls, [("image", self.PICTURE, "Here's today. Nobody collects Tom yet - who takes it?")])
+
+    def test_a_link_beside_the_picture_is_still_a_button(self) -> None:
+        link = "https://assistyca.com/lists/open/k3x9v2qm7h4t"
+        calls, sends = self._sends()
+        send_with_picture(f"Here's the week. The packing list is here:\n{link}", self.PICTURE, [{"url": link, "label": "Open Packing"}], **sends)
+        self.assertEqual(calls, [("image", self.PICTURE, "Here's the week. The packing list is here."), ("button", link)])
+
+    def test_words_too_long_for_a_caption_go_first_and_the_picture_after(self) -> None:
+        long_reply = "x" * 1100
+        calls, sends = self._sends()
+        self.assertEqual(send_with_picture(long_reply, self.PICTURE, [], **sends), "wamid.pic")
+        self.assertEqual(calls, [("text", long_reply), ("image", self.PICTURE, "")])
+
+    def test_a_picture_meta_will_not_take_goes_as_words_with_its_address(self) -> None:
+        calls, sends = self._sends(image_error=RuntimeError("media fetch failed"))
+        self.assertEqual(send_with_picture("Here's today.", self.PICTURE, [], **sends), "wamid.text")
+        self.assertEqual(calls, [("image", self.PICTURE, "Here's today."), ("text", f"Here's today.\n{self.PICTURE}")])
+        calls, sends = self._sends(image_result="")
+        send_with_picture("Here's today.", self.PICTURE, [], **sends)
+        self.assertEqual(calls[-1], ("text", f"Here's today.\n{self.PICTURE}"))
+
+
 if __name__ == "__main__":
     unittest.main()
 
@@ -1487,6 +1539,33 @@ class WhatsAppLoopTests(_WhatsAppApiCase):
         self.assertEqual(self._reply(response), "Okay, nothing changed.")
         self.assertIsNone(self.database.get_whatsapp_agent_pending(user_id=int(self.user["id"])))
         self.assertIn('"declinedAction"', model.call_args.kwargs["input"][0]["content"])
+
+    def test_asking_what_is_on_today_sends_the_day_as_a_picture_not_a_link(self) -> None:
+        user_id = int(self.user["id"])
+        self.database.save_household_member(user_id=user_id, name="Tom", role="child", age=4)
+        self.database.save_household_activity(
+            user_id=user_id, title="Gan", who=["Tom"], days=["sun", "mon", "tue", "wed", "thu", "fri", "sat"],
+            start_time="08:00", end_time="16:00", drop_off_by="me", pick_up_by="",
+        )
+        rounds = [
+            _loop_round(_tool_call("show_family_week", "c1", picture="today")),
+            _loop_round(reply={"reply": "Here's today. Nobody collects Tom from Gan yet - who takes it?"}),
+        ]
+        with (
+            mock.patch.dict("os.environ", {"PUBLIC_BASE_URL": "https://assistyca.example", "PORTAL_FAMILY_SCHOOL_CALENDAR": "0"}),
+            mock.patch("packages.infrastructure.portal_auth.server.call_openai_response", side_effect=rounds) as model,
+        ):
+            response = self._post_webhook(inbound_text_payload("what's on today?", message_id="wamid.loop-pic"))
+
+        self.assertEqual(self._reply(response), "Here's today. Nobody collects Tom from Gan yet - who takes it?")
+        outputs = [json.loads(item["output"]) for item in model.call_args.kwargs["input"] if item.get("type") == "function_call_output"]
+        self.assertRegex(outputs[0]["picture"]["url"], r"^https://assistyca\.example/week/image/[a-z0-9]{20}\.png$")
+        self.assertNotIn("weekPage", outputs[0])
+        sent = self.sent.call_args.kwargs
+        self.assertEqual(sent["image"], {"link": outputs[0]["picture"]["url"]})
+        self.assertEqual(sent["message_text"], "Here's today. Nobody collects Tom from Gan yet - who takes it?")
+        code = outputs[0]["picture"]["url"].rsplit("/", 1)[-1].removesuffix(".png")
+        self.assertTrue((self.database.get_household_week_image(code) or {}).get("image", b"").startswith(b"\x89PNG"))
 
     def test_the_model_being_down_still_gets_one_reply_with_a_way_forward(self) -> None:
         from packages.infrastructure.openai_api import OpenAIRequestError

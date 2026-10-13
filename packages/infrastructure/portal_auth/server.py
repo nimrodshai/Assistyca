@@ -32,6 +32,7 @@ from datetime import timedelta
 from datetime import timezone
 from dataclasses import dataclass
 from dataclasses import field
+from dataclasses import replace
 from email.message import EmailMessage
 from email.utils import formataddr
 from email.utils import parsedate_to_datetime
@@ -11573,6 +11574,10 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 None if group or not household_block or not full_access
                 else self._page_link_builder(session.email, channel, page="/week", prefix=WEEK_HANDOFF_PREFIX)
             ),
+            week_picture=(
+                None if group or not household_block or not full_access
+                else self._week_picture_builder(user_id, timezone_name)
+            ),
             join_link=None if group else self._join_link_builder(),
             speaker=speaker,
             sender_wa_id="" if group else sender_wa_id,
@@ -11707,6 +11712,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             "calendarChoiceSelected": result.calendar_choice_selected,
             "calendarChoiceRequested": result.calendar_choice_requested,
             "links": result.links,
+            "pictures": result.pictures,
             "fallbackUsed": result.fallback_used,
             "fallbackReason": result.fallback_reason,
             "blockedOnConnection": result.blocked_on_connection,
@@ -15997,6 +16003,21 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 user_id=user_id, list_id=0, expires_at=time.time() + LISTS_HANDOFF_TTL_SECONDS,
             )
             return f"{base}{prefix}{code}"
+
+        return build
+
+    def _week_picture_builder(self, user_id: int, timezone_name: str) -> Callable[[date, date, str], str]:
+        """A day or a week of the family's as the calendar picture the nudges
+        send, drawn when the person asks to see it and served from this
+        site's public address."""
+
+        config = replace(load_family_week_nudge_config(), public_base_url=self._public_base_url())
+        nudger = FamilyWeekNudger(
+            self.database, config=config, school_calendar=SchoolCalendar(self.database) if config.school_calendar else None,
+        )
+
+        def build(first: date, last: date, title: str) -> str:
+            return nudger.draw_picture(user_id=user_id, timezone_name=timezone_name, first=first, last=last, title=title)
 
         return build
 
