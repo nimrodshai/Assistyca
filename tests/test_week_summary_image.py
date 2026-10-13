@@ -87,7 +87,8 @@ class WeekSummaryDrawingTests(unittest.TestCase):
         self.assertTrue(png.startswith(b"\x89PNG"))
         width = int.from_bytes(png[16:20], "big")
         height = int.from_bytes(png[20:24], "big")
-        self.assertEqual(width, 2000)
+        self.assertGreaterEqual(width, 2000)
+        self.assertLessEqual(width, 3200)
         self.assertLess(height, width, "a landscape page, a column per day")
         self.assertLess(len(png), 2_000_000)
 

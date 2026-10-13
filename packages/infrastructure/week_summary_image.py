@@ -59,6 +59,8 @@ DEFAULT_LAST_HOUR = 19
 MIN_HOUR_HEIGHT = 48.0
 MIN_BLOCK_HEIGHT = 14.0
 BLOCK_INSET = 2.0
+# A lane narrower than this cannot hold "collects:" and a short name's tag.
+MIN_LANE_WIDTH = 64.0
 BLOCK_PAD = 3.0
 # The tag a taker's or collector's name is drawn in, in their colour.
 TAG_HEIGHT = 9.5
@@ -75,6 +77,7 @@ FIT_SLACK = 2.0
 # Device pixels per point: 1000pt becomes 2000px, sharp on a phone when
 # zoomed and well under WhatsApp's size limit.
 RASTER_SCALE = 2.0
+MAX_RASTER_WIDTH = 3200.0
 
 INK = "#1F2A37"
 INK_SOFT = "#6B7280"
@@ -438,9 +441,10 @@ class _Page:
     reading edge, which is the right edge on a Hebrew page, so the same
     drawing code lays the days out from right to left there."""
 
-    def __init__(self, canvas: Any, *, rtl: bool, height: float) -> None:
+    def __init__(self, canvas: Any, *, rtl: bool, width: float, height: float) -> None:
         self.c = canvas
         self.rtl = rtl
+        self.width = width
         self.height = height
 
     def text(self, x: float, y: float, text: str, *, font: str, size: float, colour: str, align: str = "start") -> None:
@@ -451,7 +455,7 @@ class _Page:
         self.c.setFillColorRGB(*_hex(colour))
         shown = _display(text)
         baseline = self.height - y
-        real_x = PAGE_WIDTH - x if self.rtl else x
+        real_x = self.width - x if self.rtl else x
         if align == "center":
             self.c.drawCentredString(real_x, baseline, shown)
         elif (align == "start") != self.rtl:
@@ -460,7 +464,7 @@ class _Page:
             self.c.drawRightString(real_x, baseline, shown)
 
     def box(self, x: float, y: float, width: float, height: float, fill: tuple[float, float, float], *, radius: float = 0.0) -> None:
-        left = PAGE_WIDTH - x - width if self.rtl else x
+        left = self.width - x - width if self.rtl else x
         self.c.setFillColorRGB(*fill)
         self.c.setStrokeColorRGB(*fill)
         if radius:
@@ -469,13 +473,13 @@ class _Page:
             self.c.rect(left, self.height - y - height, width, height, stroke=0, fill=1)
 
     def hline(self, x: float, y: float, width: float, colour: str = LINE, *, line_width: float = 0.6) -> None:
-        left = PAGE_WIDTH - x - width if self.rtl else x
+        left = self.width - x - width if self.rtl else x
         self.c.setStrokeColorRGB(*_hex(colour))
         self.c.setLineWidth(line_width)
         self.c.line(left, self.height - y, left + width, self.height - y)
 
     def vline(self, x: float, y: float, height: float, colour: str = LINE, *, line_width: float = 0.6) -> None:
-        real_x = PAGE_WIDTH - x if self.rtl else x
+        real_x = self.width - x if self.rtl else x
         self.c.setStrokeColorRGB(*_hex(colour))
         self.c.setLineWidth(line_width)
         self.c.line(real_x, self.height - y, real_x, self.height - y - height)
@@ -633,28 +637,37 @@ def render_week_pdf(
 
     grid_top = MARGIN + TITLE_BLOCK + (LEGEND_LINE if summary.legend else 0.0) + DAY_HEADER + untimed_height
     hour_height = max(MIN_HOUR_HEIGHT, (PAGE_HEIGHT - grid_top - MARGIN - FOOTER) / hours)
+    # A family whose children are all at school at once needs the columns
+    # wide enough for a lane each; the page grows to fit rather than the
+    # words being cut.
+    max_lanes = max([block.lanes for timed, _untimed in days for block in timed if not block.band] or [1])
     height = grid_top + hour_height * hours + FOOTER + MARGIN
-    column_width = (PAGE_WIDTH - 2 * MARGIN - TIME_GUTTER) / 7
+    column_width = max((PAGE_WIDTH - 2 * MARGIN - TIME_GUTTER) / 7, max_lanes * MIN_LANE_WIDTH + 2 * BLOCK_INSET)
+    page_width = 2 * MARGIN + TIME_GUTTER + 7 * column_width
     grid_x = MARGIN + TIME_GUTTER
 
     buffer = io.BytesIO()
-    c = pdf_canvas.Canvas(buffer, pagesize=(PAGE_WIDTH, height))
+    c = pdf_canvas.Canvas(buffer, pagesize=(page_width, height))
     c.setTitle(words["title"])
-    page = _Page(c, rtl=rtl, height=height)
-    page.box(0, 0, PAGE_WIDTH, height, _hex(PAPER))
+    page = _Page(c, rtl=rtl, width=page_width, height=height)
+    page.box(0, 0, page_width, height, _hex(PAPER))
 
     # Title, dates, and the colour key.
     week_end = summary.week_start + timedelta(days=6)
     page.text(MARGIN, MARGIN + 15, words["title"], font="WeekSans-SemiBold", size=17, colour=INK)
     span = f"{_format_day(summary.week_start, summary.language)} – {_format_day(week_end, summary.language)}"
-    page.text(PAGE_WIDTH - MARGIN, MARGIN + 14, span, font="WeekSans", size=10.5, colour=INK_SOFT, align="end")
+    page.text(page_width - MARGIN, MARGIN + 14, span, font="WeekSans", size=10.5, colour=INK_SOFT, align="end")
     y = MARGIN + TITLE_BLOCK
     if summary.legend:
         x = MARGIN
         for label, colour in summary.legend:
+            entry_width = 12 + _width(label, "WeekSans-Medium", 9.5) + 14
+            if x > MARGIN and x + entry_width > page_width - MARGIN:
+                x = MARGIN
+                y += LEGEND_LINE
             page.box(x, y - 14.5, 8, 8, _hex(colour), radius=4)
             page.text(x + 12, y - 7, label, font="WeekSans-Medium", size=9.5, colour=INK)
-            x += 12 + _width(label, "WeekSans-Medium", 9.5) + 14
+            x += entry_width
         y += LEGEND_LINE
 
     # Day headers.
@@ -802,29 +815,50 @@ def render_week_pdf(
         # Two lines in the near third of the column, which a plan over the
         # band leaves clear: what and who, then when.
         third = column_width * BAND_SHARE - 5
-        label_y = _band_label_y(block, others, top=top, bottom=bottom, hour_height=hour_height)
+        label_y, clear = _band_label_y(
+            block, others, top=top, bottom=bottom, hour_height=hour_height,
+            grid_start=first_hour * 60, grid_end=last_hour * 60,
+        )
         # The name goes when it will not fit: the colour already says whose.
         name_line = f"{block.head} · {block.who}" if block.who and _width(f"{block.head} · {block.who}", "WeekSans-Medium", 6.4) <= third else block.head
+        if not clear:
+            # Nothing in the column is ever clear of this band - a child in
+            # daycare all day - so the lines get a little paper of their own.
+            page.box(column_x + 1, label_y - 16.5, third + 4, BAND_LABEL_HEIGHT, _tint(block.colour, 0.8), radius=2.5)
         page.text(column_x + 3, label_y - 8.5, _clip(name_line, "WeekSans-Medium", 6.4, third), font="WeekSans-Medium", size=6.4, colour=block.colour)
         page.text(column_x + 3, label_y, _time_label(block), font="WeekSans", size=6.4, colour=block.colour)
 
-    page.text(PAGE_WIDTH - MARGIN, height - MARGIN + 3, "Assistyca", font="WeekSans-Medium", size=8, colour=INK_SOFT, align="end")
+    page.text(page_width - MARGIN, height - MARGIN + 3, "Assistyca", font="WeekSans-Medium", size=8, colour=INK_SOFT, align="end")
     c.showPage()
     c.save()
     return buffer.getvalue()
 
 
-def _band_label_y(block: _Block, others: list[_Block], *, top: float, bottom: float, hour_height: float) -> float:
-    """The baseline for a band's two lines: the lowest clear stretch of the
-    band tall enough for them, the foot when that is clear, the foot anyway
-    when nothing is. others are the blocks in the near half of the column,
-    where the lines go."""
+def _band_label_y(
+    block: _Block, others: list[_Block], *, top: float, bottom: float, hour_height: float,
+    grid_start: int = 0, grid_end: int = 24 * 60,
+) -> tuple[float, bool]:
+    """The baseline for a band's two lines and whether it is clear: the
+    lowest clear stretch of the band tall enough for them, the foot when
+    that is clear; failing that, just under the foot line or just over the
+    head line, where the band's own words still read as its caption; the
+    foot anyway (and not clear) when nothing at all is. others are the
+    blocks in the near third of the column, where the lines go."""
 
     need_minutes = BAND_LABEL_HEIGHT / hour_height * 60
     busy = sorted(
         (max(other.start, block.start), min(other.end, block.end))
         for other in others if other.start < block.end and other.end > block.start
     )
+
+    def clear_outside(start: int, end: int) -> bool:
+        return (
+            start >= grid_start and end <= grid_end
+            and not any(other.start < end and other.end > start for other in others)
+        )
+
+    below = clear_outside(block.end, int(block.end + need_minutes) + 1)
+    above = clear_outside(int(block.start - need_minutes) - 1, block.start)
     gaps: list[tuple[int, int]] = []
     cursor = block.start
     for start, end in busy:
@@ -834,14 +868,18 @@ def _band_label_y(block: _Block, others: list[_Block], *, top: float, bottom: fl
     if block.end - cursor >= need_minutes:
         gaps.append((cursor, block.end))
     if not gaps:
-        return bottom - 3
+        if below:
+            return bottom + BAND_LABEL_HEIGHT - 2, True
+        if above:
+            return top - 4, True
+        return bottom - 3, False
     gap_start, gap_end = gaps[-1]
     if gap_end == block.end:
-        return bottom - 3
+        return bottom - 3, True
     if gap_start == block.start and len(gaps) == 1:
-        return top + 17.5
+        return top + 17.5, True
     # Lowest point of the lowest clear stretch, with the gap's own margin.
-    return top + (gap_end - block.start) / 60 * hour_height - 3
+    return top + (gap_end - block.start) / 60 * hour_height - 3, True
 
 
 def _time_label(block: _Block) -> str:
@@ -858,6 +896,9 @@ def pdf_to_png(pdf_bytes: bytes, *, scale: float = RASTER_SCALE) -> bytes:
     document = fitz.open("pdf", pdf_bytes)
     try:
         page = document[0]
+        # A page made wide by a big family is rendered a little smaller, so
+        # the picture never outgrows what a phone will show.
+        scale = min(scale, MAX_RASTER_WIDTH / max(1.0, page.rect.width))
         pixmap = page.get_pixmap(matrix=fitz.Matrix(scale, scale), alpha=False)
         return pixmap.tobytes("png")
     finally:
