@@ -85,6 +85,7 @@ from packages.infrastructure.schedule_exceptions import family_week_paused
 from packages.infrastructure.school_days import SchoolCalendar
 from packages.infrastructure.school_days import describe_day
 from packages.infrastructure.standing_tasks import STANDING_TASK_ACTION_TYPE
+from packages.infrastructure.week_summary_image import WORDS
 from packages.infrastructure.week_summary_image import WeekDayPlan
 from packages.infrastructure.week_summary_image import build_day_summary
 from packages.infrastructure.week_summary_image import build_week_summary
@@ -1214,6 +1215,50 @@ class FamilyWeekNudger:
             return url
         except Exception as exc:  # noqa: BLE001 - the words go without the picture
             print(f"[family-week] day picture failed user={user_id} day={day.isoformat()} error={exc!r}", flush=True)
+            return ""
+
+    def draw_picture(
+        self, *, user_id: int, timezone_name: str, first: date, last: date, title: str = "",
+    ) -> str:
+        """A day or a run of days as the calendar page the nudges send,
+        drawn now because somebody asked - "what's on today", "show me this
+        week" - held up against exceptions, the school calendar and the
+        days' own drives like any morning, and kept under a code the server
+        serves. Gives back the picture's address, or "" when there is no
+        public address to serve it from or the drawing fails: the words go
+        without it. title is "today", "tomorrow" or "this_week"; anything
+        else is the week ahead."""
+
+        base_url = normalize_text(self.config.public_base_url).rstrip("/")
+        if not base_url or last < first:
+            return ""
+        try:
+            activities = self.database.list_household_activities(user_id=user_id)
+            members = self.database.list_household_members(user_id=user_id)
+            exceptions = self.database.list_schedule_exceptions(user_id=user_id, ending_on_or_after=first.isoformat())
+            owner_names = self._owner_names(user_id)
+            day_drives = self._day_drives(user_id, "", first, last)
+            days: list[WeekDayPlan] = []
+            for offset in range((last - first).days + 1):
+                day = first + timedelta(days=offset)
+                plans, status = self._on_day(
+                    user_id=user_id, timezone_name=timezone_name, day=day, activities=activities, exceptions=exceptions,
+                    day_drives=day_drives,
+                )
+                note = normalize_text(status.get("occasion")) if status else ""
+                if status and not note:
+                    note = normalize_text(status.get("note"))[:60]
+                days.append(WeekDayPlan(day=day, plans=plans, note=note))
+            if len(days) == 1:
+                summary = build_day_summary(day=days[0], members=members, owner_names=owner_names, title=title or "today")
+            else:
+                summary = build_week_summary(week_start=first, days=days, members=members, owner_names=owner_names)
+                summary.title = (WORDS[summary.language].get(title) or "") if title else ""
+            png, _pdf = render_week_image(summary, members=members, owner_names=owner_names)
+            code = self.database.save_household_week_image(user_id=user_id, week_start=first.isoformat(), image=png)
+            return f"{base_url}{WEEK_IMAGE_PATH_PREFIX}{code}.png"
+        except Exception as exc:  # noqa: BLE001 - the words go without the picture
+            print(f"[family-week] picture failed user={user_id} days={first.isoformat()}..{last.isoformat()} error={exc!r}", flush=True)
             return ""
 
     @staticmethod

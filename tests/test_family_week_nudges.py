@@ -625,6 +625,29 @@ class WeekAheadTests(unittest.TestCase):
         self.assertIn("Tomorrow is attached as a picture", payload["instruction"])
         self.assertIn("what tomorrow still has nobody down for", payload["instruction"])
 
+    def test_a_day_or_a_week_is_drawn_on_request_for_the_conversation(self) -> None:
+        # "What's on today?" in the chat gets the same page the morning
+        # sends, drawn for the day asked about; "this week" gets the week.
+        sunday = SUNDAY.date()
+        today = self.nudger.draw_picture(user_id=self.user_id, timezone_name="Asia/Jerusalem", first=sunday, last=sunday, title="today")
+        self.assertRegex(today, r"^https://assistyca\.example/week/image/[a-z0-9]{20}\.png$")
+        code = today.rsplit("/", 1)[-1].removesuffix(".png")
+        picture = self.database.get_household_week_image(code) or {}
+        self.assertTrue(picture.get("image", b"").startswith(b"\x89PNG"))
+        self.assertEqual(picture.get("weekStart"), sunday.isoformat())
+
+        week = self.nudger.draw_picture(
+            user_id=self.user_id, timezone_name="Asia/Jerusalem", first=sunday, last=sunday + timedelta(days=6), title="this_week",
+        )
+        self.assertRegex(week, r"^https://assistyca\.example/week/image/[a-z0-9]{20}\.png$")
+        self.assertNotEqual(week, today)
+        self.assertEqual(len(self.week_ahead()), 0, "a picture drawn on request is not a nudge")
+
+        # Without a public address there is nothing Meta could fetch: no picture.
+        quiet = FamilyWeekNudger(self.database, config=FamilyWeekNudgeConfig(public_base_url=""))
+        self.assertEqual(quiet.draw_picture(user_id=self.user_id, timezone_name="Asia/Jerusalem", first=sunday, last=sunday), "")
+        self.assertEqual(self.nudger.draw_picture(user_id=self.user_id, timezone_name="Asia/Jerusalem", first=sunday, last=sunday - timedelta(days=1)), "")
+
     def test_a_parent_on_their_own_phone_gets_the_same_picture_as_the_account_holder(self) -> None:
         self.database.create_household_invite(
             user_id=self.user_id, member_id=int(self.stav["id"]), code="STV111",

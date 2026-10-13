@@ -314,6 +314,13 @@ class LoopContext:
     # The family's week page, built the same way as the receipts link.
     week_link: Callable[[], str] | None = None
     week_page: str = ""
+    # Draws a day or a run of days as the calendar picture the nudges send,
+    # for when the person asks to see today or the week: (first day, last
+    # day, title) to the picture's address. The server knows where pictures
+    # are served from; the loop only asks for one.
+    week_picture: Callable[[date, date, str], str] | None = None
+    # The pictures this turn's reply goes out with, by address, in order.
+    pictures: list[str] = field(default_factory=list)
     # The phone this turn came from, on WhatsApp. Signing out unlinks that
     # phone and no other; on the portal there is no phone and no sign_out.
     sender_wa_id: str = ""
@@ -377,6 +384,10 @@ class LoopResult:
     # The links the reply carries, each with its label, in the order they
     # appear. A channel that shows buttons lifts them out of the text.
     links: list[dict[str, str]] = field(default_factory=list)
+    # The pictures the reply goes out with - a day or a week drawn as a
+    # calendar page - by address. A channel that can send a picture sends
+    # the reply as its caption.
+    pictures: list[str] = field(default_factory=list)
     rounds: int = 0
     input_tokens: int = 0
     # Of those input tokens, the ones OpenAI served from its prompt cache.
@@ -2188,6 +2199,51 @@ def _tool_remove_week_activity(context: LoopContext, args: dict[str, Any]) -> di
     return _ok({"removed": activity_id})
 
 
+WEEK_PICTURE_PERIODS = ("today", "tomorrow", "this_week", "next_week")
+WEEK_PICTURE_NOTE = (
+    "This picture goes out with your reply, as a calendar page of these days: a column per day, each plan a "
+    "block at its time in its person's colour, who takes and who collects, a leg nobody is down for in red. "
+    "Write one or two short lines beside it - what still has nobody, or that it is covered. Do not list the "
+    "plans: the picture does. Do not offer the week page."
+)
+WEEK_PICTURE_MISSING_NOTE = (
+    "No picture could be drawn this time: answer in words from byDay, one line per day that has something on, "
+    "and offer the week page."
+)
+
+
+def _picture_days(today: date, period: str) -> tuple[date, date, str]:
+    """The days a picture period covers, and the title the page gets. A
+    week runs Sunday to Saturday; this week is the one today is in."""
+
+    sunday = today - timedelta(days=(today.weekday() + 1) % 7)
+    if period == "today":
+        return today, today, "today"
+    if period == "tomorrow":
+        tomorrow = today + timedelta(days=1)
+        return tomorrow, tomorrow, "tomorrow"
+    if period == "this_week":
+        return sunday, sunday + timedelta(days=6), "this_week"
+    return sunday + timedelta(days=7), sunday + timedelta(days=13), "week_ahead"
+
+
+def _week_picture(context: LoopContext, period: str) -> str:
+    """The picture of a period, remembered as one the reply goes out
+    with, or "" when none can be drawn: the words then carry the day."""
+
+    if context.week_picture is None or period not in WEEK_PICTURE_PERIODS:
+        return ""
+    first, last, title = _picture_days(_household_today(context), period)
+    try:
+        url = str(context.week_picture(first, last, title) or "").strip()
+    except Exception as exc:  # noqa: BLE001 - a picture that cannot be drawn is words instead
+        print(f"agent.loop.week_picture_failed period={period} error={exc!r}", flush=True)
+        return ""
+    if url and url not in context.pictures:
+        context.pictures.append(url)
+    return url
+
+
 def _tool_show_family_week(context: LoopContext, args: dict[str, Any]) -> dict[str, Any]:
     try:
         payload = _household_payload(context)
@@ -2200,6 +2256,15 @@ def _tool_show_family_week(context: LoopContext, args: dict[str, Any]) -> dict[s
     data = {"members": payload["members"], "byDay": {code: items for code, items in by_day.items() if items}}
     if payload.get("dayDrives"):
         data["dayDrives"] = payload["dayDrives"]
+    period = str(args.get("picture") or "").strip().lower()
+    if period in WEEK_PICTURE_PERIODS:
+        # They asked to see the day or the week: the answer is the picture,
+        # not the page that holds it. The page is for changing the week.
+        url = _week_picture(context, period)
+        if url:
+            data["picture"] = {"period": period, "url": url, "note": WEEK_PICTURE_NOTE}
+            return _ok(data)
+        data["pictureNote"] = WEEK_PICTURE_MISSING_NOTE
     link = _week_page_link(context)
     if link:
         data["weekPage"] = link
@@ -3931,9 +3996,14 @@ TOOLS: list[ToolSpec] = [
         name="show_family_week",
         description=(
             "The family and their week laid out day by day, with what has nobody down for the drop-off or "
-            "pickup. For 'what does our week look like', 'who's picking up Tom on Tuesday', 'what's on today'."
+            "pickup. For 'what does our week look like', 'who's picking up Tom on Tuesday', 'what's on today'. "
+            "picture is for when they ask to see a day or a week - 'what's on today', 'show me tomorrow', "
+            "'what does this week look like', 'next week's schedule': today, tomorrow, this_week or next_week, "
+            "and the result's picture then goes out with your reply as a calendar page instead of a list or "
+            "the week page. Pass none for a question about one thing (who collects Tom on Tuesday) or when "
+            "you need the week to change it."
         ),
-        parameters=_params({}),
+        parameters=_params({"picture": {"type": "string", "enum": ["none", "today", "tomorrow", "this_week", "next_week"]}}),
         run=_tool_show_family_week,
     ),
     ToolSpec(
@@ -4346,7 +4416,9 @@ _LINKS = (
     "CONTEXT.listsPage for their lists, CONTEXT.receiptsPage for their receipts, and the weekPage a result "
     "carries for their week, where they can change who drives and share a read-only link with the other "
     "parent. Offer the page whenever the conversation is about what it holds - lists or todos, receipts or "
-    "invoices, the week - including when they ask how it works or what you can do here at all. Lists "
+    "invoices, the week - including when they ask how it works or what you can do here at all; but when they "
+    "ask to see a day or the week, the answer is the picture show_family_week draws, and the page is not "
+    "offered beside it. Lists "
     "and receipts are each a page of the person's own, so an answer about "
     "what you can do here at all names both, each link on its own line. Leave a page out when a reply in "
     "recentConversation already carried it."
@@ -4368,7 +4440,10 @@ _FAMILY = (
     "they tell you about them the moment they say it, with save_family_member and save_week_activity, and "
     "keep it current when something changes; never use remember_fact for family. A partner's email "
     "address they give you is saved on the partner. Read household before asking anything it already "
-    "answers. A family's week is never read out of a calendar or a mailbox - it is what they have told "
+    "answers. When they ask to see what is on - today, tomorrow, this week, next week - call show_family_week "
+    "with picture set to that period: the result's picture goes out with your reply as a calendar page, and "
+    "your reply is one or two lines beside it (what still has nobody, or that it is covered), never the list "
+    "and never the week page. A family's week is never read out of a calendar or a mailbox - it is what they have told "
     "you, kept here, and what you do with it is see that everybody ends up where they need to be: say "
     "who is on what before the day starts, raise a pickup nobody has taken while there is still time to "
     "sort it out, and tell whoever is driving when it is time to leave. The week is their usual week; "
@@ -4774,6 +4849,7 @@ def run_agent_loop(
         reply=reply,
         tool_calls=tool_calls,
         links=links_in_reply,
+        pictures=list(context.pictures),
         pending_confirmation=pending,
         calendar_choice=context.calendar_choice,
         calendar_choice_selected=list(context.calendar_choice_selected),
