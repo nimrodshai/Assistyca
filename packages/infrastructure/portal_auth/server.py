@@ -1074,6 +1074,10 @@ LISTS_HANDOFF_PREFIX = "/lists/open/"
 # only says whose account signs in; the page comes from the address.
 RECEIPTS_HANDOFF_PREFIX = "/receipts/open/"
 WEEK_HANDOFF_PREFIX = "/week/open/"
+# The week-ahead picture, fetched by Meta and by the phone it was sent to.
+# The code is the only key; there is nothing to sign in to.
+WEEK_IMAGE_PREFIX = "/week/image/"
+_WEEK_IMAGE_CODE_RE = re.compile(r"^[a-z0-9]{12,40}$")
 # The link a parent forwards to bring the other parent or a grandparent onto
 # the family's account. It carries the invitation code and opens WhatsApp on
 # the Assistyca number with the code already written in the message.
@@ -4552,6 +4556,9 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             return
         if path.startswith(WEEK_HANDOFF_PREFIX):
             self._handle_page_handoff(parsed, prefix=WEEK_HANDOFF_PREFIX, page="/week")
+            return
+        if path.startswith(WEEK_IMAGE_PREFIX):
+            self._handle_week_image(parsed)
             return
         if path.startswith(JOIN_PAGE_PREFIX):
             self._handle_family_join_page(parsed)
@@ -16122,6 +16129,25 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             json_response(self, HTTPStatus.NOT_FOUND, {"ok": False, "error": "not_found", "message": "That is not in your week."})
             return
         json_response(self, HTTPStatus.OK, self._household_page_payload(user_id))
+
+    def _handle_week_image(self, parsed: urllib_parse.ParseResult) -> None:
+        """The week-ahead picture behind its code, as the image it is."""
+
+        code = parsed.path[len(WEEK_IMAGE_PREFIX):]
+        if code.endswith(".png"):
+            code = code[:-4]
+        record = self.database.get_household_week_image(code) if _WEEK_IMAGE_CODE_RE.match(code) else None
+        if not record or not record.get("image"):
+            self.send_error(HTTPStatus.NOT_FOUND)
+            return
+        body = bytes(record["image"])
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", normalize_text(record.get("contentType")) or "image/png")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "public, max-age=86400")
+        self.send_header("X-Robots-Tag", "noindex")
+        self.end_headers()
+        self.wfile.write(body)
 
     def _handle_public_week_get(self, parsed: urllib_parse.ParseResult) -> None:
         """The week for anyone holding its link: who does what, when. First

@@ -62,7 +62,9 @@ JUDGE_INSTRUCTIONS = (
     "could have answered from what it already had all lose points. A plain reply that answers and stops is "
     "a 5; a link, a next step, or a deadline the person themselves set is not pressure. A single small "
     "emoji is not performance either and loses nothing; several in one reply, one standing in for words, "
-    "or any at all alongside bad news or an upset person do lose points.\n"
+    "or any at all alongside bad news or an upset person do lose points. One light line answering a joke "
+    "the person made is not performance and loses nothing, so long as the help follows; a joke nobody "
+    "set up, or one that stands in for the help, does.\n"
     "Be strict but fair: a plain, correct, helpful reply is a 5 on every point."
 )
 

@@ -26,7 +26,15 @@ Three moments, each once, on the person's own clock:
   before asked, the morning said so; this is the last word before the
   child is standing at the gate;
 * a birthday a month away, with an offer of the ready-made list to get
-  ready for it.
+  ready for it;
+* Saturday evening: the whole of the coming week as one picture - a
+  calendar with a column per day, a colour per person - drawn by
+  week_summary_image from the
+  same week, held up against the same exceptions and school calendar, so
+  the family sees next week before it starts and what still has nobody.
+  The picture is kept under an unguessable code the server serves, and
+  the message carries its address; the worker sends it as a picture, or
+  through the template made for one, or as a link.
 
 Code decides what is due and says it plainly in the fallback sentence; the
 message itself is written by the assistant from those facts, the way the
@@ -58,6 +66,11 @@ from typing import Callable
 from zoneinfo import ZoneInfo
 from zoneinfo import ZoneInfoNotFoundError
 
+from packages.infrastructure.notification_templates import TEMPLATE_KIND_EVENING_GLANCE
+from packages.infrastructure.notification_templates import TEMPLATE_KIND_MORNING_DIGEST
+from packages.infrastructure.notification_templates import TEMPLATE_KIND_PAYLOAD_KEY
+from packages.infrastructure.notification_templates import TEMPLATE_KIND_WEEK_AHEAD
+from packages.infrastructure.notification_templates import normalize_template_kind
 from packages.infrastructure import household
 from packages.infrastructure.account_types import account_feature_allowed
 from packages.infrastructure.portal_db import normalize_text
@@ -66,11 +79,21 @@ from packages.infrastructure.schedule_exceptions import family_week_paused
 from packages.infrastructure.school_days import SchoolCalendar
 from packages.infrastructure.school_days import describe_day
 from packages.infrastructure.standing_tasks import STANDING_TASK_ACTION_TYPE
+from packages.infrastructure.week_summary_image import WeekDayPlan
+from packages.infrastructure.week_summary_image import build_week_summary
+from packages.infrastructure.week_summary_image import next_week_start
+from packages.infrastructure.week_summary_image import render_week_image
 from packages.infrastructure.whatsapp_agent_chat import infer_timezone_from_wa_id
 
 NUDGE_SOURCE = "family_week"
 DEFAULT_MORNING_HOUR = 6
 DEFAULT_EVENING_HOUR = 20
+# The week ahead goes out on Saturday evening, Python's weekday 5.
+DEFAULT_WEEK_AHEAD_WEEKDAY = 5
+DEFAULT_WEEK_AHEAD_HOUR = 20
+DEFAULT_WEEK_AHEAD_MINUTE = 30
+WEEK_AHEAD_WINDOW_HOURS = 2
+WEEK_IMAGE_PATH_PREFIX = "/week/image/"
 DEFAULT_RIDE_LEAD_MINUTES = 30
 # Drives of the owner's that follow one another within this many minutes
 # of the first due are said together, as one trip.
@@ -110,6 +133,13 @@ class FamilyWeekNudgeConfig:
     # Whether each day is checked against the school calendar online. Off
     # only for an incident: without it a holiday is nudged like any day.
     school_calendar: bool = True
+    week_ahead: bool = True
+    week_ahead_weekday: int = DEFAULT_WEEK_AHEAD_WEEKDAY
+    week_ahead_hour: int = DEFAULT_WEEK_AHEAD_HOUR
+    week_ahead_minute: int = DEFAULT_WEEK_AHEAD_MINUTE
+    # Where the picture can be fetched from by Meta: the site's public
+    # address. Without one the week ahead goes out in words alone.
+    public_base_url: str = ""
 
 
 def _parse_int(value: str | None, default: int) -> int:
@@ -131,6 +161,12 @@ def load_family_week_nudge_config() -> FamilyWeekNudgeConfig:
         poll_seconds=max(30, _parse_int(os.getenv("PORTAL_FAMILY_NUDGE_POLL_SECONDS"), DEFAULT_POLL_SECONDS)),
         school_calendar=normalize_text(os.getenv("PORTAL_FAMILY_SCHOOL_CALENDAR")).lower()
         not in {"0", "false", "no", "off", "disabled"},
+        week_ahead=normalize_text(os.getenv("PORTAL_FAMILY_WEEK_AHEAD_ENABLED")).lower()
+        not in {"0", "false", "no", "off", "disabled"},
+        week_ahead_weekday=min(6, max(0, _parse_int(os.getenv("PORTAL_FAMILY_WEEK_AHEAD_WEEKDAY"), DEFAULT_WEEK_AHEAD_WEEKDAY))),
+        week_ahead_hour=min(23, max(0, _parse_int(os.getenv("PORTAL_FAMILY_WEEK_AHEAD_HOUR"), DEFAULT_WEEK_AHEAD_HOUR))),
+        week_ahead_minute=min(59, max(0, _parse_int(os.getenv("PORTAL_FAMILY_WEEK_AHEAD_MINUTE"), DEFAULT_WEEK_AHEAD_MINUTE))),
+        public_base_url=normalize_text(os.getenv("PUBLIC_BASE_URL")).rstrip("/"),
     )
 
 
@@ -710,10 +746,13 @@ class FamilyWeekNudger:
 
     def _queue(
         self, *, user_id: int, now: datetime, timezone_name: str, title: str, instruction: str, fallback: str,
-        offer: str = "", recipient_wa_id: str = "",
+        offer: str = "", recipient_wa_id: str = "", image_url: str = "", kind: str = "",
     ) -> None:
         """Queue one message for the account holder, or - with recipient_wa_id
-        - for a family member's own phone on the same account."""
+        - for a family member's own phone on the same account. image_url is
+        a picture the message carries, which the worker sends as one. kind
+        names the template that carries it outside the service window
+        (notification_templates); unnamed, it goes as a reminder."""
 
         connection = self.database.get_whatsapp_connection_by_user_id(user_id) or {}
         owner_wa_id = normalize_text(connection.get("ownerWaId")) or owner_phone(self.database, user_id)
@@ -723,11 +762,15 @@ class FamilyWeekNudger:
             "fallbackText": fallback,
             "oneOff": True,
             "source": NUDGE_SOURCE,
+            TEMPLATE_KIND_PAYLOAD_KEY: normalize_template_kind(kind),
         }
         if offer:
             payload["offerInstruction"] = offer
         if recipient_wa_id:
             payload["recipientWaId"] = recipient_wa_id
+        if image_url:
+            payload["imageUrl"] = image_url
+            payload["resultUrl"] = image_url
         self.database.create_scheduled_action(
             user_id=user_id,
             action_type=STANDING_TASK_ACTION_TYPE,
@@ -870,7 +913,7 @@ class FamilyWeekNudger:
 
     def run_pending(self, *, now: datetime | None = None) -> dict[str, Any]:
         reference = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
-        counts = {"accounts": 0, "morning": 0, "evening": 0, "rides": 0, "birthdays": 0, "askedAgain": 0}
+        counts = {"accounts": 0, "morning": 0, "evening": 0, "rides": 0, "birthdays": 0, "askedAgain": 0, "weekAhead": 0}
         for user_id in self.database.list_household_nudge_accounts():
             if not account_feature_allowed(self.database, user_id=user_id, feature_id="family_week"):
                 continue
@@ -909,7 +952,7 @@ class FamilyWeekNudger:
                     ]
                     self._queue(
                         user_id=user_id, now=reference, timezone_name=timezone_name,
-                        title="Today in your family's week",
+                        title="Today in your family's week", kind=TEMPLATE_KIND_MORNING_DIGEST,
                         instruction=(
                             "It is the morning. Write the person one short WhatsApp message with what today holds for "
                             "their family, in the language they write to you in: one bullet per thing, each a few words "
@@ -988,7 +1031,7 @@ class FamilyWeekNudger:
                     ]
                     self._queue(
                         user_id=user_id, now=reference, timezone_name=timezone_name,
-                        title="Tomorrow still needs someone",
+                        title="Tomorrow still needs someone", kind=TEMPLATE_KIND_EVENING_GLANCE,
                         instruction=(
                             "It is the evening. In one or two short sentences, in the language the person writes to you "
                             "in, tell them " + ", and ".join(about) + ". "
@@ -1096,7 +1139,125 @@ class FamilyWeekNudger:
                 )
                 self.database.save_household_profile(user_id=user_id, ask_again_on="")
                 counts["askedAgain"] += 1
+
+            if activities and not week_paused and self._week_ahead_due(local_now):
+                try:
+                    counts["weekAhead"] += self._send_week_ahead(
+                        user_id=user_id, members=members, activities=activities, exceptions=exceptions,
+                        local_now=local_now, reference=reference, timezone_name=timezone_name,
+                        owner_names=owner_names, claim=claim,
+                    )
+                except Exception as exc:  # noqa: BLE001 - the picture is a courtesy; the week's other nudges go on
+                    print(f"[family-week] week ahead failed user={user_id} error={exc!r}", flush=True)
         return {"ok": True, **counts}
+
+    def _week_ahead_due(self, local_now: datetime) -> bool:
+        """Saturday from half past eight for two hours, on the family's own
+        clock. A poll that runs hours later has missed it."""
+
+        if not self.config.week_ahead:
+            return False
+        if local_now.weekday() != int(self.config.week_ahead_weekday):
+            return False
+        start = local_now.replace(hour=self.config.week_ahead_hour, minute=self.config.week_ahead_minute, second=0, microsecond=0)
+        return start <= local_now < start + timedelta(hours=WEEK_AHEAD_WINDOW_HOURS)
+
+    def _send_week_ahead(
+        self, *, user_id: int, members: list[dict[str, Any]], activities: list[dict[str, Any]],
+        exceptions: list[dict[str, Any]], local_now: datetime, reference: datetime, timezone_name: str,
+        owner_names: list[str], claim: Callable[[str], bool],
+    ) -> int:
+        """The coming week as one picture, to the account holder and to a
+        partner on their own phone. Drawn once per week per family: the
+        drawing is claimed first so the polls inside the window do not all
+        draw it, and the claim is given back when the drawing fails, so the
+        next poll tries again instead of losing the week."""
+
+        week_start = next_week_start(local_now.date())
+        key = f"week-ahead:{week_start.isoformat()}"
+        drawing_key = f"{key}:drawing"
+        if not self.database.claim_household_nudge(user_id=user_id, nudge_key=drawing_key):
+            # Already drawn this week - or being drawn by another poll.
+            return 0
+        try:
+            return self._draw_and_queue_week_ahead(
+                user_id=user_id, members=members, activities=activities, exceptions=exceptions, week_start=week_start,
+                key=key, reference=reference, timezone_name=timezone_name, owner_names=owner_names, claim=claim,
+            )
+        except Exception:
+            self.database.release_household_nudge(user_id=user_id, nudge_key=drawing_key)
+            raise
+
+    def _draw_and_queue_week_ahead(
+        self, *, user_id: int, members: list[dict[str, Any]], activities: list[dict[str, Any]],
+        exceptions: list[dict[str, Any]], week_start: date, key: str, reference: datetime, timezone_name: str,
+        owner_names: list[str], claim: Callable[[str], bool],
+    ) -> int:
+        week_end = week_start + timedelta(days=6)
+        day_drives = self._day_drives(user_id, "", week_start, week_end)
+        days: list[WeekDayPlan] = []
+        for offset in range(7):
+            day = week_start + timedelta(days=offset)
+            plans, status = self._on_day(
+                user_id=user_id, timezone_name=timezone_name, day=day, activities=activities, exceptions=exceptions,
+                day_drives=day_drives,
+            )
+            note = normalize_text(status.get("occasion")) if status else ""
+            if status and not note:
+                note = normalize_text(status.get("note"))[:60]
+            days.append(WeekDayPlan(day=day, plans=plans, note=note))
+        summary = build_week_summary(week_start=week_start, days=days, members=members, owner_names=owner_names)
+        image_url = ""
+        base_url = normalize_text(self.config.public_base_url).rstrip("/")
+        if base_url.startswith("https://"):
+            png, _pdf = render_week_image(summary, members=members, owner_names=owner_names)
+            code = self.database.save_household_week_image(user_id=user_id, week_start=week_start.isoformat(), image=png)
+            image_url = f"{base_url}{WEEK_IMAGE_PATH_PREFIX}{code}.png"
+        facts = "\n".join(f"- {line}" for line in summary.facts)
+        open_legs = summary.open_legs
+        if image_url:
+            instruction = (
+                "It is Saturday evening. The coming week is attached as a picture: a calendar with a column per day, a colour per "
+                "person, who takes and who collects on every plan. Write one or two short sentences, in the "
+                "language the person writes to you in, saying here is next week at a glance. "
+                + ("Say which drop-offs or pickups still have nobody - a few words each, from the facts - and ask "
+                   "who takes them. " if open_legs else "Say the week is covered. ")
+                + "Do not list the week: the picture does. Use no tool.\n"
+                f"WEEK:\n{facts}"
+            )
+        else:
+            instruction = (
+                "It is Saturday evening. Write the person a short WhatsApp message with the coming week at a "
+                "glance, in the language they write to you in: one line per day that has something on it, who "
+                "takes and who collects, and anything that still has nobody. The facts are exact; add none, and "
+                f"use no tool.\nWEEK:\n{facts}"
+            )
+        fallback = "Here is your family's week ahead." + (
+            f" {open_legs} drop-off{'s' if open_legs != 1 else ''} or pickup{'s' if open_legs != 1 else ''} still "
+            "have nobody - who takes them?" if open_legs else " Everything has someone."
+        )
+        if not image_url:
+            fallback = "Your family's week ahead:\n" + "\n".join(summary.facts[:7])
+        sent = 0
+        if claim(key):
+            self._queue(
+                user_id=user_id, now=reference, timezone_name=timezone_name, title="Your family's week ahead",
+                instruction=instruction, fallback=fallback, image_url=image_url, kind=TEMPLATE_KIND_WEEK_AHEAD,
+            )
+            sent += 1
+        for member in members:
+            wa_id = normalize_text(member.get("waId"))
+            if not wa_id or "morning" not in household.member_nudges(member.get("role")):
+                continue
+            if not claim(f"{key}:{member['id']}"):
+                continue
+            self._queue(
+                user_id=user_id, now=reference, timezone_name=timezone_name, title="Your family's week ahead",
+                instruction=instruction, fallback=fallback, image_url=image_url, recipient_wa_id=wa_id,
+                kind=TEMPLATE_KIND_WEEK_AHEAD,
+            )
+            sent += 1
+        return sent
 
     def _nudge_members(
         self, *, user_id: int, members: list[dict[str, Any]], activities: list[dict[str, Any]],
@@ -1127,7 +1288,7 @@ class FamilyWeekNudger:
                 lines = [describe_activity_line(activity, owner_names, members, viewer_names=names) for activity in todays]
                 self._queue(
                     user_id=user_id, now=reference, timezone_name=timezone_name, recipient_wa_id=wa_id,
-                    title="Today in your family's week",
+                    title="Today in your family's week", kind=TEMPLATE_KIND_MORNING_DIGEST,
                     instruction=(
                         f"It is the morning, and this message is for {first}, a parent in this family writing from "
                         "their own phone. Write them one short WhatsApp message with what today holds for their "
@@ -1149,7 +1310,7 @@ class FamilyWeekNudger:
                 if gaps and claim(f"evening:{tomorrow.isoformat()}{suffix}"):
                     self._queue(
                         user_id=user_id, now=reference, timezone_name=timezone_name, recipient_wa_id=wa_id,
-                        title="Tomorrow still needs someone",
+                        title="Tomorrow still needs someone", kind=TEMPLATE_KIND_EVENING_GLANCE,
                         instruction=(
                             f"It is the evening, and this message is for {first}, a parent in this family writing from "
                             "their own phone. In one or two short sentences, in the language the family writes to you "
@@ -1203,7 +1364,7 @@ class FamilyWeekNudger:
             try:
                 summary = {**self.run_pending(), **self.run_pending_for_groups()}
                 sent = sum(int(summary.get(key) or 0) for key in (
-                    "morning", "evening", "rides", "birthdays", "askedAgain", "groupEvening", "groupRides",
+                    "morning", "evening", "rides", "birthdays", "askedAgain", "weekAhead", "groupEvening", "groupRides",
                 ))
                 if sent:
                     logger(f"[family-week] queued={sent} {summary}")

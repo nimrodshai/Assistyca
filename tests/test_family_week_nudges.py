@@ -7,6 +7,7 @@ import tempfile
 import unittest
 from unittest import mock
 from datetime import datetime
+from datetime import timedelta
 from datetime import timezone
 from pathlib import Path
 
@@ -275,6 +276,7 @@ class NudgerTests(unittest.TestCase):
         self.assertIn("Say each fact once", payload["instruction"])
         self.assertNotIn("NOBODY DOWN FOR", payload["instruction"])
         self.assertTrue(payload["fallbackText"].startswith("Today:\n• "))
+        self.assertEqual(payload["templateKind"], "morning_digest")
         self.assertNotIn("offerInstruction", payload)
 
     def test_a_morning_missed_by_hours_is_not_sent_late(self) -> None:
@@ -557,6 +559,98 @@ class NudgerTests(unittest.TestCase):
         for evening in evenings:
             self.assertIn("Swimming (Tom) at 18:00: nobody is down for the drop-off and the pickup", evening["payload"]["instruction"])
         self.assertFalse(any(a["recipientRef"] == "972500000003" for a in self.queued() if a["payload"]["title"] != "Time to leave soon"))
+
+
+class WeekAheadTests(unittest.TestCase):
+    """Saturday evening: the coming week as one picture, once, to the
+    parents."""
+
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.database = PortalDatabase(Path(self.temp_dir.name) / "portal.db")
+        self.database.register_user("nimrod@example.com")
+        self.user_id = int((self.database.get_user("nimrod@example.com") or {})["id"])
+        self.database.save_whatsapp_connection("nimrod@example.com", owner_wa_id="972500000001", connection_status="connected")
+        self.stav = self.database.save_household_member(user_id=self.user_id, name="Stav", role="partner")
+        self.database.save_household_member(user_id=self.user_id, name="Lahav", role="child")
+        self.database.save_household_activity(
+            user_id=self.user_id, title="School", who=["Lahav"], days=["sun", "mon", "tue"],
+            start_time="08:00", end_time="12:45", drop_off_by="me", pick_up_by="",
+        )
+        self.nudger = FamilyWeekNudger(
+            self.database,
+            config=FamilyWeekNudgeConfig(morning_hour=7, evening_hour=20, public_base_url="https://assistyca.example"),
+        )
+
+    def tearDown(self) -> None:
+        self.temp_dir.cleanup()
+
+    def week_ahead(self) -> list[dict]:
+        return [
+            action for action in self.database.list_scheduled_actions_for_user(self.user_id, limit=50)
+            if (action.get("payload") or {}).get("title") == "Your family's week ahead"
+        ]
+
+    @staticmethod
+    def israel(day: datetime, hour: int, minute: int = 0) -> datetime:
+        """The family's clock is read off its phone number: Israel, which in
+        September is three hours ahead of the UTC the tests count in."""
+
+        return at(day, hour - 3, minute)
+
+    def test_the_picture_goes_out_on_saturday_evening_once(self) -> None:
+        saturday = SUNDAY.replace(day=19)
+        self.assertEqual(self.nudger.run_pending(now=self.israel(saturday, 20, 15))["weekAhead"], 0, "not before half past")
+        self.assertEqual(self.nudger.run_pending(now=self.israel(saturday, 20, 35))["weekAhead"], 1)
+        self.assertEqual(self.nudger.run_pending(now=self.israel(saturday, 21, 5))["weekAhead"], 0, "once")
+        [action] = self.week_ahead()
+        payload = action["payload"]
+        self.assertEqual(action["channel"], "whatsapp")
+        self.assertRegex(payload["imageUrl"], r"^https://assistyca\.example/week/image/[a-z0-9]{20}\.png$")
+        self.assertEqual(payload["resultUrl"], payload["imageUrl"])
+        self.assertEqual(payload["templateKind"], "week_ahead")
+        self.assertIn("Sunday 2026-09-20: 08:00–12:45 School · Lahav", payload["instruction"])
+        self.assertIn("collects: nobody", payload["instruction"])
+        self.assertIn("ask who takes them", payload["instruction"])
+        self.assertIn("3 drop-offs or pickups still have nobody", payload["fallbackText"])
+        code = payload["imageUrl"].rsplit("/", 1)[1][:-4]
+        image = self.database.get_household_week_image(code)
+        self.assertTrue(image["image"].startswith(b"\x89PNG"))
+        self.assertEqual(image["weekStart"], "2026-09-20")
+
+    def test_a_partner_on_their_own_phone_gets_the_same_picture(self) -> None:
+        self.database.create_household_invite(
+            user_id=self.user_id, member_id=int(self.stav["id"]), code="STV111",
+            expires_at=datetime.now(UTC) + timedelta(days=14),
+        )
+        self.assertTrue(self.database.claim_household_invite(code="STV111", wa_id="972500000002")["ok"])
+        self.assertEqual(self.nudger.run_pending(now=self.israel(SUNDAY.replace(day=19), 20, 40))["weekAhead"], 2)
+        phones = sorted((a["payload"].get("recipientWaId") or "owner") for a in self.week_ahead())
+        self.assertEqual(phones, ["972500000002", "owner"])
+        urls = {a["payload"]["imageUrl"] for a in self.week_ahead()}
+        self.assertEqual(len(urls), 1, "drawn once")
+
+    def test_nothing_on_other_evenings_or_when_the_week_is_on_hold(self) -> None:
+        self.assertEqual(self.nudger.run_pending(now=self.israel(SUNDAY, 20, 40))["weekAhead"], 0)
+        self.database.save_schedule_exception(
+            user_id=self.user_id, starts_on="2026-09-19", ends_on="2026-09-26", targets=[{"kind": "family_week", "ref": ""}],
+        )
+        self.assertEqual(self.nudger.run_pending(now=self.israel(SUNDAY.replace(day=19), 20, 40))["weekAhead"], 0)
+
+    def test_a_drawing_that_fails_is_tried_again_on_the_next_poll(self) -> None:
+        saturday = SUNDAY.replace(day=19)
+        with mock.patch("packages.infrastructure.family_week_nudges.render_week_image", side_effect=RuntimeError("no fonts")):
+            self.assertEqual(self.nudger.run_pending(now=self.israel(saturday, 20, 35))["weekAhead"], 0)
+        self.assertEqual(self.week_ahead(), [])
+        self.assertEqual(self.nudger.run_pending(now=self.israel(saturday, 20, 37))["weekAhead"], 1)
+
+    def test_without_a_public_address_the_week_goes_in_words(self) -> None:
+        nudger = FamilyWeekNudger(self.database, config=FamilyWeekNudgeConfig(public_base_url=""))
+        self.assertEqual(nudger.run_pending(now=self.israel(SUNDAY.replace(day=19), 20, 35))["weekAhead"], 1)
+        [action] = self.week_ahead()
+        self.assertNotIn("imageUrl", action["payload"])
+        self.assertIn("one line per day", action["payload"]["instruction"])
+        self.assertIn("Sunday 2026-09-20", action["payload"]["fallbackText"])
 
 
 if __name__ == "__main__":

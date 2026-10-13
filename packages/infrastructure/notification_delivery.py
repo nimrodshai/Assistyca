@@ -195,6 +195,7 @@ def send_whatsapp_notification(
     template_language: str | None = None,
     template_parameters: Sequence[Any] | None = None,
     template_header_image_url: str | None = None,
+    image_url: str | None = None,
 ) -> str:
     """Send one owner notification over WhatsApp through the Assistyca sender.
 
@@ -205,9 +206,11 @@ def send_whatsapp_notification(
     the caller passes `template_parameters`, which fill {{1}}, {{2}} and so on
     in order; a template that opens with a picture takes the picture per
     message, so `template_header_image_url` has to be an address Meta can
-    fetch. Without a template name it sends plain text. Raises rather than
-    pretending, so the caller can fall back to the in-app feed and say which
-    channel actually carried the message.
+    fetch. Without a template name it sends plain text, or - with
+    `image_url` - that picture with the text as its caption, which Meta takes
+    only inside the service window. Raises rather than pretending, so the
+    caller can fall back to the in-app feed and say which channel actually
+    carried the message.
     """
 
     # Imported here rather than at module top: this module is imported by
@@ -265,6 +268,7 @@ def send_whatsapp_notification(
             "components": components,
         }
 
+    resolved_image_url = normalize_text(image_url)
     return send_whatsapp_message(
         access_token=resolved_access_token,
         phone_number_id=resolved_phone_number_id,
@@ -272,6 +276,7 @@ def send_whatsapp_notification(
         recipient_wa_id=resolved_recipient,
         message_text=None if template is not None else message_text,
         template=template,
+        image={"link": resolved_image_url} if resolved_image_url and template is None else None,
     )
 
 

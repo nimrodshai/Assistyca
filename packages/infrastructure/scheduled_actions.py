@@ -13,6 +13,11 @@ from zoneinfo import ZoneInfo
 from zoneinfo import ZoneInfoNotFoundError
 
 from packages.infrastructure.list_due_nudges import describe_due
+from packages.infrastructure.message_language import resolve_message_language
+from packages.infrastructure.notification_templates import TEMPLATE_KIND_PAYLOAD_KEY
+from packages.infrastructure.notification_templates import image_template_for
+from packages.infrastructure.notification_templates import normalize_template_kind
+from packages.infrastructure.notification_templates import template_for
 from packages.infrastructure.notification_delivery import deliver_portal_notification
 from packages.infrastructure.notification_delivery import send_whatsapp_notification
 from packages.infrastructure.portal_db import PortalDatabase
@@ -31,6 +36,10 @@ from packages.infrastructure.standing_tasks import next_task_run_at
 
 DEFAULT_SCHEDULED_ACTION_POLL_SECONDS = 10
 DEFAULT_SCHEDULED_ACTION_BATCH_SIZE = 25
+# The generic template every scheduled message used to ride. It is the
+# last resort now: a message goes first on the template made for its kind,
+# in the person's language (notification_templates), and falls back to
+# this one only while Meta is yet to approve that - or refuses it.
 DEFAULT_SCHEDULED_WHATSAPP_TEMPLATE_NAME = "notification_message"
 DEFAULT_SCHEDULED_WHATSAPP_TEMPLATE_LANGUAGE = "en"
 # A message the owner asked to receive on WhatsApp goes out on WhatsApp; the
@@ -522,9 +531,15 @@ class ScheduledActionScheduler:
         """Send the scheduled message to the owner over WhatsApp.
 
         Inside Meta's 24-hour service window the message goes as plain text,
-        exactly like the chat's own replies. Outside it, or when plain text
-        is refused, the approved scheduled-notification template carries it.
-        Every refusal is kept, so a message that reaches neither says why.
+        exactly like the chat's own replies - or, when the payload names an
+        image, as that picture with the text as its caption. Outside it, or
+        when plain text is refused, an approved template carries it: the one
+        made for the message's kind, in the language the person writes in,
+        and failing that the generic one, so the message still arrives while
+        Meta is yet to approve the new ones. A picture goes first through the
+        week-ahead template, which opens with one, and failing that as a link
+        in the plain template. Every refusal is kept, so a message that
+        reaches neither says why.
         """
 
         payload = action.get("payload") if isinstance(action.get("payload"), dict) else {}
@@ -541,30 +556,56 @@ class ScheduledActionScheduler:
             return provider_message_id
 
         refusals: list[str] = []
+        image_url = normalize_text(payload.get("imageUrl"))
         if self._service_window_open(user_id, thread_id=self._thread_for_phone(user_id, recipient_ref)):
             try:
                 provider_message_id = send_whatsapp_notification(
                     recipient_wa_id=recipient_ref,
                     message_text=message_text,
+                    image_url=image_url or None,
                 )
-                payload["whatsappSendMode"] = "text"
+                payload["whatsappSendMode"] = "image" if image_url else "text"
                 return provider_message_id
             except Exception as exc:  # noqa: BLE001 - the template is the next thing to try
-                refusals.append(f"plain text: {exc}")
-        try:
-            provider_message_id = send_whatsapp_notification(
-                recipient_wa_id=recipient_ref,
-                message_text=message_text,
-                template_name=self.config.whatsapp_template_name,
-                template_language=self.config.whatsapp_template_language,
-            )
-            payload["whatsappSendMode"] = "template"
-            return provider_message_id
-        except Exception as exc:  # noqa: BLE001 - reported with whatever failed before it
-            refusals.append(
-                f"template {self.config.whatsapp_template_name} "
-                f"({self.config.whatsapp_template_language}): {exc}"
-            )
+                refusals.append(f"{'picture' if image_url else 'plain text'}: {exc}")
+        language = resolve_message_language(self.database, user_id=user_id)
+        kind = normalize_template_kind(payload.get(TEMPLATE_KIND_PAYLOAD_KEY))
+        if image_url:
+            image_template_name, image_template_language = image_template_for(language)
+            try:
+                provider_message_id = send_whatsapp_notification(
+                    recipient_wa_id=recipient_ref,
+                    message_text=message_text,
+                    template_name=image_template_name,
+                    template_language=image_template_language,
+                    template_header_image_url=image_url,
+                )
+                payload["whatsappSendMode"] = "image_template"
+                return provider_message_id
+            except Exception as exc:  # noqa: BLE001 - the plain template with a link is the next thing to try
+                refusals.append(f"template {image_template_name} ({image_template_language}): {exc}")
+        plain_text = f"{message_text} {image_url}".strip() if image_url else message_text
+        attempts = [
+            template_for(kind, language),
+            (self.config.whatsapp_template_name, self.config.whatsapp_template_language),
+        ]
+        tried: set[tuple[str, str]] = set()
+        for template_name, template_language in attempts:
+            if not template_name or (template_name, template_language) in tried:
+                continue
+            tried.add((template_name, template_language))
+            try:
+                provider_message_id = send_whatsapp_notification(
+                    recipient_wa_id=recipient_ref,
+                    message_text=plain_text,
+                    template_name=template_name,
+                    template_language=template_language,
+                )
+                payload["whatsappSendMode"] = "template_with_link" if image_url else "template"
+                payload["whatsappTemplate"] = f"{template_name}:{template_language}"
+                return provider_message_id
+            except Exception as exc:  # noqa: BLE001 - the next template is tried; reported with whatever failed before it
+                refusals.append(f"template {template_name} ({template_language}): {exc}")
         raise RuntimeError("; ".join(refusals))
 
     def _deliver_in_app(self, action: dict[str, Any], message_text: str) -> str:

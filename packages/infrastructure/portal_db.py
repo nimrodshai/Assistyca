@@ -486,6 +486,10 @@ CREATE TABLE IF NOT EXISTS household_profiles (
     -- question belongs to the first getting to know and is put once, so
     -- a later change to the week never brings it back. Empty until asked.
     own_week_asked_on TEXT NOT NULL DEFAULT '',
+    -- The language the person writes in ('he' or 'en'), kept from the
+    -- script of each message they send; empty until they have written.
+    -- Their scheduled messages go out in it (message_language).
+    language TEXT NOT NULL DEFAULT '',
     share_token TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
@@ -591,6 +595,18 @@ CREATE TABLE IF NOT EXISTS household_nudges (
     nudge_key TEXT NOT NULL,
     created_at TEXT NOT NULL,
     PRIMARY KEY(user_id, nudge_key),
+    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+-- The week ahead as a picture, sent on Saturday evening and fetched by Meta
+-- from a link that carries only this code. Kept a few weeks, then swept.
+CREATE TABLE IF NOT EXISTS household_week_images (
+    code TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    week_start TEXT NOT NULL,
+    content_type TEXT NOT NULL DEFAULT 'image/png',
+    image BLOB NOT NULL,
+    created_at TEXT NOT NULL,
     FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
@@ -1431,6 +1447,8 @@ ON scheduled_actions(user_id, created_at DESC);
 # Codes are lower-case letters and digits with the look-alikes (0/o, 1/l/i)
 # left out, so one read aloud or retyped from a screenshot still opens.
 LIST_OPEN_CODE_ALPHABET = "abcdefghjkmnpqrstuvwxyz23456789"
+# A week picture's code is longer: the link is public for a month, not two days.
+WEEK_IMAGE_CODE_LENGTH = 20
 LIST_OPEN_CODE_LENGTH = 12
 
 
@@ -1795,6 +1813,8 @@ class PortalDatabase:
         if "connect_offer" not in profile_columns:
             conn.execute("ALTER TABLE household_profiles ADD COLUMN connect_offer TEXT NOT NULL DEFAULT 'not_started'")
             conn.execute("ALTER TABLE household_profiles ADD COLUMN connect_ask_again_on TEXT NOT NULL DEFAULT ''")
+        if "language" not in profile_columns:
+            conn.execute("ALTER TABLE household_profiles ADD COLUMN language TEXT NOT NULL DEFAULT ''")
         if "own_week_asked_on" not in profile_columns:
             conn.execute("ALTER TABLE household_profiles ADD COLUMN own_week_asked_on TEXT NOT NULL DEFAULT ''")
             # Before this column, the question was put whenever the week was
@@ -9857,7 +9877,7 @@ class PortalDatabase:
     # profile's own account_kind column predates that and is no longer read.
     _HOUSEHOLD_PROFILE_SELECT = """
         SELECT u.id AS user_id, u.account_type, p.getting_to_know, p.ask_again_on,
-               p.connect_offer, p.connect_ask_again_on, p.own_week_asked_on, p.share_token,
+               p.connect_offer, p.connect_ask_again_on, p.own_week_asked_on, p.language, p.share_token,
                p.created_at, p.updated_at
         FROM users u LEFT JOIN household_profiles p ON p.user_id = u.id
     """
@@ -9873,6 +9893,7 @@ class PortalDatabase:
             "connectOffer": str(row["connect_offer"] or "not_started"),
             "connectAskAgainOn": str(row["connect_ask_again_on"] or ""),
             "ownWeekAskedOn": str(row["own_week_asked_on"] or ""),
+            "language": str(row["language"] or ""),
             "shareToken": str(row["share_token"] or ""),
             "createdAt": str(row["created_at"] or ""),
             "updatedAt": str(row["updated_at"] or ""),
@@ -9897,6 +9918,7 @@ class PortalDatabase:
         connect_offer: str | None = None,
         connect_ask_again_on: str | None = None,
         own_week_asked_on: str | None = None,
+        language: str | None = None,
     ) -> dict[str, Any]:
         """Set what is given and keep the rest."""
 
@@ -9906,6 +9928,8 @@ class PortalDatabase:
             raise ValueError(f"getting_to_know must be one of: {', '.join(household.GETTING_TO_KNOW_STATUSES)}.")
         if connect_offer is not None and connect_offer not in household.GETTING_TO_KNOW_STATUSES:
             raise ValueError(f"connect_offer must be one of: {', '.join(household.GETTING_TO_KNOW_STATUSES)}.")
+        if language is not None and normalize_text(language).lower() not in {"", "he", "en"}:
+            raise ValueError("language must be 'he', 'en' or empty.")
         now = now_iso()
         with self._connection() as conn:
             conn.execute(
@@ -9932,6 +9956,9 @@ class PortalDatabase:
             if own_week_asked_on is not None:
                 updates.append("own_week_asked_on = ?")
                 values.append(normalize_text(own_week_asked_on)[:10])
+            if language is not None:
+                updates.append("language = ?")
+                values.append(normalize_text(language).lower())
             if updates:
                 conn.execute(
                     f"UPDATE household_profiles SET {', '.join(updates)}, updated_at = ? WHERE user_id = ?",
@@ -10610,6 +10637,71 @@ class PortalDatabase:
                 "SELECT DISTINCT user_id, group_id FROM household_activities WHERE group_id <> ''"
             ).fetchall()
         return sorted((int(row["user_id"]), str(row["group_id"])) for row in rows)
+
+    def save_household_week_image(
+        self, *, user_id: int, week_start: str, image: bytes, content_type: str = "image/png",
+    ) -> str:
+        """Keep the week-ahead picture under a code nobody can guess, and
+        give the code back. Pictures older than a month go with it."""
+
+        resolved_user_id = int(user_id or 0)
+        if resolved_user_id <= 0:
+            raise ValueError("A week picture needs an account.")
+        if not image:
+            raise ValueError("A week picture needs an image.")
+        now = datetime.now(timezone.utc)
+        with self._connection() as conn:
+            conn.execute(
+                "DELETE FROM household_week_images WHERE created_at < ?", ((now - timedelta(days=35)).isoformat(),)
+            )
+            for _attempt in range(5):
+                code = "".join(secrets.choice(LIST_OPEN_CODE_ALPHABET) for _ in range(WEEK_IMAGE_CODE_LENGTH))
+                try:
+                    conn.execute(
+                        """
+                        INSERT INTO household_week_images (code, user_id, week_start, content_type, image, created_at)
+                        VALUES (?, ?, ?, ?, ?, ?)
+                        """,
+                        (code, resolved_user_id, normalize_text(week_start)[:10], normalize_text(content_type) or "image/png",
+                         sqlite3.Binary(bytes(image)), now.isoformat()),
+                    )
+                except sqlite3.IntegrityError as exc:
+                    if "UNIQUE" in str(exc).upper():
+                        continue
+                    raise ValueError("A week picture needs an account that exists.") from exc
+                return code
+        raise RuntimeError("Could not mint a week picture code.")
+
+    def get_household_week_image(self, code: str) -> dict[str, Any] | None:
+        """The picture behind a code: its bytes and type, or None."""
+
+        resolved = normalize_text(code)
+        if not resolved:
+            return None
+        with self._connection() as conn:
+            row = conn.execute(
+                "SELECT code, user_id, week_start, content_type, image, created_at FROM household_week_images WHERE code = ?",
+                (resolved,),
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "code": str(row["code"]),
+            "userId": int(row["user_id"]),
+            "weekStart": str(row["week_start"] or ""),
+            "contentType": str(row["content_type"] or "image/png"),
+            "image": bytes(row["image"] or b""),
+            "createdAt": str(row["created_at"] or ""),
+        }
+
+    def release_household_nudge(self, *, user_id: int, nudge_key: str) -> None:
+        """Give a claim back, for a nudge that could not be made after all."""
+
+        with self._connection() as conn:
+            conn.execute(
+                "DELETE FROM household_nudges WHERE user_id = ? AND nudge_key = ?",
+                (int(user_id), normalize_text(nudge_key)[:160]),
+            )
 
     def claim_household_nudge(self, *, user_id: int, nudge_key: str) -> bool:
         """True the first time a nudge is claimed, False ever after. Claims
