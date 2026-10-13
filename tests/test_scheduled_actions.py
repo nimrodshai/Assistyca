@@ -862,6 +862,26 @@ class ScheduledPictureTests(unittest.TestCase):
         self.assertEqual(send.call_args.kwargs["template_header_image_url"], "https://assistyca.example/week/image/abc.png")
         self.assertEqual(send.call_args.kwargs["message_text"], "Here is next week.")
 
+    def test_a_morning_picture_rides_the_mornings_picture_template(self) -> None:
+        self.database.create_scheduled_action(
+            user_id=int(self.user["id"]),
+            action_type="send_message",
+            channel="whatsapp",
+            recipient_ref="owner",
+            run_at=datetime.now(timezone.utc) - timedelta(seconds=1),
+            timezone_name="Asia/Jerusalem",
+            payload={
+                "messageText": "Here is today.", "imageUrl": "https://assistyca.example/week/image/day.png",
+                "templateKind": "morning_digest",
+            },
+        )
+        with mock.patch(
+            "packages.infrastructure.scheduled_actions.send_whatsapp_notification", return_value="wamid.pic-m",
+        ) as send:
+            self.scheduler.run_pending(now=datetime.now(timezone.utc))
+        self.assertEqual(send.call_args.kwargs["template_name"], "assistyca_morning_digest_picture")
+        self.assertEqual(send.call_args.kwargs["template_header_image_url"], "https://assistyca.example/week/image/day.png")
+
     def test_until_meta_approves_that_template_the_picture_goes_as_a_link(self) -> None:
         action = self._picture_message()
         calls = []

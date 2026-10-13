@@ -72,8 +72,17 @@ class NotificationTemplateTests(unittest.TestCase):
     def test_the_week_ahead_template_goes_only_with_its_picture(self) -> None:
         self.assertEqual(template_for("week_ahead", "he"), ("", ""))
         self.assertEqual(template_for("week_ahead", "he", with_image=True), ("assistyca_week_ahead", "he"))
-        self.assertEqual(image_template_for("he"), ("assistyca_week_ahead", "he"))
-        self.assertEqual(image_template_for("xx"), ("assistyca_week_ahead", "en"))
+        self.assertEqual(image_template_for("week_ahead", "he"), ("assistyca_week_ahead", "he"))
+        self.assertEqual(image_template_for("week_ahead", "xx"), ("assistyca_week_ahead", "en"))
+
+    def test_the_morning_and_the_evening_have_a_picture_variant(self) -> None:
+        self.assertEqual(image_template_for("morning_digest", "he"), ("assistyca_morning_digest_picture", "he"))
+        self.assertEqual(image_template_for("evening_glance", "en"), ("assistyca_evening_glance_picture", "en"))
+        self.assertEqual(template_for("morning_digest", "en", with_image=True), ("assistyca_morning_digest_picture", "en"))
+        # Without a picture the morning is still the morning: the to-do list rides it.
+        self.assertEqual(template_for("morning_digest", "en"), ("assistyca_morning_digest", "en"))
+        # A reminder with a picture rides the one template that takes any picture.
+        self.assertEqual(image_template_for("reminder", "en"), ("assistyca_week_ahead", "en"))
 
 
 if __name__ == "__main__":

@@ -537,8 +537,8 @@ class ScheduledActionScheduler:
         made for the message's kind, in the language the person writes in,
         and failing that the generic one, so the message still arrives while
         Meta is yet to approve the new ones. A picture goes first through the
-        week-ahead template, which opens with one, and failing that as a link
-        in the plain template. Every refusal is kept, so a message that
+        kind's picture template, which opens with one, and failing that as a
+        link in the plain template. Every refusal is kept, so a message that
         reaches neither says why.
         """
 
@@ -571,7 +571,7 @@ class ScheduledActionScheduler:
         language = resolve_message_language(self.database, user_id=user_id)
         kind = normalize_template_kind(payload.get(TEMPLATE_KIND_PAYLOAD_KEY))
         if image_url:
-            image_template_name, image_template_language = image_template_for(language)
+            image_template_name, image_template_language = image_template_for(kind, language)
             try:
                 provider_message_id = send_whatsapp_notification(
                     recipient_wa_id=recipient_ref,

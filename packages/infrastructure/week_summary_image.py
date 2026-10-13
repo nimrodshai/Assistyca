@@ -43,6 +43,9 @@ from packages.infrastructure.portal_db import normalize_text
 # the side. Rendered at two device pixels per point it is 2000 by 1200.
 PAGE_WIDTH = 1000.0
 PAGE_HEIGHT = 600.0
+# A single day is drawn on a narrower, nearly square page: one wide column
+# reads better on a phone than a sliver of a week.
+DAY_PAGE_WIDTH = 640.0
 MARGIN = 22.0
 TIME_GUTTER = 34.0
 TITLE_BLOCK = 44.0
@@ -114,6 +117,8 @@ _LATIN_RE = re.compile(r"[A-Za-z]")
 WORDS = {
     "en": {
         "title": "The week ahead",
+        "today": "Today",
+        "tomorrow": "Tomorrow",
         "weekdays": ("Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"),
         "months": ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"),
         "nothing": "Nothing planned",
@@ -125,6 +130,8 @@ WORDS = {
     },
     "he": {
         "title": "השבוע הקרוב",
+        "today": "היום",
+        "tomorrow": "מחר",
         "weekdays": ("ראשון", "שני", "שלישי", "רביעי", "חמישי", "שישי", "שבת"),
         "months": (),
         "nothing": "אין תוכניות",
@@ -159,6 +166,7 @@ class WeekSummary:
     language: str
     facts: list[str]  # one plain line per day, for the caption's writer
     open_legs: int  # drop-offs and pickups with nobody down for them
+    title: str = ""  # the page's title when it is not the week's
 
 
 # -- words and colours --------------------------------------------------------
@@ -446,6 +454,7 @@ class _Page:
         self.rtl = rtl
         self.width = width
         self.height = height
+        self.width = width
 
     def text(self, x: float, y: float, text: str, *, font: str, size: float, colour: str, align: str = "start") -> None:
         """Draw text at x from the reading edge and y from the top. start
@@ -609,7 +618,8 @@ def render_week_pdf(
 ) -> bytes:
     """The week as a calendar page: a column per day, the hours down the
     side, each plan a block at its time in its person's colour, the colour
-    key under the title. One landscape page, sized like a screen."""
+    key under the title. One landscape page, sized like a screen - or, for
+    a summary of one day, one wide column on a narrower page."""
 
     from reportlab.pdfgen import canvas as pdf_canvas
 
@@ -635,6 +645,8 @@ def render_week_pdf(
     has_untimed = any(untimed for _timed, untimed in days)
     untimed_height = UNTIMED_STRIP if has_untimed else 0.0
 
+    columns = max(1, len(summary.days))
+    base_width = PAGE_WIDTH if columns > 3 else DAY_PAGE_WIDTH
     grid_top = MARGIN + TITLE_BLOCK + (LEGEND_LINE if summary.legend else 0.0) + DAY_HEADER + untimed_height
     hour_height = max(MIN_HOUR_HEIGHT, (PAGE_HEIGHT - grid_top - MARGIN - FOOTER) / hours)
     # A family whose children are all at school at once needs the columns
@@ -642,21 +654,24 @@ def render_week_pdf(
     # words being cut.
     max_lanes = max([block.lanes for timed, _untimed in days for block in timed if not block.band] or [1])
     height = grid_top + hour_height * hours + FOOTER + MARGIN
-    column_width = max((PAGE_WIDTH - 2 * MARGIN - TIME_GUTTER) / 7, max_lanes * MIN_LANE_WIDTH + 2 * BLOCK_INSET)
-    page_width = 2 * MARGIN + TIME_GUTTER + 7 * column_width
+    column_width = max((base_width - 2 * MARGIN - TIME_GUTTER) / columns, max_lanes * MIN_LANE_WIDTH + 2 * BLOCK_INSET)
+    page_width = 2 * MARGIN + TIME_GUTTER + columns * column_width
     grid_x = MARGIN + TIME_GUTTER
 
     buffer = io.BytesIO()
     c = pdf_canvas.Canvas(buffer, pagesize=(page_width, height))
-    c.setTitle(words["title"])
-    page = _Page(c, rtl=rtl, width=page_width, height=height)
+    title = summary.title or words["title"]
+    c.setTitle(title)
+    page = _Page(c, rtl=rtl, height=height, width=page_width)
     page.box(0, 0, page_width, height, _hex(PAPER))
 
-    # Title, dates, and the colour key.
-    week_end = summary.week_start + timedelta(days=6)
-    page.text(MARGIN, MARGIN + 15, words["title"], font="WeekSans-SemiBold", size=17, colour=INK)
-    span = f"{_format_day(summary.week_start, summary.language)} – {_format_day(week_end, summary.language)}"
-    page.text(page_width - MARGIN, MARGIN + 14, span, font="WeekSans", size=10.5, colour=INK_SOFT, align="end")
+    # Title, dates, and the colour key. A single day's date is in its
+    # column header already, so the title line carries none.
+    week_end = summary.week_start + timedelta(days=columns - 1)
+    page.text(MARGIN, MARGIN + 15, title, font="WeekSans-SemiBold", size=17, colour=INK)
+    if columns > 1:
+        span = f"{_format_day(summary.week_start, summary.language)} – {_format_day(week_end, summary.language)}"
+        page.text(page_width - MARGIN, MARGIN + 14, span, font="WeekSans", size=10.5, colour=INK_SOFT, align="end")
     y = MARGIN + TITLE_BLOCK
     if summary.legend:
         x = MARGIN
@@ -698,16 +713,16 @@ def render_week_pdf(
 
     # The grid.
     grid_height = hour_height * hours
-    for index in range(7):
+    for index in range(columns):
         if index % 2 == 1:
             page.box(grid_x + index * column_width, y, column_width, grid_height, _hex(ROW_ALT))
     for hour_index in range(hours + 1):
         line_y = y + hour_index * hour_height
-        page.hline(grid_x, line_y, column_width * 7)
+        page.hline(grid_x, line_y, column_width * columns)
         if hour_index < hours:
             page.text(grid_x - 5, line_y + 3.5 + (hour_height / 2 if hour_height < 18 else 9), f"{first_hour + hour_index:02d}:00",
                       font="WeekSans", size=7.5, colour=INK_SOFT, align="end")
-    for index in range(8):
+    for index in range(columns + 1):
         page.vline(grid_x + index * column_width, y, grid_height)
 
     # The blocks.
@@ -914,6 +929,23 @@ def render_week_image(
     return pdf_to_png(pdf_bytes), pdf_bytes
 
 
+def build_day_summary(
+    *,
+    day: WeekDayPlan,
+    members: list[dict[str, Any]],
+    owner_names: list[str],
+    title: str = "today",
+    language: str = "",
+) -> WeekSummary:
+    """One day as a page of its own - this morning's, or tomorrow's for
+    the evening before - with the same blocks, colours and facts as the
+    week. title is "today" or "tomorrow", said in the family's language."""
+
+    summary = build_week_summary(week_start=day.day, days=[day], members=members, owner_names=owner_names, language=language)
+    summary.title = WORDS[summary.language].get(title) or WORDS[summary.language]["title"]
+    return summary
+
+
 def next_week_start(today: date) -> date:
     """The Sunday that starts the coming week: tomorrow when today is
     Saturday, which is when the picture goes out."""
@@ -925,6 +957,7 @@ def next_week_start(today: date) -> date:
 __all__ = [
     "WeekDayPlan",
     "WeekSummary",
+    "build_day_summary",
     "build_week_summary",
     "detect_language",
     "next_week_start",

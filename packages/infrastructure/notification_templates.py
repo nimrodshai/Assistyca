@@ -43,7 +43,15 @@ TEMPLATE_NAMES = {
     TEMPLATE_KIND_EVENING_GLANCE: "assistyca_evening_glance",
     TEMPLATE_KIND_WEEK_AHEAD: "assistyca_week_ahead",
 }
-# Kinds whose template opens with a picture: sent only with one.
+# The same kinds with a picture on top: the morning's day, tomorrow's for
+# the evening, the week for Saturday. A kind not here that carries a
+# picture rides the week-ahead one, which takes any picture and a line.
+PICTURE_TEMPLATE_NAMES = {
+    TEMPLATE_KIND_MORNING_DIGEST: "assistyca_morning_digest_picture",
+    TEMPLATE_KIND_EVENING_GLANCE: "assistyca_evening_glance_picture",
+    TEMPLATE_KIND_WEEK_AHEAD: "assistyca_week_ahead",
+}
+# Kinds whose only template opens with a picture: sent only with one.
 IMAGE_TEMPLATE_KINDS = frozenset({TEMPLATE_KIND_WEEK_AHEAD})
 
 
@@ -62,20 +70,26 @@ def template_for(kind: Any, language: Any, *, with_image: bool = False) -> tuple
     the week-ahead template takes a picture and cannot go without one."""
 
     resolved_kind = normalize_template_kind(kind)
-    if resolved_kind in IMAGE_TEMPLATE_KINDS and not with_image:
+    if with_image:
+        return image_template_for(resolved_kind, language)
+    if resolved_kind in IMAGE_TEMPLATE_KINDS:
         return "", ""
     return TEMPLATE_NAMES[resolved_kind], template_language(language)
 
 
-def image_template_for(language: Any) -> tuple[str, str]:
-    """The template that carries a picture with one line under it."""
+def image_template_for(kind: Any, language: Any) -> tuple[str, str]:
+    """The template that carries a picture of this kind with one line under
+    it: the kind's own, or the week-ahead one for a kind without one."""
 
-    return TEMPLATE_NAMES[TEMPLATE_KIND_WEEK_AHEAD], template_language(language)
+    resolved_kind = normalize_template_kind(kind)
+    name = PICTURE_TEMPLATE_NAMES.get(resolved_kind) or PICTURE_TEMPLATE_NAMES[TEMPLATE_KIND_WEEK_AHEAD]
+    return name, template_language(language)
 
 
 __all__ = [
     "DEFAULT_TEMPLATE_KIND",
     "IMAGE_TEMPLATE_KINDS",
+    "PICTURE_TEMPLATE_NAMES",
     "TEMPLATE_KINDS",
     "TEMPLATE_KIND_EVENING_GLANCE",
     "TEMPLATE_KIND_MORNING_DIGEST",
