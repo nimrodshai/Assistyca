@@ -46,7 +46,7 @@ NUDGE_SOURCE = "family_week"
 # under the message, and the button under both.
 REMIND_AGAIN_QUESTION = {
     "en": "Want me to remind you again 5 minutes before?",
-    "he": "רוצים שאזכיר שוב 5 דקות לפני?",
+    "he": "רוצה שאזכיר שוב 5 דקות לפני?",
 }
 # A reply button's title takes 20 characters on an interactive message.
 REMIND_AGAIN_BUTTON_LABEL = {
