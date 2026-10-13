@@ -2677,5 +2677,28 @@ class AdminFreeTrialControlTests(unittest.TestCase):
         self.assertIn(':root[data-theme="dark"] .admin-trial-input {', styles)
 
 
+class WeekImageRouteTests(unittest.TestCase):
+    """The week-ahead picture is served by its code and by nothing else."""
+
+    setUp = PortalStaticPageTests.setUp
+    tearDown = PortalStaticPageTests.tearDown
+
+    def test_a_saved_picture_is_served_as_an_image_and_a_wrong_code_is_not(self) -> None:
+        database = self.server.database  # type: ignore[attr-defined]
+        database.register_user("family@example.com")
+        user_id = int((database.get_user("family@example.com") or {})["id"])
+        png = b"\x89PNG\r\n\x1a\n" + b"0" * 64
+        code = database.save_household_week_image(user_id=user_id, week_start="2026-10-18", image=png)
+        with urllib_request.urlopen(f"{self.base_url}/week/image/{code}.png") as response:
+            self.assertEqual(response.status, 200)
+            self.assertEqual(response.headers["Content-Type"], "image/png")
+            self.assertEqual(response.headers["Cache-Control"], "public, max-age=86400")
+            self.assertEqual(response.read(), png)
+        for wrong in ("nope.png", "a" * 20 + ".png", "../portal.db"):
+            with self.assertRaises(urllib_error.HTTPError) as caught:
+                urllib_request.urlopen(f"{self.base_url}/week/image/{wrong}")
+            self.assertEqual(caught.exception.code, 404, wrong)
+
+
 if __name__ == "__main__":
     unittest.main()

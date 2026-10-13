@@ -1319,12 +1319,14 @@ def send_whatsapp_message(
     interactive: dict[str, Any] | None = None,
     template: dict[str, Any] | None = None,
     to_group: bool = False,
+    image: dict[str, Any] | None = None,
 ) -> str:
     """Send one message. With to_group, recipient_wa_id is a group id.
 
     Groups take text, media and templates but not interactive messages: Meta
     does not deliver buttons to a group, so a caller that offers them has to
-    write the choice out in words there.
+    write the choice out in words there. An image is {"link": url} or
+    {"id": media_id}, with message_text as its caption.
     """
 
     url = f"https://graph.facebook.com/{api_version}/{phone_number_id}/messages"
@@ -1338,6 +1340,9 @@ def send_whatsapp_message(
     if template is not None:
         payload["type"] = "template"
         payload["template"] = template
+    elif image is not None:
+        payload["type"] = "image"
+        payload["image"] = {**image, **({"caption": message_text} if message_text else {})}
     elif interactive is not None:
         payload["type"] = "interactive"
         payload["interactive"] = interactive

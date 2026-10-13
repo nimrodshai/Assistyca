@@ -594,6 +594,18 @@ CREATE TABLE IF NOT EXISTS household_nudges (
     FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
+-- The week ahead as a picture, sent on Saturday evening and fetched by Meta
+-- from a link that carries only this code. Kept a few weeks, then swept.
+CREATE TABLE IF NOT EXISTS household_week_images (
+    code TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    week_start TEXT NOT NULL,
+    content_type TEXT NOT NULL DEFAULT 'image/png',
+    image BLOB NOT NULL,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
 -- What the school calendar says about one day where families live, looked
 -- up online once per place (a clock such as Asia/Jerusalem) and day, and
 -- read by every family on that clock. Nobody's data: a holiday is public.
@@ -1431,6 +1443,8 @@ ON scheduled_actions(user_id, created_at DESC);
 # Codes are lower-case letters and digits with the look-alikes (0/o, 1/l/i)
 # left out, so one read aloud or retyped from a screenshot still opens.
 LIST_OPEN_CODE_ALPHABET = "abcdefghjkmnpqrstuvwxyz23456789"
+# A week picture's code is longer: the link is public for a month, not two days.
+WEEK_IMAGE_CODE_LENGTH = 20
 LIST_OPEN_CODE_LENGTH = 12
 
 
@@ -10610,6 +10624,71 @@ class PortalDatabase:
                 "SELECT DISTINCT user_id, group_id FROM household_activities WHERE group_id <> ''"
             ).fetchall()
         return sorted((int(row["user_id"]), str(row["group_id"])) for row in rows)
+
+    def save_household_week_image(
+        self, *, user_id: int, week_start: str, image: bytes, content_type: str = "image/png",
+    ) -> str:
+        """Keep the week-ahead picture under a code nobody can guess, and
+        give the code back. Pictures older than a month go with it."""
+
+        resolved_user_id = int(user_id or 0)
+        if resolved_user_id <= 0:
+            raise ValueError("A week picture needs an account.")
+        if not image:
+            raise ValueError("A week picture needs an image.")
+        now = datetime.now(timezone.utc)
+        with self._connection() as conn:
+            conn.execute(
+                "DELETE FROM household_week_images WHERE created_at < ?", ((now - timedelta(days=35)).isoformat(),)
+            )
+            for _attempt in range(5):
+                code = "".join(secrets.choice(LIST_OPEN_CODE_ALPHABET) for _ in range(WEEK_IMAGE_CODE_LENGTH))
+                try:
+                    conn.execute(
+                        """
+                        INSERT INTO household_week_images (code, user_id, week_start, content_type, image, created_at)
+                        VALUES (?, ?, ?, ?, ?, ?)
+                        """,
+                        (code, resolved_user_id, normalize_text(week_start)[:10], normalize_text(content_type) or "image/png",
+                         sqlite3.Binary(bytes(image)), now.isoformat()),
+                    )
+                except sqlite3.IntegrityError as exc:
+                    if "UNIQUE" in str(exc).upper():
+                        continue
+                    raise ValueError("A week picture needs an account that exists.") from exc
+                return code
+        raise RuntimeError("Could not mint a week picture code.")
+
+    def get_household_week_image(self, code: str) -> dict[str, Any] | None:
+        """The picture behind a code: its bytes and type, or None."""
+
+        resolved = normalize_text(code)
+        if not resolved:
+            return None
+        with self._connection() as conn:
+            row = conn.execute(
+                "SELECT code, user_id, week_start, content_type, image, created_at FROM household_week_images WHERE code = ?",
+                (resolved,),
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "code": str(row["code"]),
+            "userId": int(row["user_id"]),
+            "weekStart": str(row["week_start"] or ""),
+            "contentType": str(row["content_type"] or "image/png"),
+            "image": bytes(row["image"] or b""),
+            "createdAt": str(row["created_at"] or ""),
+        }
+
+    def release_household_nudge(self, *, user_id: int, nudge_key: str) -> None:
+        """Give a claim back, for a nudge that could not be made after all."""
+
+        with self._connection() as conn:
+            conn.execute(
+                "DELETE FROM household_nudges WHERE user_id = ? AND nudge_key = ?",
+                (int(user_id), normalize_text(nudge_key)[:160]),
+            )
 
     def claim_household_nudge(self, *, user_id: int, nudge_key: str) -> bool:
         """True the first time a nudge is claimed, False ever after. Claims

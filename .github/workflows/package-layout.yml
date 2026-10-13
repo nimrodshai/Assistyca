@@ -46,6 +46,8 @@ jobs:
             tests.test_whatsapp_tool_delivery \
             tests.test_portal_manual_run \
             tests.test_scheduled_actions \
+            tests.test_week_summary_image \
+            tests.test_family_week_nudges \
             tests.test_standing_tasks \
             tests.test_mailbox_findings \
             tests.test_mailbox_finding_scans \

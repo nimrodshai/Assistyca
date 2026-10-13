@@ -741,5 +741,83 @@ class ScheduledActionApiTests(unittest.TestCase):
         self.assertNotIn("recipientWaId", payload["actions"][0]["payload"])
 
 
+class ScheduledPictureTests(unittest.TestCase):
+    """A scheduled message that carries a picture: sent as one inside the
+    window, through the picture template outside it, and as a link when
+    that template is not there yet."""
+
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.database = PortalDatabase(Path(self.temp_dir.name) / "portal.db")
+        self.database.register_user("owner@example.com")
+        self.user = self.database.get_user("owner@example.com") or {}
+        self.database.save_whatsapp_connection(
+            "owner@example.com", owner_wa_id="972507322341", connection_status="connected",
+        )
+        self.scheduler = ScheduledActionScheduler(
+            self.database,
+            config=ScheduledActionConfig(enabled=True, poll_seconds=1, batch_size=10),
+        )
+
+    def tearDown(self) -> None:
+        self.temp_dir.cleanup()
+
+    def _picture_message(self) -> dict:
+        return self.database.create_scheduled_action(
+            user_id=int(self.user["id"]),
+            action_type="send_message",
+            channel="whatsapp",
+            recipient_ref="owner",
+            run_at=datetime.now(timezone.utc) - timedelta(seconds=1),
+            timezone_name="Asia/Jerusalem",
+            payload={"messageText": "Here is next week.", "imageUrl": "https://assistyca.example/week/image/abc.png"},
+        )
+
+    def test_inside_the_window_the_picture_itself_is_sent_with_the_text_as_caption(self) -> None:
+        self.database.save_whatsapp_agent_message(user_id=int(self.user["id"]), role="user", text="thanks")
+        action = self._picture_message()
+        with mock.patch(
+            "packages.infrastructure.scheduled_actions.send_whatsapp_notification", return_value="wamid.pic-1",
+        ) as send:
+            self.scheduler.run_pending(now=datetime.now(timezone.utc))
+        saved = self.database.get_scheduled_action(int(action["id"])) or {}
+        self.assertEqual(saved["payload"]["whatsappSendMode"], "image")
+        self.assertEqual(send.call_count, 1)
+        self.assertEqual(send.call_args.kwargs["image_url"], "https://assistyca.example/week/image/abc.png")
+        self.assertEqual(send.call_args.kwargs["message_text"], "Here is next week.")
+        self.assertNotIn("template_name", send.call_args.kwargs)
+
+    def test_outside_the_window_the_picture_template_carries_it(self) -> None:
+        action = self._picture_message()
+        with mock.patch(
+            "packages.infrastructure.scheduled_actions.send_whatsapp_notification", return_value="wamid.pic-2",
+        ) as send:
+            self.scheduler.run_pending(now=datetime.now(timezone.utc))
+        saved = self.database.get_scheduled_action(int(action["id"])) or {}
+        self.assertEqual(saved["payload"]["whatsappSendMode"], "image_template")
+        self.assertEqual(send.call_count, 1)
+        self.assertEqual(send.call_args.kwargs["template_name"], "assistyca_week_ahead")
+        self.assertEqual(send.call_args.kwargs["template_header_image_url"], "https://assistyca.example/week/image/abc.png")
+        self.assertEqual(send.call_args.kwargs["message_text"], "Here is next week.")
+
+    def test_until_meta_approves_that_template_the_picture_goes_as_a_link(self) -> None:
+        action = self._picture_message()
+        calls = []
+
+        def send(**kwargs):
+            calls.append(kwargs)
+            if kwargs.get("template_name") == "assistyca_week_ahead":
+                raise RuntimeError("(#132001) Template name does not exist")
+            return "wamid.pic-3"
+
+        with mock.patch("packages.infrastructure.scheduled_actions.send_whatsapp_notification", side_effect=send):
+            self.scheduler.run_pending(now=datetime.now(timezone.utc))
+        saved = self.database.get_scheduled_action(int(action["id"])) or {}
+        self.assertEqual(saved["payload"]["whatsappSendMode"], "template_with_link")
+        self.assertEqual([c.get("template_name") for c in calls], ["assistyca_week_ahead", "notification_message"])
+        self.assertEqual(calls[-1]["message_text"], "Here is next week. https://assistyca.example/week/image/abc.png")
+        self.assertEqual(saved["status"], "sent")
+
+
 if __name__ == "__main__":
     unittest.main()

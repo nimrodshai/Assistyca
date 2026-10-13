@@ -33,6 +33,11 @@ DEFAULT_SCHEDULED_ACTION_POLL_SECONDS = 10
 DEFAULT_SCHEDULED_ACTION_BATCH_SIZE = 25
 DEFAULT_SCHEDULED_WHATSAPP_TEMPLATE_NAME = "notification_message"
 DEFAULT_SCHEDULED_WHATSAPP_TEMPLATE_LANGUAGE = "en"
+# A message that carries a picture outside the service window needs a
+# template approved with an image header and one body variable. Until Meta
+# has approved one, the picture rides as a link in the plain template.
+DEFAULT_SCHEDULED_WHATSAPP_IMAGE_TEMPLATE_NAME = "assistyca_week_ahead"
+DEFAULT_SCHEDULED_WHATSAPP_IMAGE_TEMPLATE_LANGUAGE = "en"
 # A message the owner asked to receive on WhatsApp goes out on WhatsApp; the
 # in-app feed carries everything else and is the fallback when WhatsApp
 # delivery is not configured. The WhatsApp agent conversation made "text me at
@@ -65,6 +70,8 @@ class ScheduledActionConfig:
     batch_size: int = DEFAULT_SCHEDULED_ACTION_BATCH_SIZE
     whatsapp_template_name: str = DEFAULT_SCHEDULED_WHATSAPP_TEMPLATE_NAME
     whatsapp_template_language: str = DEFAULT_SCHEDULED_WHATSAPP_TEMPLATE_LANGUAGE
+    whatsapp_image_template_name: str = DEFAULT_SCHEDULED_WHATSAPP_IMAGE_TEMPLATE_NAME
+    whatsapp_image_template_language: str = DEFAULT_SCHEDULED_WHATSAPP_IMAGE_TEMPLATE_LANGUAGE
 
 
 def parse_bool_env(value: str | None, default: bool = False) -> bool:
@@ -103,6 +110,14 @@ def load_scheduled_action_config() -> ScheduledActionConfig:
         whatsapp_template_language=(
             normalize_text(os.getenv("WHATSAPP_SCHEDULED_NOTIFICATION_TEMPLATE_LANGUAGE"))
             or DEFAULT_SCHEDULED_WHATSAPP_TEMPLATE_LANGUAGE
+        ),
+        whatsapp_image_template_name=(
+            normalize_text(os.getenv("WHATSAPP_SCHEDULED_IMAGE_TEMPLATE_NAME"))
+            or DEFAULT_SCHEDULED_WHATSAPP_IMAGE_TEMPLATE_NAME
+        ),
+        whatsapp_image_template_language=(
+            normalize_text(os.getenv("WHATSAPP_SCHEDULED_IMAGE_TEMPLATE_LANGUAGE"))
+            or DEFAULT_SCHEDULED_WHATSAPP_IMAGE_TEMPLATE_LANGUAGE
         ),
     )
 
@@ -522,8 +537,12 @@ class ScheduledActionScheduler:
         """Send the scheduled message to the owner over WhatsApp.
 
         Inside Meta's 24-hour service window the message goes as plain text,
-        exactly like the chat's own replies. Outside it, or when plain text
-        is refused, the approved scheduled-notification template carries it.
+        exactly like the chat's own replies - or, when the payload names an
+        image, as that picture with the text as its caption. Outside it, or
+        when plain text is refused, the approved scheduled-notification
+        template carries it; a picture goes first through the template made
+        for one, and failing that as a link in the plain template, so the
+        week still arrives while Meta is yet to approve the picture one.
         Every refusal is kept, so a message that reaches neither says why.
         """
 
@@ -541,24 +560,42 @@ class ScheduledActionScheduler:
             return provider_message_id
 
         refusals: list[str] = []
+        image_url = normalize_text(payload.get("imageUrl"))
         if self._service_window_open(user_id, thread_id=self._thread_for_phone(user_id, recipient_ref)):
             try:
                 provider_message_id = send_whatsapp_notification(
                     recipient_wa_id=recipient_ref,
                     message_text=message_text,
+                    image_url=image_url or None,
                 )
-                payload["whatsappSendMode"] = "text"
+                payload["whatsappSendMode"] = "image" if image_url else "text"
                 return provider_message_id
             except Exception as exc:  # noqa: BLE001 - the template is the next thing to try
-                refusals.append(f"plain text: {exc}")
+                refusals.append(f"{'picture' if image_url else 'plain text'}: {exc}")
+        if image_url and self.config.whatsapp_image_template_name:
+            try:
+                provider_message_id = send_whatsapp_notification(
+                    recipient_wa_id=recipient_ref,
+                    message_text=message_text,
+                    template_name=self.config.whatsapp_image_template_name,
+                    template_language=self.config.whatsapp_image_template_language,
+                    template_header_image_url=image_url,
+                )
+                payload["whatsappSendMode"] = "image_template"
+                return provider_message_id
+            except Exception as exc:  # noqa: BLE001 - the plain template with a link is the next thing to try
+                refusals.append(
+                    f"template {self.config.whatsapp_image_template_name} "
+                    f"({self.config.whatsapp_image_template_language}): {exc}"
+                )
         try:
             provider_message_id = send_whatsapp_notification(
                 recipient_wa_id=recipient_ref,
-                message_text=message_text,
+                message_text=f"{message_text} {image_url}".strip() if image_url else message_text,
                 template_name=self.config.whatsapp_template_name,
                 template_language=self.config.whatsapp_template_language,
             )
-            payload["whatsappSendMode"] = "template"
+            payload["whatsappSendMode"] = "template_with_link" if image_url else "template"
             return provider_message_id
         except Exception as exc:  # noqa: BLE001 - reported with whatever failed before it
             refusals.append(
