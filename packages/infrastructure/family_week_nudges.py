@@ -80,7 +80,7 @@ from packages.infrastructure.week_summary_image import render_week_image
 from packages.infrastructure.whatsapp_agent_chat import infer_timezone_from_wa_id
 
 NUDGE_SOURCE = "family_week"
-DEFAULT_MORNING_HOUR = 7
+DEFAULT_MORNING_HOUR = 6
 DEFAULT_EVENING_HOUR = 20
 # The week ahead goes out on Saturday evening, Python's weekday 5.
 DEFAULT_WEEK_AHEAD_WEEKDAY = 5
