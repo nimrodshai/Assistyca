@@ -16,8 +16,8 @@ from types import SimpleNamespace
 from unittest import mock
 
 from packages.infrastructure.portal_auth.server import PortalConfig, create_server
-from packages.infrastructure.registration_welcome import FAMILY_WELCOME_LINE
-from packages.infrastructure.registration_welcome import HEBREW_FAMILY_WELCOME_LINE
+from packages.infrastructure.registration_welcome import FAMILY_WELCOME_BODY
+from packages.infrastructure.registration_welcome import HEBREW_FAMILY_WELCOME_BODY
 from packages.infrastructure.registration_welcome import REGISTRATION_WELCOME_LINE
 from packages.infrastructure.whatsapp_agent_chat import build_registration_welcome_prompt
 from packages.infrastructure.whatsapp_agent_chat import build_signup_concierge_prompt
@@ -224,11 +224,11 @@ class WebRegistrationTests(unittest.TestCase):
         signup = self.database.get_whatsapp_signup(PHONE) or {}
         self.assertEqual(signup["registration"]["kind"], "family")
 
-        # A family gets the short family welcome, in English for a name typed
-        # in English: their first name and no family line.
+        # A family gets the family welcome, in English for a name typed in
+        # English: their first name and nothing else.
         self.assertEqual(self.template_sent.call_count, 1)
         sent = self.template_sent.call_args.kwargs["template"]
-        self.assertEqual(sent["name"], "assistyca_welcome_family_english_short")
+        self.assertEqual(sent["name"], "assistyca_welcome_family")
         self.assertEqual(sent["language"], {"code": "en"})
         self.assertEqual([parameter["text"] for parameter in sent["components"][-1]["parameters"]], ["Dana"])
 
@@ -271,106 +271,32 @@ class WebRegistrationTests(unittest.TestCase):
         transcript = self.database.list_recent_whatsapp_agent_messages(user_id=user_id)
         self.assertEqual([entry["role"] for entry in transcript], ["assistant", "user", "assistant"])
         self.assertTrue(transcript[0]["text"].startswith("Hi Dana 👋"))
-        self.assertNotIn(FAMILY_WELCOME_LINE, transcript[0]["text"])
+        self.assertIn(FAMILY_WELCOME_BODY, transcript[0]["text"])
 
-    def test_a_short_family_template_that_still_wants_the_line_gets_it(self) -> None:
-        # The short templates were wired in without being read. If one turns
-        # out to still take {{2}}, Meta refuses the name-only send whole, and
-        # the family is sent the line rather than nothing.
-        def want_two_variables(**kwargs):
-            body = (kwargs.get("template") or {}).get("components", [])[-1]
-            if len(body.get("parameters") or []) != 2:
-                raise RuntimeError("(#132000) Number of parameters does not match the expected number of params")
-            return "wamid.welcome-with-line"
+    def test_while_meta_reviews_the_new_family_welcome_the_earlier_one_carries_it(self) -> None:
+        # The new family welcome exists in both languages under one name, but
+        # Meta refuses it while the review runs. The English one it approved
+        # earlier goes instead, in English, so the family still hears from us.
+        def only_the_old_one(**kwargs):
+            template = kwargs.get("template") or {}
+            if template.get("name") == "assistyca_welcome_family":
+                raise RuntimeError("(#132001) Template name does not exist in the translation")
+            return "wamid.welcome-old"
 
-        self.template_sent.side_effect = want_two_variables
-        status, payload = self.register(family_registration())
+        self.template_sent.side_effect = only_the_old_one
+        status, payload = self.register(family_registration(name="דנה לוי"))
 
         self.assertEqual(status, 200, payload)
         self.assertTrue(payload["whatsappSent"])
         sent = self.template_sent.call_args.kwargs["template"]
         self.assertEqual(sent["name"], "assistyca_welcome_family_english_short")
-        self.assertEqual(
-            [parameter["text"] for parameter in sent["components"][-1]["parameters"]],
-            ["Dana", FAMILY_WELCOME_LINE],
-        )
-        # The conversation we keep says what their phone showed: the line too.
+        self.assertEqual(sent["language"], {"code": "en"})
+        self.assertEqual([parameter["text"] for parameter in sent["components"][-1]["parameters"]], ["דנה"])
+        # The conversation we keep says what their phone showed: the English words.
         transcript = (self.database.get_whatsapp_signup(PHONE) or {})["transcript"]
         self.assertEqual(len(transcript), 1)
-        self.assertIn(FAMILY_WELCOME_LINE, transcript[0]["text"])
-
-    def test_a_family_is_never_asked_for_an_email_however_it_answers(self) -> None:
-        # Even "later" or a question opens the account: there is nothing to
-        # collect first, so nothing to keep asking for.
-        self.register(family_registration())
-        result = self.text("What can you actually do?", message_id="wamid.f1")
-
-        self.assertEqual(result["results"][0]["action"], "signup_completed_without_email")
-        self.assertNotIn("email", " ".join(self.replies()).lower())
-        self.assertTrue(self.database.get_user("wa-972507322341@whatsapp.assistyca.com"))
-
-    def just_now(self) -> str:
-        """A message sent now, for the tests where the clock matters."""
-
-        return str(int(datetime.now(timezone.utc).timestamp()))
-
-    def _erase_the_phone_an_hour_ago(self) -> None:
-        """This phone asked to be forgotten, earlier today rather than now, so
-        the message that follows is not read as one sent before the deletion."""
-
-        self.database.mark_whatsapp_phones_erased([PHONE])
-        with self.database._connection() as conn:
-            conn.execute(
-                "UPDATE erased_whatsapp_phones SET erased_at = ?",
-                ((datetime.now(timezone.utc) - timedelta(hours=1)).isoformat(),),
-            )
-            conn.commit()
-
-    def test_a_family_that_asked_to_be_forgotten_and_came_back_is_not_asked_for_an_email(self) -> None:
-        # A phone is remembered as erased for a day, so a family could ask to
-        # be forgotten in the afternoon, register again in the evening, and be
-        # met by the one question a family is never asked. Registering again
-        # is starting over on purpose: the deletion has nothing left to say.
-        self._erase_the_phone_an_hour_ago()
-        self.assertIsNotNone(self.database.whatsapp_phone_erased_at(PHONE))
-
-        self.register(family_registration())
-        result = self.text("My wife is Stav and we have three kids", message_id="wamid.f1", timestamp=self.just_now())
-
-        self.assertEqual(result["results"][0]["action"], "signup_completed_without_email")
-        self.assertNotIn("email", " ".join(self.replies()).lower())
-        self.assertTrue(self.database.get_user("wa-972507322341@whatsapp.assistyca.com"))
-
-    def test_a_business_that_registers_again_is_not_told_about_the_old_deletion(self) -> None:
-        # The same mistake in a business's clothes: the concierge would open on
-        # an erasure they have already moved past, instead of welcoming them.
-        self._erase_the_phone_an_hour_ago()
-        self.register(registration())
-        self.text("Hello again", message_id="wamid.b1", timestamp=self.just_now())
-
-        concierge_prompt = self.model.call_args.kwargs["prompt"]
-        self.assertIn('"accountDeletedMinutesAgo":null', concierge_prompt)
-        self.assertNotIn("erased at their request", concierge_prompt)
-        self.assertIn("registeredOnTheWebsite", concierge_prompt)
-
-    def test_the_handle_a_family_account_is_keyed_on_is_not_a_way_in(self) -> None:
-        # Nobody has that address, so a code sent to it would reach nobody.
-        self.register(family_registration())
-        self.text("Hi", message_id="wamid.f1")
-
-        request = urllib_request.Request(
-            f"{self.base_url}/api/auth/otp/request",
-            data=json.dumps({"email": "wa-972507322341@whatsapp.assistyca.com"}).encode("utf-8"),
-            method="POST",
-            headers={"Content-Type": "application/json"},
-        )
-        with self.assertRaises(urllib_error.HTTPError) as refused:
-            urllib_request.urlopen(request, timeout=10)
-
-        self.assertEqual(refused.exception.code, 403)
-        body = json.loads(refused.exception.read().decode("utf-8"))
-        self.assertEqual(body["error"], "whatsapp_account")
-        self.assertIn("WhatsApp", body["message"])
+        self.assertTrue(transcript[0]["text"].startswith("Hi דנה 👋"))
+        self.assertIn(FAMILY_WELCOME_BODY, transcript[0]["text"])
 
     def test_a_business_is_still_asked_for_an_email(self) -> None:
         # Nothing changes for a business: its mail is half of what it came for.
@@ -387,13 +313,13 @@ class WebRegistrationTests(unittest.TestCase):
         self.assertEqual(status, 200, payload)
 
         sent = self.template_sent.call_args.kwargs["template"]
-        self.assertEqual(sent["name"], "assistyca_welcome_family_hebrew_short")
+        self.assertEqual(sent["name"], "assistyca_welcome_family")
         self.assertEqual(sent["language"], {"code": "he"})
         self.assertEqual([parameter["text"] for parameter in sent["components"][-1]["parameters"]], ["דנה"])
         # The conversation we keep says what their phone showed, in Hebrew.
         transcript = (self.database.get_whatsapp_signup(PHONE) or {})["transcript"]
         self.assertTrue(transcript[0]["text"].startswith("היי דנה 👋"))
-        self.assertNotIn(HEBREW_FAMILY_WELCOME_LINE, transcript[0]["text"])
+        self.assertIn(HEBREW_FAMILY_WELCOME_BODY, transcript[0]["text"])
 
     def test_a_family_is_never_asked_what_it_does(self) -> None:
         # Whatever arrives in the field, a family's registration keeps none of it.

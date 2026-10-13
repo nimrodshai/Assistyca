@@ -335,8 +335,7 @@ from packages.infrastructure.whatsapp_agent_chat import send_with_link_buttons
 from packages.infrastructure.whatsapp_agent_chat import sign_in_link_buttons
 from packages.infrastructure.whatsapp_agent_chat import resolve_whatsapp_signup_daily_cap
 from packages.infrastructure.whatsapp_agent_chat import whatsapp_signup_enabled
-from packages.infrastructure.registration_welcome import registration_welcome_attempts
-from packages.infrastructure.registration_welcome import resolve_registration_welcome_template
+from packages.infrastructure.registration_welcome import registration_welcome_plan
 from packages.infrastructure.whatsapp_agent_chat import flatten_for_template
 from packages.infrastructure.whatsapp_portal_service import PortalWhatsAppService
 from packages.infrastructure.whatsapp_portal_service import build_portal_service_from_connection
@@ -15612,30 +15611,31 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             })
             return
 
-        # An approved template: the business welcome, or the family one in
-        # the language their name was typed in. A family's is sent with the
-        # name alone first and with the family line only if Meta will not take
-        # that, so which words went out is known after the send, not before.
-        template = resolve_registration_welcome_template(base_url=self._public_base_url(), kind=kind, name=name)
-        attempts = registration_welcome_attempts(name=name, kind=kind)
-        welcome = attempts[0].message
+        # An approved template: the welcome of their kind, in the language
+        # their name was typed in, with the earlier approved ones behind it
+        # while Meta reviews the new - so which words went out is known
+        # after the send, not before.
+        plan = registration_welcome_plan(base_url=self._public_base_url(), kind=kind, name=name)
+        welcome = plan[0].message
         variables_sent = 0
+        template_sent = ""
         sent_message_id = ""
         send_error = ""
-        for attempt in attempts:
+        for template in plan:
             for header_image_url in (template.header_image_url, ""):
                 try:
                     sent_message_id = send_whatsapp_notification(
                         recipient_wa_id=phone,
-                        message_text=flatten_for_template(attempt.message),
+                        message_text=flatten_for_template(template.message),
                         template_name=template.name,
                         template_language=template.language,
-                        template_parameters=attempt.parameters,
+                        template_parameters=list(template.parameters),
                         template_header_image_url=header_image_url,
                     )
                     send_error = ""
-                    welcome = attempt.message
-                    variables_sent = len(attempt.parameters)
+                    welcome = template.message
+                    variables_sent = len(template.parameters)
+                    template_sent = f"{template.name}:{template.language}"
                     break
                 except Exception as exc:  # noqa: BLE001 - the registration stands; the page gets another way in
                     send_error = str(exc)
@@ -15648,10 +15648,10 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 print("Web registration welcome retried without its header image.", flush=True)
             if sent_message_id:
                 break
-            if attempt is not attempts[-1]:
-                # A count Meta does not expect is refused whole. A family with
-                # one line too many is better than a family with no welcome.
-                print("Web registration welcome retried with the line in {{2}}.", flush=True)
+            if template is not plan[-1]:
+                # A template Meta is still reviewing is refused whole. An older
+                # welcome, in English, is better than no welcome.
+                print(f"Web registration welcome retried with the earlier template after {template.name} ({template.language}).", flush=True)
 
         # The signup conversation starts with the welcome, so the reply to it
         # is answered as a reply and not as a first hello. It is written down
@@ -15669,6 +15669,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                     # short family templates this is the only place it is
                     # written down.
                     "welcomeVariables": variables_sent,
+                    "welcomeTemplate": template_sent,
                     "sendError": send_error[:200],
                 },
                 ensure_ascii=True,

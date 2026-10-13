@@ -8,7 +8,8 @@ from packages.infrastructure.notification_delivery import send_whatsapp_notifica
 from packages.infrastructure.registration_welcome import REGISTRATION_WELCOME_CLOSING
 from packages.infrastructure.registration_welcome import build_registration_welcome_message
 from packages.infrastructure.registration_welcome import REGISTRATION_WELCOME_LINE
-from packages.infrastructure.registration_welcome import registration_welcome_attempts
+from packages.infrastructure.registration_welcome import HEBREW_REGISTRATION_WELCOME_LINE
+from packages.infrastructure.registration_welcome import registration_welcome_plan
 from packages.infrastructure.registration_welcome import registration_welcome_template_parameters
 from packages.infrastructure.registration_welcome import resolve_registration_welcome_template
 
@@ -63,61 +64,52 @@ class FamilyWelcomeTemplateTests(unittest.TestCase):
         with mock.patch.dict(os.environ, {}, clear=True):
             template = resolve_registration_welcome_template(kind="family", name="Dana Levi")
 
-        self.assertEqual((template.name, template.language), ("assistyca_welcome_family_english_short", "en"))
-        self.assertEqual(
-            [attempt.parameters for attempt in registration_welcome_attempts(name="Dana Levi", kind="family")],
-            [
-                ["Dana"],
-                ["Dana", 'No more "Did you remember to take Noah to soccer?". I\'ll keep track of who\'s '
-                 "taking who, and remind them in time."],
-            ],
-        )
+        self.assertEqual((template.name, template.language), ("assistyca_welcome_family", "en"))
+        self.assertEqual(template.parameters, ("Dana",))
+        self.assertTrue(template.message.startswith("Hi Dana 👋\nI'm your new assistant"))
 
     def test_a_family_with_a_hebrew_name_gets_the_hebrew_family_welcome(self) -> None:
         with mock.patch.dict(os.environ, {}, clear=True):
             template = resolve_registration_welcome_template(kind="family", name="יוני כהן")
 
-        self.assertEqual((template.name, template.language), ("assistyca_welcome_family_hebrew_short", "he"))
-        self.assertEqual(
-            [attempt.parameters for attempt in registration_welcome_attempts(name="יוני כהן", kind="family")],
-            [
-                ["יוני"],
-                ["יוני", 'בואו נשים סוף להודעות כמו "זכרת לקחת את יוני לכדורגל?". אני אעקוב מי לוקח את מי, '
-                 "ואזכיר להם בזמן."],
-            ],
-        )
+        self.assertEqual((template.name, template.language), ("assistyca_welcome_family", "he"))
+        self.assertEqual(template.parameters, ("יוני",))
+        self.assertTrue(template.message.startswith("היי יוני 👋\nאני העוזר החדש שלך!"))
 
-    def test_a_business_is_sent_one_shape_with_both_variables(self) -> None:
-        for name in ("Dana Levi", "יוני כהן", ""):
-            with self.subTest(name=name):
-                attempts = registration_welcome_attempts(name=name, kind="business")
-                self.assertEqual([len(attempt.parameters) for attempt in attempts], [2])
-
-    def test_a_family_always_has_the_two_variable_shape_to_fall_back_on(self) -> None:
-        """Meta refuses a send whose count does not match, and refuses it whole.
-
-        Dropping a variable the template has got "(#132000) Number of
-        parameters does not match the expected number of params" on
-        2026-09-23 and a family with no welcome at all. The short templates
-        were not read before they were wired in, so the old shape stays
-        behind the new one.
-        """
+    def test_the_earlier_english_family_welcome_stands_behind_both(self) -> None:
+        """Meta refuses a template it is still reviewing. The English family
+        welcome it approved earlier takes one variable like the new ones, so
+        it carries the welcome - in English - until the new pair is through.
+        The old Hebrew one is never tried: it has a name baked into its body
+        and no variable, which is why a Hebrew-named family used to get no
+        welcome at all."""
 
         for name in ("Dana Levi", "יוני כהן", ""):
-            with self.subTest(name=name):
-                attempts = registration_welcome_attempts(name=name, kind="family")
-                self.assertEqual([len(attempt.parameters) for attempt in attempts], [1, 2])
-                short, with_line = attempts
-                self.assertNotIn(with_line.parameters[1], short.message)
-                self.assertIn(with_line.parameters[1], with_line.message)
+            with self.subTest(name=name), mock.patch.dict(os.environ, {}, clear=True):
+                plan = registration_welcome_plan(kind="family", name=name)
+                self.assertEqual([(t.name, t.language) for t in plan], [
+                    ("assistyca_welcome_family", "he" if name == "יוני כהן" else "en"),
+                    ("assistyca_welcome_family_english_short", "en"),
+                ])
+                self.assertEqual([len(t.parameters) for t in plan], [1, 1])
+                self.assertTrue(plan[-1].message.startswith("Hi "))
+
+    def test_a_business_is_sent_both_variables_in_the_language_of_its_name(self) -> None:
+        with mock.patch.dict(os.environ, {}, clear=True):
+            english = registration_welcome_plan(kind="business", name="Dana Levi")
+            hebrew = registration_welcome_plan(kind="business", name="דנה לוי")
+        self.assertEqual([(t.name, t.language) for t in english], [("assistyca_welcome1", "en")])
+        self.assertEqual([(t.name, t.language) for t in hebrew], [("assistyca_welcome1", "he"), ("assistyca_welcome1", "en")])
+        self.assertEqual(hebrew[0].parameters, ("דנה", HEBREW_REGISTRATION_WELCOME_LINE))
+        self.assertTrue(hebrew[0].message.startswith("היי דנה 👋 אני אסיסטיקה"))
+        self.assertEqual(hebrew[1].parameters, ("דנה", REGISTRATION_WELCOME_LINE))
+        self.assertEqual([len(t.parameters) for t in english], [2])
 
     def test_any_other_language_gets_english(self) -> None:
         for name in ("Мария", "محمد", "José", ""):
-            with self.subTest(name=name):
-                self.assertEqual(
-                    resolve_registration_welcome_template(kind="family", name=name).name,
-                    "assistyca_welcome_family_english_short",
-                )
+            with self.subTest(name=name), mock.patch.dict(os.environ, {}, clear=True):
+                template = resolve_registration_welcome_template(kind="family", name=name)
+                self.assertEqual((template.name, template.language), ("assistyca_welcome_family", "en"))
 
     def test_a_family_welcome_carries_the_waving_robot(self) -> None:
         for name in ("Dana Levi", "דנה לוי"):
@@ -129,11 +121,10 @@ class FamilyWelcomeTemplateTests(unittest.TestCase):
                     "https://assistyca.com/assets/assistyca-whatsapp-header-family.jpg",
                 )
 
-    def test_a_business_keeps_its_welcome_whatever_the_language(self) -> None:
-        with mock.patch.dict(os.environ, {}, clear=True):
-            template = resolve_registration_welcome_template(kind="business", name="דנה לוי")
-
-        self.assertEqual((template.name, template.language), ("assistyca_welcome1", "en"))
+    def test_a_template_named_in_the_environment_stands_alone(self) -> None:
+        with mock.patch.dict(os.environ, {"WHATSAPP_REGISTRATION_WELCOME_TEMPLATE_NAME": "assistyca_welcome2"}, clear=True):
+            plan = registration_welcome_plan(kind="business", name="דנה לוי")
+        self.assertEqual([(t.name, t.language) for t in plan], [("assistyca_welcome2", "en")])
 
 
 class RegistrationWelcomeMessageTests(unittest.TestCase):

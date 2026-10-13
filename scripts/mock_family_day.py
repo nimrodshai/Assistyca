@@ -60,7 +60,7 @@ from packages.infrastructure import household  # noqa: E402
 from packages.infrastructure.chat_flow import describe_chat_flow  # noqa: E402
 from packages.infrastructure.family_week_nudges import FamilyWeekNudger, load_family_week_nudge_config  # noqa: E402
 from packages.infrastructure.openai_api import call_openai_response, load_openai_config  # noqa: E402
-from packages.infrastructure.registration_welcome import registration_welcome_attempts  # noqa: E402
+from packages.infrastructure.registration_welcome import registration_welcome_plan  # noqa: E402
 from packages.infrastructure.scheduled_actions import ScheduledActionScheduler, load_scheduled_action_config  # noqa: E402
 from packages.infrastructure.standing_tasks import StandingTaskRunner  # noqa: E402
 from packages.infrastructure.portal_auth.server import mint_agent_session_token  # noqa: E402
@@ -305,7 +305,7 @@ class Run:
     def setup(self) -> None:
         owner = self.family["owner"]
         self.db.start_web_registration(wa_id=owner["phone"], name=owner["name"], business=self.family["line"], kind="family")
-        welcome = registration_welcome_attempts(name=owner["name"], kind="family")[0].message
+        welcome = registration_welcome_plan(name=owner["name"], kind="family")[0].message
         self.db.append_whatsapp_signup_message(wa_id=owner["phone"], role="assistant", text=welcome)
         self.transcript.append({"role": "assistant", "text": welcome})
         self.say(f"welcome: {welcome!r}")
