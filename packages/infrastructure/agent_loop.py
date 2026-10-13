@@ -1328,11 +1328,36 @@ def _tool_delete_account(context: LoopContext, args: dict[str, Any]) -> dict[str
     return _error("internal", "Could not delete the account just now.", can_retry=True)
 
 
+def _scheduled_time_has_passed(run_at: str, *, now: datetime | None = None) -> bool:
+    """Whether a resolved send time is already behind the clock: "remind me
+    at 16:00" asked at 16:56 with today as the date. A reminder queued for
+    the past would go out the moment the scheduler looks, which is not a
+    reminder at all."""
+
+    try:
+        instant = datetime.fromisoformat(run_at.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    if instant.tzinfo is None:
+        instant = instant.replace(tzinfo=timezone.utc)
+    return instant <= (now or datetime.now(timezone.utc))
+
+
 def _tool_schedule_message(context: LoopContext, args: dict[str, Any]) -> dict[str, Any]:
     run_at = resolve_scheduled_message_run_at(_schedule_details(context, args))
     message_text = str(args.get("message_text") or "").strip()
     if not run_at:
         return _error("choice_required", _SCHEDULE_TIME_NEEDED)
+    if _scheduled_time_has_passed(run_at):
+        # The clock time they named has gone by today. They are in this
+        # conversation already, so a message now would tell them nothing:
+        # the only way on is a time still ahead.
+        return _error(
+            "time_passed",
+            f"{describe_local_time(run_at, context.timezone_name)} has already gone by, so nothing can be set for "
+            "then. Say so and ask for a time still ahead today, or whether they mean tomorrow. Do not offer to "
+            "remind them now: they are in this conversation already.",
+        )
     if not message_text:
         return _error("choice_required", "The message text is needed.")
     payload: dict[str, Any] = {"messageText": message_text}
@@ -4350,7 +4375,10 @@ _SCHEDULING = (
     "action cannot be set up here. A reminder, by contrast, is one message at one time. show_scheduled lists "
     "what is set and cancel_scheduled ends one; a person who says stop is not asking for a yes. Skipping "
     "one for some days - 'no summary while I'm away', 'hold the reminders until Sunday' - is add_exception, "
-    "not cancel_scheduled: it comes back by itself."
+    "not cancel_scheduled: it comes back by itself. A clock time that has already gone by today - 'remind "
+    "me at 16:00' when CONTEXT.now is 16:56 - cannot be set for today: say it has passed and ask for a time "
+    "still ahead. Never offer to remind them now; they are in this conversation with you already, so a "
+    "message now would tell them nothing."
 )
 
 _CONFIRMATION = (
