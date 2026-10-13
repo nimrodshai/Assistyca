@@ -21,14 +21,9 @@ const SETTINGS_PANEL_ANIMATION_MS = 320;
 const FEATURE_CONFIG_AUTOSAVE_DELAY_MS = 450;
 const ACCOUNT_PROFILE_AUTOSAVE_DELAY_MS = 500;
 const BILLING_ENTRY_REFRESH_COOLDOWN_MS = 20 * 1000;
-const WHATSAPP_EXTERNAL_OUTBOUND_TEXT = "You replied here - but the WhatsApp API doesn't let us read the content";
-const WHATSAPP_CONNECTION_POLL_MS = 15 * 1000;
 const SCHEDULED_ACTIONS_POLL_MS = 5 * 1000;
-const WHATSAPP_APPROVALS_POLL_MS = 5 * 1000;
 const NOTIFICATIONS_POLL_MS = 15 * 1000;
 const SCHEDULED_ACTIONS_REFRESH_ERROR_THRESHOLD = 3;
-const WHATSAPP_SAMPLE_CONFIRMATION_POLL_MS = 2 * 1000;
-const WHATSAPP_SAMPLE_CONFIRMATION_TIMEOUT_MS = 30 * 1000;
 const OPPORTUNITIES_OWNER_EMAIL = "nimrod.shai@gmail.com";
 const ADMIN_CLIENT_TYPES = [
   { value: "paying", label: "Paying", className: "is-client-type-paying" },
@@ -36,12 +31,8 @@ const ADMIN_CLIENT_TYPES = [
   { value: "qa", label: "QA", className: "is-client-type-qa" },
 ];
 const DEFAULT_ADMIN_CLIENT_TYPE = "demo";
-const ADMIN_ACCOUNT_TYPES = [
-  { value: "business", label: "Business" },
-  { value: "family", label: "Family" },
-];
-const VALID_TABS = new Set(["features", "opportunities", "clients", "account-types", "turns", "personal-details", "preview", "simulator", "billing", "pricing", "settings"]);
-const VALID_FEATURE_STUDIO_VIEWS = new Set(["overview", "activation", "editor", "history"]);
+const VALID_TABS = new Set(["features", "opportunities", "clients", "feature-switches", "turns", "personal-details", "billing", "pricing", "settings"]);
+const VALID_FEATURE_STUDIO_VIEWS = new Set(["overview", "editor"]);
 const TAB_ALIASES = new Map([
   ["guidance", "features"],
   ["tools", "features"],
@@ -50,6 +41,7 @@ const TAB_ALIASES = new Map([
   ["users", "clients"],
   ["accounts", "clients"],
   ["customers", "clients"],
+  ["account-types", "feature-switches"],
   ["personal", "personal-details"],
   ["profile", "personal-details"],
   ["details", "personal-details"],
@@ -58,9 +50,7 @@ const TAB_LABELS = {
   features: "Agent",
   opportunities: "Opportunities",
   clients: "Clients",
-  "personal-details": "About your business",
-  preview: "Preview",
-  simulator: "Simulator",
+  "personal-details": "About your family",
   turns: "Turns",
   billing: "Billing",
   pricing: "Pricing",
@@ -81,65 +71,13 @@ const SETTINGS_MODE_CONTENT = {
     description: "",
   },
 };
-const LOCAL_APPROVAL_URL = "../approval.html";
 const LOCAL_PORTAL_API_BASE = "http://127.0.0.1:8000";
-const META_WHATSAPP_ACCOUNTS_URL = "https://business.facebook.com/latest/settings/whatsapp_account";
-const SAVED_ACCESS_TOKEN_FIELD_VALUE = "................";
 const DEFAULT_BILLING_MINIMUM = 50.0;
 const DEFAULT_FEATURE_LAUNCH_URL = "";
 const MONITOR_FEATURE_ID = "scheduled-web-monitor-notifier";
-const REENGAGEMENT_FEATURE_ID = "whatsapp-business-follow-up-outreach-writer";
-const WHATSAPP_REPLY_ASSISTANT_FEATURE_ID = "whatsapp-business-reply-suggestion-assistant";
-const LEGACY_DEFAULT_FEATURE_NAMES = new Set([
-  "WhatsApp Business Reply Suggestion Assistant",
-  "WhatsApp Reply Approval Bot",
-]);
-const LEGACY_DEFAULT_FEATURE_MODES = new Set([
-  "suggestion_only",
-  "Approval bot",
-]);
-const LEGACY_DEFAULT_FEATURE_DESCRIPTION_PATTERNS = [
-  /drafts\s+suggested\s+whatsapp\s+replies/i,
-  /surfaces?\s+approvals?\s+inside\s+whatsapp/i,
-  /reusable\s+approval\s+page/i,
-];
 const BILLING_MODEL_COLORS = ["#17958a", "#2f7de1", "#d49a3a", "#8c96a3"];
 const DEFAULT_FEATURE_PRICING = {
   minimumMonthlyCharge: DEFAULT_BILLING_MINIMUM,
-};
-const PHONE_PLACEHOLDER_BY_COUNTRY = {
-  IL: "972559195101",
-  US: "15551234567",
-};
-const FEATURE_ACTIVATION_REQUIRED_KEYS = [
-  "business_account_id",
-  "phone_number_id",
-  "access_token",
-  "owner_wa_id",
-];
-const FEATURE_ACTIVATION_STEPS = [
-  "WABA ID",
-  "Phone number ID",
-  "Access token",
-  "Approval phone number",
-];
-const DEFAULT_FEATURE_WHATSAPP = {
-  business_account_id: "",
-  phone_number_id: "",
-  access_token: "",
-  access_token_configured: false,
-  workspace_access_token_configured: false,
-  backend_access_token_configured: false,
-  owner_wa_id: "",
-  connection_status: "not_connected",
-  display_phone_number: "",
-  verified_name: "",
-  connected_at: "",
-  last_tested_at: "",
-  configured: false,
-  live_send_enabled: false,
-  webhook_url: "",
-  metadata: {},
 };
 const DEFAULT_MONITOR_SETTINGS = {
   model: "gpt-5.5",
@@ -153,17 +91,6 @@ const DEFAULT_MONITOR_SETTINGS = {
   scheduleTimezone: "",
   scheduleStartAt: "",
   deliveryChannel: "email",
-  telegramChatId: "",
-};
-const DEFAULT_REENGAGEMENT_SETTINGS = {
-  model: "gpt-5.4-mini",
-  intervalDays: 7,
-  scheduleTimeLocal: "09:00",
-  scheduleTimezone: "",
-  inactivityValue: 6,
-  inactivityUnit: "months",
-  maxContextMessages: 100,
-  deliveryChannels: [],
   telegramChatId: "",
 };
 const MANUAL_PRICING_SNAPSHOT = {
@@ -225,38 +152,11 @@ const MANUAL_PRICING_SNAPSHOT = {
 };
 const MONITOR_INTERVAL_DAYS_MIN = 1;
 const MONITOR_INTERVAL_DAYS_MAX = 365;
-const REENGAGEMENT_INACTIVITY_VALUE_MIN = 1;
-const REENGAGEMENT_INACTIVITY_VALUE_MAX = 10000;
 const DEFAULT_MONITOR_SCHEDULE_TIME = "09:00";
 const DEFAULT_TOOL_MODEL = DEFAULT_MONITOR_SETTINGS.model;
 const DEFAULT_FEATURE_SETTINGS = {
   model: DEFAULT_TOOL_MODEL,
 };
-const DEFAULT_WHATSAPP_TOOL_SETTINGS = {
-  ...DEFAULT_FEATURE_SETTINGS,
-  deliveryChannels: [],
-  telegramChatId: "",
-};
-const WHATSAPP_TOOL_PLATFORM_OPTIONS = [
-  {
-    id: "whatsapp",
-    label: "WhatsApp",
-    shortLabel: "WA",
-    caption: "Connected workspace number",
-  },
-  {
-    id: "telegram",
-    label: "Telegram",
-    shortLabel: "TG",
-    caption: "Bot chat delivery",
-  },
-  {
-    id: "portal",
-    label: "This chat",
-    shortLabel: "CHAT",
-    caption: "Review drafts in Assistyca",
-  },
-];
 const DEFAULT_TOOL_MODEL_OPTIONS = MANUAL_PRICING_SNAPSHOT.cards.map((card) => ({
   id: String(card?.modelId || "").trim(),
   name: String(card?.modelName || card?.modelId || "Model").trim(),
@@ -274,7 +174,7 @@ const DEFAULT_PROMPT = {
     "Hand off when the customer is upset, the answer needs a human decision, or the request is urgent.",
   exampleReplies: "",
   responseStyle: "balanced",
-  scenario: "approval",
+  scenario: "monitor",
 };
 
 const DEFAULT_SETTINGS = {
@@ -282,89 +182,21 @@ const DEFAULT_SETTINGS = {
   workspaceName: "Assistyca",
   timezone: defaultTimeZone(),
 };
+// The household summary still travels under the businessSummary key the
+// backend has always read; only the words around it changed.
 const DEFAULT_ACCOUNT_PROFILE = {
   businessSummary: "",
-  customerNotes: "",
   assistantGuidance: "",
 };
 
 const DEFAULT_FEATURES = [
-  {
-    id: "whatsapp-business-reply-suggestion-assistant",
-    name: "WhatsApp Reply Assistant",
-    description: "Turns incoming WhatsApp questions into quick, human-reviewed replies that help you quote faster and book more work.",
-    channel: "WhatsApp",
-    mode: "Human-reviewed",
-    sortOrder: 100,
-    status: "non-active",
-    activated: false,
-    setupComplete: false,
-    launchUrl: DEFAULT_FEATURE_LAUNCH_URL,
-    pricing: { ...DEFAULT_FEATURE_PRICING },
-    prompt: { ...DEFAULT_PROMPT },
-    requirements: {
-      requiresWhatsAppConnection: true,
-    },
-    billing: {
-      required: true,
-      provider: "lemon_squeezy",
-      storeId: "",
-      productId: "",
-      variantId: "",
-    },
-    assignment: {},
-    paymentStatus: null,
-    metadata: {},
-    settings: { ...DEFAULT_FEATURE_SETTINGS },
-    savedSettings: { ...DEFAULT_FEATURE_SETTINGS },
-    whatsapp: { ...DEFAULT_FEATURE_WHATSAPP },
-    savedWhatsApp: { ...DEFAULT_FEATURE_WHATSAPP },
-  },
-  {
-    id: REENGAGEMENT_FEATURE_ID,
-    name: "WhatsApp Re-engagement Assistant",
-    description: "Helps you reconnect with past customers using ready-to-send WhatsApp follow-ups, so more quiet conversations turn back into active work.",
-    channel: "WhatsApp",
-    mode: "Weekly follow-up",
-    sortOrder: 110,
-    status: "non-active",
-    activated: false,
-    setupComplete: false,
-    launchUrl: DEFAULT_FEATURE_LAUNCH_URL,
-    pricing: { ...DEFAULT_FEATURE_PRICING },
-    prompt: {
-      ...DEFAULT_PROMPT,
-      replyRules:
-        "Use the saved conversation to write a warm, low-pressure re-engagement message that is specific, concise, and easy to copy into WhatsApp.",
-      businessNotes:
-        "Reference real context from the previous conversation when it helps. Never invent discounts, availability, or promises.",
-      scenario: "reengagement",
-    },
-    requirements: {
-      requiresWhatsAppConnection: true,
-    },
-    billing: {
-      required: true,
-      provider: "lemon_squeezy",
-      storeId: "",
-      productId: "",
-      variantId: "",
-    },
-    assignment: {},
-    paymentStatus: null,
-    metadata: {},
-    settings: { ...DEFAULT_REENGAGEMENT_SETTINGS },
-    savedSettings: { ...DEFAULT_REENGAGEMENT_SETTINGS },
-    whatsapp: { ...DEFAULT_FEATURE_WHATSAPP },
-    savedWhatsApp: { ...DEFAULT_FEATURE_WHATSAPP },
-  },
   {
     id: MONITOR_FEATURE_ID,
     name: "Scheduled Web Monitor",
     description: "Searches the web on a daily, weekly, or monthly schedule and sends source-backed alerts about the events, dates, and opportunities you care about.",
     channel: "Alerts",
     mode: "Scheduled search",
-    sortOrder: 120,
+    sortOrder: 100,
     status: "non-active",
     activated: false,
     setupComplete: false,
@@ -396,24 +228,8 @@ const DEFAULT_FEATURES = [
     },
     settings: { ...DEFAULT_MONITOR_SETTINGS },
     savedSettings: { ...DEFAULT_MONITOR_SETTINGS },
-    whatsapp: { ...DEFAULT_FEATURE_WHATSAPP },
-    savedWhatsApp: { ...DEFAULT_FEATURE_WHATSAPP },
   },
 ];
-
-const DEFAULT_SIMULATOR = {
-  composer: {
-    scenario: "approval",
-    senderName: "Maya Cohen",
-    senderWaId: "15551230000",
-    latestMessage: "Hi, can you quote a same-day leak repair at 14 King St? We’re comparing options now.",
-    threadContext:
-      "Need a quote for a leak repair at 14 King St.\nWe need the earliest slot and a rough price.\nCustomer is comparing options now.",
-    approvalUrl: LOCAL_APPROVAL_URL,
-  },
-  approvals: [],
-  selectedApprovalId: "",
-};
 
 const AGENT_INITIAL_MESSAGE = "";
 // There is one chat, like WhatsApp, and it keeps the last hundred messages.
@@ -719,44 +535,6 @@ const AGENT_BLUEPRINTS = {
     ],
     alternatives: ["Email", "Telegram", "WhatsApp after setup", "Notifications"],
   },
-  whatsappReplies: {
-    type: "whatsapp-replies",
-    title: "WhatsApp reply assistant",
-    summary:
-      "Use WhatsApp skills to draft replies for incoming leads while keeping every send under human control.",
-    response:
-      "I can use the WhatsApp reply skill for this. If the WhatsApp Business API is not connected yet, I will guide you through the required IDs and access token, then keep manual approval in place.",
-    relatedFeatureId: WHATSAPP_REPLY_ASSISTANT_FEATURE_ID,
-    primaryActionLabel: "Create WhatsApp helper",
-    setupActionLabel: "Open WhatsApp setup",
-    missingCredential: "WhatsApp Business API access token",
-    skills: [
-      {
-        label: "WhatsApp listener",
-        detail: "Receives new customer messages from the connected workspace number.",
-      },
-      {
-        label: "Reply drafter",
-        detail: "Writes short, grounded responses using your business context.",
-      },
-      {
-        label: "Human approval",
-        detail: "Sends drafts for review before anything goes to the customer.",
-      },
-    ],
-    helpers: [
-      {
-        name: "WhatsApp Reply Agent",
-        purpose: "Watch inbound leads and prepare approval-ready reply drafts.",
-      },
-    ],
-    questions: [
-      "Which WhatsApp number should be connected?",
-      "Who approves reply drafts?",
-      "What should the assistant never promise without you?",
-    ],
-    alternatives: ["Manual copy/paste", "Telegram alerts", "Email alerts"],
-  },
   scheduledMessage: {
     type: "scheduled-message",
     title: "Scheduled message",
@@ -811,44 +589,6 @@ const AGENT_BLUEPRINTS = {
     ],
     questions: ["What should I check?", "How often should I check it?"],
     alternatives: [],
-  },
-  reengagement: {
-    type: "reengagement",
-    title: "Customer re-engagement",
-    summary:
-      "Create a recurring helper that finds quiet WhatsApp conversations and drafts warm follow-ups.",
-    response:
-      "I can help with past-customer follow-up. I would use the saved WhatsApp history, run on a schedule, and generate reviewable follow-up drafts without sending automatically.",
-    relatedFeatureId: REENGAGEMENT_FEATURE_ID,
-    primaryActionLabel: "Create follow-up helper",
-    setupActionLabel: "Open follow-up setup",
-    missingCredential: "WhatsApp history or connected WhatsApp",
-    skills: [
-      {
-        label: "Conversation history",
-        detail: "Reads saved WhatsApp exports or connected message history.",
-      },
-      {
-        label: "Dormancy detector",
-        detail: "Finds conversations that have been quiet longer than your rule.",
-      },
-      {
-        label: "Follow-up writer",
-        detail: "Drafts low-pressure messages for review.",
-      },
-    ],
-    helpers: [
-      {
-        name: "Re-engagement Agent",
-        purpose: "Find quiet conversations and prepare follow-up drafts.",
-      },
-    ],
-    questions: [
-      "How long should a conversation be quiet before follow-up?",
-      "How often should the helper check?",
-      "Where should drafts be delivered?",
-    ],
-    alternatives: ["WhatsApp approval", "Telegram alerts", "Email alerts"],
   },
   custom: {
     type: "custom",
@@ -960,42 +700,6 @@ const AGENT_PROPOSAL_FIELD_SCHEMAS = {
     { key: "sourceFileName", question: "Which file should I use?", requiredWhen: "source-file" },
     { key: "frequency", question: "How often should I check?", actions: ["Hourly", "Daily", "Weekly"] },
   ],
-  "whatsapp-replies": [
-    {
-      key: "whatsappNumber",
-      question: "Which WhatsApp number should I use?",
-    },
-    {
-      key: "approver",
-      question: "Who should approve reply drafts?",
-    },
-    {
-      key: "guardrails",
-      question: "What should I never promise without you?",
-    },
-    {
-      key: "deliveryChannel",
-      question: "Where should I bring reply drafts for your review?",
-      actions: ["This chat", "WhatsApp", "Telegram"],
-    },
-  ],
-  reengagement: [
-    {
-      key: "inactivityPeriod",
-      question: "How long should a conversation be quiet before I suggest a follow-up?",
-      actions: ["1 month", "3 months", "6 months"],
-    },
-    {
-      key: "frequency",
-      question: "How often should I check?",
-      actions: ["Daily", "Weekly"],
-    },
-    {
-      key: "deliveryChannel",
-      question: "Where should I send drafts for review?",
-      actions: ["WhatsApp", "Email", "Telegram"],
-    },
-  ],
   custom: [
     {
       key: "result",
@@ -1068,18 +772,6 @@ const AGENT_PROPOSAL_FIELD_ALIASES = {
   time_window: "timeWindow",
   timewindow: "timeWindow",
   period: "timeWindow",
-  number: "whatsappNumber",
-  whatsapp_number: "whatsappNumber",
-  whatsappnumber: "whatsappNumber",
-  approver: "approver",
-  reviewer: "approver",
-  guardrails: "guardrails",
-  restrictions: "guardrails",
-  inactivity: "inactivityPeriod",
-  inactivity_period: "inactivityPeriod",
-  inactivityperiod: "inactivityPeriod",
-  quiet_period: "inactivityPeriod",
-  quietperiod: "inactivityPeriod",
   result: "result",
   output: "result",
   folder: "outputFolder",
@@ -1137,76 +829,7 @@ function isLegacyWorkspaceName(value) {
   return LEGACY_WORKSPACE_NAMES.has(normalizeBrandName(value));
 }
 
-function isLegacyDefaultFeatureDescription(value) {
-  const text = String(value || "").trim();
-  if (!text) {
-    return false;
-  }
-
-  return LEGACY_DEFAULT_FEATURE_DESCRIPTION_PATTERNS.some((pattern) => pattern.test(text));
-}
-
 const SCENARIOS = {
-  approval: {
-    label: "Hot lead",
-    sender: "Maya Cohen",
-    meta: "After-hours quote request",
-    user: "Hi, can you quote a same-day leak repair at 14 King St? We’re comparing options now.",
-    ask: "Absolutely. Send me a photo and your address, and I’ll confirm pricing and the earliest slot right away.",
-    insight: "Keeps fresh leads from going cold while you’re busy on another job.",
-    exactReply: true,
-  },
-  availability: {
-    label: "Booking request",
-    sender: "Maya Cohen",
-    meta: "New inquiry",
-    user: "Hi, are you available tomorrow afternoon?",
-    ask: "Let me check what works best. What address should I look at?",
-    insight: "Shows customers you’re responsive before they move on.",
-  },
-  pricing: {
-    label: "Quote request",
-    sender: "Oren Levy",
-    meta: "Price comparison",
-    user: "How much would it cost to replace the lock?",
-    ask: "I can give you a proper price once I know the door type and lock model.",
-    insight: "Gets the details you need before quoting blind.",
-  },
-  reschedule: {
-    label: "Schedule change",
-    sender: "Dana Klein",
-    meta: "Existing customer",
-    user: "Can we move the appointment by one day?",
-    ask: "Yes, I can check that. What time window would work for you?",
-    insight: "Keeps repeat business moving without a phone call.",
-  },
-  urgent: {
-    label: "Escalation",
-    sender: "Customer",
-    meta: "Needs a human",
-    user: "The door is stuck and I need help right now.",
-    ask: "I’m flagging this for immediate human follow-up so someone can help you as fast as possible.",
-    insight: "Makes urgent jobs impossible to miss.",
-  },
-  reengagement: {
-    label: "Dormant client",
-    sender: "Maya Cohen",
-    meta: "6+ months since the last thread",
-    user: "Thanks, I’ll think about it and get back to you.",
-    messages: [
-      {
-        direction: "incoming",
-        text: "Thanks, I’ll think about it and get back to you.",
-      },
-      {
-        direction: "outgoing",
-        text: "👍",
-      },
-    ],
-    ask: "Hi Maya, just checking in in case you still need help with the leak repair we discussed. If you want to pick it back up, send me a message and I’ll take it from there.",
-    insight: "Keeps old conversations from going cold without sounding pushy.",
-    exactReply: true,
-  },
   monitor: {
     label: "Scheduled alert",
     sender: "Scheduled monitor",
@@ -1217,58 +840,14 @@ const SCENARIOS = {
   },
 };
 
-const SIMULATOR_PRESETS = {
-  approval: {
-    senderName: SCENARIOS.approval.sender,
-    senderWaId: "15551230000",
-    latestMessage: SCENARIOS.approval.user,
-    threadContext:
-      "Can you fit me in later today?\nI can check my calendar now.\nIf not, tomorrow afternoon works too.",
-    approvalUrl: LOCAL_APPROVAL_URL,
-  },
-  availability: {
-    senderName: SCENARIOS.availability.sender,
-    senderWaId: "15551230001",
-    latestMessage: SCENARIOS.availability.user,
-    threadContext:
-      "Hi, are you available tomorrow afternoon?\nLet me check the schedule.\nGreat, thanks.",
-    approvalUrl: LOCAL_APPROVAL_URL,
-  },
-  pricing: {
-    senderName: SCENARIOS.pricing.sender,
-    senderWaId: "15551230002",
-    latestMessage: SCENARIOS.pricing.user,
-    threadContext:
-      "How much would it cost to replace the lock?\nI can quote it once I know the lock type.\nGot it, I’ll send a photo.",
-    approvalUrl: LOCAL_APPROVAL_URL,
-  },
-  reschedule: {
-    senderName: SCENARIOS.reschedule.sender,
-    senderWaId: "15551230003",
-    latestMessage: SCENARIOS.reschedule.user,
-    threadContext:
-      "Can we move the appointment by one day?\nYes, I can check what’s open.\nPerfect.",
-    approvalUrl: LOCAL_APPROVAL_URL,
-  },
-  urgent: {
-    senderName: SCENARIOS.urgent.sender,
-    senderWaId: "15551230004",
-    latestMessage: SCENARIOS.urgent.user,
-    threadContext:
-      "The door is stuck and I need help right now.\nI’m escalating this to a person immediately.\nThanks, please hurry.",
-    approvalUrl: LOCAL_APPROVAL_URL,
-  },
-};
-
 const state = {
   activeTab: "features",
   settingsMode: "account",
   settingsOpen: false,
-  accountTypes: null,
-  accountTypesLoading: false,
-  accountTypesError: "",
-  accountTypesBusy: {},
-  adminAccountTypeBusyByEmail: {},
+  featureSwitches: null,
+  featureSwitchesLoading: false,
+  featureSwitchesError: "",
+  featureSwitchesBusy: {},
   agentTurns: null,
   agentTurnsLoading: false,
   agentTurnsError: "",
@@ -1302,20 +881,6 @@ const state = {
   notificationCenterOpen: false,
   selectedFeatureId: null,
   featureStudioView: "overview",
-  featureActivationNotice: "",
-  featureActivationFieldErrors: {},
-  whatsappHistory: null,
-  whatsappHistoryLoading: false,
-  whatsappHistoryImportBusy: false,
-  whatsappHistoryDeleteBusy: false,
-  whatsappHistoryDeleteTargetId: "",
-  whatsappHistoryImportStatus: "",
-  whatsappHistoryImportError: "",
-  whatsappHistoryError: "",
-  whatsappHistorySelectedConversationId: "",
-  whatsappHistoryLoadedAt: 0,
-  whatsappHistoryEmail: "",
-  whatsappConnection: null,
   whatsappLinkedPhones: [],
   whatsappLinkedPhonesLoading: false,
   whatsappLinkedPhonesError: "",
@@ -1361,7 +926,6 @@ const state = {
   agentCalendarSourcesLoadedAt: 0,
   agentCalendarSourcesError: "",
   paymentStatus: null,
-  selectedSimulatorId: null,
   billingReport: null,
   billingLoading: false,
   billingError: "",
@@ -1370,8 +934,6 @@ const state = {
   pricingLoading: false,
   pricingError: "",
   monitorWatchItemDraft: "",
-  reengagementDemoResult: null,
-  reengagementDemoDrafts: {},
   lastPrimaryTab: normalizeTab(loadJson(LAST_PRIMARY_TAB_KEY, "features")) || "features",
 };
 
@@ -1433,7 +995,6 @@ const AGENT_VOICE_MIME_CANDIDATES = [
 ];
 let agentAttachSourceMenuOpen = false;
 let agentAttachSourceMenuMode = "options";
-let featureActivationBusy = false;
 let featureActivationTransitionBusy = false;
 let featureActivationTransitionTargetId = "";
 let featureActivationTransitionAction = "";
@@ -1451,17 +1012,8 @@ const agentActionLifecycleBusy = new Set();
 const agentActionChoiceSelections = new Map();
 const agentLocalActionSettingsBusy = new Set();
 const agentFolderContents = new Map();
-let reengagementDemoRunBusy = false;
-let reengagementDemoRunTargetId = "";
-let reengagementDemoRunRequestId = "";
-let reengagementDemoRunCancelling = false;
-let reengagementDemoRunCancellationError = "";
-let reengagementDemoRunOverlayVisible = false;
-let whatsappSampleMessageBusy = false;
 let agentAddToolMenuOpenFrame = null;
 let agentAddToolMenuCloseTimer = null;
-let whatsappSampleMessageTargetId = "";
-let whatsappHistoryRefreshPromise = null;
 let whatsappLinkedPhonesRefreshPromise = null;
 let whatsappLinkCodeExpiryTimer = null;
 let featureConfigBusy = false;
@@ -1469,16 +1021,10 @@ let featureConfigSavePromise = null;
 const featureConfigAutosaveTimers = new Map();
 let accountProfileAutosaveTimer = null;
 let accountProfileSavePromise = null;
-let whatsappConnectionPollTimer = null;
-let whatsappConnectionPollInFlight = false;
-let whatsappConnectionPollActive = false;
-let whatsappConnectionPollFeatureId = "";
 let scheduledActionsPollTimer = null;
 let notificationsPollTimer = null;
 let scheduledActionsRefreshPromise = null;
 let sourceActionsRefreshPromise = null;
-let whatsappApprovalsPollTimer = null;
-let whatsappApprovalsRefreshPromise = null;
 let agentActionSpotlightId = "";
 let agentActionSpotlightTimer = null;
 
@@ -1586,15 +1132,10 @@ const elements = {
   featureStudioNav: document.querySelector("#featureStudioNav"),
   featureStudioOverviewButton: document.querySelector("#featureStudioOverviewButton"),
   featureStudioEditorButton: document.querySelector("#featureStudioEditorButton"),
-  featureStudioActivationSection: document.querySelector("#featureStudioActivationSection"),
   featureStudioStatus: document.querySelector("#featureStudioStatus"),
   featureStudioOverviewSection: document.querySelector("#featureStudioOverviewSection"),
-  featureStudioActivationButton: document.querySelector("#featureStudioActivationButton"),
-  featureActivationDisconnectButton: document.querySelector("#featureActivationDisconnectButton"),
   featureStudioEditorSection: document.querySelector("#toolEditorSection"),
   featureStudioEditorToggleButton: document.querySelector("#featureStudioEditorToggleButton"),
-  featureStudioWhatsAppSampleButton: document.querySelector("#featureStudioWhatsAppSampleButton"),
-  featureStudioWhatsAppHistoryButton: document.querySelector("#featureStudioWhatsAppHistoryButton"),
   featureStudioMonitorRunButton: document.querySelector("#featureStudioMonitorRunButton"),
   featureStudioTitle: document.querySelector("#featureStudioTitle"),
   featureStudioDescription: document.querySelector("#featureStudioDescription"),
@@ -1605,37 +1146,6 @@ const elements = {
   featureStudioExampleMessage: document.querySelector("#featureStudioExampleMessage"),
   featureStudioExampleReply: document.querySelector("#featureStudioExampleReply"),
   featureStudioLaunchButton: document.querySelector("#featureStudioLaunchButton"),
-  featureActivationBusinessAccountIdInput: document.querySelector("#featureActivationBusinessAccountId"),
-  featureActivationBusinessAccountIdHelpButton: document.querySelector("#featureActivationBusinessAccountIdHelpButton"),
-  featureActivationPhoneNumberIdInput: document.querySelector("#featureActivationPhoneNumberId"),
-  featureActivationPhoneNumberIdHelpButton: document.querySelector("#featureActivationPhoneNumberIdHelpButton"),
-  featureActivationCustomerNumberCard: document.querySelector("#featureActivationCustomerNumberCard"),
-  featureActivationCustomerNumberValue: document.querySelector("#featureActivationCustomerNumberValue"),
-  featureActivationCustomerNumberHelp: document.querySelector("#featureActivationCustomerNumberHelp"),
-  featureActivationBusinessAccountIdError: document.querySelector("#featureActivationBusinessAccountIdError"),
-  featureActivationPhoneNumberIdError: document.querySelector("#featureActivationPhoneNumberIdError"),
-  whatsappGuidedConnect: document.querySelector("#whatsappGuidedConnect"),
-  whatsappGuidedConnectButton: document.querySelector("#whatsappGuidedConnectButton"),
-  whatsappGuidedConnectStatus: document.querySelector("#whatsappGuidedConnectStatus"),
-  whatsappManualToggle: document.querySelector("#whatsappManualToggle"),
-  whatsappManualFields: document.querySelector("#whatsappManualFields"),
-  featureActivationAccessTokenInput: document.querySelector("#featureActivationAccessToken"),
-  featureActivationAccessTokenHelp: document.querySelector("#featureActivationAccessTokenHelp"),
-  featureActivationAccessTokenError: document.querySelector("#featureActivationAccessTokenError"),
-  featureActivationOwnerWaIdInput: document.querySelector("#featureActivationOwnerWaId"),
-  featureActivationOwnerWaIdError: document.querySelector("#featureActivationOwnerWaIdError"),
-  featureActivationNumberStatusTitle: document.querySelector("#featureActivationNumberStatusTitle"),
-  featureActivationNumberStatusCopy: document.querySelector("#featureActivationNumberStatusCopy"),
-  featureActivationWebhookStatusTitle: document.querySelector("#featureActivationWebhookStatusTitle"),
-  featureActivationWebhookStatusCopy: document.querySelector("#featureActivationWebhookStatusCopy"),
-  featureActivationInboundStatusTitle: document.querySelector("#featureActivationInboundStatusTitle"),
-  featureActivationInboundStatusCopy: document.querySelector("#featureActivationInboundStatusCopy"),
-  featureActivationOwnerStatusTitle: document.querySelector("#featureActivationOwnerStatusTitle"),
-  featureActivationOwnerStatusCopy: document.querySelector("#featureActivationOwnerStatusCopy"),
-  featureActivationWebhookHint: document.querySelector("#featureActivationWebhookHint"),
-  featureActivationResult: document.querySelector("#featureActivationResult"),
-  featureActivationResultIcon: document.querySelector("#featureActivationResultIcon"),
-  featureActivationResultText: document.querySelector("#featureActivationResultText"),
   monitorTargetCard: document.querySelector("#monitorTargetCard"),
   monitorScheduleCard: document.querySelector("#monitorScheduleCard"),
   monitorDeliveryCard: document.querySelector("#monitorDeliveryCard"),
@@ -1651,48 +1161,15 @@ const elements = {
   monitorNextRun: document.querySelector("#monitorNextRun"),
   monitorNextRunValue: document.querySelector("#monitorNextRunValue"),
   monitorDeliveryChannel: document.querySelector("#monitorDeliveryChannel"),
-  deliveryPlatformManager: document.querySelector("#deliveryPlatformManager"),
-  deliveryPlatformList: document.querySelector("#deliveryPlatformList"),
-  deliveryPlatformAddButton: document.querySelector("#deliveryPlatformAddButton"),
-  deliveryPlatformMenu: document.querySelector("#deliveryPlatformMenu"),
   monitorEmailField: document.querySelector("#monitorEmailField"),
   monitorEmailSummary: document.querySelector("#monitorEmailSummary"),
   monitorTelegramField: document.querySelector("#monitorTelegramField"),
   monitorTelegramChatId: document.querySelector("#monitorTelegramChatId"),
   monitorWhatsAppField: document.querySelector("#monitorWhatsAppField"),
-  monitorWhatsAppSetupButton: document.querySelector("#monitorWhatsAppSetupButton"),
-  reengagementScheduleCard: document.querySelector("#reengagementScheduleCard"),
-  reengagementIntervalDays: document.querySelector("#reengagementIntervalDays"),
-  reengagementScheduleTime: document.querySelector("#reengagementScheduleTime"),
-  reengagementScheduleTimezoneLabel: document.querySelector("#reengagementScheduleTimezoneLabel"),
-  reengagementInactivityValue: document.querySelector("#reengagementInactivityValue"),
-  reengagementInactivityUnit: document.querySelector("#reengagementInactivityUnit"),
-  reengagementNextRun: document.querySelector("#reengagementNextRun"),
-  reengagementNextRunValue: document.querySelector("#reengagementNextRunValue"),
-  reengagementDemoResultsCard: document.querySelector("#reengagementDemoResultsCard"),
-  reengagementDemoResultsSummary: document.querySelector("#reengagementDemoResultsSummary"),
-  reengagementDemoResultsList: document.querySelector("#reengagementDemoResultsList"),
   featureModelCard: document.querySelector("#featureModelCard"),
   featureModelSelect: document.querySelector("#featureModelSelect"),
   featureModelBand: document.querySelector("#featureModelBand"),
   featureModelSummary: document.querySelector("#featureModelSummary"),
-  featureToneCard: document.querySelector("#featureToneCard"),
-  featureRulesCard: document.querySelector("#featureRulesCard"),
-  featureContextCard: document.querySelector("#featureContextCard"),
-  featureStudioWhatsAppHealthNotice: document.querySelector("#featureStudioWhatsAppHealthNotice"),
-  featureStudioWhatsAppHealthNoticeTitle: document.querySelector("#featureStudioWhatsAppHealthNoticeTitle"),
-  featureStudioWhatsAppHealthNoticeCopy: document.querySelector("#featureStudioWhatsAppHealthNoticeCopy"),
-  whatsappHistorySection: document.querySelector("#whatsappHistorySection"),
-  whatsappHistoryFileInput: document.querySelector("#whatsappHistoryFileInput"),
-  whatsappHistoryImportStatus: document.querySelector("#whatsappHistoryImportStatus"),
-  whatsappHistoryDiagnostics: document.querySelector("#whatsappHistoryDiagnostics"),
-  whatsappHistoryConversationList: document.querySelector("#whatsappHistoryConversationList"),
-  whatsappHistorySelectedAvatar: document.querySelector("#whatsappHistorySelectedAvatar"),
-  whatsappHistorySelectedTitle: document.querySelector("#whatsappHistorySelectedTitle"),
-  whatsappHistorySelectedMeta: document.querySelector("#whatsappHistorySelectedMeta"),
-  whatsappHistorySelectedCount: document.querySelector("#whatsappHistorySelectedCount"),
-  whatsappHistoryDeleteButton: document.querySelector("#whatsappHistoryDeleteButton"),
-  whatsappHistoryMessages: document.querySelector("#whatsappHistoryMessages"),
   accountMenuButton: document.querySelector("#accountMenuButton"),
   accountMenu: document.querySelector("#accountMenu"),
   notificationCenterButton: document.querySelector("#notificationCenterButton"),
@@ -1713,9 +1190,9 @@ const elements = {
   opportunitiesList: document.querySelector("#opportunitiesList"),
   opportunitiesRefreshButton: document.querySelector("#opportunitiesRefreshButton"),
   turnsPanel: document.querySelector("#turnsPanel"),
-  accountTypesPanel: document.querySelector("#accountTypesPanel"),
-  accountTypesContent: document.querySelector("#accountTypesContent"),
-  accountTypesRefreshButton: document.querySelector("#accountTypesRefreshButton"),
+  featureSwitchesPanel: document.querySelector("#featureSwitchesPanel"),
+  featureSwitchesContent: document.querySelector("#featureSwitchesContent"),
+  featureSwitchesRefreshButton: document.querySelector("#featureSwitchesRefreshButton"),
   turnsSummary: document.querySelector("#turnsSummary"),
   turnsList: document.querySelector("#turnsList"),
   turnsRefreshButton: document.querySelector("#turnsRefreshButton"),
@@ -1723,11 +1200,8 @@ const elements = {
   personalDetailsPanel: document.querySelector("#personalDetailsPanel"),
   personalDetailsPreviewCard: document.querySelector("#personalDetailsPreviewCard"),
   profileBusinessSummaryInput: document.querySelector("#profileBusinessSummaryInput"),
-  profileCustomerNotesInput: document.querySelector("#profileCustomerNotesInput"),
   profileAssistantGuidanceInput: document.querySelector("#profileAssistantGuidanceInput"),
   personalDetailsPreview: document.querySelector("#personalDetailsPreview"),
-  previewPanel: document.querySelector("#previewPanel"),
-  simulatorPanel: document.querySelector("#simulatorPanel"),
   billingPanel: document.querySelector("#billingPanel"),
   billingBackButton: document.querySelector("#backToToolsButton"),
   pricingPanel: document.querySelector("#pricingPanel"),
@@ -1764,38 +1238,6 @@ const elements = {
   settingsSwitcher: document.querySelector("#settingsSwitcher"),
   settingsTitle: document.querySelector("#settingsTitle"),
   settingsDescription: document.querySelector("#settingsDescription"),
-  toneGuidance: document.querySelector("#toneGuidance"),
-  responseStyle: document.querySelector("#responseStyle"),
-  replyRules: document.querySelector("#replyRules"),
-  businessNotes: document.querySelector("#businessNotes"),
-  escalationGuidance: document.querySelector("#escalationGuidance"),
-  scenarioSelect: document.querySelector("#scenarioSelect"),
-  scenarioMessage: document.querySelector("#scenarioMessage"),
-  responseMessage: document.querySelector("#responseMessage"),
-  approvalSender: document.querySelector("#approvalSender"),
-  compiledPrompt: document.querySelector("#compiledPrompt"),
-  copyButton: document.querySelector("#copyButton"),
-  simulatorPresetSelect: document.querySelector("#simulatorPresetSelect"),
-  simulatorSenderNameInput: document.querySelector("#simulatorSenderNameInput"),
-  simulatorSenderWaIdInput: document.querySelector("#simulatorSenderWaIdInput"),
-  simulatorMessageInput: document.querySelector("#simulatorMessageInput"),
-  simulatorContextInput: document.querySelector("#simulatorContextInput"),
-  simulatorApprovalUrlInput: document.querySelector("#simulatorApprovalUrlInput"),
-  simulatorQueueList: document.querySelector("#simulatorQueueList"),
-  simulatorQueueCount: document.querySelector("#simulatorQueueCount"),
-  simulatorDetailTitle: document.querySelector("#simulatorDetailTitle"),
-  simulatorDetailStatus: document.querySelector("#simulatorDetailStatus"),
-  simulatorDetailSender: document.querySelector("#simulatorDetailSender"),
-  simulatorDetailMessage: document.querySelector("#simulatorDetailMessage"),
-  simulatorDetailReply: document.querySelector("#simulatorDetailReply"),
-  simulatorReplyInput: document.querySelector("#simulatorReplyInput"),
-  simulatorContextList: document.querySelector("#simulatorContextList"),
-  simulatorApprovalNote: document.querySelector("#simulatorApprovalNote"),
-  simulatorQueueButton: document.querySelector("#simulatorQueueButton"),
-  simulatorLoadSampleButton: document.querySelector("#simulatorLoadSampleButton"),
-  simulatorEditButton: document.querySelector("#simulatorEditButton"),
-  simulatorSendButton: document.querySelector("#simulatorSendButton"),
-  simulatorResetButton: document.querySelector("#simulatorResetButton"),
   settingsButtons: Array.from(document.querySelectorAll("#settingsPanel [data-settings-mode]")),
   accountSettingsPane: document.querySelector("#accountSettingsPane"),
   preferencesSettingsPane: document.querySelector("#preferencesSettingsPane"),
@@ -1822,7 +1264,6 @@ let authChallenge = normalizeStoredChallenge(storedAuthChallenge);
 let authBusy = false;
 let activeEmail = normalizeEmail(initialAuthSession?.email || authChallenge?.email || "");
 let clientState = loadClientState("");
-state.selectedSimulatorId = clientState.simulator.selectedApprovalId || null;
 syncAgentStateFromClientState();
 
 // Sessions used to be persisted with their bearer token alongside them. The token
@@ -2123,7 +1564,6 @@ function resetAgentWorkspaceRemoteState(options = {}) {
   state.featureActivationLoadedAt = 0;
   state.selectedScheduledActionId = "";
   state.agentAddToolMenuOpen = false;
-  state.whatsappConnection = null;
   state.platformConnections = [];
   state.platformConnectionsLoading = loading;
   state.platformConnectionsInitialLoadPending = loading;
@@ -2140,10 +1580,6 @@ function clearAuthSession() {
   if (scheduledActionsPollTimer !== null) {
     window.clearInterval(scheduledActionsPollTimer);
     scheduledActionsPollTimer = null;
-  }
-  if (whatsappApprovalsPollTimer !== null) {
-    window.clearInterval(whatsappApprovalsPollTimer);
-    whatsappApprovalsPollTimer = null;
   }
 }
 
@@ -2360,7 +1796,6 @@ function normalizeAdminUserRecord(user = {}) {
     isActive: Boolean(user.isActive),
     isAdmin: Boolean(user.isAdmin),
     clientType,
-    accountType: user.accountType === "family" ? "family" : "business",
     registeredAt: String(user.registeredAt || "").trim(),
     lastLoginAt: String(user.lastLoginAt || "").trim(),
     usageCount: Number(user.usageCount || user.usage_count || 0),
@@ -2725,25 +2160,6 @@ function createAdminClientTypeSelect(user, options = {}) {
   return select;
 }
 
-function createAdminAccountTypeSelect(user, options = {}) {
-  const normalizedEmail = normalizeEmail(user?.email || "");
-  const selected = user?.accountType === "family" ? "family" : "business";
-  const select = document.createElement("select");
-  select.className = "admin-client-type-select";
-  select.dataset.adminAccountTypeUser = normalizedEmail;
-  select.disabled = Boolean(options.disabled) || Boolean(state.adminAccountTypeBusyByEmail[normalizedEmail]);
-  select.setAttribute("aria-label", `Account type for ${user?.displayName || normalizedEmail || "client"}`);
-  for (const type of ADMIN_ACCOUNT_TYPES) {
-    const option = document.createElement("option");
-    option.value = type.value;
-    option.textContent = type.label;
-    option.selected = type.value === selected;
-    select.append(option);
-  }
-  select.value = selected;
-  return select;
-}
-
 function createAdminActiveSwitch(user, options = {}) {
   const normalizedEmail = normalizeEmail(user?.email || "");
   const nextIsActive = !Boolean(user?.isActive);
@@ -2839,7 +2255,6 @@ function showClientsTab(options = {}) {
   persistLastPrimaryTab();
   state.settingsOpen = false;
   state.selectedFeatureId = null;
-  state.selectedSimulatorId = null;
   closeFeatureStudioMenu();
   closeBillingHelp();
   closePersonalDetailsTips();
@@ -2942,20 +2357,8 @@ function isFeatureActivationTransitionBusy(feature = getSelectedFeature()) {
   );
 }
 
-function isWhatsAppFeature(feature) {
-  return String(feature?.channel || "").trim().toLowerCase() === "whatsapp";
-}
-
 function isMonitorFeature(feature = getSelectedFeature()) {
   return Boolean(feature && feature.id === MONITOR_FEATURE_ID);
-}
-
-function isReengagementFeature(feature = getSelectedFeature()) {
-  return Boolean(feature && feature.id === REENGAGEMENT_FEATURE_ID);
-}
-
-function isWhatsAppReplyAssistantFeature(feature = getSelectedFeature()) {
-  return Boolean(feature && feature.id === WHATSAPP_REPLY_ASSISTANT_FEATURE_ID);
 }
 
 function usesEditorSetup(feature = getSelectedFeature()) {
@@ -2965,33 +2368,6 @@ function usesEditorSetup(feature = getSelectedFeature()) {
 function normalizeCountryCode(value) {
   const code = String(value || "").trim().toUpperCase();
   return /^[A-Z]{2}$/.test(code) ? code : "";
-}
-
-function inferRequestCountryCode() {
-  const explicit = normalizeCountryCode(state.requestCountryCode || authSession?.requestCountry);
-  if (explicit) {
-    return explicit;
-  }
-
-  const timeZone = String(clientState?.settings?.timezone || defaultTimeZone()).trim();
-  if (timeZone === "Asia/Jerusalem") {
-    return "IL";
-  }
-
-  const locale = String(navigator.language || "").trim().toUpperCase();
-  if (locale.endsWith("-IL")) {
-    return "IL";
-  }
-  if (locale.endsWith("-US")) {
-    return "US";
-  }
-
-  return "";
-}
-
-function getOwnerPhonePlaceholder() {
-  const requestCountry = inferRequestCountryCode();
-  return PHONE_PLACEHOLDER_BY_COUNTRY[requestCountry] || PHONE_PLACEHOLDER_BY_COUNTRY.US;
 }
 
 function buildApiUrl(path) {
@@ -3208,35 +2584,8 @@ function openAuthAlert(title, message, options = {}) {
 function openFeatureActivationAlert(title, message, options = {}) {
   openAuthAlert(title, message, {
     eyebrow: options.eyebrow || "Before you turn it on",
-    returnFocus: options.returnFocus || elements.featureStudioActivationButton,
+    returnFocus: options.returnFocus || elements.featureStudioEditorToggleButton,
   });
-}
-
-function openMetaWhatsAppAccounts() {
-  window.open(META_WHATSAPP_ACCOUNTS_URL, "_blank", "noopener,noreferrer");
-}
-
-function openWhatsAppIdsHelp(returnFocus = elements.featureActivationPhoneNumberIdHelpButton) {
-  openAuthAlert(
-    "Where to find the WhatsApp IDs",
-    "Open Meta Business Settings, choose the correct business portfolio, then go to Accounts > WhatsApp Accounts. Select the client's WhatsApp Business Account; the WABA ID is shown on that account. Open Phone numbers to copy the Phone Number ID for the exact number that receives customer messages.",
-    {
-      eyebrow: "WhatsApp setup",
-      icon: "?",
-      buttonLabel: "Open Meta",
-      secondaryButtonLabel: "Done",
-      onPrimary: openMetaWhatsAppAccounts,
-      returnFocus,
-    },
-  );
-}
-
-function updateFeatureActivationPhonePlaceholder() {
-  if (!elements.featureActivationOwnerWaIdInput) {
-    return;
-  }
-
-  elements.featureActivationOwnerWaIdInput.placeholder = getOwnerPhonePlaceholder();
 }
 
 function closeAuthAlert() {
@@ -3412,17 +2761,13 @@ function loadClientState(email) {
   resetNotificationPaging();
   const saved = loadJson(getClientKey(email), null) || {};
   const savedPrompt = saved.guidance || {};
-  const savedSimulator = saved.simulator || {};
   const profile = normalizeAccountProfile(saved.profile || {});
   const featuresSource = Array.isArray(saved.features) && saved.features.length
     ? saved.features
     : DEFAULT_FEATURES;
-  let didMigrateLegacyDescription = false;
   const features = sortFeaturesByDisplayOrder(featuresSource.map((feature, index) => {
     const fallbackPrompt = index === 0 ? { ...DEFAULT_PROMPT, ...savedPrompt } : DEFAULT_PROMPT;
     const featureId = String(feature?.id || "");
-    const featureName = String(feature?.name || "");
-    const featureMode = String(feature?.mode || "");
     const featureDescription = String(feature?.description || "");
     const featureChannel = String(feature?.channel || "");
     const activated = Boolean(
@@ -3437,37 +2782,13 @@ function loadClientState(email) {
       ?? activated,
     );
     const setupComplete = savedSetupComplete;
-    const isLegacyDefaultFeature = index === 0
-      && featureId === DEFAULT_FEATURES[0].id
-      && (
-        LEGACY_DEFAULT_FEATURE_NAMES.has(featureName)
-        || LEGACY_DEFAULT_FEATURE_MODES.has(featureMode)
-      );
-    const shouldUpgradeDescription = index === 0
-      && featureId === DEFAULT_FEATURES[0].id
-      && (
-        isLegacyDefaultFeatureDescription(featureDescription)
-        || (!featureDescription && isLegacyDefaultFeature)
-      );
-
-    if (shouldUpgradeDescription) {
-      didMigrateLegacyDescription = true;
-    }
 
     return {
       id: featureId || `feature-${index + 1}`,
-      name: isLegacyDefaultFeature
-        ? DEFAULT_FEATURES[0].name
-        : String(feature?.name || `Tool ${index + 1}`),
-      description: shouldUpgradeDescription
-        ? DEFAULT_FEATURES[0].description
-        : featureDescription,
-      channel: isLegacyDefaultFeature
-        ? DEFAULT_FEATURES[0].channel
-        : featureChannel || "Web",
-      mode: isLegacyDefaultFeature
-        ? DEFAULT_FEATURES[0].mode
-        : String(feature?.mode || "Default"),
+      name: String(feature?.name || `Tool ${index + 1}`),
+      description: featureDescription,
+      channel: featureChannel || "Web",
+      mode: String(feature?.mode || "Default"),
       sortOrder: normalizeFeatureSortOrder(feature, DEFAULT_FEATURES[index]?.sortOrder ?? 100 + index),
       status: activated ? "active" : "non-active",
       activated,
@@ -3490,18 +2811,9 @@ function loadClientState(email) {
         : {},
       settings: normalizeSettingsForFeature(featureId, feature?.settings || {}),
       savedSettings: normalizeSettingsForFeature(featureId, feature?.savedSettings || feature?.settings || {}),
-      whatsapp: normalizeFeatureWhatsApp(feature?.whatsapp || feature?.activation || {}),
-      savedWhatsApp: normalizeFeatureWhatsApp(
-        feature?.savedWhatsApp
-        || feature?.saved_whatsapp
-        || feature?.whatsapp
-        || feature?.activation
-        || {},
-      ),
     };
   }));
   const settings = { ...DEFAULT_SETTINGS, ...(saved.settings || {}) };
-  const simulator = normalizeSimulatorState(savedSimulator, savedPrompt);
   const agent = normalizeAgentWorkspace(saved.agent || {});
   const notifications = normalizeAgentNotifications(saved.notifications || []);
 
@@ -3509,23 +2821,10 @@ function loadClientState(email) {
     settings.workspaceName = DEFAULT_SETTINGS.workspaceName;
   }
 
-  if (didMigrateLegacyDescription) {
-    persistJson(getClientKey(email), {
-      ...saved,
-      profile,
-      settings,
-      features,
-      simulator,
-      agent,
-      notifications,
-    });
-  }
-
   return {
     profile,
     settings,
     features,
-    simulator,
     agent,
     notifications,
   };
@@ -4153,14 +3452,7 @@ function describeNotificationIconName(notification) {
   if (featureId === MONITOR_FEATURE_ID || source === "web-monitor" || title.includes("monitor")) {
     return "web-monitor";
   }
-  if (
-    featureId === REENGAGEMENT_FEATURE_ID
-    || featureId === WHATSAPP_REPLY_ASSISTANT_FEATURE_ID
-    || source.includes("whatsapp")
-    || kind === "reply_approval"
-    || kind === "reengagement_report"
-    || title.includes("whatsapp")
-  ) {
+  if (source.includes("whatsapp") || title.includes("whatsapp")) {
     return "whatsapp";
   }
   if (source === "calendar-summary" || title.includes("meeting") || title.includes("calendar")) {
@@ -5085,7 +4377,6 @@ function normalizeAccountProfile(profile = {}) {
   const source = profile && typeof profile === "object" ? profile : {};
   return {
     businessSummary: String(source.businessSummary || "").trim(),
-    customerNotes: String(source.customerNotes || "").trim(),
     assistantGuidance: String(source.assistantGuidance || "").trim(),
   };
 }
@@ -5109,11 +4400,6 @@ function normalizeFeaturePricing(pricing = {}) {
 function normalizeFeatureRequirements(requirements = {}) {
   const source = requirements && typeof requirements === "object" ? requirements : {};
   return {
-    requiresWhatsAppConnection: Boolean(
-      source.requiresWhatsAppConnection
-      ?? source.requires_whatsapp_connection
-      ?? false,
-    ),
     requiresScheduledMonitorConfig: Boolean(
       source.requiresScheduledMonitorConfig
       ?? source.requires_scheduled_monitor_config
@@ -5176,69 +4462,6 @@ function normalizeFeatureSetupStatus(setupStatus = null) {
         field: String(issue.field || "").trim(),
         message: String(issue.message || "").trim(),
       })),
-  };
-}
-
-function normalizeFeatureWhatsAppMetadata(metadata = null) {
-  const source = metadata && typeof metadata === "object" ? metadata : {};
-  return {
-    lastInboundAt: String(source.lastInboundAt || source.last_inbound_at || "").trim(),
-    lastInboundSenderName: String(source.lastInboundSenderName || source.last_inbound_sender_name || "").trim(),
-    lastInboundSenderWaId: String(source.lastInboundSenderWaId || source.last_inbound_sender_wa_id || "").trim(),
-    lastInboundPreview: String(source.lastInboundPreview || source.last_inbound_preview || "").trim(),
-    lastInboundMessageId: String(source.lastInboundMessageId || source.last_inbound_message_id || "").trim(),
-    lastInboundPhoneNumberId: String(source.lastInboundPhoneNumberId || source.last_inbound_phone_number_id || "").trim(),
-    lastApprovalCreatedAt: String(source.lastApprovalCreatedAt || source.last_approval_created_at || "").trim(),
-    lastApprovalId: String(source.lastApprovalId || source.last_approval_id || "").trim(),
-    lastOwnerNotificationAt: String(source.lastOwnerNotificationAt || source.last_owner_notification_at || "").trim(),
-    lastOwnerNotificationStatus: String(source.lastOwnerNotificationStatus || source.last_owner_notification_status || "").trim(),
-    lastOwnerNotificationError: String(source.lastOwnerNotificationError || source.last_owner_notification_error || "").trim(),
-    lastOwnerNotificationMessageId: String(source.lastOwnerNotificationMessageId || source.last_owner_notification_message_id || "").trim(),
-    webhookSubscriptionStatus: String(source.webhookSubscriptionStatus || source.webhook_subscription_status || "").trim(),
-    webhookSubscribedAt: String(source.webhookSubscribedAt || source.webhook_subscribed_at || "").trim(),
-    webhookCallbackUrl: String(source.webhookCallbackUrl || source.webhook_callback_url || "").trim(),
-    webhookCallbackOverrideApplied: Boolean(source.webhookCallbackOverrideApplied ?? source.webhook_callback_override_applied ?? false),
-    webhookVerifyTokenConfigured: Boolean(source.webhookVerifyTokenConfigured ?? source.webhook_verify_token_configured ?? false),
-  };
-}
-
-function normalizePendingAccessToken(value) {
-  const token = String(value || "").trim();
-  return token === SAVED_ACCESS_TOKEN_FIELD_VALUE ? "" : token;
-}
-
-function getAccessTokenDisplayValue(whatsapp = {}) {
-  const accessToken = normalizePendingAccessToken(whatsapp.access_token);
-  if (accessToken) {
-    return accessToken;
-  }
-
-  return whatsapp.workspace_access_token_configured ? SAVED_ACCESS_TOKEN_FIELD_VALUE : "";
-}
-
-function normalizeFeatureWhatsApp(config = {}) {
-  const source = config && typeof config === "object" ? config : {};
-  const businessAccountId = String(source.business_account_id || source.businessAccountId || "").trim();
-  const phoneNumberId = String(source.phone_number_id || source.phoneNumberId || "").trim();
-  const accessToken = normalizePendingAccessToken(source.access_token || source.accessToken || "");
-
-  return {
-    business_account_id: businessAccountId,
-    phone_number_id: phoneNumberId,
-    access_token: accessToken,
-    access_token_configured: Boolean(source.access_token_configured ?? source.accessTokenConfigured ?? accessToken),
-    workspace_access_token_configured: Boolean(source.workspace_access_token_configured ?? source.workspaceAccessTokenConfigured ?? accessToken),
-    backend_access_token_configured: Boolean(source.backend_access_token_configured ?? source.backendAccessTokenConfigured ?? false),
-    owner_wa_id: String(source.owner_wa_id || source.ownerWaId || "").trim(),
-    connection_status: String(source.connection_status || source.connectionStatus || "not_connected").trim() || "not_connected",
-    display_phone_number: String(source.display_phone_number || source.displayPhoneNumber || "").trim(),
-    verified_name: String(source.verified_name || source.verifiedName || "").trim(),
-    connected_at: String(source.connected_at || source.connectedAt || "").trim(),
-    last_tested_at: String(source.last_tested_at || source.lastTestedAt || "").trim(),
-    configured: Boolean(source.configured ?? false),
-    live_send_enabled: Boolean(source.live_send_enabled ?? source.liveSendEnabled ?? false),
-    webhook_url: String(source.webhook_url || source.webhookUrl || "").trim(),
-    metadata: normalizeFeatureWhatsAppMetadata(source.metadata || {}),
   };
 }
 
@@ -5488,82 +4711,6 @@ function normalizeFeatureSettings(settings = {}) {
   };
 }
 
-function normalizeWhatsAppToolDeliveryChannels(value, fallback = DEFAULT_WHATSAPP_TOOL_SETTINGS.deliveryChannels) {
-  const hasArrayFallback = Array.isArray(fallback);
-  const fallbackChannels = hasArrayFallback ? fallback : ["whatsapp"];
-  let rawChannels = [];
-  if (Array.isArray(value)) {
-    rawChannels = value;
-  } else {
-    const text = String(value || "").trim().toLowerCase();
-    if (["both", "all", "whatsapp+telegram", "whatsapp_telegram"].includes(text)) {
-      rawChannels = ["whatsapp", "telegram"];
-    } else if (text) {
-      rawChannels = text.replace(/\+/g, ",").split(",");
-    }
-  }
-
-  const channels = [];
-  for (const channel of rawChannels) {
-    const normalized = String(channel || "").trim().toLowerCase();
-    if (["whatsapp", "telegram", "portal"].includes(normalized) && !channels.includes(normalized)) {
-      channels.push(normalized);
-    }
-  }
-
-  if (Array.isArray(value)) {
-    return channels;
-  }
-  if (channels.length) {
-    return channels;
-  }
-  const normalizedFallback = fallbackChannels.filter((channel) => ["whatsapp", "telegram", "portal"].includes(channel));
-  return normalizedFallback.length ? normalizedFallback : hasArrayFallback ? [] : ["whatsapp"];
-}
-
-function normalizeWhatsAppToolDeliverySettings(settings = {}) {
-  const source = settings && typeof settings === "object" ? settings : {};
-  const deliveryChannels = normalizeWhatsAppToolDeliveryChannels(
-    source.deliveryChannels || source.delivery_channels || source.deliveryChannel || source.delivery_channel,
-  );
-  return {
-    deliveryChannels,
-    telegramChatId: String(source.telegramChatId || source.telegram_chat_id || "").trim(),
-  };
-}
-
-function normalizeFeatureWhatsAppToolSettings(settings = {}) {
-  const source = settings && typeof settings === "object" ? settings : {};
-  return {
-    ...normalizeFeatureSettings(source),
-    ...normalizeWhatsAppToolDeliverySettings(source),
-  };
-}
-
-function normalizeFeatureWhatsAppReplyAssistantSettings(settings = {}) {
-  const normalized = normalizeFeatureWhatsAppToolSettings(settings);
-  const source = settings && typeof settings === "object" ? settings : {};
-  const hasExplicitDelivery = ["deliveryChannels", "delivery_channels", "deliveryChannel", "delivery_channel"]
-    .some((key) => Object.prototype.hasOwnProperty.call(source, key));
-  return {
-    ...normalized,
-    deliveryChannels: hasExplicitDelivery ? normalized.deliveryChannels : ["portal"],
-  };
-}
-
-function getWhatsAppDeliverySelection(settings = {}) {
-  const channels = getWhatsAppToolDeliveryChannels(settings);
-  const hasWhatsApp = channels.includes("whatsapp");
-  const hasTelegram = channels.includes("telegram");
-  if (hasWhatsApp && hasTelegram) {
-    return "both";
-  }
-  if (hasTelegram) {
-    return "telegram";
-  }
-  return hasWhatsApp ? "whatsapp" : "";
-}
-
 function normalizeFeatureMonitorSettings(settings = {}) {
   const source = settings && typeof settings === "object" ? settings : {};
   const deliveryChannel = String(source.deliveryChannel || DEFAULT_MONITOR_SETTINGS.deliveryChannel).trim().toLowerCase();
@@ -5626,136 +4773,16 @@ function normalizeFeatureMonitorSettings(settings = {}) {
   };
 }
 
-function normalizeReengagementInactivityUnit(value, fallback = DEFAULT_REENGAGEMENT_SETTINGS.inactivityUnit) {
-  const text = String(value || "").trim().toLowerCase();
-  const aliases = {
-    m: "minutes",
-    min: "minutes",
-    mins: "minutes",
-    minute: "minutes",
-    minutes: "minutes",
-    h: "hours",
-    hr: "hours",
-    hrs: "hours",
-    hour: "hours",
-    hours: "hours",
-    d: "days",
-    day: "days",
-    days: "days",
-    month: "months",
-    months: "months",
-  };
-  const normalized = aliases[text] || "";
-  if (normalized) {
-    return normalized;
-  }
-  return aliases[String(fallback || "").trim().toLowerCase()] || DEFAULT_REENGAGEMENT_SETTINGS.inactivityUnit;
-}
-
-function normalizeReengagementInactivityValue(value, fallback = DEFAULT_REENGAGEMENT_SETTINGS.inactivityValue) {
-  const parsedFallback = Number.parseInt(fallback, 10);
-  const safeFallback = Number.isFinite(parsedFallback)
-    ? Math.min(REENGAGEMENT_INACTIVITY_VALUE_MAX, Math.max(REENGAGEMENT_INACTIVITY_VALUE_MIN, parsedFallback))
-    : DEFAULT_REENGAGEMENT_SETTINGS.inactivityValue;
-  const parsedValue = Number.parseInt(value, 10);
-  return Number.isFinite(parsedValue)
-    ? Math.min(REENGAGEMENT_INACTIVITY_VALUE_MAX, Math.max(REENGAGEMENT_INACTIVITY_VALUE_MIN, parsedValue))
-    : safeFallback;
-}
-
-function normalizeFeatureReengagementSettings(settings = {}) {
-  const source = settings && typeof settings === "object" ? settings : {};
-  const legacyMonths = source.inactivityMonths || source.inactivity_months;
-  const inactivityUnit = normalizeReengagementInactivityUnit(
-    source.inactivityUnit || source.inactivity_unit || (legacyMonths ? "months" : DEFAULT_REENGAGEMENT_SETTINGS.inactivityUnit),
-  );
-  const inactivityValue = source.inactivityValue || legacyMonths || DEFAULT_REENGAGEMENT_SETTINGS.inactivityValue;
-  const scheduleTimeLocal = normalizeMonitorScheduleTime(
-    source.scheduleTimeLocal || source.scheduleTime || "",
-    DEFAULT_REENGAGEMENT_SETTINGS.scheduleTimeLocal,
-  );
-  const scheduleTimezone = scheduleTimeLocal
-    ? normalizeMonitorScheduleTimezone(source.scheduleTimezone || source.scheduleTimeZone || "", defaultTimeZone())
-    : normalizeMonitorScheduleTimezone(source.scheduleTimezone || source.scheduleTimeZone || "", "");
-
-  return {
-    ...normalizeFeatureSettings(source),
-    ...normalizeWhatsAppToolDeliverySettings(source),
-    intervalDays: normalizeMonitorIntervalDays(source.intervalDays, DEFAULT_REENGAGEMENT_SETTINGS.intervalDays),
-    scheduleTimeLocal,
-    scheduleTimezone,
-    inactivityValue: normalizeReengagementInactivityValue(inactivityValue),
-    inactivityUnit,
-    maxContextMessages: Math.min(
-      DEFAULT_REENGAGEMENT_SETTINGS.maxContextMessages,
-      Math.max(1, Number.parseInt(source.maxContextMessages, 10) || DEFAULT_REENGAGEMENT_SETTINGS.maxContextMessages),
-    ),
-  };
-}
-
 function normalizeSettingsForFeature(featureId, settings = {}) {
   if (featureId === MONITOR_FEATURE_ID) {
     return normalizeFeatureMonitorSettings(settings);
   }
-  if (featureId === REENGAGEMENT_FEATURE_ID) {
-    return normalizeFeatureReengagementSettings(settings);
-  }
-  if (featureId === WHATSAPP_REPLY_ASSISTANT_FEATURE_ID) {
-    return normalizeFeatureWhatsAppReplyAssistantSettings(settings);
-  }
   return normalizeFeatureSettings(settings);
-}
-
-function getReengagementScheduleTimezone(feature = getSelectedFeature()) {
-  const settings = isReengagementFeature(feature) ? getSelectedFeatureSettings(feature) : DEFAULT_REENGAGEMENT_SETTINGS;
-  return normalizeMonitorScheduleTimezone(settings.scheduleTimezone, getWorkspaceTimeZone()) || getWorkspaceTimeZone();
-}
-
-function getReengagementScheduleTime(feature = getSelectedFeature()) {
-  if (!feature || !isReengagementFeature(feature)) {
-    return DEFAULT_REENGAGEMENT_SETTINGS.scheduleTimeLocal;
-  }
-
-  const settings = getSelectedFeatureSettings(feature);
-  const explicitTime = normalizeMonitorScheduleTime(settings.scheduleTimeLocal);
-  if (explicitTime) {
-    return explicitTime;
-  }
-
-  const derivedTime = formatMonitorScheduleTimeFromMoment(
-    feature.nextRunAt || feature.settingsSavedAt || feature.setupStatus?.nextRunAt || "",
-    getReengagementScheduleTimezone(feature),
-  );
-  return derivedTime || DEFAULT_REENGAGEMENT_SETTINGS.scheduleTimeLocal;
-}
-
-function buildReengagementSettingsForSave(feature = getSelectedFeature(), settings = getSelectedFeatureSettings(feature)) {
-  const source = settings && typeof settings === "object" ? settings : {};
-  const scheduleTimeLocal = normalizeMonitorScheduleTime(
-    source.scheduleTimeLocal,
-    getReengagementScheduleTime(feature),
-  );
-  const scheduleTimezone = scheduleTimeLocal
-    ? normalizeMonitorScheduleTimezone(source.scheduleTimezone, getReengagementScheduleTimezone(feature))
-    : "";
-
-  return normalizeFeatureReengagementSettings({
-    ...source,
-    scheduleTimeLocal,
-    scheduleTimezone,
-    maxContextMessages: DEFAULT_REENGAGEMENT_SETTINGS.maxContextMessages,
-  });
 }
 
 function buildSettingsForSave(feature = getSelectedFeature(), settings = getSelectedFeatureSettings(feature)) {
   if (isMonitorFeature(feature)) {
     return buildMonitorSettingsForSave(feature, settings);
-  }
-  if (isReengagementFeature(feature)) {
-    return buildReengagementSettingsForSave(feature, settings);
-  }
-  if (isWhatsAppReplyAssistantFeature(feature)) {
-    return normalizeFeatureWhatsAppReplyAssistantSettings(settings);
   }
   return normalizeFeatureSettings(settings);
 }
@@ -5766,26 +4793,22 @@ function getFeaturePricing(feature = getSelectedFeature()) {
 
 function buildFeaturePitch(feature = getSelectedFeature()) {
   if (feature?.id === MONITOR_FEATURE_ID) {
-    return "Scheduled Web Monitor keeps watch for the dates, opportunities, and public updates that matter to this client. It turns a plain-language brief into recurring web research, then sends concise alerts with source links so the right person hears about conferences, holidays, deadlines, or niche developments before they slip by.";
+    return "Scheduled Web Monitor keeps watch for the dates, opportunities, and public updates that matter to you. It turns a plain-language brief into recurring web research, then sends concise alerts with source links so you hear about events, holidays, deadlines, or niche developments before they slip by.";
   }
 
-  if (feature?.id === REENGAGEMENT_FEATURE_ID) {
-    return "WhatsApp Re-engagement Assistant makes it easy to follow up with past customers without starting from scratch. It prepares outreach messages you can review and send, helping you restart conversations, stay top of mind, and bring more opportunities back into your pipeline.";
-  }
-
-  return "WhatsApp Reply Assistant helps you respond faster without sounding rushed. It turns incoming messages into clear, polished reply drafts that keep leads warm, reduce missed opportunities after hours, and make follow-up feel consistent and professional. You stay in control of every send while moving quicker, quoting with more confidence, and turning more conversations into booked work.";
+  return String(feature?.description || "").trim();
 }
 
 function buildFeatureExample(feature = getSelectedFeature()) {
   const prompt = feature?.prompt || getSelectedPrompt();
-  const scenario = SCENARIOS[prompt.scenario] ?? SCENARIOS.approval;
+  const scenario = SCENARIOS[prompt.scenario] ?? SCENARIOS.monitor;
   const messages = Array.isArray(scenario.messages) && scenario.messages.length
     ? scenario.messages
     : [{ direction: "incoming", text: scenario.user }];
   return {
-    sender: scenario.sender || "Customer",
-    avatar: getInitialsFromName(scenario.sender || feature?.name || "WA"),
-    meta: scenario.meta || "Recent lead",
+    sender: scenario.sender || "Assistyca",
+    avatar: getInitialsFromName(scenario.sender || feature?.name || "AS"),
+    meta: scenario.meta || "Example",
     incoming: scenario.user,
     messages,
     outgoing: buildResponseText(prompt),
@@ -5815,79 +4838,6 @@ function buildFeatureEditorHint(feature = getSelectedFeature()) {
   const pricing = getFeaturePricing(feature);
   const accountMinimum = Math.max(DEFAULT_BILLING_MINIMUM, Number(pricing.minimumMonthlyCharge || 0) || 0);
   return `Open the editor before payment. This tool bills by usage, and your account has a ${formatCurrency(accountMinimum, "USD")} monthly minimum across all tools.`;
-}
-
-function buildWhatsAppConfigHint() {
-  return "Connect the client's WhatsApp Business Platform account, then save the WABA ID, Phone Number ID, access token, and approval phone.";
-}
-
-function isWhatsAppConnectionConnected(feature = getSelectedFeature()) {
-  return Boolean(
-    feature
-    && isWhatsAppFeature(feature)
-    && getSelectedFeatureWhatsApp(feature).connection_status === "connected",
-  );
-}
-
-function openWhatsAppDisconnectConfirmation() {
-  if (!isWhatsAppConnectionConnected()) {
-    return;
-  }
-
-  openAuthAlert(
-    "Disconnect WhatsApp?",
-    "This removes the saved WhatsApp credentials from Assistyca. WhatsApp actions will need setup again before they can run.",
-    {
-      eyebrow: "Disconnect app",
-      icon: "!",
-      tone: "warning",
-      buttonLabel: "Disconnect",
-      primaryTone: "danger",
-      secondaryButtonLabel: "Keep connected",
-      returnFocus: elements.featureActivationDisconnectButton,
-      onPrimary: () => {
-        void disconnectWhatsAppConnection();
-      },
-    },
-  );
-}
-
-async function disconnectWhatsAppConnection() {
-  try {
-    const response = await apiRequest("/api/whatsapp/connection", {
-      method: "DELETE",
-      timeoutMs: 20000,
-    });
-    clearWhatsAppConnectionPollTimer();
-    applyWhatsAppConnectionToFeatures(null, { persist: true });
-    const message = normalizeText(response.message) || "WhatsApp was disconnected.";
-    pushAgentMessage("assistant", message, { kind: "result" });
-    persistAgentWorkspace(message);
-    renderApp({ preserveStatus: true });
-    openAuthAlert(
-      "WhatsApp disconnected",
-      message,
-      {
-        eyebrow: "Connection removed",
-        icon: "✓",
-        tone: "success",
-        buttonLabel: "Done",
-        returnFocus: elements.featureStudioLaunchButton,
-      },
-    );
-  } catch (error) {
-    openAuthAlert(
-      "Couldn’t disconnect WhatsApp",
-      formatApiErrorMessage(error, "I couldn’t disconnect WhatsApp right now. Please try again."),
-      {
-        eyebrow: "Connection issue",
-        icon: "!",
-        tone: "warning",
-        buttonLabel: "Close",
-        returnFocus: elements.featureActivationDisconnectButton,
-      },
-    );
-  }
 }
 
 // The tap-to-open link is written into an href, so only the shape the server
@@ -6311,38 +5261,6 @@ function renderWhatsAppPhoneLinkCard() {
   card.replaceChildren(...nodes);
 }
 
-function applyWhatsAppConnectionToFeatures(connection, options = {}) {
-  const normalizedConnection = normalizeFeatureWhatsApp(connection || {});
-  state.whatsappConnection = normalizedConnection.configured || normalizedConnection.connection_status === "connected"
-    ? { ...normalizedConnection }
-    : null;
-  const setupComplete = Boolean(
-    normalizedConnection.business_account_id
-    && normalizedConnection.phone_number_id
-    && normalizedConnection.access_token_configured
-    && normalizedConnection.owner_wa_id
-    && normalizedConnection.connection_status === "connected",
-  );
-
-  clientState.features = clientState.features.map((feature) => {
-    if (!isWhatsAppFeature(feature)) {
-      return feature;
-    }
-
-    return {
-      ...feature,
-      whatsapp: { ...normalizedConnection },
-      savedWhatsApp: { ...normalizedConnection },
-      setupComplete,
-      status: feature.activated ? "active" : "non-active",
-    };
-  });
-
-  if (options.persist !== false) {
-    persistClientState();
-  }
-}
-
 function buildClientFeatureFromServer(serverFeature = {}, existingFeature = null, index = 0) {
   const featureId = String(serverFeature?.featureId || serverFeature?.id || existingFeature?.id || `feature-${index + 1}`).trim();
   const channel = String(serverFeature?.channel || existingFeature?.channel || "Web").trim() || "Web";
@@ -6377,12 +5295,6 @@ function buildClientFeatureFromServer(serverFeature = {}, existingFeature = null
     : existingFeature?.assignment && typeof existingFeature.assignment === "object"
       ? { ...existingFeature.assignment }
       : {};
-  const whatsapp = isWhatsAppFeature({ channel })
-    ? normalizeFeatureWhatsApp(existingFeature?.whatsapp || serverFeature?.whatsapp || {})
-    : normalizeFeatureWhatsApp({});
-  const savedWhatsApp = isWhatsAppFeature({ channel })
-    ? normalizeFeatureWhatsApp(existingFeature?.savedWhatsApp || existingFeature?.whatsapp || serverFeature?.whatsapp || {})
-    : normalizeFeatureWhatsApp({});
   const settings = normalizeSettingsForFeature(featureId, serverFeature?.settings || existingFeature?.settings || {});
   const savedSettings = normalizeSettingsForFeature(
     featureId,
@@ -6415,8 +5327,6 @@ function buildClientFeatureFromServer(serverFeature = {}, existingFeature = null
     metadata,
     settings,
     savedSettings,
-    whatsapp,
-    savedWhatsApp,
   };
 }
 
@@ -9300,7 +8210,7 @@ function hasPendingFeatureConfigAutosave(featureId = state.selectedFeatureId) {
 }
 
 function getFeatureConfigReturnFocus() {
-  return elements.featureStudioEditorToggleButton || elements.featureStudioActivationButton || null;
+  return elements.featureStudioEditorToggleButton || null;
 }
 
 function sendFeatureConfigKeepalive(feature = getSelectedFeature()) {
@@ -9445,367 +8355,6 @@ async function saveSelectedFeatureConfig(options = {}) {
   return await currentSavePromise;
 }
 
-// --- WhatsApp Embedded Signup -------------------------------------------------
-// Meta's guided flow. The customer signs in with Facebook and picks their number;
-// the popup hands back a one-time code plus the ids it created, and the server
-// does the rest. Their business token never touches this browser.
-
-const WHATSAPP_SIGNUP_SDK_URL = "https://connect.facebook.net/en_US/sdk.js";
-const WHATSAPP_SIGNUP_TIMEOUT_MS = 10 * 60 * 1000;
-const WHATSAPP_SIGNUP_TRUSTED_ORIGINS = new Set([
-  "https://www.facebook.com",
-  "https://web.facebook.com",
-  "https://business.facebook.com",
-]);
-
-let whatsappSignupConfig = null;
-let whatsappSignupSdkPromise = null;
-let whatsappSignupSessionDetails = null;
-let whatsappSignupListenerAttached = false;
-
-function setWhatsAppGuidedStatus(message, { error = false } = {}) {
-  const element = elements.whatsappGuidedConnectStatus;
-  if (!element) {
-    return;
-  }
-
-  const text = normalizeText(message);
-  element.textContent = text;
-  element.classList.toggle("is-hidden", !text);
-  element.dataset.state = error ? "error" : "info";
-}
-
-async function loadWhatsAppSignupConfig() {
-  if (whatsappSignupConfig) {
-    return whatsappSignupConfig;
-  }
-
-  try {
-    const response = await apiRequest("/api/whatsapp/embedded-signup/config");
-    whatsappSignupConfig = {
-      configured: Boolean(response?.configured),
-      appId: normalizeText(response?.appId),
-      configId: normalizeText(response?.configId),
-      graphVersion: normalizeText(response?.graphVersion) || "v20.0",
-    };
-  } catch {
-    whatsappSignupConfig = { configured: false, appId: "", configId: "", graphVersion: "v20.0" };
-  }
-
-  return whatsappSignupConfig;
-}
-
-function loadWhatsAppSignupSdk(config) {
-  if (whatsappSignupSdkPromise) {
-    return whatsappSignupSdkPromise;
-  }
-
-  whatsappSignupSdkPromise = new Promise((resolve, reject) => {
-    if (window.FB) {
-      resolve(window.FB);
-      return;
-    }
-
-    window.fbAsyncInit = () => {
-      try {
-        window.FB.init({
-          appId: config.appId,
-          autoLogAppEvents: false,
-          xfbml: false,
-          version: config.graphVersion,
-        });
-        resolve(window.FB);
-      } catch (error) {
-        reject(error);
-      }
-    };
-
-    const existing = document.querySelector('script[data-whatsapp-signup-sdk="true"]');
-    if (existing) {
-      return;
-    }
-
-    const script = document.createElement("script");
-    script.src = WHATSAPP_SIGNUP_SDK_URL;
-    script.async = true;
-    script.defer = true;
-    script.crossOrigin = "anonymous";
-    script.dataset.whatsappSignupSdk = "true";
-    script.addEventListener("error", () => {
-      whatsappSignupSdkPromise = null;
-      reject(new Error("Facebook could not be reached to start the connection."));
-    });
-    document.head.append(script);
-  });
-
-  return whatsappSignupSdkPromise;
-}
-
-function attachWhatsAppSignupListener() {
-  if (whatsappSignupListenerAttached) {
-    return;
-  }
-  whatsappSignupListenerAttached = true;
-
-  window.addEventListener("message", (event) => {
-    // Only Meta's own signup windows may set these ids. Anything else is
-    // someone else's page talking to ours.
-    if (!WHATSAPP_SIGNUP_TRUSTED_ORIGINS.has(event.origin)) {
-      return;
-    }
-
-    let payload = null;
-    try {
-      payload = typeof event.data === "string" ? JSON.parse(event.data) : event.data;
-    } catch {
-      return;
-    }
-
-    if (!payload || payload.type !== "WA_EMBEDDED_SIGNUP") {
-      return;
-    }
-
-    if (payload.event === "FINISH" || payload.event === "FINISH_ONLY_WABA"
-      || payload.event === "FINISH_WHATSAPP_BUSINESS_APP_ONBOARDING") {
-      whatsappSignupSessionDetails = {
-        wabaId: normalizeText(payload.data?.waba_id),
-        phoneNumberId: normalizeText(payload.data?.phone_number_id),
-        // Coexistence numbers stay live on the owner's phone, so the backend
-        // must not try to register them.
-        coexistence: payload.event === "FINISH_WHATSAPP_BUSINESS_APP_ONBOARDING",
-      };
-      return;
-    }
-
-    if (payload.event === "CANCEL") {
-      whatsappSignupSessionDetails = null;
-    }
-  });
-}
-
-async function completeWhatsAppSignup(code) {
-  const details = whatsappSignupSessionDetails || {};
-  const response = await apiRequest("/api/whatsapp/embedded-signup/code", {
-    method: "POST",
-    timeoutMs: 60000,
-    body: {
-      code,
-      waba_id: details.wabaId || "",
-      phone_number_id: details.phoneNumberId || "",
-      onboarding_type: details.coexistence ? "coexistence" : "embedded_signup",
-      owner_wa_id: normalizeText(elements.featureActivationOwnerWaIdInput?.value || ""),
-    },
-  });
-
-  whatsappSignupSessionDetails = null;
-  return response;
-}
-
-async function startWhatsAppGuidedConnect() {
-  const button = elements.whatsappGuidedConnectButton;
-  if (!button || button.disabled) {
-    return;
-  }
-
-  const config = await loadWhatsAppSignupConfig();
-  if (!config.configured) {
-    setWhatsAppGuidedStatus(
-      "Guided setup is not available yet. Use the manual details below for now.",
-      { error: true },
-    );
-    return;
-  }
-
-  button.disabled = true;
-  setWhatsAppGuidedStatus("Opening WhatsApp…");
-
-  try {
-    attachWhatsAppSignupListener();
-    const FB = await loadWhatsAppSignupSdk(config);
-    whatsappSignupSessionDetails = null;
-
-    // FB.login can fail without ever invoking its callback, which would leave the
-    // button disabled and the status frozen. The timeout is only a safety net --
-    // it is deliberately longer than any real signup takes.
-    const authResponse = await new Promise((resolve) => {
-      let settled = false;
-      const finish = (value) => {
-        if (!settled) {
-          settled = true;
-          resolve(value);
-        }
-      };
-
-      window.setTimeout(() => finish(null), WHATSAPP_SIGNUP_TIMEOUT_MS);
-      try {
-        FB.login((response) => finish(response), {
-          config_id: config.configId,
-          response_type: "code",
-          override_default_response_type: true,
-          extras: {
-            setup: {},
-            // Adds a "connect your existing WhatsApp Business account" choice to
-            // the popup. Without it the only path is migrating the number off
-            // the owner's phone, which most owners will refuse.
-            featureType: "whatsapp_business_app_onboarding",
-            sessionInfoVersion: "3",
-          },
-        });
-      } catch {
-        finish(null);
-      }
-    });
-
-    const code = normalizeText(authResponse?.authResponse?.code);
-    if (!code) {
-      setWhatsAppGuidedStatus("The WhatsApp connection was closed before it finished.");
-      return;
-    }
-
-    setWhatsAppGuidedStatus("Finishing the connection…");
-    const result = await completeWhatsAppSignup(code);
-    applyWhatsAppConnectionToFeatures(result?.connection || null, { persist: true });
-    renderApp({ preserveStatus: true });
-    setWhatsAppGuidedStatus(result?.message || "WhatsApp is connected.");
-  } catch (error) {
-    setWhatsAppGuidedStatus(
-      formatApiErrorMessage(error, "We couldn’t finish the WhatsApp connection. Please try again."),
-      { error: true },
-    );
-  } finally {
-    button.disabled = false;
-  }
-}
-
-function toggleWhatsAppManualFields() {
-  const fields = elements.whatsappManualFields;
-  const toggle = elements.whatsappManualToggle;
-  if (!fields || !toggle) {
-    return;
-  }
-
-  const nowHidden = !fields.classList.contains("is-hidden");
-  fields.classList.toggle("is-hidden", nowHidden);
-  toggle.setAttribute("aria-expanded", String(!nowHidden));
-  toggle.textContent = nowHidden ? "Enter the details manually instead" : "Hide the manual details";
-}
-
-async function syncWhatsAppGuidedConnectVisibility() {
-  const panel = elements.whatsappGuidedConnect;
-  const fields = elements.whatsappManualFields;
-  if (!panel) {
-    return;
-  }
-
-  const config = await loadWhatsAppSignupConfig();
-  panel.classList.toggle("is-hidden", !config.configured);
-  // Until this server is set up as a Meta Tech Provider the guided flow cannot
-  // run, so the manual form stays as the only way in.
-  if (fields) {
-    fields.classList.toggle("is-hidden", config.configured);
-    elements.whatsappManualToggle?.setAttribute("aria-expanded", String(!config.configured));
-  }
-}
-
-async function refreshWhatsAppConnection(options = {}) {
-  if (!isSignedIn()) {
-    return null;
-  }
-
-  const response = await apiRequest("/api/whatsapp/connection", {
-    timeoutMs: options.timeoutMs || 15000,
-  });
-
-  applyWhatsAppConnectionToFeatures(response.connection || null, { persist: true });
-  if (options.render !== false && document.body.dataset.view === "app") {
-    renderApp();
-  }
-  return response.connection || null;
-}
-
-function clearWhatsAppConnectionPollTimer() {
-  if (whatsappConnectionPollTimer !== null) {
-    window.clearTimeout(whatsappConnectionPollTimer);
-    whatsappConnectionPollTimer = null;
-  }
-}
-
-function shouldPollWhatsAppConnection(feature = getSelectedFeature()) {
-  return Boolean(
-    isSignedIn()
-    && document.body.dataset.view === "app"
-    && state.activeTab === "features"
-    && feature
-    && isWhatsAppFeature(feature)
-    && !hasFeatureActivationChanges(feature)
-    && !featureActivationBusy,
-  );
-}
-
-async function pollWhatsAppConnectionHealth() {
-  const feature = getSelectedFeature();
-  const featureId = String(feature?.id || "").trim();
-  if (whatsappConnectionPollInFlight || !shouldPollWhatsAppConnection(feature)) {
-    if (!shouldPollWhatsAppConnection(feature)) {
-      clearWhatsAppConnectionPollTimer();
-      whatsappConnectionPollActive = false;
-    }
-    return;
-  }
-
-  whatsappConnectionPollInFlight = true;
-  try {
-    await refreshWhatsAppConnection({ render: false });
-    if (
-      document.body.dataset.view === "app"
-      && state.activeTab === "features"
-      && String(getSelectedFeature()?.id || "").trim() === featureId
-    ) {
-      renderApp({ preserveStatus: true });
-    }
-  } catch {
-    // Keep the current UI and try again on the next poll.
-  } finally {
-    whatsappConnectionPollInFlight = false;
-    clearWhatsAppConnectionPollTimer();
-    if (shouldPollWhatsAppConnection()) {
-      whatsappConnectionPollTimer = window.setTimeout(() => {
-        void pollWhatsAppConnectionHealth();
-      }, WHATSAPP_CONNECTION_POLL_MS);
-    } else {
-      whatsappConnectionPollActive = false;
-    }
-  }
-}
-
-function syncWhatsAppConnectionPolling() {
-  const feature = getSelectedFeature();
-  const featureId = String(feature?.id || "").trim();
-
-  if (!shouldPollWhatsAppConnection(feature)) {
-    clearWhatsAppConnectionPollTimer();
-    whatsappConnectionPollActive = false;
-    whatsappConnectionPollFeatureId = featureId;
-    return;
-  }
-
-  const isNewTarget = !whatsappConnectionPollActive || whatsappConnectionPollFeatureId !== featureId;
-  whatsappConnectionPollActive = true;
-  whatsappConnectionPollFeatureId = featureId;
-
-  if (isNewTarget) {
-    clearWhatsAppConnectionPollTimer();
-    void pollWhatsAppConnectionHealth();
-    return;
-  }
-
-  if (whatsappConnectionPollTimer === null && !whatsappConnectionPollInFlight) {
-    whatsappConnectionPollTimer = window.setTimeout(() => {
-      void pollWhatsAppConnectionHealth();
-    }, WHATSAPP_CONNECTION_POLL_MS);
-  }
-}
-
 function formatNextBillingDate(reference = new Date()) {
   const moment = new Date(reference.getTime());
   moment.setDate(1);
@@ -9880,67 +8429,6 @@ function isFeatureActivated(feature = getSelectedFeature()) {
   return Boolean(feature && feature.activated);
 }
 
-function getWhatsAppConnectionSetupState(feature = getFeatureById(WHATSAPP_REPLY_ASSISTANT_FEATURE_ID)) {
-  if (!feature || !isWhatsAppFeature(feature)) {
-    return {
-      feature: feature || null,
-      ready: false,
-      genericPlatformConnected: false,
-      connectionStatus: "not_connected",
-      missingFields: [],
-    };
-  }
-
-  const candidates = [
-    normalizeFeatureWhatsApp(feature.whatsapp || {}),
-    normalizeFeatureWhatsApp(feature.savedWhatsApp || {}),
-  ];
-  const tokenConfigured = (config) => Boolean(
-    config.access_token_configured
-    || config.workspace_access_token_configured
-    || config.backend_access_token_configured
-    || config.access_token,
-  );
-  const hasRequiredDetails = (config) => Boolean(
-    config.business_account_id
-    && config.phone_number_id
-    && tokenConfigured(config)
-    && config.owner_wa_id
-    && config.connection_status === "connected",
-  );
-  const readyConfig = candidates.find(hasRequiredDetails) || candidates[0];
-  const hasValue = (key) => candidates.some((config) => String(config[key] || "").trim());
-  const missingFields = [];
-
-  if (!hasValue("business_account_id")) {
-    missingFields.push({ key: "business_account_id", label: "WhatsApp Business Account ID (WABA ID)" });
-  }
-  if (!hasValue("phone_number_id")) {
-    missingFields.push({ key: "phone_number_id", label: "Phone Number ID" });
-  }
-  if (!candidates.some(tokenConfigured)) {
-    missingFields.push({ key: "access_token", label: "WhatsApp access token" });
-  }
-  if (!hasValue("owner_wa_id")) {
-    missingFields.push({ key: "owner_wa_id", label: "Approval phone number" });
-  }
-  if (!candidates.some((config) => config.connection_status === "connected")) {
-    missingFields.push({ key: "connection_status", label: "Verified WhatsApp Business connection" });
-  }
-
-  return {
-    feature,
-    ready: hasRequiredDetails(readyConfig),
-    genericPlatformConnected: Boolean(getSinglePlatformConnection("whatsapp")),
-    connectionStatus: readyConfig.connection_status || "not_connected",
-    missingFields,
-  };
-}
-
-function isWhatsAppConnectionReady(feature = getFeatureById(WHATSAPP_REPLY_ASSISTANT_FEATURE_ID)) {
-  return getWhatsAppConnectionSetupState(feature).ready;
-}
-
 // What the chat is allowed to say about the account's connections. A lookup
 // reads every connected mailbox, so the list it reads from has to be here too:
 // with only Gmail described, the chat answered a question about coverage by
@@ -9957,22 +8445,12 @@ function buildAgentMailboxContext() {
 }
 
 function buildAgentToolContext() {
-  const whatsapp = getWhatsAppConnectionSetupState();
   const calendar = getSinglePlatformConnection("calendar");
   const gmail = getConnectedMailboxForProvider(EMAIL_PROVIDER_GMAIL);
   const outlook = getConnectedMailboxForProvider(EMAIL_PROVIDER_OUTLOOK);
   const drive = getSinglePlatformConnection("drive");
   return {
     mailboxes: buildAgentMailboxContext(),
-    whatsapp: {
-      ready: whatsapp.ready,
-      platformConnected: whatsapp.genericPlatformConnected,
-      connectionStatus: whatsapp.connectionStatus,
-      missingFields: whatsapp.missingFields.map((field) => ({
-        key: field.key,
-        label: field.label,
-      })),
-    },
     calendar: {
       platformConnected: Boolean(calendar),
       connectionStatus: getPlatformConnectionStatus(calendar).label.toLowerCase().replace(/\s+/g, "_"),
@@ -9997,37 +8475,7 @@ function buildAgentToolContext() {
 }
 
 function isFeatureSetupComplete(feature = getSelectedFeature()) {
-  if (isWhatsAppFeature(feature)) {
-    return isWhatsAppConnectionReady(feature);
-  }
   return Boolean(feature && (feature.setupComplete || isFeatureActivated(feature)));
-}
-
-function hasFeatureWhatsAppDetails(feature = getSelectedFeature()) {
-  if (!feature || !isWhatsAppFeature(feature)) {
-    return false;
-  }
-
-  const detailKeys = [
-    "business_account_id",
-    "phone_number_id",
-    "access_token",
-    "access_token_configured",
-    "owner_wa_id",
-    "display_phone_number",
-    "verified_name",
-  ];
-  const configs = [getSelectedFeatureWhatsApp(feature), getSavedFeatureWhatsApp(feature)];
-
-  return configs.some((config) => detailKeys.some((key) => String(config[key] || "").trim()));
-}
-
-function canOpenFeatureWhatsAppDetails(feature = getSelectedFeature()) {
-  return Boolean(
-    feature
-    && isWhatsAppFeature(feature)
-    && (isFeatureActivated(feature) || isFeatureSetupComplete(feature) || hasFeatureWhatsAppDetails(feature))
-  );
 }
 
 function getFeatureActivationState(feature = getSelectedFeature()) {
@@ -10053,16 +8501,6 @@ function applyFeatureActivationBadgeStyle(element, feature = getSelectedFeature(
   element.style.color = palette.color;
 }
 
-function clearFeatureActivationBadgeStyle(element) {
-  if (!element) {
-    return;
-  }
-
-  element.removeAttribute("data-state");
-  element.style.backgroundColor = "";
-  element.style.color = "";
-}
-
 function setFeatureActivationState(feature, activated) {
   if (!feature) {
     return;
@@ -10084,9 +8522,6 @@ function getDefaultFeatureStudioView(feature = getSelectedFeature()) {
 
 function getSelectedFeatureStudioView(feature = getSelectedFeature()) {
   const nextView = normalizeFeatureStudioView(state.featureStudioView);
-  if (nextView === "history" && !isWhatsAppFeature(feature)) {
-    return getDefaultFeatureStudioView(feature);
-  }
   return nextView || getDefaultFeatureStudioView(feature);
 }
 
@@ -10097,37 +8532,12 @@ function getActivationBackView(feature = getSelectedFeature()) {
   return isFeatureActivated(feature) ? "editor" : "overview";
 }
 
-function getSelectedFeatureWhatsApp(feature = getSelectedFeature()) {
-  return normalizeFeatureWhatsApp(feature?.whatsapp || {});
-}
-
 function getSelectedFeatureSettings(feature = getSelectedFeature()) {
   return normalizeSettingsForFeature(feature?.id || "", feature?.settings || {});
 }
 
 function getSavedFeatureSettings(feature = getSelectedFeature()) {
   return normalizeSettingsForFeature(feature?.id || "", feature?.savedSettings || feature?.settings || {});
-}
-
-function getSavedFeatureWhatsApp(feature = getSelectedFeature()) {
-  const savedSource = feature?.savedWhatsApp || feature?.saved_whatsapp;
-  if (savedSource) {
-    return normalizeFeatureWhatsApp(savedSource);
-  }
-
-  return isFeatureSetupComplete(feature)
-    ? normalizeFeatureWhatsApp(feature?.whatsapp || {})
-    : normalizeFeatureWhatsApp(DEFAULT_FEATURE_WHATSAPP);
-}
-
-function getFeatureWhatsAppHealth(feature = getSelectedFeature()) {
-  const whatsapp = getSelectedFeatureWhatsApp(feature);
-  return normalizeFeatureWhatsAppMetadata(whatsapp.metadata || {});
-}
-
-function getFeatureWhatsAppOwnerLabel(feature = getSelectedFeature()) {
-  const whatsapp = getSelectedFeatureWhatsApp(feature);
-  return String(whatsapp.owner_wa_id || whatsapp.display_phone_number || "your phone").trim() || "your phone";
 }
 
 function formatWhatsAppHumanPhoneNumber(value) {
@@ -10140,1032 +8550,6 @@ function formatWhatsAppHumanPhoneNumber(value) {
     return digits ? `+${digits}` : text;
   }
   return text;
-}
-
-function getFeatureWhatsAppConnectedLabel(feature = getSelectedFeature()) {
-  const whatsapp = getSelectedFeatureWhatsApp(feature);
-  const displayPhoneNumber = formatWhatsAppHumanPhoneNumber(whatsapp.display_phone_number);
-  const verifiedName = String(whatsapp.verified_name || "").trim();
-  if (displayPhoneNumber && verifiedName && verifiedName !== displayPhoneNumber) {
-    return `${displayPhoneNumber} (${verifiedName})`;
-  }
-  return String(displayPhoneNumber || verifiedName || whatsapp.phone_number_id || "your WhatsApp number").trim() || "your WhatsApp number";
-}
-
-function getWhatsAppOwnerNotificationFailureCopy(feature = getSelectedFeature(), options = {}) {
-  const ownerLabel = String(options.ownerLabel || getFeatureWhatsAppOwnerLabel(feature) || "your phone").trim() || "your phone";
-  const health = getFeatureWhatsAppHealth(feature);
-  const errorText = sanitizeErrorText(health.lastOwnerNotificationError || "");
-  const issueDetails = errorText ? ` WhatsApp reported: ${errorText}.` : "";
-  return `We kept the incoming message, but the alert did not reach ${ownerLabel}.${issueDetails} Check the connected number and your WhatsApp delivery status before trying again.`;
-}
-
-function buildFeatureActivationStatusContent(feature = getSelectedFeature()) {
-  const whatsapp = getSelectedFeatureWhatsApp(feature);
-  const health = getFeatureWhatsAppHealth(feature);
-  const isConnected = whatsapp.connection_status === "connected";
-  const numberLabel = getFeatureWhatsAppConnectedLabel(feature);
-  const ownerLabel = getFeatureWhatsAppOwnerLabel(feature);
-  const lastInboundAt = health.lastInboundAt ? formatAdminDateTime(health.lastInboundAt) : "";
-  const lastOwnerNotificationAt = health.lastOwnerNotificationAt ? formatAdminDateTime(health.lastOwnerNotificationAt) : "";
-  const lastWebhookSubscribedAt = health.webhookSubscribedAt ? formatAdminDateTime(health.webhookSubscribedAt) : "";
-  const webhookStatus = String(health.webhookSubscriptionStatus || "").trim().toLowerCase();
-  const lastInboundSender = String(health.lastInboundSenderName || health.lastInboundSenderWaId || "a customer").trim() || "a customer";
-  const lastOwnerStatus = String(health.lastOwnerNotificationStatus || "").trim().toLowerCase();
-
-  const content = {
-    number: {
-      title: "Add your details",
-      copy: "Save the WABA ID, Phone Number ID, access token, and approval phone.",
-    },
-    webhook: {
-      title: "Waiting for setup",
-      copy: "After you save, Assistyca will ask Meta to forward messages to this workspace.",
-    },
-    inbound: {
-      title: "Waiting for the first live message",
-      copy: "Once someone messages your connected WhatsApp number, we’ll show that Assistyca received it here.",
-    },
-    owner: {
-      title: "No approval alert sent yet",
-      copy: "The first live message from another number will trigger an approval alert to your phone.",
-    },
-    note: "",
-  };
-
-  if (hasFeatureWhatsAppDetails(feature)) {
-    content.number = isConnected
-      ? {
-          title: "Business number verified",
-          copy: `Customer messages must be sent to ${numberLabel}. ${ownerLabel} only receives approval alerts.`,
-        }
-      : {
-          title: "Still need to verify the number",
-          copy: "The details are saved, but Assistyca still needs to verify the phone number and subscribe the WABA webhook with Meta.",
-        };
-  }
-
-  if (isConnected && webhookStatus === "subscribed" && health.webhookSubscribedAt) {
-    content.webhook = {
-      title: "Webhook refreshed",
-      copy: lastWebhookSubscribedAt
-        ? `Meta accepted the webhook subscription on ${lastWebhookSubscribedAt}.`
-        : "Meta accepted the webhook subscription.",
-    };
-  } else if (isConnected && webhookStatus === "subscribed") {
-    content.webhook = {
-      title: "Webhook subscribed",
-      copy: "Meta accepted the webhook subscription for this WhatsApp Business Account.",
-    };
-  } else if (isConnected) {
-    content.webhook = {
-      title: "Refresh webhook",
-      copy: "Click Refresh webhook to ask Meta to forward incoming messages to Assistyca again.",
-    };
-  }
-
-  if (health.lastInboundAt) {
-    content.inbound = {
-      title: "Live message received",
-      copy: `Assistyca last received a WhatsApp message on ${lastInboundAt} from ${lastInboundSender}.`,
-    };
-  } else if (isConnected) {
-    content.inbound = {
-      title: "Waiting for the first live message",
-      copy: `Ask someone else to message ${numberLabel}. Messages from ${ownerLabel} are treated as your commands, so they will not create a customer draft.`,
-    };
-  }
-
-  if (lastOwnerStatus === "failed") {
-    content.owner = {
-      title: "Latest approval alert hit a delivery issue",
-      copy: lastOwnerNotificationAt
-        ? `${getWhatsAppOwnerNotificationFailureCopy(feature, { ownerLabel })} The latest failed attempt was on ${lastOwnerNotificationAt}.`
-        : getWhatsAppOwnerNotificationFailureCopy(feature, { ownerLabel }),
-    };
-  } else if (lastOwnerStatus === "requested") {
-    content.owner = {
-      title: "Latest approval alert is waiting for delivery confirmation",
-      copy: lastOwnerNotificationAt
-        ? `We asked WhatsApp to send the latest alert to ${ownerLabel} on ${lastOwnerNotificationAt}. We’re waiting for delivery confirmation.`
-        : `We asked WhatsApp to send the latest alert to ${ownerLabel}. We’re waiting for delivery confirmation.`,
-    };
-  } else if (lastOwnerStatus === "sent") {
-    content.owner = {
-      title: "Latest approval alert is on the way",
-      copy: lastOwnerNotificationAt
-        ? `WhatsApp accepted the latest alert for ${ownerLabel} on ${lastOwnerNotificationAt}. We’re still waiting for delivery confirmation.`
-        : `WhatsApp accepted the latest alert for ${ownerLabel}. We’re still waiting for delivery confirmation.`,
-    };
-  } else if (lastOwnerStatus === "delivered") {
-    content.owner = {
-      title: "Latest approval alert was delivered",
-      copy: lastOwnerNotificationAt
-        ? `The latest approval alert reached ${ownerLabel} on ${lastOwnerNotificationAt}.`
-        : `The latest approval alert reached ${ownerLabel}.`,
-    };
-  } else if (lastOwnerStatus === "read") {
-    content.owner = {
-      title: "Latest approval alert was opened",
-      copy: lastOwnerNotificationAt
-        ? `${ownerLabel} opened the latest approval alert on ${lastOwnerNotificationAt}.`
-        : `${ownerLabel} opened the latest approval alert.`,
-    };
-  } else if (lastOwnerStatus === "pending" && health.lastInboundAt) {
-    content.owner = {
-      title: "Approval alert is still pending",
-      copy: `Assistyca received the message and is still trying to alert ${ownerLabel}.`,
-    };
-  } else if (isConnected) {
-    content.owner = {
-      title: "No approval alert sent yet",
-      copy: `When the first live message from another number arrives, we’ll alert ${ownerLabel}.`,
-    };
-  }
-
-  if (isConnected && !health.lastInboundAt && whatsapp.webhook_url) {
-    content.note = `If another number messages ${numberLabel} and nothing reaches Assistyca, make sure Meta is forwarding the messages webhook field to ${whatsapp.webhook_url}.`;
-  }
-
-  return content;
-}
-
-function buildFeatureEditorWhatsAppHealthNotice(feature = getSelectedFeature()) {
-  if (!feature || !isWhatsAppFeature(feature) || !isFeatureActivated(feature)) {
-    return null;
-  }
-
-  const whatsapp = getSelectedFeatureWhatsApp(feature);
-  if (whatsapp.connection_status !== "connected") {
-    return null;
-  }
-
-  const health = getFeatureWhatsAppHealth(feature);
-  const lastOwnerStatus = String(health.lastOwnerNotificationStatus || "").trim().toLowerCase();
-
-  if (["requested", "sent"].includes(lastOwnerStatus)) {
-    return {
-      tone: "neutral",
-      title: "Waiting for WhatsApp delivery confirmation",
-      copy: "The latest alert was accepted by WhatsApp, but we have not seen a delivered receipt yet.",
-    };
-  }
-
-  if (!health.lastInboundAt) {
-    return {
-      tone: "neutral",
-      title: "Still waiting for the first live WhatsApp message",
-      copy: "Ask someone else to message your connected WhatsApp number. Messages from your approval phone are treated as your commands. If nothing reaches Assistyca, incoming messages are not being forwarded yet.",
-    };
-  }
-
-  return null;
-}
-
-function hasFeatureActivationChanges(feature = getSelectedFeature()) {
-  const current = getSelectedFeatureWhatsApp(feature);
-  const saved = getSavedFeatureWhatsApp(feature);
-  const editableKeys = ["business_account_id", "phone_number_id", "owner_wa_id"];
-  if (normalizePendingAccessToken(current.access_token)) {
-    return true;
-  }
-
-  return editableKeys.some((key) => String(current[key] || "").trim() !== String(saved[key] || "").trim());
-}
-
-function canRefreshFeatureActivationWebhook(feature = getSelectedFeature()) {
-  const whatsapp = getSelectedFeatureWhatsApp(feature);
-  return Boolean(
-    feature
-    && isWhatsAppFeature(feature)
-    && whatsapp.connection_status === "connected"
-    && whatsapp.business_account_id
-    && whatsapp.phone_number_id
-    && whatsapp.owner_wa_id
-    && whatsapp.access_token_configured
-  );
-}
-
-function canSendWhatsAppReplySample(feature = getSelectedFeature()) {
-  const whatsapp = getSelectedFeatureWhatsApp(feature);
-  return Boolean(
-    isWhatsAppReplyAssistantFeature(feature)
-    && isWhatsAppFeature(feature)
-    && whatsapp.connection_status === "connected"
-  );
-}
-
-function isWhatsAppReplySampleBusy(feature = getSelectedFeature()) {
-  return Boolean(
-    whatsappSampleMessageBusy
-    && feature
-    && feature.id
-    && feature.id === whatsappSampleMessageTargetId
-  );
-}
-
-function formatWhatsAppMessageCount(count) {
-  const value = Math.max(0, Number.parseInt(count, 10) || 0);
-  return `${value} message${value === 1 ? "" : "s"}`;
-}
-
-function formatWhatsAppImportLineCount(count) {
-  const value = Math.max(0, Number.parseInt(count, 10) || 0);
-  return `${value} line${value === 1 ? "" : "s"}`;
-}
-
-function buildWhatsAppHistoryImportStatusMessage(response = {}) {
-  const saved = Math.max(0, Number.parseInt(response.messagesSaved, 10) || 0);
-  const parsed = Math.max(0, Number.parseInt(response.messagesParsed, 10) || 0);
-  const replaced = Math.max(0, Number.parseInt(response.messagesReplaced, 10) || 0);
-  const duplicates = Math.max(0, Number.parseInt(response.duplicates, 10) || 0);
-  const lineCount = Math.max(0, Number.parseInt(response.lineCount, 10) || 0);
-  const blankLines = Math.max(0, Number.parseInt(response.blankLineCount, 10) || 0);
-  const skipped = Math.max(0, Number.parseInt(response.skippedLineCount, 10) || 0);
-  const unsupported = Math.max(0, Number.parseInt(response.unsupportedMessageLineCount, 10) || 0);
-  const continuation = Math.max(0, Number.parseInt(response.continuationLineCount, 10) || 0);
-  const parts = [];
-
-  if (saved > 0) {
-    parts.push(
-      replaced > 0
-        ? `Imported ${formatWhatsAppMessageCount(saved)}, replacing ${formatWhatsAppMessageCount(replaced)}`
-        : `Imported ${formatWhatsAppMessageCount(saved)}`,
-    );
-  } else if (parsed > 0 && duplicates > 0) {
-    parts.push(`No new messages imported; ${formatWhatsAppMessageCount(duplicates)} were already saved`);
-  } else {
-    parts.push(String(response.message || "WhatsApp history import completed.").replace(/\.$/, ""));
-  }
-
-  if (parsed > 0 && (parsed !== saved || lineCount || duplicates)) {
-    parts.push(`${formatWhatsAppMessageCount(parsed)} parsed from the file`);
-  }
-  if (lineCount > 0) {
-    const detail = continuation > 0
-      ? `${formatWhatsAppImportLineCount(lineCount)} read, including ${formatWhatsAppImportLineCount(continuation)} of multi-line message text`
-      : `${formatWhatsAppImportLineCount(lineCount)} read`;
-    parts.push(detail);
-  }
-  if (blankLines > 0) {
-    parts.push(`${formatWhatsAppImportLineCount(blankLines)} blank lines ignored`);
-  }
-  if (skipped > 0) {
-    const skippedText = unsupported > 0
-      ? `${formatWhatsAppImportLineCount(skipped)} skipped as system/unsupported export rows; ${formatWhatsAppImportLineCount(unsupported)} looked like message rows`
-      : `${formatWhatsAppImportLineCount(skipped)} skipped as system/unsupported export rows`;
-    parts.push(skippedText);
-  }
-
-  return `${parts.join(". ")}.`;
-}
-
-function isWhatsAppExternalOutboundPlaceholder(payload = {}) {
-  const metadata = payload.metadata && typeof payload.metadata === "object" ? payload.metadata : {};
-  const direction = String(payload.direction || "").trim().toLowerCase();
-  const text = normalizeText(payload.text || "").toLowerCase();
-  return Boolean(
-    direction === "outbound"
-    && (
-      metadata.contentUnavailable
-      || (text.includes("content unavailable") && text.includes("outside assistyca"))
-    )
-  );
-}
-
-function getWhatsAppExternalOutboundText(payload = {}) {
-  return WHATSAPP_EXTERNAL_OUTBOUND_TEXT;
-}
-
-function getWhatsAppHistoryDisplayText(payload = {}) {
-  if (isWhatsAppExternalOutboundPlaceholder(payload)) {
-    return getWhatsAppExternalOutboundText(payload);
-  }
-
-  return normalizeText(payload.text || "");
-}
-
-function normalizeWhatsAppHistoryMessage(source = {}) {
-  const direction = String(source.direction || "").trim().toLowerCase();
-  const metadata = source.metadata && typeof source.metadata === "object" ? source.metadata : {};
-  const suggestedReply = normalizeText(
-    source.suggestedReply
-    || source.suggested_reply
-    || metadata.suggestedReply
-    || metadata.suggested_reply
-    || "",
-  );
-  const approvalId = normalizeText(
-    source.approvalId
-    || source.approval_id
-    || metadata.approvalId
-    || metadata.approval_id
-    || "",
-  );
-  const approvalReviewUrl = normalizeText(
-    source.approvalReviewUrl
-    || source.approval_review_url
-    || metadata.approvalReviewUrl
-    || metadata.approval_review_url
-    || "",
-  );
-  const approvalStatus = normalizeText(
-    source.approvalStatus
-    || source.approval_status
-    || metadata.approvalStatus
-    || metadata.approval_status
-    || "",
-  ).toLowerCase();
-  return {
-    messageId: String(source.messageId || source.message_id || "").trim(),
-    direction: ["inbound", "outbound"].includes(direction) ? direction : "inbound",
-    messageType: String(source.messageType || source.message_type || "text").trim() || "text",
-    text: getWhatsAppHistoryDisplayText({ direction, text: source.text || "", metadata }),
-    importSenderName: normalizeText(metadata.importSenderName || metadata.import_sender_name || ""),
-    source: normalizeText(metadata.source || ""),
-    suggestedReply,
-    approvalId,
-    approvalReviewUrl,
-    approvalStatus,
-    messageAt: String(source.messageAt || source.message_at || "").trim(),
-    metadata,
-    createdAt: String(source.createdAt || source.created_at || "").trim(),
-    updatedAt: String(source.updatedAt || source.updated_at || "").trim(),
-  };
-}
-
-function normalizeWhatsAppHistoryConversation(source = {}) {
-  const messages = Array.isArray(source.messages)
-    ? source.messages.map(normalizeWhatsAppHistoryMessage).filter((message) => message.text)
-    : [];
-  const messageCount = Math.max(
-    Number.parseInt(source.messageCount ?? source.message_count ?? 0, 10) || 0,
-    messages.length,
-  );
-  const metadata = source.metadata && typeof source.metadata === "object" ? source.metadata : {};
-  const lastMessageDirection = String(source.lastMessageDirection || source.last_message_direction || "").trim().toLowerCase();
-  const lastMessageText = getWhatsAppHistoryDisplayText({
-    direction: lastMessageDirection,
-    text: source.lastMessageText || source.last_message_text || "",
-    metadata,
-  });
-
-  return {
-    conversationId: String(source.conversationId || source.conversation_id || "").trim(),
-    senderName: normalizeText(source.senderName || source.sender_name || ""),
-    senderWaId: normalizeText(source.senderWaId || source.sender_wa_id || ""),
-    lastMessageText,
-    lastMessageDirection,
-    lastMessageAt: String(source.lastMessageAt || source.last_message_at || "").trim(),
-    lastInboundAt: String(source.lastInboundAt || source.last_inbound_at || "").trim(),
-    lastOutboundAt: String(source.lastOutboundAt || source.last_outbound_at || "").trim(),
-    messageCount,
-    messages,
-    metadata,
-    createdAt: String(source.createdAt || source.created_at || "").trim(),
-    updatedAt: String(source.updatedAt || source.updated_at || "").trim(),
-  };
-}
-
-function normalizeWhatsAppHistoryDiagnostic(source = {}) {
-  const tone = String(source.tone || "").trim().toLowerCase();
-  return {
-    tone: ["warning", "neutral", "success"].includes(tone) ? tone : "neutral",
-    title: normalizeText(source.title || ""),
-    message: normalizeText(source.message || ""),
-  };
-}
-
-function normalizeWhatsAppHistoryPayload(payload = {}) {
-  const conversations = Array.isArray(payload.conversations)
-    ? payload.conversations.map(normalizeWhatsAppHistoryConversation).filter((conversation) => conversation.conversationId)
-    : [];
-  const diagnostics = Array.isArray(payload.diagnostics)
-    ? payload.diagnostics.map(normalizeWhatsAppHistoryDiagnostic).filter((item) => item.title || item.message)
-    : [];
-  const messageCount = conversations.reduce((total, conversation) => total + conversation.messageCount, 0);
-
-  return {
-    connection: normalizeFeatureWhatsApp(payload.connection || {}),
-    conversationCount: conversations.length,
-    diagnostics,
-    messageCount,
-    conversations,
-  };
-}
-
-function normalizeWhatsAppParticipantKey(value) {
-  return normalizeText(value).toLowerCase().replace(/\s+/g, " ").trim();
-}
-
-function deriveWhatsAppEmailNameCandidates(email) {
-  const localPart = String(email || "").split("@", 1)[0] || "";
-  const cleaned = localPart.replace(/[^A-Za-z0-9]+/g, " ").trim();
-  const tokens = cleaned.split(/\s+/).filter(Boolean);
-  const candidates = cleaned ? [cleaned] : [];
-  if (tokens.length > 1) {
-    candidates.push([...tokens].reverse().join(" "));
-  }
-  return candidates;
-}
-
-function getActiveWhatsAppSenderKeys() {
-  const keys = new Set();
-  const addCandidate = (value) => {
-    const key = normalizeWhatsAppParticipantKey(value);
-    if (key) {
-      keys.add(key);
-    }
-  };
-
-  addCandidate(clientState?.settings?.displayName || "");
-  deriveWhatsAppEmailNameCandidates(activeEmail).forEach(addCandidate);
-  addCandidate("You");
-  return keys;
-}
-
-function resolveWhatsAppHistoryMessageDirection(message = {}) {
-  const importSenderName = normalizeText(message.importSenderName || "");
-  if (importSenderName) {
-    return getActiveWhatsAppSenderKeys().has(normalizeWhatsAppParticipantKey(importSenderName))
-      ? "outbound"
-      : "inbound";
-  }
-  return message.direction === "outbound" ? "outbound" : "inbound";
-}
-
-function getCurrentWhatsAppHistory() {
-  if (state.whatsappHistoryEmail !== normalizeEmail(activeEmail)) {
-    return null;
-  }
-  return state.whatsappHistory && Array.isArray(state.whatsappHistory.conversations)
-    ? state.whatsappHistory
-    : null;
-}
-
-function getWhatsAppHistoryConversations() {
-  return getCurrentWhatsAppHistory()?.conversations || [];
-}
-
-function getSelectedWhatsAppHistoryConversation() {
-  const conversations = getWhatsAppHistoryConversations();
-  if (!conversations.length) {
-    state.whatsappHistorySelectedConversationId = "";
-    return null;
-  }
-
-  const selected = conversations.find((conversation) => (
-    conversation.conversationId === state.whatsappHistorySelectedConversationId
-  ));
-  if (selected) {
-    return selected;
-  }
-
-  state.whatsappHistorySelectedConversationId = conversations[0].conversationId;
-  return conversations[0];
-}
-
-function buildWhatsAppHistoryConversationTitle(conversation) {
-  return String(
-    conversation?.senderName
-    || conversation?.senderWaId
-    || conversation?.conversationId
-    || "WhatsApp conversation",
-  ).trim() || "WhatsApp conversation";
-}
-
-function buildWhatsAppHistoryConversationMeta(conversation) {
-  const parts = [];
-  const senderWaId = String(conversation?.senderWaId || "").trim();
-  const lastMessageAt = formatAdminDateTime(conversation?.lastMessageAt || "");
-  const metadata = conversation?.metadata && typeof conversation.metadata === "object" ? conversation.metadata : {};
-  const imported = String(metadata.source || "").trim() === "manual_import"
-    || Boolean(metadata.importedAt || metadata.imported_at);
-
-  if (senderWaId) {
-    parts.push(senderWaId);
-  }
-  if (imported) {
-    parts.push("Imported");
-  }
-  if (lastMessageAt) {
-    parts.push(lastMessageAt);
-  }
-
-  return parts.join(" · ");
-}
-
-function createWhatsAppHistoryEmptyState(titleText, copyText = "") {
-  const emptyState = document.createElement("div");
-  emptyState.className = "whatsapp-history-empty";
-
-  const title = document.createElement("h3");
-  title.textContent = titleText;
-  emptyState.append(title);
-
-  if (copyText) {
-    const copy = document.createElement("p");
-    copy.textContent = copyText;
-    emptyState.append(copy);
-  }
-
-  return emptyState;
-}
-
-function createWhatsAppHistoryDiagnosticNotice(diagnostic) {
-  const notice = document.createElement("article");
-  notice.className = `whatsapp-history-diagnostic is-${diagnostic.tone}`;
-
-  const title = document.createElement("h3");
-  title.textContent = diagnostic.title || "WhatsApp history notice";
-
-  const message = document.createElement("p");
-  message.textContent = diagnostic.message || "";
-
-  notice.append(title, message);
-  return notice;
-}
-
-function createWhatsAppHistoryConversationButton(conversation, isSelected) {
-  const button = document.createElement("button");
-  button.type = "button";
-  button.className = "whatsapp-history-conversation";
-  button.dataset.conversationId = conversation.conversationId;
-  button.setAttribute("role", "listitem");
-  button.setAttribute("aria-pressed", String(isSelected));
-
-  const avatar = document.createElement("span");
-  avatar.className = "whatsapp-history-avatar";
-  avatar.textContent = deriveInitialsLabel(buildWhatsAppHistoryConversationTitle(conversation), "WA");
-
-  const copy = document.createElement("span");
-  copy.className = "whatsapp-history-conversation-copy";
-
-  const titleRow = document.createElement("span");
-  titleRow.className = "whatsapp-history-conversation-title-row";
-
-  const title = document.createElement("strong");
-  title.textContent = buildWhatsAppHistoryConversationTitle(conversation);
-
-  titleRow.append(title);
-
-  const metadata = conversation.metadata && typeof conversation.metadata === "object" ? conversation.metadata : {};
-  if (String(metadata.source || "").trim() === "manual_import" || metadata.importedAt || metadata.imported_at) {
-    const badge = document.createElement("span");
-    badge.className = "whatsapp-history-source-badge";
-    badge.textContent = "Imported";
-    titleRow.append(badge);
-  }
-
-  const preview = document.createElement("span");
-  preview.className = "whatsapp-history-preview";
-  preview.textContent = conversation.lastMessageText || "No message preview";
-
-  const meta = document.createElement("span");
-  meta.className = "whatsapp-history-meta";
-  meta.textContent = buildWhatsAppHistoryConversationMeta(conversation);
-
-  copy.append(titleRow, preview, meta);
-  button.append(avatar, copy);
-  return button;
-}
-
-function createWhatsAppHistoryMessage(message) {
-  const direction = resolveWhatsAppHistoryMessageDirection(message);
-  const item = document.createElement("div");
-  item.className = `whatsapp-history-message is-${direction}`;
-
-  const bubble = document.createElement("div");
-  bubble.className = "whatsapp-history-bubble";
-
-  const text = document.createElement("p");
-  text.textContent = message.text;
-
-  const meta = document.createElement("span");
-  meta.className = "whatsapp-history-message-meta";
-  const timestamp = formatAdminDateTime(message.messageAt);
-  const directionLabel = direction === "outbound" ? "Business" : "Customer";
-  const senderLabel = message.importSenderName || directionLabel;
-  meta.textContent = timestamp ? `${senderLabel} · ${timestamp}` : senderLabel;
-
-  bubble.append(text, meta);
-  item.append(bubble);
-
-  if (direction === "inbound" && message.suggestedReply) {
-    const suggestion = document.createElement("div");
-    suggestion.className = "whatsapp-history-suggestion";
-
-    const suggestionHead = document.createElement("div");
-    suggestionHead.className = "whatsapp-history-suggestion-head";
-
-    const label = document.createElement("span");
-    label.textContent = "Suggested reply";
-    suggestionHead.append(label);
-
-    if (message.approvalStatus) {
-      const status = document.createElement("span");
-      status.className = "whatsapp-history-suggestion-status";
-      status.textContent = message.approvalStatus === "sent"
-        ? "Sent"
-        : message.approvalStatus === "skipped"
-          ? "Skipped"
-          : "Draft";
-      suggestionHead.append(status);
-    }
-
-    const suggestionText = document.createElement("p");
-    suggestionText.textContent = message.suggestedReply;
-
-    suggestion.append(suggestionHead, suggestionText);
-
-    if (message.approvalReviewUrl && message.approvalStatus !== "sent") {
-      const reviewLink = document.createElement("a");
-      reviewLink.className = "whatsapp-history-suggestion-link";
-      reviewLink.href = message.approvalReviewUrl;
-      reviewLink.textContent = "Review reply";
-      suggestion.append(reviewLink);
-    }
-
-    item.append(suggestion);
-  }
-
-  return item;
-}
-
-function scrollWhatsAppHistoryMessagesToBottom() {
-  const container = elements.whatsappHistoryMessages;
-  if (!container) {
-    return;
-  }
-
-  window.requestAnimationFrame(() => {
-    container.scrollTop = container.scrollHeight;
-  });
-}
-
-function renderWhatsAppHistory(feature = getSelectedFeature()) {
-  if (!elements.whatsappHistorySection) {
-    return;
-  }
-
-  const conversations = getWhatsAppHistoryConversations();
-  const selectedConversation = getSelectedWhatsAppHistoryConversation();
-  const isLoading = Boolean(state.whatsappHistoryLoading);
-  const isImporting = Boolean(state.whatsappHistoryImportBusy);
-  const isDeleting = Boolean(state.whatsappHistoryDeleteBusy);
-  const errorText = String(state.whatsappHistoryError || "").trim();
-  const selectedFileCount = elements.whatsappHistoryFileInput?.files?.length || 0;
-
-  if (elements.whatsappHistoryFileInput) {
-    elements.whatsappHistoryFileInput.disabled = isImporting || isDeleting || !isSignedIn() || !isWhatsAppFeature(feature);
-  }
-  if (elements.whatsappHistoryImportStatus) {
-    const importError = String(state.whatsappHistoryImportError || "").trim();
-    const importStatus = String(state.whatsappHistoryImportStatus || "").trim();
-    elements.whatsappHistoryImportStatus.textContent = importError
-      || importStatus
-      || (selectedFileCount ? `${selectedFileCount} chat file${selectedFileCount === 1 ? "" : "s"} selected` : "");
-    elements.whatsappHistoryImportStatus.classList.toggle("is-warning", Boolean(importError));
-  }
-
-  if (elements.whatsappHistoryDiagnostics) {
-    const diagnostics = getCurrentWhatsAppHistory()?.diagnostics || [];
-    elements.whatsappHistoryDiagnostics.classList.toggle("is-hidden", !diagnostics.length);
-    elements.whatsappHistoryDiagnostics.replaceChildren(
-      ...diagnostics.map(createWhatsAppHistoryDiagnosticNotice),
-    );
-  }
-
-  if (elements.whatsappHistoryConversationList) {
-    if (isLoading && !conversations.length) {
-      elements.whatsappHistoryConversationList.replaceChildren(
-        createWhatsAppHistoryEmptyState("Loading history", "Fetching saved WhatsApp conversations."),
-      );
-    } else if (errorText) {
-      elements.whatsappHistoryConversationList.replaceChildren(
-        createWhatsAppHistoryEmptyState("Couldn’t load history", errorText),
-      );
-    } else if (!conversations.length) {
-      elements.whatsappHistoryConversationList.replaceChildren(
-        createWhatsAppHistoryEmptyState("No saved conversations yet", "Live customer messages and imported WhatsApp chat files will appear here."),
-      );
-    } else {
-      elements.whatsappHistoryConversationList.replaceChildren(
-        ...conversations.map((conversation) => createWhatsAppHistoryConversationButton(
-          conversation,
-          selectedConversation?.conversationId === conversation.conversationId,
-        )),
-      );
-    }
-  }
-
-  if (elements.whatsappHistorySelectedTitle) {
-    elements.whatsappHistorySelectedTitle.textContent = selectedConversation
-      ? buildWhatsAppHistoryConversationTitle(selectedConversation)
-      : "Select a conversation";
-  }
-  if (elements.whatsappHistorySelectedMeta) {
-    elements.whatsappHistorySelectedMeta.textContent = selectedConversation
-      ? buildWhatsAppHistoryConversationMeta(selectedConversation)
-      : "";
-  }
-  if (elements.whatsappHistorySelectedAvatar) {
-    elements.whatsappHistorySelectedAvatar.textContent = selectedConversation
-      ? deriveInitialsLabel(buildWhatsAppHistoryConversationTitle(selectedConversation), "WA")
-      : "WA";
-  }
-  if (elements.whatsappHistorySelectedCount) {
-    elements.whatsappHistorySelectedCount.textContent = selectedConversation
-      ? formatWhatsAppMessageCount(selectedConversation.messageCount)
-      : "0 messages";
-  }
-  if (elements.whatsappHistoryDeleteButton) {
-    const isDeletingSelected = isDeleting
-      && selectedConversation?.conversationId === state.whatsappHistoryDeleteTargetId;
-    elements.whatsappHistoryDeleteButton.disabled = (
-      isLoading
-      || isImporting
-      || isDeleting
-      || !selectedConversation
-      || !isSignedIn()
-      || !isWhatsAppFeature(feature)
-    );
-    elements.whatsappHistoryDeleteButton.classList.toggle("is-loading", isDeletingSelected);
-    elements.whatsappHistoryDeleteButton.setAttribute("aria-busy", String(isDeletingSelected));
-    elements.whatsappHistoryDeleteButton.textContent = isDeletingSelected ? "Deleting..." : "Delete";
-  }
-
-  if (elements.whatsappHistoryMessages) {
-    const messages = selectedConversation?.messages || [];
-    if (isLoading && !selectedConversation) {
-      elements.whatsappHistoryMessages.replaceChildren(
-        createWhatsAppHistoryEmptyState("Loading messages"),
-      );
-    } else if (errorText && !selectedConversation) {
-      elements.whatsappHistoryMessages.replaceChildren(
-        createWhatsAppHistoryEmptyState("No messages to show"),
-      );
-    } else if (!selectedConversation) {
-      elements.whatsappHistoryMessages.replaceChildren(
-        createWhatsAppHistoryEmptyState("No conversation selected"),
-      );
-    } else if (!messages.length) {
-      elements.whatsappHistoryMessages.replaceChildren(
-        createWhatsAppHistoryEmptyState("No saved messages in this conversation"),
-      );
-    } else {
-      elements.whatsappHistoryMessages.replaceChildren(...messages.map(createWhatsAppHistoryMessage));
-      scrollWhatsAppHistoryMessagesToBottom();
-    }
-  }
-}
-
-function selectWhatsAppHistoryConversation(conversationId) {
-  const normalizedId = String(conversationId || "").trim();
-  if (!normalizedId) {
-    return;
-  }
-
-  state.whatsappHistorySelectedConversationId = normalizedId;
-  renderWhatsAppHistory();
-}
-
-function removeWhatsAppConversationFromState(conversationId) {
-  const normalizedId = String(conversationId || "").trim();
-  const history = getCurrentWhatsAppHistory();
-  if (!normalizedId || !history) {
-    return;
-  }
-
-  const conversations = history.conversations.filter((conversation) => (
-    conversation.conversationId !== normalizedId
-  ));
-  state.whatsappHistory = {
-    ...history,
-    conversationCount: conversations.length,
-    messageCount: conversations.reduce((total, conversation) => total + conversation.messageCount, 0),
-    conversations,
-  };
-  if (state.whatsappHistorySelectedConversationId === normalizedId) {
-    state.whatsappHistorySelectedConversationId = conversations[0]?.conversationId || "";
-  }
-}
-
-function deleteSelectedWhatsAppHistoryConversation() {
-  const conversation = getSelectedWhatsAppHistoryConversation();
-  if (!conversation || state.whatsappHistoryDeleteBusy) {
-    return;
-  }
-
-  const title = buildWhatsAppHistoryConversationTitle(conversation);
-  const messageCount = formatWhatsAppMessageCount(conversation.messageCount);
-  openAuthAlert(
-    "Delete conversation?",
-    `Delete ${title} from saved WhatsApp history? This removes ${messageCount}, and the scheduler will no longer scan this conversation unless it is imported or received again.`,
-    {
-      eyebrow: "Delete WhatsApp history",
-      icon: "!",
-      tone: "warning",
-      buttonLabel: "Delete",
-      primaryTone: "danger",
-      secondaryButtonLabel: "Cancel",
-      returnFocus: elements.whatsappHistoryDeleteButton,
-      focusTarget: "secondary",
-      onPrimary: () => {
-        void confirmWhatsAppHistoryConversationDelete(conversation.conversationId);
-      },
-    },
-  );
-}
-
-async function confirmWhatsAppHistoryConversationDelete(conversationId) {
-  const normalizedId = String(conversationId || "").trim();
-  if (!normalizedId || state.whatsappHistoryDeleteBusy) {
-    return;
-  }
-
-  state.whatsappHistoryDeleteBusy = true;
-  state.whatsappHistoryDeleteTargetId = normalizedId;
-  state.whatsappHistoryError = "";
-  renderWhatsAppHistory();
-
-  let didSucceed = false;
-  try {
-    await apiRequest(`/api/whatsapp/history/conversations/${encodeURIComponent(normalizedId)}`, {
-      method: "DELETE",
-    });
-    removeWhatsAppConversationFromState(normalizedId);
-    didSucceed = true;
-    await refreshWhatsAppHistory({ force: true });
-  } catch (error) {
-    openAuthAlert(
-      "Couldn’t delete conversation",
-      formatApiErrorMessage(error, "We couldn’t delete that conversation right now."),
-      {
-        eyebrow: "Delete WhatsApp history",
-      },
-    );
-  } finally {
-    state.whatsappHistoryDeleteBusy = false;
-    state.whatsappHistoryDeleteTargetId = "";
-    renderWhatsAppHistory(getSelectedFeature());
-    if (didSucceed) {
-      setStatus("Conversation deleted.");
-    }
-  }
-}
-
-async function readWhatsAppHistoryImportFile(file) {
-  const content = await file.text();
-  return {
-    name: String(file.name || "whatsapp-chat.txt").trim() || "whatsapp-chat.txt",
-    content,
-  };
-}
-
-function isWhatsAppHistoryTxtExport(file) {
-  const fileName = String(file?.name || "").trim().toLowerCase();
-  return fileName.endsWith(".txt");
-}
-
-async function importWhatsAppHistoryExports() {
-  const feature = getSelectedFeature();
-  if (!isSignedIn() || !isWhatsAppFeature(feature) || state.whatsappHistoryImportBusy) {
-    return;
-  }
-
-  const files = Array.from(elements.whatsappHistoryFileInput?.files || []);
-  if (!files.length) {
-    state.whatsappHistoryImportError = "Choose a WhatsApp .txt export first.";
-    state.whatsappHistoryImportStatus = "";
-    renderWhatsAppHistory(feature);
-    elements.whatsappHistoryFileInput?.focus();
-    return;
-  }
-  const unsupportedFiles = files.filter((file) => !isWhatsAppHistoryTxtExport(file));
-  if (unsupportedFiles.length) {
-    state.whatsappHistoryImportError = "Only .txt files exported from WhatsApp are supported.";
-    state.whatsappHistoryImportStatus = "";
-    if (elements.whatsappHistoryFileInput) {
-      elements.whatsappHistoryFileInput.value = "";
-    }
-    renderWhatsAppHistory(feature);
-    elements.whatsappHistoryFileInput?.focus();
-    return;
-  }
-
-  state.whatsappHistoryImportBusy = true;
-  state.whatsappHistoryImportError = "";
-  state.whatsappHistoryImportStatus = `Reading ${files.length} WhatsApp .txt export${files.length === 1 ? "" : "s"}...`;
-  renderWhatsAppHistory(feature);
-
-  try {
-    const importFiles = await Promise.all(files.map(readWhatsAppHistoryImportFile));
-    state.whatsappHistoryImportStatus = "Importing WhatsApp history...";
-    renderWhatsAppHistory(feature);
-
-    const response = await apiRequest("/api/whatsapp/history/import", {
-      method: "POST",
-      timeoutMs: 180000,
-      body: {
-        files: importFiles,
-      },
-    });
-
-    const imports = Array.isArray(response.imports) ? response.imports : [];
-    const firstImportedConversationId = imports.find((item) => item?.conversationId)?.conversationId || "";
-    if (firstImportedConversationId) {
-      state.whatsappHistorySelectedConversationId = firstImportedConversationId;
-    }
-    if (elements.whatsappHistoryFileInput) {
-      elements.whatsappHistoryFileInput.value = "";
-    }
-    state.whatsappHistoryImportStatus = buildWhatsAppHistoryImportStatusMessage(response);
-    setStatus(state.whatsappHistoryImportStatus);
-    await refreshWhatsAppHistory({ force: true });
-  } catch (error) {
-    if (isAbortError(error)) {
-      state.whatsappHistoryImportError = "The import is taking longer than expected. Refresh history in a moment to check the saved messages.";
-      state.whatsappHistoryImportStatus = "";
-      setStatus("WhatsApp history import may still be processing.");
-    } else {
-      state.whatsappHistoryImportError = formatApiErrorMessage(error, "We couldn’t import that WhatsApp chat file.");
-      state.whatsappHistoryImportStatus = "";
-      setStatus("WhatsApp history import failed.");
-    }
-  } finally {
-    if (elements.whatsappHistoryFileInput) {
-      elements.whatsappHistoryFileInput.value = "";
-    }
-    state.whatsappHistoryImportBusy = false;
-    renderWhatsAppHistory(getSelectedFeature());
-    updateFeatureStudioHeader();
-  }
-}
-
-async function refreshWhatsAppHistory(options = {}) {
-  if (!isSignedIn()) {
-    return null;
-  }
-
-  const feature = getSelectedFeature();
-  if (!isWhatsAppFeature(feature)) {
-    return null;
-  }
-
-  if (whatsappHistoryRefreshPromise && !options.force) {
-    return whatsappHistoryRefreshPromise;
-  }
-
-  state.whatsappHistoryLoading = true;
-  state.whatsappHistoryError = "";
-  state.whatsappHistoryEmail = normalizeEmail(activeEmail);
-  renderWhatsAppHistory(feature);
-
-  whatsappHistoryRefreshPromise = (async () => {
-    try {
-      const response = await apiRequest("/api/whatsapp/history", {
-        timeoutMs: 20000,
-      });
-      const history = normalizeWhatsAppHistoryPayload(response);
-      state.whatsappHistory = history;
-      state.whatsappHistoryLoadedAt = Date.now();
-      state.whatsappHistoryEmail = normalizeEmail(activeEmail);
-      if (!history.conversations.some((conversation) => (
-        conversation.conversationId === state.whatsappHistorySelectedConversationId
-      ))) {
-        state.whatsappHistorySelectedConversationId = history.conversations[0]?.conversationId || "";
-      }
-      setStatus(`Loaded ${formatWhatsAppMessageCount(history.messageCount)}.`);
-      return history;
-    } catch (error) {
-      state.whatsappHistoryError = formatApiErrorMessage(error, "We couldn’t load the saved WhatsApp history.");
-      setStatus("WhatsApp history could not be loaded.");
-      return null;
-    } finally {
-      state.whatsappHistoryLoading = false;
-      whatsappHistoryRefreshPromise = null;
-      renderWhatsAppHistory(getSelectedFeature());
-      updateFeatureStudioHeader();
-    }
-  })();
-
-  return whatsappHistoryRefreshPromise;
-}
-
-function openWhatsAppHistory() {
-  const feature = getSelectedFeature();
-  if (!feature || !isWhatsAppFeature(feature)) {
-    return;
-  }
-
-  state.featureStudioView = "history";
-  closeMenu();
-  closeFeatureStudioMenu();
-  setHashForTab("features", feature.id, "history");
-  renderApp();
-  window.scrollTo(0, 0);
-  void refreshWhatsAppHistory({ force: !getCurrentWhatsAppHistory() });
 }
 
 function hasFeatureConfigChanges(feature = getSelectedFeature()) {
@@ -11186,18 +8570,10 @@ function hasFeatureConfigChanges(feature = getSelectedFeature()) {
   const savedManualOnly = normalizeMonitorManualOnly(savedSettings.manualOnly);
   const defaultSettings = isMonitorFeature(feature)
     ? DEFAULT_MONITOR_SETTINGS
-    : isReengagementFeature(feature)
-      ? DEFAULT_REENGAGEMENT_SETTINGS
-      : isWhatsAppReplyAssistantFeature(feature)
-        ? DEFAULT_WHATSAPP_TOOL_SETTINGS
-        : DEFAULT_FEATURE_SETTINGS;
+    : DEFAULT_FEATURE_SETTINGS;
   return Object.keys(defaultSettings).some(
     (key) => JSON.stringify(currentSettings[key] ?? "") !== JSON.stringify(savedSettings[key] ?? ""),
   );
-}
-
-function isFeatureActivationBusy(feature = getSelectedFeature()) {
-  return Boolean(featureActivationBusy && getSelectedFeatureStudioView(feature) === "activation");
 }
 
 function isMonitorManualRunBusy(feature = getSelectedFeature()) {
@@ -11206,25 +8582,6 @@ function isMonitorManualRunBusy(feature = getSelectedFeature()) {
     && feature
     && feature.id === monitorManualRunTargetId,
   );
-}
-
-function isReengagementDemoRunBusy(feature = getSelectedFeature()) {
-  return Boolean(
-    reengagementDemoRunBusy
-    && feature
-    && feature.id === reengagementDemoRunTargetId,
-  );
-}
-
-function formatFeatureActivationFieldLabel(key) {
-  const labels = {
-    business_account_id: "WhatsApp Business Account ID",
-    phone_number_id: "Phone number ID",
-    access_token: "Access token",
-    owner_wa_id: "Approval phone number",
-  };
-
-  return labels[key] || key;
 }
 
 function formatReadableList(items = []) {
@@ -11248,184 +8605,11 @@ function formatReadableList(items = []) {
   return `${values.slice(0, -1).join(", ")}, and ${last}`;
 }
 
-function clearFeatureActivationFieldErrors() {
-  state.featureActivationFieldErrors = {};
-}
-
-function setFeatureActivationFieldErrors(issues = []) {
-  const nextErrors = {};
-
-  for (const issue of issues) {
-    if (!issue?.field) {
-      continue;
-    }
-
-    nextErrors[issue.field] = String(issue.message || issue.title || "").trim();
-  }
-
-  state.featureActivationFieldErrors = nextErrors;
-}
-
-function clearFeatureActivationFieldError(key) {
-  if (!state.featureActivationFieldErrors?.[key]) {
-    return;
-  }
-
-  const nextErrors = { ...state.featureActivationFieldErrors };
-  delete nextErrors[key];
-  state.featureActivationFieldErrors = nextErrors;
-}
-
-function getFeatureActivationFieldError(key) {
-  return String(state.featureActivationFieldErrors?.[key] || "").trim();
-}
-
-function getFeatureActivationFieldElement(key) {
-  const elementsByKey = {
-    business_account_id: elements.featureActivationBusinessAccountIdInput,
-    phone_number_id: elements.featureActivationPhoneNumberIdInput,
-    access_token: elements.featureActivationAccessTokenInput,
-    owner_wa_id: elements.featureActivationOwnerWaIdInput,
-  };
-
-  return elementsByKey[key] || null;
-}
-
-function getMissingFeatureActivationFields(feature = getSelectedFeature()) {
-  const whatsapp = getSelectedFeatureWhatsApp(feature);
-  return FEATURE_ACTIVATION_REQUIRED_KEYS.filter((key) => {
-    if (key === "access_token") {
-      return !normalizePendingAccessToken(whatsapp.access_token) && !whatsapp.access_token_configured;
-    }
-    return !String(whatsapp[key] || "").trim();
-  });
-}
-
-function getFeatureActivationTestIssues(feature = getSelectedFeature()) {
-  const whatsapp = getSelectedFeatureWhatsApp(feature);
-  const businessAccountId = String(whatsapp.business_account_id || "").trim();
-  const phoneNumberId = String(whatsapp.phone_number_id || "").trim();
-  const accessToken = normalizePendingAccessToken(whatsapp.access_token);
-  const ownerWaId = String(whatsapp.owner_wa_id || "").trim();
-  const issues = [];
-
-  if (!/^\d+$/.test(businessAccountId)) {
-    issues.push({ field: "business_account_id", message: "Enter the WhatsApp Business Account ID Meta gave you.", inline: true });
-  }
-  if (!/^\d+$/.test(phoneNumberId)) {
-    issues.push({ field: "phone_number_id", message: "Enter the Phone Number ID Meta gave you.", inline: true });
-  }
-  if (!accessToken && !whatsapp.access_token_configured) {
-    issues.push({ field: "access_token", message: "Paste an access token for this WhatsApp Business Account.", inline: true });
-  }
-  if (!/^\d+$/.test(ownerWaId)) {
-    issues.push({ field: "owner_wa_id", message: "Enter the phone number that should receive suggested replies.", inline: true });
-  }
-
-  return issues;
-}
-
-function getFeatureActivationProgress(feature = getSelectedFeature()) {
-  const whatsapp = getSelectedFeatureWhatsApp(feature);
-  const total = FEATURE_ACTIVATION_REQUIRED_KEYS.length;
-  const missingKeys = getMissingFeatureActivationFields(feature);
-  const ready = isFeatureSetupComplete(feature)
-    ? total
-    : FEATURE_ACTIVATION_REQUIRED_KEYS.reduce((count, key) => {
-        if (key === "access_token") {
-          return count + ((normalizePendingAccessToken(whatsapp.access_token) || whatsapp.access_token_configured) ? 1 : 0);
-        }
-        return count + (String(whatsapp[key] || "").trim() ? 1 : 0);
-      }, 0);
-  return {
-    total,
-    ready,
-    missing: isFeatureSetupComplete(feature) ? [] : missingKeys.map((key) => formatFeatureActivationFieldLabel(key)),
-    readyRatio: total > 0 ? ready / total : 0,
-  };
-}
-
-function formatFeatureActivationProgressLabel(feature = getSelectedFeature()) {
-  if (isFeatureActivationBusy(feature)) {
-    return "Saving setup";
-  }
-
-  if (isFeatureActivated(feature)) {
-    return "Live";
-  }
-
-  if (isFeatureSetupComplete(feature)) {
-    return "Setup saved";
-  }
-
-  const progress = getFeatureActivationProgress(feature);
-  if (progress.ready === 0) {
-    return "WhatsApp setup";
-  }
-
-  return progress.ready === progress.total ? "Ready to save" : "Setup in progress";
-}
-
-function getFeatureActivationNoticeLabel() {
-  const notice = String(state.featureActivationNotice || "").trim();
-  if (!notice) {
-    return "";
-  }
-
-  if (/^setup failed\b/i.test(notice)) {
-    return "Setup failed";
-  }
-
-  if (/^checking\b/i.test(notice)) {
-    return "Checking connection";
-  }
-
-  if (/^setup saved\b/i.test(notice)) {
-    return "Setup saved";
-  }
-
-  if (/^whatsapp confirmed\b/i.test(notice)) {
-    return "Setup saved";
-  }
-
-  if (/^add the missing details\b/i.test(notice) || /^please add\b/i.test(notice)) {
-    return "Missing details";
-  }
-
-  if (/^replace the confirmation code\b/i.test(notice)) {
-    return "Confirmation code";
-  }
-
-  if (/^sign in again\b/i.test(notice)) {
-    return "Sign in again";
-  }
-
-  if (/^connection failed\b/i.test(notice) || /could not|failed|rejected|unavailable|network|timeout|connect/i.test(notice)) {
-    return "Connection issue";
-  }
-
-  return "Check details";
-}
-
-function getFeatureStudioStatusLabel(feature = getSelectedFeature(), view = getSelectedFeatureStudioView(feature)) {
-  if (isFeatureActivationBusy(feature)) {
-    return "Saving setup";
-  }
-
-  if (view === "activation") {
-    return "";
-  }
-
-  return getFeatureActivationLabel(feature);
-}
-
 function persistClientState() {
   clientState.notifications = normalizeAgentNotifications(clientState.notifications || []);
   const persistedFeatures = clientState.features.map((feature) => ({
     ...feature,
     setupComplete: Boolean(feature.setupComplete),
-    whatsapp: { ...DEFAULT_FEATURE_WHATSAPP },
-    savedWhatsApp: { ...DEFAULT_FEATURE_WHATSAPP },
   }));
   const persistedAgent = prepareAgentWorkspaceForPersistence(clientState.agent);
   persistJson(getClientKey(activeEmail), {
@@ -12463,7 +9647,6 @@ function setView(view) {
   elements.loadingView?.classList.toggle("is-hidden", nextView !== "loading");
   elements.authView.classList.toggle("is-hidden", nextView !== "auth");
   elements.appView.classList.toggle("is-hidden", nextView !== "app");
-  syncWhatsAppConnectionPolling();
   syncScheduledActionsPolling();
 }
 
@@ -12482,18 +9665,14 @@ function setStatus(message) {
   elements.saveState.classList.toggle("is-loading", /^checking\b/i.test(text));
 }
 
-function clearFeatureActivationNotice() {
-  state.featureActivationNotice = "";
-}
-
 function setHashForTab(tab, itemId = null, subview = null) {
   const normalizedTab = normalizeTab(tab);
   const url = new URL(window.location.href);
   const encodedSubview = normalizeFeatureStudioView(subview);
 
-  if (itemId && (normalizedTab === "features" || normalizedTab === "simulator")) {
+  if (itemId && normalizedTab === "features") {
     const parts = [normalizedTab, encodeURIComponent(itemId)];
-    if (normalizedTab === "features" && encodedSubview) {
+    if (encodedSubview) {
       parts.push(encodeURIComponent(encodedSubview));
     }
     url.hash = parts.join("/");
@@ -12614,12 +9793,12 @@ function resolveRouteFromHash() {
   const [rawTab, ...rest] = hash.split("/");
   const normalized = normalizeTab(rawTab);
 
-  if ((normalized === "features" || normalized === "simulator") && rest.length) {
+  if (normalized === "features" && rest.length) {
     const [itemId, maybeSubview, ...remaining] = rest;
     return {
       tab: normalized,
       featureId: decodeURIComponent([itemId, ...remaining].join("/")),
-      subview: normalized === "features" ? normalizeFeatureStudioView(decodeURIComponent(maybeSubview || "")) : null,
+      subview: normalizeFeatureStudioView(decodeURIComponent(maybeSubview || "")),
     };
   }
 
@@ -12685,7 +9864,7 @@ function setActiveTab(tab, options = {}) {
   if (nextTab === "clients" && !canManageClients()) {
     nextTab = "features";
   }
-  if ((nextTab === "turns" || nextTab === "account-types") && !canManageClients()) {
+  if ((nextTab === "turns" || nextTab === "feature-switches") && !canManageClients()) {
     nextTab = "features";
   }
 
@@ -12699,7 +9878,6 @@ function setActiveTab(tab, options = {}) {
   state.settingsOpen = false;
   state.selectedFeatureId = null;
   closeFeatureStudioMenu();
-  state.selectedSimulatorId = null;
   closeBillingHelp();
   closePersonalDetailsTips();
   if (options.settingsMode) {
@@ -12730,8 +9908,8 @@ function setActiveTab(tab, options = {}) {
   if (nextTab === "turns") {
     void refreshAgentTurns();
   }
-  if (nextTab === "account-types") {
-    void refreshAccountTypes();
+  if (nextTab === "feature-switches") {
+    void refreshFeatureSwitches();
   }
 }
 
@@ -12792,8 +9970,7 @@ function normalizeText(value) {
 function buildAccountProfilePromptLines(profile = clientState.profile) {
   const normalized = normalizeAccountProfile(profile);
   const lines = [];
-  appendProfilePromptLines(lines, "Business basics", normalized.businessSummary);
-  appendProfilePromptLines(lines, "Typical customers", normalized.customerNotes);
+  appendProfilePromptLines(lines, "The family", normalized.businessSummary);
   appendProfilePromptLines(lines, "Important notes", normalized.assistantGuidance);
   return lines;
 }
@@ -12802,7 +9979,6 @@ function hasAccountProfileContent(profile = clientState.profile) {
   const normalized = normalizeAccountProfile(profile);
   return Boolean(
     normalized.businessSummary
-    || normalized.customerNotes
     || normalized.assistantGuidance
   );
 }
@@ -12828,15 +10004,6 @@ function applyRemoteAccountProfile(payload = {}) {
   persistClientState();
 }
 
-function nowIso() {
-  return new Date().toISOString();
-}
-
-function textHasAny(text, needles) {
-  const haystack = String(text || "").toLowerCase();
-  return needles.some((needle) => haystack.includes(String(needle).toLowerCase()));
-}
-
 function bulletList(lines) {
   return (lines.length ? lines : [""]).map((line) => `- ${line}`);
 }
@@ -12860,7 +10027,7 @@ function buildOpening(toneText) {
 }
 
 function buildResponseText(prompt = getSelectedPrompt()) {
-  const scenario = SCENARIOS[prompt.scenario] ?? SCENARIOS.availability;
+  const scenario = SCENARIOS[prompt.scenario] ?? SCENARIOS.monitor;
 
   if (scenario.exactReply) {
     return scenario.ask;
@@ -12874,550 +10041,6 @@ function buildResponseText(prompt = getSelectedPrompt()) {
   }
 
   return `${opening}. ${scenario.ask}`;
-}
-
-function buildCompiledPrompt(feature = getSelectedFeature()) {
-  const prompt = feature?.prompt || getSelectedPrompt();
-  const sharedProfileLines = buildAccountProfilePromptLines();
-  const exampleReplies = splitLines(prompt.exampleReplies);
-  const lines = [
-    "Client tool draft",
-    "",
-    `Tool: ${feature?.name || "Unassigned tool"}`,
-    `Channel: ${feature?.channel || "Web"}`,
-    `Mode: ${feature?.mode || "Default"}`,
-  ];
-
-  if (sharedProfileLines.length) {
-    lines.push(
-      "",
-      "Shared client context",
-      ...bulletList(sharedProfileLines),
-    );
-  }
-
-  lines.push(
-    "",
-    "Reply style",
-    `- ${prompt.responseStyle}`,
-    "",
-    "Tone",
-    ...bulletList(splitLines(prompt.toneGuidance)),
-    "",
-    "Reply rules",
-    ...bulletList(splitLines(prompt.replyRules)),
-    "",
-    "Tool-specific business notes",
-    ...bulletList(splitLines(prompt.businessNotes)),
-    "",
-    "Escalation rules",
-    ...bulletList(splitLines(prompt.escalationGuidance)),
-  );
-
-  if (exampleReplies.length) {
-    lines.push(
-      "",
-      "Example replies",
-      ...bulletList(exampleReplies),
-    );
-  }
-
-  return lines.join("\n").trim();
-}
-
-function normalizeSimulatorContext(value) {
-  const items = Array.isArray(value) ? value : splitLines(value);
-  return items.map((item) => String(item).trim()).filter(Boolean);
-}
-
-function buildApprovalMessagePayload(threadContext = []) {
-  const messages = normalizeSimulatorContext(threadContext);
-  return messages.map((text, index) => ({
-    direction: index % 2 === 0 ? "incoming" : "outgoing",
-    text,
-  }));
-}
-
-function normalizeSimulatorApproval(record = {}, index = 0) {
-  const approvalId = String(record.approvalId || record.id || `local-approval-${index + 1}`);
-  const threadContext = normalizeSimulatorContext(record.threadContext || record.context || []);
-  const suggestedReply = String(record.suggestedReply || record.replyDraft || "");
-  const replyDraft = String(record.replyDraft || suggestedReply || "");
-  const status = String(record.status || "pending").toLowerCase() === "sent" ? "sent" : "pending";
-  const createdAt = String(record.createdAt || record.created_at || nowIso());
-  const updatedAt = String(record.updatedAt || record.updated_at || createdAt);
-
-  return {
-    approvalId,
-    senderName: String(record.senderName || record.sender_name || "Customer"),
-    senderWaId: String(record.senderWaId || record.sender_wa_id || ""),
-    latestMessage: String(record.latestMessage || record.latest_message || ""),
-    threadContext,
-    suggestedReply,
-    replyDraft,
-    approvalUrl: String(record.approvalUrl || record.approval_url || DEFAULT_SIMULATOR.composer.approvalUrl),
-    status,
-    createdAt,
-    updatedAt,
-    sentAt: String(record.sentAt || record.sent_at || ""),
-    messageType: String(record.messageType || record.message_type || "text"),
-  };
-}
-
-function buildLocalSuggestion(messageText, prompt = getSelectedPrompt(), contextLines = []) {
-  const latestText = normalizeText(messageText);
-  const lowered = latestText.toLowerCase();
-  const tone = normalizeText(prompt.toneGuidance).toLowerCase();
-  const replyStyle = normalizeText(prompt.responseStyle || "balanced").toLowerCase();
-
-  let reply;
-
-  if (textHasAny(lowered, ["available today", "available tomorrow", "available", "free today", "calendar", "schedule"])) {
-    reply = "One sec, checking my calendar right now.";
-  } else if (textHasAny(lowered, ["price", "cost", "quote", "how much", "charge", "estimate"])) {
-    reply = "I can help with that. I just need a couple of details first so I can give you the right price.";
-  } else if (textHasAny(lowered, ["urgent", "asap", "right now", "emergency", "stuck", "critical"])) {
-    reply = "I’m flagging this for immediate human follow-up so someone can help as fast as possible.";
-  } else if (textHasAny(lowered, ["resched", "move the appointment", "change the time", "another day"])) {
-    reply = "Yes, I can check that for you. What time window works best?";
-  } else if (textHasAny(lowered, ["thanks", "thank you", "ok", "okay"])) {
-    reply = "Of course. I’m checking that now.";
-  } else {
-    reply = "Thanks for reaching out. Let me check and I’ll get back to you shortly.";
-  }
-
-  if ((tone.includes("friendly") || tone.includes("warm")) && reply.startsWith("Thanks for reaching out")) {
-    reply = `${reply} Happy to help.`;
-  }
-
-  if (replyStyle === "detailed") {
-    if (textHasAny(lowered, ["urgent", "emergency"])) {
-      reply = `${reply} I’ll make sure a person follows up as soon as possible.`;
-    } else if (!reply.endsWith("right away.")) {
-      reply = `${reply} Once I confirm, I’ll send the next step right away.`;
-    }
-  }
-
-  if (contextLines.length > 2 && reply.toLowerCase().includes("check") && !reply.toLowerCase().includes("again")) {
-    reply = `${reply} I’ll keep the thread updated.`;
-  }
-
-  return reply;
-}
-
-function createSimulatorApproval(composer, options = {}) {
-  const now = nowIso();
-  const approvalId = String(options.approvalId || `local-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`);
-  const threadContext = normalizeSimulatorContext(composer.threadContext);
-  const prompt = options.prompt || DEFAULT_PROMPT;
-  const suggestedReply = buildLocalSuggestion(composer.latestMessage, prompt, threadContext);
-  const approval = normalizeSimulatorApproval(
-    {
-      approvalId,
-      senderName: composer.senderName,
-      senderWaId: composer.senderWaId,
-      latestMessage: composer.latestMessage,
-      threadContext,
-      suggestedReply,
-      replyDraft: options.replyDraft || suggestedReply,
-      approvalUrl: composer.approvalUrl,
-      status: "pending",
-      createdAt: options.createdAt || now,
-      updatedAt: options.updatedAt || now,
-      sentAt: "",
-      messageType: "text",
-      ...options,
-    },
-    0,
-  );
-
-  approval.suggestedReply = suggestedReply;
-  if (!approval.replyDraft) {
-    approval.replyDraft = suggestedReply;
-  }
-
-  return approval;
-}
-
-function buildSimulatorEditUrl(approval) {
-  const approvalUrl = String(approval?.approvalUrl || "").trim();
-
-  if (!approvalUrl) {
-    return null;
-  }
-
-  try {
-    const url = new URL(approvalUrl, window.location.href);
-    url.searchParams.set("senderName", approval.senderName || "");
-    url.searchParams.set("senderWaId", approval.senderWaId || "");
-    url.searchParams.set("latestMessage", approval.latestMessage || "");
-    url.searchParams.set("suggestedReply", approval.suggestedReply || "");
-    url.searchParams.set("replyDraft", approval.replyDraft || "");
-    url.searchParams.set("messages", JSON.stringify(buildApprovalMessagePayload(approval.threadContext || [])));
-    url.searchParams.set("context", (approval.threadContext || []).join("\n"));
-    url.searchParams.set("approvalId", approval.approvalId || "");
-    url.searchParams.set("clientName", getWorkspaceName());
-    url.searchParams.set("returnUrl", new URL("./", window.location.href).toString());
-    return url.toString();
-  } catch {
-    return null;
-  }
-}
-
-function normalizeSimulatorState(savedSimulator = {}, promptSource = DEFAULT_PROMPT) {
-  const prompt = normalizePrompt(promptSource);
-  const savedComposer = savedSimulator.composer || {};
-  const exampleKey = SIMULATOR_PRESETS[savedComposer.scenario] ? savedComposer.scenario : DEFAULT_SIMULATOR.composer.scenario;
-  const preset = SIMULATOR_PRESETS[exampleKey] || SIMULATOR_PRESETS.approval;
-  const composer = {
-    scenario: exampleKey,
-    senderName: String(savedComposer.senderName || preset.senderName || DEFAULT_SIMULATOR.composer.senderName),
-    senderWaId: String(savedComposer.senderWaId || preset.senderWaId || DEFAULT_SIMULATOR.composer.senderWaId),
-    latestMessage: String(savedComposer.latestMessage || preset.latestMessage || DEFAULT_SIMULATOR.composer.latestMessage),
-    threadContext: String(savedComposer.threadContext || preset.threadContext || DEFAULT_SIMULATOR.composer.threadContext),
-    approvalUrl: String(savedComposer.approvalUrl || preset.approvalUrl || DEFAULT_SIMULATOR.composer.approvalUrl),
-  };
-
-  const approvalsSource = Array.isArray(savedSimulator.approvals) ? savedSimulator.approvals : [];
-  const approvals = approvalsSource.length
-    ? approvalsSource.map((approval, index) => normalizeSimulatorApproval(approval, index)).filter(Boolean)
-    : [createSimulatorApproval(composer, { approvalId: "sample-local-approval", prompt })];
-
-  let selectedApprovalId = String(savedSimulator.selectedApprovalId || approvals[0]?.approvalId || "");
-  if (!approvals.some((approval) => approval.approvalId === selectedApprovalId)) {
-    selectedApprovalId = approvals[0]?.approvalId || "";
-  }
-
-  return {
-    composer,
-    approvals,
-    selectedApprovalId,
-  };
-}
-
-function getSimulatorState() {
-  if (!clientState.simulator) {
-    clientState.simulator = normalizeSimulatorState({}, getSelectedPrompt());
-  }
-
-  return clientState.simulator;
-}
-
-function getSimulatorApprovals() {
-  return getSimulatorState().approvals || [];
-}
-
-function getSelectedSimulatorApproval() {
-  const simulator = getSimulatorState();
-  const approvals = simulator.approvals || [];
-  if (!approvals.length) {
-    return null;
-  }
-
-  const selectedId = state.selectedSimulatorId || simulator.selectedApprovalId || approvals[0].approvalId;
-  return approvals.find((approval) => approval.approvalId === selectedId) || approvals[0];
-}
-
-function ensureSimulatorSelection() {
-  const simulator = getSimulatorState();
-  const approvals = simulator.approvals || [];
-  if (!approvals.length) {
-    state.selectedSimulatorId = null;
-    simulator.selectedApprovalId = "";
-    return null;
-  }
-
-  let selectedApproval = approvals.find((approval) => approval.approvalId === state.selectedSimulatorId)
-    || approvals.find((approval) => approval.approvalId === simulator.selectedApprovalId)
-    || approvals[0];
-
-  if (selectedApproval && selectedApproval.approvalId !== state.selectedSimulatorId) {
-    state.selectedSimulatorId = selectedApproval.approvalId;
-    simulator.selectedApprovalId = selectedApproval.approvalId;
-    persistClientState();
-  }
-
-  return selectedApproval || null;
-}
-
-function selectSimulatorApproval(approvalId) {
-  const simulator = getSimulatorState();
-  const approvals = simulator.approvals || [];
-  if (!approvals.some((approval) => approval.approvalId === approvalId)) {
-    return;
-  }
-
-  state.selectedSimulatorId = approvalId;
-  simulator.selectedApprovalId = approvalId;
-  persistClientState();
-  setHashForTab("simulator", approvalId);
-  renderApp();
-}
-
-function applySimulatorPreset(presetKey) {
-  const preset = SIMULATOR_PRESETS[presetKey] || SIMULATOR_PRESETS.approval;
-  const simulator = getSimulatorState();
-  simulator.composer = {
-    scenario: SIMULATOR_PRESETS[presetKey] ? presetKey : "approval",
-    senderName: preset.senderName,
-    senderWaId: preset.senderWaId,
-    latestMessage: preset.latestMessage,
-    threadContext: preset.threadContext,
-    approvalUrl: preset.approvalUrl,
-  };
-  persistClientState();
-  updateSimulatorComposerFields();
-  updateStatusFromSimulator("Loaded sample message");
-}
-
-function queueSimulatorApproval() {
-  const simulator = getSimulatorState();
-  const composer = simulator.composer || { ...DEFAULT_SIMULATOR.composer };
-  const approval = createSimulatorApproval(composer, { prompt: getSelectedPrompt() });
-  simulator.approvals = [approval, ...(simulator.approvals || [])];
-  simulator.selectedApprovalId = approval.approvalId;
-  state.selectedSimulatorId = approval.approvalId;
-  persistClientState();
-  setHashForTab("simulator", approval.approvalId);
-  renderApp();
-  updateStatusFromSimulator("Queued mock approval");
-}
-
-function markSimulatorApprovalSent() {
-  const simulator = getSimulatorState();
-  const approval = getSelectedSimulatorApproval();
-  if (!approval || approval.status === "sent") {
-    return;
-  }
-
-  approval.replyDraft = normalizeText(approval.replyDraft || approval.suggestedReply);
-  approval.status = "sent";
-  approval.sentAt = nowIso();
-  approval.updatedAt = approval.sentAt;
-  persistClientState();
-  renderApp();
-  updateStatusFromSimulator("Marked as sent locally");
-}
-
-function updateStatusFromSimulator(message) {
-  setStatus(message || "Saved");
-}
-
-function syncSimulatorComposerField(key) {
-  return (event) => {
-    const simulator = getSimulatorState();
-    if (!simulator.composer) {
-      simulator.composer = { ...DEFAULT_SIMULATOR.composer };
-    }
-
-    simulator.composer[key] = event.target.value;
-    persistClientState();
-    updateStatusFromSimulator("Simulator draft updated");
-  };
-}
-
-function syncSimulatorReplyDraft(event) {
-  const approval = getSelectedSimulatorApproval();
-  if (!approval) {
-    return;
-  }
-
-  approval.replyDraft = event.target.value;
-  approval.updatedAt = nowIso();
-  persistClientState();
-  updateSimulatorDetail();
-  updateSimulatorQueue();
-  updateStatusFromSimulator("Reply draft updated");
-}
-
-function updateSimulatorComposerFields() {
-  const simulator = getSimulatorState();
-  const composer = simulator.composer || { ...DEFAULT_SIMULATOR.composer };
-
-  if (elements.simulatorPresetSelect) {
-    elements.simulatorPresetSelect.value = composer.scenario;
-  }
-  if (elements.simulatorSenderNameInput) {
-    elements.simulatorSenderNameInput.value = composer.senderName;
-  }
-  if (elements.simulatorSenderWaIdInput) {
-    elements.simulatorSenderWaIdInput.value = composer.senderWaId;
-  }
-  if (elements.simulatorMessageInput) {
-    elements.simulatorMessageInput.value = composer.latestMessage;
-  }
-  if (elements.simulatorContextInput) {
-    elements.simulatorContextInput.value = composer.threadContext;
-  }
-  if (elements.simulatorApprovalUrlInput) {
-    elements.simulatorApprovalUrlInput.value = composer.approvalUrl;
-  }
-}
-
-function createSimulatorQueueItem(approval, isActive) {
-  const item = document.createElement("button");
-  item.type = "button";
-  item.className = "glass-card simulator-queue-item";
-  item.classList.toggle("is-active", isActive);
-  item.addEventListener("click", () => selectSimulatorApproval(approval.approvalId));
-
-  const head = document.createElement("div");
-  head.className = "simulator-queue-head";
-
-  const titleBlock = document.createElement("div");
-  const title = document.createElement("h4");
-  title.textContent = approval.senderName;
-  const meta = document.createElement("p");
-  meta.className = "simulator-queue-meta";
-  meta.textContent = approval.senderWaId ? approval.senderWaId : "No WhatsApp ID yet";
-  titleBlock.append(title, meta);
-
-  const status = document.createElement("span");
-  status.className = `feature-status ${approval.status === "sent" ? "is-sent" : ""}`.trim();
-  status.textContent = approval.status === "sent" ? "Sent" : "Pending";
-
-  head.append(titleBlock, status);
-
-  const message = document.createElement("p");
-  message.className = "simulator-queue-copy";
-  message.textContent = approval.latestMessage;
-
-  const footer = document.createElement("div");
-  footer.className = "simulator-queue-footer";
-
-  const created = document.createElement("span");
-  created.textContent = new Intl.DateTimeFormat(undefined, {
-    month: "short",
-    day: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-  }).format(new Date(approval.createdAt));
-
-  const action = document.createElement("span");
-  action.textContent = "Open";
-
-  footer.append(created, action);
-  item.append(head, message, footer);
-  return item;
-}
-
-function updateSimulatorQueue() {
-  const approvals = getSimulatorApprovals();
-  if (elements.simulatorQueueCount) {
-    const pendingCount = approvals.filter((approval) => approval.status !== "sent").length;
-    elements.simulatorQueueCount.textContent = `${pendingCount} pending`;
-  }
-
-  if (!elements.simulatorQueueList) {
-    return;
-  }
-
-  if (!approvals.length) {
-    const emptyState = document.createElement("article");
-    emptyState.className = "glass-card empty-state simulator-empty";
-    const title = document.createElement("h3");
-    title.textContent = "No mock approvals yet";
-    const copy = document.createElement("p");
-    copy.textContent = "Use the form to queue a fake WhatsApp message and create a local approval card.";
-    emptyState.append(title, copy);
-    elements.simulatorQueueList.replaceChildren(emptyState);
-    return;
-  }
-
-  const selectedApproval = getSelectedSimulatorApproval();
-  elements.simulatorQueueList.replaceChildren(
-    ...approvals.map((approval) => createSimulatorQueueItem(approval, approval.approvalId === selectedApproval?.approvalId)),
-  );
-}
-
-function updateSimulatorDetail() {
-  const approval = getSelectedSimulatorApproval();
-  if (!approval) {
-    if (elements.simulatorDetailTitle) {
-      elements.simulatorDetailTitle.textContent = "Select a queued approval";
-    }
-    if (elements.simulatorDetailStatus) {
-      elements.simulatorDetailStatus.textContent = "Empty";
-    }
-    if (elements.simulatorDetailSender) {
-      elements.simulatorDetailSender.textContent = "No sender";
-    }
-    if (elements.simulatorDetailMessage) {
-      elements.simulatorDetailMessage.textContent = "Queue a message to see the local approval view.";
-    }
-    if (elements.simulatorReplyInput) {
-      elements.simulatorReplyInput.value = "";
-      elements.simulatorReplyInput.disabled = true;
-    }
-    if (elements.simulatorContextList) {
-      elements.simulatorContextList.replaceChildren();
-    }
-    if (elements.simulatorApprovalNote) {
-      elements.simulatorApprovalNote.textContent = "Edit opens the inline draft editor in this simulator.";
-    }
-    if (elements.simulatorSendButton) {
-      elements.simulatorSendButton.disabled = true;
-    }
-    if (elements.simulatorEditButton) {
-      elements.simulatorEditButton.disabled = true;
-    }
-    return;
-  }
-
-  if (elements.simulatorDetailTitle) {
-    elements.simulatorDetailTitle.textContent = approval.senderName;
-  }
-  if (elements.simulatorDetailStatus) {
-    elements.simulatorDetailStatus.textContent = approval.status === "sent" ? "Sent" : "Pending";
-  }
-  if (elements.simulatorDetailSender) {
-    elements.simulatorDetailSender.textContent = approval.senderWaId || "Customer";
-  }
-  if (elements.simulatorDetailMessage) {
-    elements.simulatorDetailMessage.textContent = approval.latestMessage;
-  }
-  if (elements.simulatorReplyInput) {
-    elements.simulatorReplyInput.value = approval.replyDraft || approval.suggestedReply || "";
-    elements.simulatorReplyInput.disabled = approval.status === "sent";
-  }
-  if (elements.simulatorContextList) {
-    const items = approval.threadContext.length
-      ? approval.threadContext.map((line, index) => {
-          const row = document.createElement("div");
-          row.className = `simulator-context-item ${index === 0 ? "is-primary" : ""}`.trim();
-          row.textContent = line;
-          return row;
-        })
-      : [];
-
-    if (!items.length) {
-      const empty = document.createElement("div");
-      empty.className = "notice";
-      empty.textContent = "No thread context was added to this mock message.";
-      elements.simulatorContextList.replaceChildren(empty);
-    } else {
-      elements.simulatorContextList.replaceChildren(...items);
-    }
-  }
-  if (elements.simulatorApprovalNote) {
-    elements.simulatorApprovalNote.textContent = approval.approvalUrl
-      ? `Edit opens ${approval.approvalUrl} with the sender, message, and draft prefilled.`
-      : "Edit keeps the draft local in this simulator.";
-  }
-  if (elements.simulatorSendButton) {
-    elements.simulatorSendButton.disabled = approval.status === "sent";
-    elements.simulatorSendButton.textContent = approval.status === "sent" ? "Sent" : "Send";
-  }
-  if (elements.simulatorEditButton) {
-    elements.simulatorEditButton.disabled = false;
-  }
-}
-
-function updateSimulatorPanel() {
-  ensureSimulatorSelection();
-  updateSimulatorComposerFields();
-  updateSimulatorQueue();
-  updateSimulatorDetail();
 }
 
 function createBillingNotice(message, tone = "neutral") {
@@ -14412,7 +11035,7 @@ function createAdminUsersListView() {
 
   const thead = document.createElement("thead");
   const headRow = document.createElement("tr");
-  for (const heading of ["Client", "Email", "Account type", "Client type", "Free trial", "Cost this month", "Active", "Last login", ""]) {
+  for (const heading of ["Client", "Email", "Client type", "Free trial", "Cost this month", "Active", "Last login", ""]) {
     const cell = document.createElement("th");
     cell.textContent = heading;
     headRow.append(cell);
@@ -14433,11 +11056,6 @@ function createAdminUsersListView() {
 
     const emailCell = document.createElement("td");
     emailCell.textContent = user.email;
-
-    const accountTypeCell = document.createElement("td");
-    accountTypeCell.append(createAdminAccountTypeSelect(user, {
-      disabled: Boolean(state.adminDeleteBusyByEmail[user.email]),
-    }));
 
     const clientTypeCell = document.createElement("td");
     clientTypeCell.append(createAdminClientTypeSelect(user, {
@@ -14473,7 +11091,7 @@ function createAdminUsersListView() {
     actionCell.append(manageButton);
 
     row.classList.toggle("is-inactive-client", !user.isActive);
-    row.append(nameCell, emailCell, accountTypeCell, clientTypeCell, trialCell, spendCell, activeCell, lastLoginCell, actionCell);
+    row.append(nameCell, emailCell, clientTypeCell, trialCell, spendCell, activeCell, lastLoginCell, actionCell);
     tbody.append(row);
   }
 
@@ -14655,7 +11273,6 @@ function createAdminUserDetailView(user) {
   const infoRows = document.createElement("div");
   infoRows.className = "detail-stack";
   infoRows.append(
-    createAdminDetailRow("Account type", user.accountType === "family" ? "Family" : "Business"),
     createAdminDetailRow("Client type", getAdminClientTypeLabel(user.clientType)),
     createAdminDetailRow("Free trial", describeAdminTrial(user).label),
     createAdminDetailRow("Login", user.isActive ? "Active" : "Inactive"),
@@ -14677,9 +11294,6 @@ function createAdminUserDetailView(user) {
     disabled: isDeleting || isStatusSaving,
     help: true,
   });
-  infoActions.append(createAdminAccountTypeSelect(user, {
-    disabled: isDeleting || isStatusSaving,
-  }));
   infoActions.append(clientTypeControl);
   infoActions.append(trialControl);
   infoActions.append(statusControl);
@@ -15040,52 +11654,6 @@ async function saveAdminUserStatus(email, isActive) {
     renderApp();
     if (updatedUser) {
       setStatus(updatedUser.isActive ? "Client activated" : "Client disabled");
-    }
-  }
-}
-
-async function saveAdminUserAccountType(email, accountType) {
-  const normalizedEmail = normalizeEmail(email);
-  const nextType = accountType === "family" ? "family" : "business";
-  const user = state.adminUsers.find((entry) => entry.email === normalizedEmail);
-  if (!canManageClients() || !user || state.adminAccountTypeBusyByEmail[normalizedEmail]) {
-    return;
-  }
-  const previousType = user.accountType === "family" ? "family" : "business";
-  if (previousType === nextType) {
-    return;
-  }
-
-  const setType = (value) => {
-    state.adminUsers = state.adminUsers.map((entry) => (
-      entry.email === normalizedEmail ? { ...entry, accountType: value } : entry
-    ));
-  };
-  state.adminAccountTypeBusyByEmail = { ...state.adminAccountTypeBusyByEmail, [normalizedEmail]: true };
-  setType(nextType);
-  renderApp();
-
-  let saved = false;
-  try {
-    const response = await apiRequest(`/api/admin/users/${encodeURIComponent(normalizedEmail)}/account-type`, {
-      method: "POST",
-      body: { accountType: nextType },
-    });
-    upsertAdminUserState(response.user || { ...user, accountType: nextType });
-    // The grid's account counts moved with it.
-    state.accountTypes = null;
-    saved = true;
-  } catch (error) {
-    setType(previousType);
-    openAuthAlert("Couldn’t update account type", formatApiErrorMessage(error, "We couldn’t update that account type right now."), {
-      eyebrow: "Account type",
-    });
-  } finally {
-    const { [normalizedEmail]: _ignore, ...nextBusy } = state.adminAccountTypeBusyByEmail;
-    state.adminAccountTypeBusyByEmail = nextBusy;
-    renderApp();
-    if (saved) {
-      setStatus(`Account type set to ${nextType === "family" ? "Family" : "Business"}`);
     }
   }
 }
@@ -15813,14 +12381,6 @@ function getAgentBlueprintForText(text) {
     return AGENT_BLUEPRINTS.emailDigest;
   }
 
-  if (/\b(re-?engage|follow[- ]?up|past customer|quiet conversation|dormant)\b/.test(value)) {
-    return AGENT_BLUEPRINTS.reengagement;
-  }
-
-  if (/\b(whatsapp|reply|approval|lead|customer message)\b/.test(value)) {
-    return AGENT_BLUEPRINTS.whatsappReplies;
-  }
-
   if (/\b(watch|monitor|deadline|alert|web|search|opportunit|event)\b/.test(value)) {
     return AGENT_BLUEPRINTS.webMonitor;
   }
@@ -15856,27 +12416,14 @@ function createAgentProposalFromRequest(text, blueprintOverride = null) {
   ) {
     inferredFields.deliveryChannel = "portal";
   }
-  if (blueprint.type === "whatsapp-replies" && isWhatsAppConnectionReady()) {
-    inferredFields.whatsappNumber = inferredFields.whatsappNumber || "connected WhatsApp number";
-    inferredFields.deliveryChannel = inferredFields.deliveryChannel || "portal";
-  }
   const scheduledQuestionPlan = blueprint.type === "scheduled-message"
     ? buildAgentScheduledMessageQuestionPlan(scheduledDetails)
     : { questions: [...blueprint.questions], questionKeys: [] };
-  const scheduledChannel = normalizeAgentDeliveryChannel(scheduledDetails.channel);
-  const relatedFeatureId = blueprint.type === "scheduled-message" && scheduledChannel === "whatsapp"
-    ? WHATSAPP_REPLY_ASSISTANT_FEATURE_ID
-    : blueprint.relatedFeatureId;
+  const relatedFeatureId = blueprint.relatedFeatureId;
   const calendarConnected = isCalendarConnectionReady();
   const gmailConnected = isEmailConnectionReady();
   let missingCredential = blueprint.missingCredential;
-  if (blueprint.type === "scheduled-message" && scheduledChannel === "whatsapp") {
-    missingCredential = isFeatureSetupComplete(getFeatureById(WHATSAPP_REPLY_ASSISTANT_FEATURE_ID))
-      ? ""
-      : "WhatsApp Business API access token";
-  } else if (blueprint.type === "whatsapp-replies" && isWhatsAppConnectionReady()) {
-    missingCredential = "";
-  } else if (blueprint.type === "calendar-summary" && calendarConnected) {
+  if (blueprint.type === "calendar-summary" && calendarConnected) {
     missingCredential = "";
   } else if (blueprint.type === "email-digest" && gmailConnected) {
     missingCredential = "";
@@ -16095,7 +12642,7 @@ function getAgentMessageProposal(message, agent = getAgentWorkspace()) {
 }
 
 function getAgentRenderableMessageActions(message, kind, proposal) {
-  if (!message || message.role === "user" || kind === "connection-setup") {
+  if (!message || message.role === "user") {
     return [];
   }
 
@@ -16266,14 +12813,6 @@ function getAgentProposalFieldKeysForAnswers(proposal, answerCount = 0) {
 
   if (proposal?.type === "calendar-summary") {
     return ["calendar", "timeWindow", "deliveryChannel"];
-  }
-
-  if (proposal?.type === "whatsapp-replies") {
-    return ["whatsappNumber", "approver", "guardrails", "deliveryChannel"];
-  }
-
-  if (proposal?.type === "reengagement") {
-    return ["inactivityPeriod", "frequency", "deliveryChannel"];
   }
 
   if (proposal?.type === "source-action") {
@@ -16545,31 +13084,6 @@ function inferAgentProposalFieldsFromText(text, proposalType) {
     return fields;
   }
 
-  if (proposalType === "reengagement") {
-    const inactivityMatch = value.match(/\b(\d+)\s*(days?|weeks?|months?)\b/i);
-    if (inactivityMatch) {
-      fields.inactivityPeriod = `${inactivityMatch[1]} ${inactivityMatch[2].toLowerCase()}`;
-    }
-    if (frequency) {
-      fields.frequency = frequency;
-    }
-    if (deliveryChannel) {
-      fields.deliveryChannel = formatAgentScheduledMessageChannel(deliveryChannel);
-    }
-    return fields;
-  }
-
-  if (proposalType === "whatsapp-replies") {
-    if (/\bwhatsapp\b/i.test(value)) {
-      fields.whatsappNumber = "connected WhatsApp number";
-    }
-    const deliveryMatch = value.match(/\b(?:send|deliver|bring|notify|alert|review)\b[\s\S]{0,40}\b(whatsapp|telegram|portal|chat|workspace)\b/i);
-    const requestedDeliveryChannel = normalizeAgentDeliveryChannel(deliveryMatch?.[1] || "");
-    if (requestedDeliveryChannel) {
-      fields.deliveryChannel = formatAgentScheduledMessageChannel(requestedDeliveryChannel);
-    }
-    return fields;
-  }
 
   if (/\b(calendar|agenda|appointments?)\b/i.test(value)) {
     return {};
@@ -16617,10 +13131,6 @@ function updateAgentProposalSummaryFromFields(proposal) {
       ? ` and deliver it by ${formatAgentScheduledMessageChannel(deliveryChannel)}`
       : "";
     proposal.summary = `Summarize meetings from ${calendar}${timeWindow}${deliveryText}.`;
-  } else if (proposal.type === "reengagement" && (fields.inactivityPeriod || fields.frequency)) {
-    const inactivity = fields.inactivityPeriod || "the chosen quiet period";
-    const frequency = fields.frequency ? ` ${fields.frequency}` : "";
-    proposal.summary = `Find conversations quiet for ${inactivity}${frequency} and draft follow-ups.`;
   } else if (proposal.type === "source-action") {
     const source = fields.sourceType === "file" ? (fields.sourceFileName || "the attached file") : (fields.sourceUrl || "the selected URL");
     const frequency = fields.frequency ? ` ${fields.frequency}` : "";
@@ -17798,214 +14308,6 @@ function openAgentErrorHelp(technical = {}, returnFocus = null) {
   );
 }
 
-function createAgentConnectionSetupCard(message) {
-  const setup = message?.metadata?.connectionSetup && typeof message.metadata.connectionSetup === "object"
-    ? message.metadata.connectionSetup
-    : {};
-  const card = document.createElement("section");
-  card.className = "agent-message-connection-card";
-  card.setAttribute("aria-label", "WhatsApp setup details");
-
-  const eyebrow = document.createElement("span");
-  eyebrow.className = "agent-message-connection-card-eyebrow";
-  eyebrow.textContent = "WhatsApp setup";
-
-  const title = document.createElement("h3");
-  title.className = "agent-message-connection-card-title";
-  title.textContent = setup.platformConnected ? "Finish the Business connection" : "Connect WhatsApp Business";
-
-  const copy = document.createElement("p");
-  copy.className = "agent-message-connection-card-copy";
-  copy.textContent = setup.platformConnected
-    ? "The WhatsApp app is connected, but incoming-message monitoring uses a separate WhatsApp Business connection."
-    : "Add these details in the secure setup form so I can monitor incoming messages.";
-
-  const list = document.createElement("ul");
-  list.className = "agent-message-connection-card-list";
-  const missingFields = Array.isArray(setup.missingFields) ? setup.missingFields : [];
-  for (const field of missingFields) {
-    const item = document.createElement("li");
-    item.className = "agent-message-connection-card-item";
-    item.textContent = String(field?.label || "Required connection detail");
-    list.append(item);
-  }
-  if (!missingFields.length) {
-    const item = document.createElement("li");
-    item.className = "agent-message-connection-card-item";
-    item.textContent = "Verified WhatsApp Business connection";
-    list.append(item);
-  }
-
-  const button = document.createElement("button");
-  button.type = "button";
-  button.className = "agent-message-connection-card-button primary-button";
-  button.textContent = "Open WhatsApp setup";
-  button.dataset.agentMessageAction = "open-whatsapp-setup";
-  button.dataset.agentActionValue = "whatsapp";
-  button.dataset.agentActionMessage = message.id;
-  const agent = getAgentWorkspace();
-  button.disabled = Boolean(agentTurnBusy || areAgentMessageActionsResolved(message, agent.messages));
-
-  const note = document.createElement("p");
-  note.className = "agent-message-connection-card-note";
-  note.textContent = "Your access token stays in the secure setup form and is never shown in chat.";
-
-  card.append(eyebrow, title, copy, list, button, note);
-  return card;
-}
-
-function getAgentWhatsAppApprovalForMessage(message) {
-  return message?.metadata?.approval && typeof message.metadata.approval === "object"
-    ? message.metadata.approval
-    : {};
-}
-
-function createAgentWhatsAppReplyCard(message) {
-  const approval = getAgentWhatsAppApprovalForMessage(message);
-  const status = String(approval.status || message.metadata?.approvalStatus || "pending").trim().toLowerCase();
-  const senderName = String(approval.sender_name || approval.senderName || approval.sender_wa_id || "WhatsApp contact").trim();
-  const incomingText = String(approval.latest_message || approval.incoming_text || approval.message || "").trim();
-  const suggestedReply = String(approval.suggested_reply || approval.suggestedReply || "").trim();
-
-  const card = document.createElement("section");
-  card.className = `agent-message-whatsapp-card is-${status || "pending"}`;
-  card.setAttribute("aria-label", `WhatsApp reply from ${senderName}`);
-
-  const header = document.createElement("div");
-  header.className = "agent-message-whatsapp-card-head";
-  const eyebrow = document.createElement("span");
-  eyebrow.className = "agent-message-whatsapp-card-eyebrow";
-  eyebrow.textContent = "WhatsApp reply";
-  const title = document.createElement("h3");
-  title.className = "agent-message-whatsapp-card-title";
-  title.textContent = senderName;
-  const statusLabel = document.createElement("span");
-  statusLabel.className = "agent-message-whatsapp-card-status";
-  statusLabel.setAttribute("role", "status");
-  statusLabel.textContent = status === "sent" ? "Sent" : status === "skipped" ? "Skipped" : "Needs review";
-  header.append(eyebrow, title, statusLabel);
-
-  const incomingLabel = document.createElement("span");
-  incomingLabel.className = "agent-message-whatsapp-card-label";
-  incomingLabel.textContent = "They wrote";
-  const incoming = document.createElement("p");
-  incoming.className = "agent-message-whatsapp-card-incoming";
-  incoming.textContent = incomingText || "New WhatsApp message received.";
-
-  const replyLabel = document.createElement("label");
-  replyLabel.className = "agent-message-whatsapp-card-label";
-  replyLabel.textContent = "Suggested reply";
-  const textarea = document.createElement("textarea");
-  textarea.className = "agent-message-whatsapp-card-textarea";
-  textarea.id = `agent-whatsapp-reply-${message.id}`;
-  replyLabel.htmlFor = textarea.id;
-  textarea.rows = 3;
-  textarea.value = suggestedReply;
-  textarea.setAttribute("aria-label", `Suggested reply to ${senderName}`);
-  textarea.disabled = status !== "pending";
-
-  card.append(header, incomingLabel, incoming, replyLabel, textarea);
-
-  if (status === "pending") {
-    if (message.metadata?.approvalError) {
-      const error = document.createElement("p");
-      error.className = "agent-message-whatsapp-card-error";
-      error.setAttribute("role", "alert");
-      error.textContent = String(message.metadata.approvalError);
-      card.append(error);
-    }
-    const note = document.createElement("p");
-    note.className = "agent-message-whatsapp-card-note";
-    note.textContent = "Review or edit it here. Nothing is sent until you choose Send reply.";
-    const actions = document.createElement("div");
-    actions.className = "agent-message-whatsapp-card-actions";
-
-    const sendButton = document.createElement("button");
-    sendButton.type = "button";
-    sendButton.className = "primary-button small";
-    sendButton.textContent = "Send reply";
-    sendButton.dataset.agentWhatsAppAction = "send";
-    sendButton.dataset.agentWhatsAppApproval = String(approval.approval_id || approval.approvalId || "");
-    sendButton.dataset.agentWhatsAppMessage = message.id;
-
-    const skipButton = document.createElement("button");
-    skipButton.type = "button";
-    skipButton.className = "ghost-button small";
-    skipButton.textContent = "Skip";
-    skipButton.dataset.agentWhatsAppAction = "skip";
-    skipButton.dataset.agentWhatsAppApproval = String(approval.approval_id || approval.approvalId || "");
-    skipButton.dataset.agentWhatsAppMessage = message.id;
-    actions.append(sendButton, skipButton);
-    card.append(note, actions);
-  } else if (message.metadata?.approvalError) {
-    const error = document.createElement("p");
-    error.className = "agent-message-whatsapp-card-error";
-    error.setAttribute("role", "alert");
-    error.textContent = String(message.metadata.approvalError);
-    card.append(error);
-  } else {
-    const outcome = document.createElement("p");
-    outcome.className = "agent-message-whatsapp-card-note";
-    outcome.textContent = status === "sent"
-      ? "The approved reply was sent to this WhatsApp contact."
-      : "This suggestion was skipped and will not be sent.";
-    card.append(outcome);
-  }
-
-  return card;
-}
-
-async function handleAgentWhatsAppApprovalAction(button) {
-  const approvalId = String(button?.dataset.agentWhatsAppApproval || "").trim();
-  const messageId = String(button?.dataset.agentWhatsAppMessage || "").trim();
-  const action = String(button?.dataset.agentWhatsAppAction || "").trim().toLowerCase();
-  if (!approvalId || !messageId || !["send", "skip"].includes(action)) {
-    return;
-  }
-
-  const agent = getAgentWorkspace();
-  const message = agent.messages.find((candidate) => candidate.id === messageId);
-  if (!message) {
-    return;
-  }
-  const approval = getAgentWhatsAppApprovalForMessage(message);
-  if (String(approval.status || "pending").toLowerCase() !== "pending") {
-    return;
-  }
-
-  const card = button.closest(".agent-message-whatsapp-card");
-  const textarea = card?.querySelector(".agent-message-whatsapp-card-textarea");
-  const buttons = card ? Array.from(card.querySelectorAll("button")) : [button];
-  buttons.forEach((candidate) => {
-    candidate.disabled = true;
-  });
-  if (card) {
-    card.classList.add("is-busy");
-  }
-
-  try {
-    const response = await apiRequest(`/api/approvals/${encodeURIComponent(approvalId)}/${action}`, {
-      method: "POST",
-      body: action === "send" ? { reply_text: String(textarea?.value || "").trim() } : {},
-    });
-    message.metadata.approval = response.approval || {
-      ...approval,
-      status: action === "send" ? "sent" : "skipped",
-    };
-    message.metadata.approvalStatus = action === "send" ? "sent" : "skipped";
-    message.metadata.approvalError = "";
-    persistAgentWorkspace(action === "send" ? "Reply sent." : "Reply skipped.");
-    renderAgentMessages();
-  } catch (error) {
-    message.metadata.approvalError = formatApiErrorMessage(
-      error,
-      action === "send" ? "I couldn’t send that reply. Check the WhatsApp connection and try again." : "I couldn’t skip that reply. Try again.",
-    );
-    persistClientState();
-    renderAgentMessages();
-  }
-}
-
 function getAgentDisplayMessageText(message, kind, proposal) {
   if (getAgentMessagePhoto(message)?.textless) {
     return "";
@@ -18680,12 +14982,6 @@ function renderAgentMessage(message) {
   }
   row.append(messageLine);
 
-  if (kind === "connection-setup") {
-    row.append(createAgentConnectionSetupCard(message));
-  }
-  if (kind === "whatsapp-reply-suggestion") {
-    row.append(createAgentWhatsAppReplyCard(message));
-  }
   if (kind === "action-choice" && getAgentMessageActionChoices(message).length) {
     row.append(createAgentActionChoiceCard(message));
   }
@@ -18734,9 +15030,6 @@ function getAgentMessageRenderSignature(messages) {
     message.text,
     message.metadata?.kind || "",
     message.metadata?.kind === "thinking" ? agentTurnProgressText : "",
-    message.metadata?.kind === "whatsapp-reply-suggestion" ? String(message.metadata?.approval?.status || message.metadata?.approvalStatus || "") : "",
-    message.metadata?.kind === "whatsapp-reply-suggestion" ? String(message.metadata?.approvalError || "") : "",
-    message.metadata?.kind === "whatsapp-reply-suggestion" ? String(message.metadata?.approval?.suggested_reply || "") : "",
     message.metadata?.kind === "action-choice"
       ? getAgentMessageActionChoices(message).map((choice) => [choice?.name || "", choice?.status || "", choice?.created || ""])
       : "",
@@ -21930,12 +18223,6 @@ function getAgentProposalLocalActionTitle(proposal) {
   if (proposal?.type === "calendar-summary") {
     return "Meeting summary";
   }
-  if (proposal?.type === "whatsapp-replies") {
-    return "WhatsApp helper";
-  }
-  if (proposal?.type === "reengagement") {
-    return "Customer follow-up";
-  }
   if (proposal?.type === "source-action") {
     return "Source action";
   }
@@ -21980,30 +18267,11 @@ function getConnectedPlatformAddress(platform) {
   }
 
   if (normalized === "whatsapp") {
-    const savedConnection = state.whatsappConnection
-      ? normalizeFeatureWhatsApp(state.whatsappConnection)
-      : null;
-    const savedAddress = formatAgentPlatformAddress(
-      "whatsapp",
-      savedConnection?.owner_wa_id || savedConnection?.display_phone_number,
-    );
-    if (savedAddress) {
-      return savedAddress;
-    }
-
-    const featureCandidates = [
-      getFeatureById(WHATSAPP_REPLY_ASSISTANT_FEATURE_ID),
-      ...(Array.isArray(clientState?.features) ? clientState.features.filter((feature) => isWhatsAppFeature(feature)) : []),
-    ].filter(Boolean);
-    for (const feature of featureCandidates) {
-      const configs = [feature.whatsapp, feature.savedWhatsApp, feature.saved_whatsapp]
-        .map((config) => normalizeFeatureWhatsApp(config || {}));
-      for (const config of configs) {
-        const address = formatAgentPlatformAddress("whatsapp", config.owner_wa_id || config.display_phone_number);
-        if (address) {
-          return address;
-        }
-      }
+    // The person's own linked phone is where WhatsApp delivery lands.
+    const linkedPhone = getWhatsAppLinkedPhones()[0];
+    const linkedAddress = formatAgentPlatformAddress("whatsapp", linkedPhone?.waId);
+    if (linkedAddress) {
+      return linkedAddress;
     }
   }
 
@@ -22036,9 +18304,6 @@ function getAgentDeliveryOptionsSignature() {
 }
 
 function getAgentProposalDeliveryChannel(proposal) {
-  if (proposal?.type === "whatsapp-replies") {
-    return normalizeAgentDeliveryChannel(getAgentProposalFieldValue(proposal, "deliveryChannel")) || "portal";
-  }
   const settings = getAgentProposalExecutionSettings(proposal);
   return normalizeAgentDeliveryChannel(settings.deliveryChannel)
     || normalizeAgentDeliveryChannel(getAgentProposalFieldValue(proposal, "deliveryChannel"))
@@ -22273,96 +18538,8 @@ function createMonitorFeatureLiveAction(feature) {
   };
 }
 
-// A tool that runs on a schedule of its own belongs in the list of scheduled
-// things, not only inside the tool that owns it. The follow-up writer had no
-// card at all, so its weekly report arrived with nothing in Actions to explain
-// where it came from.
-function isAgentReengagementLiveAction(action) {
-  return Boolean(
-    isAgentFeatureLiveAction(action)
-    && String(action?.payload?.backendFeatureId || "").trim() === REENGAGEMENT_FEATURE_ID,
-  );
-}
-
-// The monitor's formatter reads manualOnly, which follow-ups never set, so it
-// called a weekly schedule "manual only". This one goes by the interval alone.
-function formatAgentReengagementFrequency(settings = {}) {
-  const intervalDays = normalizeMonitorIntervalDays(settings.intervalDays);
-  if (intervalDays === 1) {
-    return "daily";
-  }
-  if (intervalDays % 30 === 0) {
-    const months = intervalDays / 30;
-    return months === 1 ? "monthly" : `every ${months} months`;
-  }
-  if (intervalDays % 7 === 0) {
-    const weeks = intervalDays / 7;
-    return weeks === 1 ? "weekly" : `every ${weeks} weeks`;
-  }
-  return `every ${intervalDays} days`;
-}
-
-function getReengagementFeatureLiveActionPreview(feature, settings = getSavedFeatureSettings(feature)) {
-  return `Quiet WhatsApp conversations older than ${formatReengagementInactivityLabel(settings)} · drafts only`;
-}
-
-function createReengagementFeatureLiveAction(feature) {
-  if (!feature || !isReengagementFeature(feature)) {
-    return null;
-  }
-
-  const backendFeatureActive = isFeatureActivated(feature);
-  const settingsSavedAt = String(feature.settingsSavedAt || feature.setupStatus?.settingsSavedAt || "").trim();
-  const lastRunAt = String(feature.lastRunAt || feature.setupStatus?.lastRunAt || "").trim();
-  // Stopping it must not make the card vanish, or there is nowhere to start it
-  // again. Anything set up or already run stays listed once it is switched off.
-  if (!backendFeatureActive && !settingsSavedAt && !lastRunAt) {
-    return null;
-  }
-
-  const settings = getSavedFeatureSettings(feature);
-  const nextRunAt = String(feature.nextRunAt || feature.setupStatus?.nextRunAt || "").trim();
-  const createdAt = String(feature.activatedAt || settingsSavedAt || lastRunAt || nextRunAt).trim();
-  return {
-    id: `feature:${feature.id}`,
-    actionType: "agent_whatsapp_reengagement",
-    channel: "portal",
-    recipientRef: "portal",
-    runAt: nextRunAt || lastRunAt || createdAt,
-    timezone: getReengagementScheduleTimezone(feature),
-    status: backendFeatureActive ? "running" : "paused",
-    attemptCount: 0,
-    providerMessageId: "",
-    payload: {
-      source: "feature",
-      backendFeatureId: feature.id,
-      backendFeatureActive,
-      title: "WhatsApp follow-ups",
-      preview: getReengagementFeatureLiveActionPreview(feature, settings),
-      summary: String(feature.description || "").trim(),
-      frequency: formatAgentReengagementFrequency(settings),
-      manualOnly: false,
-      actionLifecycleStatus: backendFeatureActive ? "active" : "paused",
-      deliveryChannel: "portal",
-      deliveryTarget: "",
-      deliveryLabel: "Your notifications",
-      inactivityLabel: formatReengagementInactivityLabel(settings),
-      scheduleTimeLocal: getReengagementScheduleTime(feature),
-      lastRunAt,
-      lastRunStatus: String(feature.lastRunStatus || feature.setupStatus?.lastRunStatus || "").trim(),
-      nextRunAt,
-    },
-    local: true,
-    lastError: "",
-    claimedAt: "",
-    completedAt: "",
-    createdAt,
-    updatedAt: lastRunAt || createdAt,
-  };
-}
-
 function createFeatureLiveAction(feature) {
-  return createMonitorFeatureLiveAction(feature) || createReengagementFeatureLiveAction(feature);
+  return createMonitorFeatureLiveAction(feature);
 }
 
 function getAgentFeatureLiveActions() {
@@ -22503,18 +18680,6 @@ function createAgentActionDetailActions(action) {
       ariaLabel: `${nextLabel} ${getScheduledActionTitle(action)}`,
       dataset,
     });
-  }
-
-  // Removing this one would mean deleting the tool itself, which belongs in the
-  // tool rather than in a card. The card stops it or opens where it is edited.
-  if (isAgentReengagementLiveAction(action)) {
-    appendAgentActionButton(actions, {
-      className: "ghost-button small",
-      text: "Open setup",
-      ariaLabel: `Open ${getScheduledActionTitle(action)} setup`,
-      dataset: { agentOpenFeatureSetup: featureId },
-    });
-    return actions;
   }
 
   if (isAgentLocalAction(action)) {
@@ -25135,7 +21300,7 @@ function applyAgentLocalActionDraftState(action, draft, options = {}) {
     if (proposal.type === "email-digest") fields.schedule = frequencyLabel;
   }
   if (draft.deliveryChannel) fields.deliveryChannel = formatAgentScheduledMessageChannel(draft.deliveryChannel);
-  for (const key of ["calendar", "timeWindow", "mailbox", "mailboxAccount", "inactivityPeriod", "result", "outputFolder"]) {
+  for (const key of ["calendar", "timeWindow", "mailbox", "mailboxAccount", "result", "outputFolder"]) {
     if (Object.prototype.hasOwnProperty.call(draft, key)) {
       const value = String(draft[key] || "").trim();
       if (value) {
@@ -25257,7 +21422,7 @@ function applyAgentLocalActionDraftState(action, draft, options = {}) {
   action.payload.deliveryTarget = nextDeliveryTarget;
   action.payload.deliveryLabel = formatAgentDeliveryTargetDetail(draft.deliveryChannel, nextDeliveryTarget || action.recipientRef);
   action.recipientRef = nextDeliveryTarget || draft.deliveryChannel;
-  for (const key of ["calendar", "timeWindow", "mailbox", "mailboxAccount", "inactivityPeriod", "result", "outputFolder"]) {
+  for (const key of ["calendar", "timeWindow", "mailbox", "mailboxAccount", "result", "outputFolder"]) {
     if (Object.prototype.hasOwnProperty.call(draft, key)) action.payload[key] = String(draft[key] || "").trim();
   }
   if (savedOutputFolder) {
@@ -25322,7 +21487,6 @@ function createAgentLocalActionEditor(action) {
       ["Date range", "timeWindow", "e.g. next week"],
     ],
     "email-digest": [["Mailbox", "mailboxAccount", ""]],
-    reengagement: [["Quiet period", "inactivityPeriod", "e.g. 30 days"]],
     custom: [["Result", "result", "What should this action produce?", { multiline: true }]],
   };
   let resultControl = null;
@@ -25705,44 +21869,6 @@ function createSourceActionEditor(action) {
   return form;
 }
 
-function createReengagementActionDetailBody(action) {
-  const payload = action.payload && typeof action.payload === "object" ? action.payload : {};
-  const paused = getScheduledActionStatusClass(action.status, action) === "paused";
-  const body = document.createDocumentFragment();
-
-  const details = document.createElement("dl");
-  details.className = "agent-action-detail-grid";
-  details.append(
-    createScheduledActionDetailRow("Looks for", `Conversations quiet for ${payload.inactivityLabel || "6 months"}`),
-    createScheduledActionDetailRow(
-      "Frequency",
-      `${capitalizeWords(payload.frequency || "weekly")} at ${payload.scheduleTimeLocal || "09:00"}`,
-    ),
-    createScheduledActionDetailRow(
-      paused ? "Status" : "Next run",
-      paused
-        ? "Stopped until you start it"
-        : formatScheduledActionDate(payload.nextRunAt || action.runAt, action.timezone),
-    ),
-  );
-  if (payload.lastRunAt) {
-    details.append(createScheduledActionDetailRow(
-      "Last run",
-      `${formatScheduledActionDate(payload.lastRunAt, action.timezone)} · ${capitalizeWords(payload.lastRunStatus || "completed")}`,
-    ));
-  }
-  details.append(createScheduledActionDetailRow("Reports to", payload.deliveryLabel || "Your notifications"));
-  body.append(details);
-
-  const note = document.createElement("p");
-  note.className = "agent-action-note";
-  note.textContent = paused
-    ? "Stopped, so no follow-ups are drafted. Start it to go back to the weekly report."
-    : "Drafts only — nothing is sent to your customers. The report lands in your notifications, and the schedule and quiet window are edited in the follow-up setup.";
-  body.append(note);
-  return body;
-}
-
 function createScheduledActionDetail(action) {
   const card = document.createElement("div");
   card.className = "agent-action-detail-card";
@@ -25817,15 +21943,6 @@ function createScheduledActionDetail(action) {
       runMessage.textContent = String(payload.initialRunMessage);
       runNote.append(runTitle, runMessage);
       card.append(runNote);
-    }
-
-    if (isAgentReengagementLiveAction(action)) {
-      card.append(createReengagementActionDetailBody(action));
-      const reengagementControls = createAgentActionDetailActions(action);
-      if (reengagementControls) {
-        card.append(reengagementControls);
-      }
-      return card;
     }
 
     if (isFeatureAction) {
@@ -26087,85 +22204,6 @@ async function refreshSourceActions() {
   return sourceActionsRefreshPromise;
 }
 
-async function refreshWhatsAppApprovals() {
-  if (!isSignedIn() || whatsappApprovalsRefreshPromise) {
-    return null;
-  }
-
-  const requestSessionKey = currentAuthSessionKey();
-  whatsappApprovalsRefreshPromise = (async () => {
-    try {
-      const response = await apiRequest("/api/approvals?status=pending&delivery=portal");
-      if (requestSessionKey !== currentAuthSessionKey()) {
-        return null;
-      }
-
-      const approvals = Array.isArray(response.approvals) ? response.approvals : [];
-      const agent = getAgentWorkspace();
-      const knownApprovalIds = new Set(
-        agent.messages
-          .filter((message) => message.metadata?.kind === "whatsapp-reply-suggestion")
-          .map((message) => String(message.metadata?.approvalId || "").trim())
-          .filter(Boolean),
-      );
-      let didAddMessage = false;
-      for (const approval of approvals) {
-        const approvalId = String(approval?.approval_id || approval?.approvalId || "").trim();
-        if (!approvalId || knownApprovalIds.has(approvalId)) {
-          continue;
-        }
-        const senderName = String(approval.sender_name || approval.sender_wa_id || "WhatsApp contact").trim();
-        pushAgentMessage("assistant", `A new WhatsApp message arrived from ${senderName}.`, {
-          kind: "whatsapp-reply-suggestion",
-          approvalId,
-          approval,
-          excludeFromModel: true,
-        });
-        knownApprovalIds.add(approvalId);
-        didAddMessage = true;
-      }
-      if (didAddMessage) {
-        persistClientState();
-        renderAgentMessages();
-      }
-      return approvals;
-    } catch {
-      // The chat remains usable when an inbox refresh is temporarily offline;
-      // the next poll will retry without interrupting the user's conversation.
-      return null;
-    } finally {
-      whatsappApprovalsRefreshPromise = null;
-    }
-  })();
-  return whatsappApprovalsRefreshPromise;
-}
-
-function syncWhatsAppApprovalsPolling() {
-  const shouldPoll = Boolean(
-    isSignedIn()
-    && document.body.dataset.view === "app"
-    && document.visibilityState !== "hidden"
-    && state.activeTab === "features"
-    && !state.selectedFeatureId
-  );
-  if (!shouldPoll) {
-    if (whatsappApprovalsPollTimer !== null) {
-      window.clearInterval(whatsappApprovalsPollTimer);
-      whatsappApprovalsPollTimer = null;
-    }
-    return;
-  }
-
-  if (!whatsappApprovalsRefreshPromise) {
-    void refreshWhatsAppApprovals();
-  }
-  if (whatsappApprovalsPollTimer === null) {
-    whatsappApprovalsPollTimer = window.setInterval(() => {
-      void refreshWhatsAppApprovals();
-    }, WHATSAPP_APPROVALS_POLL_MS);
-  }
-}
-
 // The notification feed is polled independently of the Actions view. Unlike the
 // scheduled-action poll it is not gated on a tab or a selected feature, because
 // a notification about an overnight run has to arrive wherever the owner is.
@@ -26205,7 +22243,6 @@ function syncScheduledActionsPolling() {
       window.clearInterval(scheduledActionsPollTimer);
       scheduledActionsPollTimer = null;
     }
-    syncWhatsAppApprovalsPolling();
     return;
   }
 
@@ -26217,7 +22254,6 @@ function syncScheduledActionsPolling() {
       void refreshScheduledActions();
     }, SCHEDULED_ACTIONS_POLL_MS);
   }
-  syncWhatsAppApprovalsPolling();
 }
 
 function updateAgentWorkspace() {
@@ -26281,17 +22317,8 @@ function applyAgentScheduledMessageRevision(proposal, changes = {}) {
   proposal.details = details;
   proposal.executionPlan = buildAgentScheduledMessageExecutionPlan(details);
 
-  const channel = normalizeAgentDeliveryChannel(details.channel);
-  if (channel === "whatsapp") {
-    proposal.relatedFeatureId = WHATSAPP_REPLY_ASSISTANT_FEATURE_ID;
-    proposal.setupActionLabel = "Open WhatsApp setup";
-    proposal.missingCredential = isFeatureSetupComplete(getFeatureById(WHATSAPP_REPLY_ASSISTANT_FEATURE_ID))
-      ? ""
-      : "WhatsApp Business API access token";
-  } else {
-    proposal.relatedFeatureId = "";
-    proposal.missingCredential = "";
-  }
+  proposal.relatedFeatureId = "";
+  proposal.missingCredential = "";
 
   const channelLabel = formatAgentScheduledMessageChannel(channel);
   const timeLabel = details.timeLocal ? ` at ${details.timeLocal}` : "";
@@ -26325,12 +22352,6 @@ function getAgentActionIntentText(action, value = "") {
   }
   if (normalizedAction === "credential-help") {
     return "Help me get it";
-  }
-  if (normalizedAction === "show-whatsapp-setup") {
-    return "Set up WhatsApp details";
-  }
-  if (normalizedAction === "open-whatsapp-setup") {
-    return "Open WhatsApp setup";
   }
   return String(value || "").trim();
 }
@@ -26490,22 +22511,6 @@ function handleAgentMessageAction(event) {
     persistClientState();
     renderAgentMessages();
     openAgentCredentialHelp(proposalId);
-    return true;
-  }
-
-  if (action === "show-whatsapp-setup") {
-    pushAgentActionIntentMessage(action, value);
-    pushAgentWhatsAppSetupCard();
-    persistAgentWorkspace("WhatsApp setup details are ready.");
-    renderApp({ preserveStatus: true });
-    return true;
-  }
-
-  if (action === "open-whatsapp-setup") {
-    pushAgentActionIntentMessage(action, value);
-    persistAgentWorkspace("Opening WhatsApp setup...");
-    renderApp({ preserveStatus: true });
-    openAgentWhatsAppSetup();
     return true;
   }
 
@@ -26700,63 +22705,6 @@ function buildAgentTurnActiveProposal(proposal) {
     questions: proposal.questions,
     answers: proposal.answers,
   };
-}
-
-function isAgentWhatsAppMonitoringRequest(text) {
-  const value = String(text || "").trim().toLowerCase();
-  return /\b(?:whatsapp|whats\s*app|wa)\b/.test(value)
-    && /\b(?:watch|monitor|listen|track|incoming|new\s+messages?)\b/.test(value);
-}
-
-function buildAgentWhatsAppSetupMetadata(setup, actionId, actionLabel) {
-  return {
-    connectionSetup: {
-      platformConnected: Boolean(setup?.genericPlatformConnected),
-      connectionStatus: String(setup?.connectionStatus || "not_connected"),
-      missingFields: Array.isArray(setup?.missingFields)
-        ? setup.missingFields.map((field) => ({
-          key: String(field?.key || "").trim(),
-          label: String(field?.label || "").trim(),
-        })).filter((field) => field.key && field.label)
-        : [],
-    },
-    actions: actionId
-      ? [createAgentAction(actionId, actionLabel, "whatsapp", "primary")]
-      : [],
-  };
-}
-
-function pushAgentWhatsAppSetupPrompt() {
-  const setup = getWhatsAppConnectionSetupState();
-  const firstMissing = setup.missingFields?.[0]?.label || "WhatsApp Business connection details";
-  const message = setup.genericPlatformConnected
-    ? `WhatsApp is connected for general use. To monitor incoming messages, I need your ${firstMissing} first.`
-    : `I can set that up. I need your ${firstMissing} first.`;
-  return pushAgentMessage("assistant", message, {
-    kind: "question",
-    ...buildAgentWhatsAppSetupMetadata(setup, "show-whatsapp-setup", "Set up WhatsApp details"),
-  });
-}
-
-function pushAgentWhatsAppSetupCard() {
-  const setup = getWhatsAppConnectionSetupState();
-  const message = setup.genericPlatformConnected
-    ? "Here’s what is still needed for WhatsApp message monitoring."
-    : "Here’s what I need to connect WhatsApp message monitoring.";
-  return pushAgentMessage("assistant", message, {
-    kind: "connection-setup",
-    ...buildAgentWhatsAppSetupMetadata(setup, "open-whatsapp-setup", "Open WhatsApp setup"),
-  });
-}
-
-function openAgentWhatsAppSetup() {
-  const feature = getFeatureById(WHATSAPP_REPLY_ASSISTANT_FEATURE_ID)
-    || clientState.features.find((candidate) => isWhatsAppFeature(candidate));
-  if (feature) {
-    openFeatureStudio(feature.id, "activation");
-    return;
-  }
-  openPlatformConnection("whatsapp", { origin: "chat" });
 }
 
 function createAgentProposalFromTurn(requestText, turn = {}) {
@@ -28828,17 +24776,6 @@ async function handleAgentUserText(text) {
     return;
   }
 
-  const whatsappSetup = getWhatsAppConnectionSetupState();
-  if (isAgentWhatsAppMonitoringRequest(cleanText) && !whatsappSetup.ready) {
-    resolvePendingAgentMessageActions("user-message");
-    pushAgentMessage("user", cleanText);
-    pushAgentWhatsAppSetupPrompt();
-    persistAgentWorkspace("WhatsApp setup details are needed.");
-    renderApp({ preserveStatus: true });
-    elements.agentComposerInput?.focus();
-    return;
-  }
-
   const platformConnection = getPlatformConnectionIntentFromText(cleanText);
   if (platformConnection) {
     resolvePendingAgentMessageActions("platform-connection");
@@ -29785,86 +25722,6 @@ async function saveAndActivateAgentWebMonitorProposal(proposal) {
   };
 }
 
-function buildAgentWhatsAppReplySettings(proposal, feature) {
-  const requestedChannel = getAgentProposalDeliveryChannel(proposal) || "portal";
-  const currentSettings = getSelectedFeatureSettings(feature);
-  return buildSettingsForSave(feature, {
-    ...currentSettings,
-    deliveryChannels: [requestedChannel],
-  });
-}
-
-async function saveAndActivateAgentWhatsAppProposal(proposal) {
-  if (!isSignedIn()) {
-    throw new Error("Sign in before activating the WhatsApp reply assistant.");
-  }
-
-  const feature = getFeatureById(WHATSAPP_REPLY_ASSISTANT_FEATURE_ID);
-  if (!feature) {
-    throw new Error("WhatsApp Reply Assistant is not available for this account.");
-  }
-
-  const settings = buildAgentWhatsAppReplySettings(proposal, feature);
-  const prompt = feature.prompt && typeof feature.prompt === "object" ? { ...feature.prompt } : {};
-  const configResponse = await apiRequest(`/api/features/${encodeURIComponent(WHATSAPP_REPLY_ASSISTANT_FEATURE_ID)}/config`, {
-    method: "POST",
-    body: { prompt, settings },
-  });
-  applyServerFeatureStates([configResponse.feature || {}], { persist: true });
-  state.paymentStatus = configResponse.paymentStatus || state.paymentStatus;
-
-  const updatedFeature = getFeatureById(WHATSAPP_REPLY_ASSISTANT_FEATURE_ID) || feature;
-  const activationResponse = await apiRequest(`/api/features/${encodeURIComponent(WHATSAPP_REPLY_ASSISTANT_FEATURE_ID)}/activation`, {
-    method: "POST",
-    body: {
-      action: "activate",
-      featureName: updatedFeature.name,
-      channel: updatedFeature.channel,
-    },
-  });
-  applyServerFeatureStates([activationResponse.feature || {}], { persist: true });
-  state.paymentStatus = activationResponse.paymentStatus || state.paymentStatus;
-  return { configResponse, activationResponse, settings };
-}
-
-function handleAgentWhatsAppActivationError(error, proposal) {
-  proposal.status = "needs-approval";
-  proposal.updatedAt = new Date().toISOString();
-  const payload = error?.payload || {};
-  if (payload.feature) {
-    applyServerFeatureStates([payload.feature], { persist: true });
-  }
-  state.paymentStatus = payload.paymentStatus || state.paymentStatus;
-
-  if (payload.error === "payment_required") {
-    const checkoutUrl = payload.paymentStatus?.checkoutUrl || payload.checkoutUrl || "";
-    const checkoutOpened = openPaymentCheckout(checkoutUrl);
-    const message = payload.message || "Add payment details before activating the WhatsApp reply assistant.";
-    pushAgentProposalResult(proposal.id, message, "credential");
-    persistAgentWorkspace(checkoutOpened ? "Opening checkout..." : "Payment is required before activation.");
-    renderApp({ preserveStatus: true });
-    return;
-  }
-
-  if (payload.error === "setup_required") {
-    const message = String(
-      payload.message
-      || payload.setupStatus?.message
-      || "I need the WhatsApp Business connection details before I can start this.",
-    ).trim();
-    pushAgentProposalResult(proposal.id, message, "credential");
-    pushAgentWhatsAppSetupPrompt();
-    persistAgentWorkspace(message);
-    renderApp({ preserveStatus: true });
-    return;
-  }
-
-  const message = formatApiErrorMessage(error, "I couldn’t activate the WhatsApp reply assistant yet.");
-  pushAgentProposalResult(proposal.id, message);
-  persistAgentWorkspace(message);
-  renderApp({ preserveStatus: true });
-}
-
 function handleAgentWebMonitorActivationError(error, proposal) {
   const payload = error?.payload || {};
   proposal.status = "needs-approval";
@@ -29973,20 +25830,6 @@ async function approveAgentProposal(proposalId, expectedRevision = 0) {
     return;
   }
 
-  if (
-    proposal.type === "scheduled-message"
-    && normalizeAgentDeliveryChannel(proposal.details?.channel) === "whatsapp"
-    && isFeatureSetupComplete(getFeatureById(WHATSAPP_REPLY_ASSISTANT_FEATURE_ID))
-  ) {
-    proposal.missingCredential = "";
-    proposal.relatedFeatureId = WHATSAPP_REPLY_ASSISTANT_FEATURE_ID;
-  }
-
-  if (proposal.type === "whatsapp-replies" && isWhatsAppConnectionReady()) {
-    proposal.missingCredential = "";
-    proposal.relatedFeatureId = WHATSAPP_REPLY_ASSISTANT_FEATURE_ID;
-  }
-
   if (!ensureAgentProposalRequiredConnectionReady(proposal)) {
     return;
   }
@@ -30000,18 +25843,9 @@ async function approveAgentProposal(proposalId, expectedRevision = 0) {
     return;
   }
 
-  if (proposal.type === "whatsapp-replies" && proposal.missingCredential) {
-    proposal.status = "needs-approval";
-    pushAgentWhatsAppSetupPrompt();
-    persistAgentWorkspace("WhatsApp setup is required before I can start this.");
-    renderApp({ preserveStatus: true });
-    return;
-  }
-
   let scheduledAction = null;
   let sourceAction = null;
   let monitorActivation = null;
-  let whatsappActivation = null;
   if (proposal.type === "scheduled-message" && !proposal.missingCredential) {
     proposal.status = "scheduling";
     persistAgentWorkspace("Scheduling message...");
@@ -30079,18 +25913,6 @@ async function approveAgentProposal(proposalId, expectedRevision = 0) {
     }
   }
 
-  if (proposal.type === "whatsapp-replies") {
-    proposal.status = "activating";
-    persistAgentWorkspace("Starting WhatsApp reply assistant...");
-    renderApp({ preserveStatus: true });
-    try {
-      whatsappActivation = await saveAndActivateAgentWhatsAppProposal(proposal);
-    } catch (error) {
-      handleAgentWhatsAppActivationError(error, proposal);
-      return;
-    }
-  }
-
   normalizeAgentMonthlyBatchProposalFields(proposal);
   proposal.approved = true;
   proposal.status = "approved";
@@ -30131,18 +25953,6 @@ async function approveAgentProposal(proposalId, expectedRevision = 0) {
     const runMessage = monitorActivation?.initialRun?.message || "";
     const runError = monitorActivation?.initialRunError || "";
     const message = runMessage || runError || "Web monitor activated.";
-    pushAgentProposalResult(proposal.id, message, "result", {
-      showActionLink: true,
-    });
-    persistAgentWorkspace(message);
-  } else if (proposal.type === "whatsapp-replies") {
-    const deliveryChannelId = getAgentProposalDeliveryChannel(proposal)
-      || whatsappActivation?.settings?.deliveryChannels?.[0]
-      || "portal";
-    const deliveryChannel = formatAgentScheduledMessageChannel(deliveryChannelId);
-    const message = deliveryChannelId === "portal"
-      ? "WhatsApp reply assistant is active. New drafts will appear here for review."
-      : `WhatsApp reply assistant is active. New drafts will be brought to you by ${deliveryChannel}.`;
     pushAgentProposalResult(proposal.id, message, "result", {
       showActionLink: true,
     });
@@ -30221,10 +26031,7 @@ function openAgentProposalSetup(proposalId) {
     return;
   }
 
-  const view = isWhatsAppFeature(feature) && !isFeatureSetupComplete(feature)
-    ? "activation"
-    : getDefaultFeatureStudioView(feature);
-  openFeatureStudio(feature.id, view);
+  openFeatureStudio(feature.id, getDefaultFeatureStudioView(feature));
 }
 
 function openAgentCredentialHelp(proposalId) {
@@ -30884,12 +26691,6 @@ async function removeSourceAction(actionId) {
 }
 
 function handleAgentWorkspaceClick(event) {
-  const whatsappApprovalButton = getEventTargetElement(event)?.closest("[data-agent-whatsapp-action]");
-  if (whatsappApprovalButton) {
-    void handleAgentWhatsAppApprovalAction(whatsappApprovalButton);
-    return;
-  }
-
   if (handleAgentActionReferenceClick(event)) {
     return;
   }
@@ -31129,22 +26930,13 @@ function createFeatureCard(feature) {
 }
 
 function getAgentToolLabel(feature) {
-  if (isWhatsAppFeature(feature)) {
-    return "WhatsApp";
-  }
   if (isMonitorFeature(feature)) {
     return "Web monitoring";
-  }
-  if (isReengagementFeature(feature)) {
-    return "Customer follow-up";
   }
   return feature?.name || "Tool";
 }
 
 function getAgentToolDetailsView(feature) {
-  if (canOpenFeatureWhatsAppDetails(feature)) {
-    return "activation";
-  }
   return getDefaultFeatureStudioView(feature);
 }
 
@@ -31156,12 +26948,10 @@ function openAgentToolDetails(featureId) {
 
   state.agentAddToolMenuOpen = false;
   openFeatureStudio(feature.id, getAgentToolDetailsView(feature));
-  setStatus(isWhatsAppFeature(feature) ? "WhatsApp details opened." : `${getAgentToolLabel(feature)} details opened.`);
+  setStatus(`${getAgentToolLabel(feature)} details opened.`);
 }
 
-// The card's own setup link goes to the tool's editor. openAgentToolDetails
-// sends WhatsApp tools to the connection form instead, which is the wrong place
-// to change a follow-up schedule.
+// The card's own setup link goes to the tool's editor.
 function openAgentFeatureActionSetup(featureId) {
   const feature = getFeatureById(featureId);
   if (!feature) {
@@ -31342,13 +27132,6 @@ function createAgentAddToolOption(option) {
 }
 
 function createAgentToolIconOption(feature) {
-  if (isWhatsAppFeature(feature)) {
-    return {
-      id: "whatsapp",
-      label: "WhatsApp",
-      icon: "whatsapp",
-    };
-  }
   if (isMonitorFeature(feature)) {
     return {
       id: "web-monitor",
@@ -31432,15 +27215,12 @@ function createAgentToolItem(feature) {
   const item = document.createElement("button");
   const label = getAgentToolLabel(feature);
   const isConnected = isFeatureSetupComplete(feature);
-  const needsWhatsAppDetails = isWhatsAppFeature(feature) && !isConnected;
   item.type = "button";
   item.className = "agent-tool-item";
   item.dataset.agentToolFeatureId = feature.id;
   item.setAttribute(
     "aria-label",
-    isConnected
-      ? `Open ${label} details`
-      : (needsWhatsAppDetails ? `Finish ${label} setup` : `Open ${label} setup`),
+    isConnected ? `Open ${label} details` : `Open ${label} setup`,
   );
 
   const icon = document.createElement("span");
@@ -31453,9 +27233,7 @@ function createAgentToolItem(feature) {
   const title = document.createElement("strong");
   title.textContent = label;
   const detail = document.createElement("span");
-  detail.textContent = isConnected
-    ? "Connected"
-    : (needsWhatsAppDetails ? "Needs details" : "Available");
+  detail.textContent = isConnected ? "Connected" : "Available";
   copy.append(title, detail);
 
   item.append(icon, copy);
@@ -31707,9 +27485,7 @@ function updateOpportunityNavigation() {
 const ADMIN_RAIL_TABS = [
   { tab: "opportunities", isAllowed: canReviewOpportunities },
   { tab: "clients", isAllowed: canManageClients },
-  { tab: "account-types", isAllowed: canManageClients },
-  { tab: "preview", isAllowed: isAdminUser },
-  { tab: "simulator", isAllowed: isAdminUser },
+  { tab: "feature-switches", isAllowed: canManageClients },
   { tab: "turns", isAllowed: canManageClients },
 ];
 
@@ -31773,141 +27549,124 @@ function updateClientNavigation() {
   }
 }
 
-// -- Admin > Account types: which features business and family accounts get ---
+// -- Admin > Features: one switch per feature, for every account at once -----
 
-async function refreshAccountTypes() {
-  if (!canManageClients() || state.accountTypesLoading) {
+async function refreshFeatureSwitches() {
+  if (!canManageClients() || state.featureSwitchesLoading) {
     return null;
   }
 
-  state.accountTypesLoading = true;
-  state.accountTypesError = "";
-  updateAccountTypesPanel();
+  state.featureSwitchesLoading = true;
+  state.featureSwitchesError = "";
+  updateFeatureSwitchesPanel();
 
   try {
-    state.accountTypes = await apiRequest("/api/admin/account-types", { timeoutMs: 15000 });
-    return state.accountTypes;
+    state.featureSwitches = await apiRequest("/api/admin/features", { timeoutMs: 15000 });
+    return state.featureSwitches;
   } catch (error) {
-    state.accountTypesError = formatApiErrorMessage(error, "We couldn’t load the account types right now.");
+    state.featureSwitchesError = formatApiErrorMessage(error, "We couldn’t load the features right now.");
     return null;
   } finally {
-    state.accountTypesLoading = false;
-    updateAccountTypesPanel();
+    state.featureSwitchesLoading = false;
+    updateFeatureSwitchesPanel();
   }
 }
 
-function setAccountTypeFeatureLocally(accountType, featureId, allowed) {
-  const features = Array.isArray(state.accountTypes?.features) ? state.accountTypes.features : [];
-  state.accountTypes = {
-    ...state.accountTypes,
+function setFeatureSwitchLocally(featureId, allowed) {
+  const features = Array.isArray(state.featureSwitches?.features) ? state.featureSwitches.features : [];
+  state.featureSwitches = {
+    ...state.featureSwitches,
     features: features.map((feature) => (
-      feature.featureId === featureId
-        ? { ...feature, allowed: { ...feature.allowed, [accountType]: allowed } }
-        : feature
+      feature.featureId === featureId ? { ...feature, allowed } : feature
     )),
   };
 }
 
-async function saveAccountTypeFeature(accountType, featureId, allowed) {
-  const key = `${accountType}:${featureId}`;
-  if (!canManageClients() || state.accountTypesBusy[key]) {
+async function saveFeatureSwitch(featureId, allowed) {
+  if (!canManageClients() || state.featureSwitchesBusy[featureId]) {
     return;
   }
 
-  state.accountTypesBusy = { ...state.accountTypesBusy, [key]: true };
-  setAccountTypeFeatureLocally(accountType, featureId, allowed);
-  updateAccountTypesPanel();
+  state.featureSwitchesBusy = { ...state.featureSwitchesBusy, [featureId]: true };
+  setFeatureSwitchLocally(featureId, allowed);
+  updateFeatureSwitchesPanel();
 
   try {
-    const response = await apiRequest("/api/admin/account-types", {
+    const response = await apiRequest("/api/admin/features", {
       method: "POST",
-      body: { accountType, featureId, allowed },
+      body: { featureId, allowed },
     });
-    state.accountTypes = response;
-    const typeLabel = ADMIN_ACCOUNT_TYPES.find((entry) => entry.value === accountType)?.label || accountType;
+    state.featureSwitches = response;
     const featureLabel = (response.features || []).find((entry) => entry.featureId === featureId)?.label || featureId;
-    setStatus(`${featureLabel} ${allowed ? "on" : "off"} for ${typeLabel.toLowerCase()} accounts`);
+    setStatus(`${featureLabel} ${allowed ? "on" : "off"} for every account`);
   } catch (error) {
-    setAccountTypeFeatureLocally(accountType, featureId, !allowed);
+    setFeatureSwitchLocally(featureId, !allowed);
     openAuthAlert("Couldn’t change that feature", formatApiErrorMessage(error, "The change was not saved."), {
-      eyebrow: "Account types",
+      eyebrow: "Features",
     });
   } finally {
-    const { [key]: _ignore, ...nextBusy } = state.accountTypesBusy;
-    state.accountTypesBusy = nextBusy;
-    updateAccountTypesPanel();
+    const { [featureId]: _ignore, ...nextBusy } = state.featureSwitchesBusy;
+    state.featureSwitchesBusy = nextBusy;
+    updateFeatureSwitchesPanel();
   }
 }
 
-function createAccountTypeSwitch(accountType, feature) {
-  const allowed = Boolean(feature.allowed?.[accountType.value]);
+function createFeatureSwitch(feature) {
+  const allowed = Boolean(feature.allowed);
   const label = document.createElement("label");
   label.className = "admin-switch";
 
   const input = document.createElement("input");
   input.type = "checkbox";
   input.checked = allowed;
-  input.disabled = Boolean(state.accountTypesBusy[`${accountType.value}:${feature.featureId}`]);
-  input.dataset.accountType = accountType.value;
-  input.dataset.accountTypeFeature = feature.featureId;
-  input.setAttribute("aria-label", `${feature.label} for ${accountType.label.toLowerCase()} accounts`);
+  input.disabled = Boolean(state.featureSwitchesBusy[feature.featureId]);
+  input.dataset.featureSwitch = feature.featureId;
+  input.setAttribute("aria-label", `${feature.label} for every account`);
 
   const track = document.createElement("span");
   track.className = "admin-switch-track";
   track.setAttribute("aria-hidden", "true");
 
   const text = document.createElement("span");
-  text.className = "account-types-switch-text";
+  text.className = "feature-switches-switch-text";
   text.textContent = allowed ? "On" : "Off";
 
   label.append(input, track, text);
   return label;
 }
 
-function createAccountTypesGrid(data) {
-  const accountTypes = Array.isArray(data.accountTypes) ? data.accountTypes : [];
+function createFeatureSwitchesTable(data) {
   const features = Array.isArray(data.features) ? data.features : [];
 
   const card = document.createElement("article");
-  card.className = "glass-card turns-table-card account-types-card";
+  card.className = "glass-card turns-table-card feature-switches-card";
   const table = document.createElement("table");
-  table.className = "turns-table account-types-table";
+  table.className = "turns-table feature-switches-table";
 
   const head = document.createElement("thead");
   const headRow = document.createElement("tr");
   const featureHeading = document.createElement("th");
   featureHeading.textContent = "Feature";
-  headRow.append(featureHeading);
-  for (const accountType of accountTypes) {
-    const cell = document.createElement("th");
-    cell.className = "account-types-type-heading";
-    const name = document.createElement("span");
-    name.textContent = accountType.label;
-    const count = document.createElement("small");
-    const accounts = Number(accountType.accountCount || 0);
-    count.textContent = `${accounts} account${accounts === 1 ? "" : "s"}`;
-    cell.append(name, count);
-    headRow.append(cell);
-  }
+  const switchHeading = document.createElement("th");
+  switchHeading.className = "feature-switches-switch-heading";
+  switchHeading.textContent = "Everyone";
+  headRow.append(featureHeading, switchHeading);
   head.append(headRow);
 
   const body = document.createElement("tbody");
   for (const feature of features) {
     const row = document.createElement("tr");
     const nameCell = document.createElement("td");
-    nameCell.className = "account-types-feature";
+    nameCell.className = "feature-switches-feature";
     const name = document.createElement("strong");
     name.textContent = feature.label;
     const description = document.createElement("span");
     description.textContent = feature.description;
     nameCell.append(name, description);
-    row.append(nameCell);
-    for (const accountType of accountTypes) {
-      const cell = document.createElement("td");
-      cell.className = "account-types-switch-cell";
-      cell.append(createAccountTypeSwitch(accountType, feature));
-      row.append(cell);
-    }
+    const cell = document.createElement("td");
+    cell.className = "feature-switches-switch-cell";
+    cell.append(createFeatureSwitch(feature));
+    row.append(nameCell, cell);
     body.append(row);
   }
 
@@ -31916,9 +27675,9 @@ function createAccountTypesGrid(data) {
   return card;
 }
 
-function createAccountTypesAlwaysOn(data) {
+function createFeatureSwitchesAlwaysOn(data) {
   const card = document.createElement("article");
-  card.className = "glass-card account-types-always-on";
+  card.className = "glass-card feature-switches-always-on";
   const title = document.createElement("h3");
   title.textContent = "Always on, for every account";
   const list = document.createElement("ul");
@@ -31935,37 +27694,37 @@ function createAccountTypesAlwaysOn(data) {
   return card;
 }
 
-function updateAccountTypesPanel() {
-  if (!elements.accountTypesPanel || !elements.accountTypesContent) {
+function updateFeatureSwitchesPanel() {
+  if (!elements.featureSwitchesPanel || !elements.featureSwitchesContent) {
     return;
   }
 
-  if (elements.accountTypesRefreshButton) {
-    elements.accountTypesRefreshButton.disabled = state.accountTypesLoading || !canManageClients();
-    elements.accountTypesRefreshButton.textContent = state.accountTypesLoading ? "Refreshing" : "Refresh";
+  if (elements.featureSwitchesRefreshButton) {
+    elements.featureSwitchesRefreshButton.disabled = state.featureSwitchesLoading || !canManageClients();
+    elements.featureSwitchesRefreshButton.textContent = state.featureSwitchesLoading ? "Refreshing" : "Refresh";
   }
 
   if (!canManageClients()) {
-    elements.accountTypesContent.replaceChildren();
+    elements.featureSwitchesContent.replaceChildren();
     return;
   }
 
-  // A reload can land on this tab before anything asked for the grid.
-  if (state.accountTypes === null && !state.accountTypesLoading && !state.accountTypesError && state.activeTab === "account-types") {
-    void refreshAccountTypes();
+  // A reload can land on this tab before anything asked for the list.
+  if (state.featureSwitches === null && !state.featureSwitchesLoading && !state.featureSwitchesError && state.activeTab === "feature-switches") {
+    void refreshFeatureSwitches();
   }
 
-  const data = state.accountTypes;
-  if (state.accountTypesError && !data) {
-    elements.accountTypesContent.replaceChildren(createAdminEmptyState("The account types did not load", state.accountTypesError));
+  const data = state.featureSwitches;
+  if (state.featureSwitchesError && !data) {
+    elements.featureSwitchesContent.replaceChildren(createAdminEmptyState("The features did not load", state.featureSwitchesError));
     return;
   }
   if (!data) {
-    elements.accountTypesContent.replaceChildren(createAdminEmptyState("Loading account types", "Reading which features each kind of account gets."));
+    elements.featureSwitchesContent.replaceChildren(createAdminEmptyState("Loading features", "Reading which features are switched on."));
     return;
   }
 
-  elements.accountTypesContent.replaceChildren(createAccountTypesGrid(data), createAccountTypesAlwaysOn(data));
+  elements.featureSwitchesContent.replaceChildren(createFeatureSwitchesTable(data), createFeatureSwitchesAlwaysOn(data));
 }
 
 // -- Admin > Turns: the three numbers and the turns behind them ---------------
@@ -32275,178 +28034,6 @@ function closeFeatureStudioMenu() {
   // No-op: the former feature options menu now lives in the action strip.
 }
 
-async function activateSelectedFeature() {
-  if (featureActivationBusy) {
-    return;
-  }
-
-  const feature = getSelectedFeature();
-  if (!feature) {
-    return;
-  }
-  const editingActiveFeature = isFeatureActivated(feature);
-  const hasActivationChanges = hasFeatureActivationChanges(feature);
-  const canRefreshWebhook = canRefreshFeatureActivationWebhook(feature);
-  const refreshOnly = !hasActivationChanges && canRefreshWebhook;
-  if (!hasActivationChanges && !canRefreshWebhook) {
-    updateFeatureStudioHeader();
-    setStatus("No changes to save.");
-    return;
-  }
-
-  const issues = getFeatureActivationTestIssues(feature);
-  if (issues.length) {
-    setFeatureActivationFieldErrors(issues);
-    updateFeatureStudioHeader();
-    setStatus("Finish the missing details.");
-    const firstIssue = issues[0];
-    const focusTarget = getFeatureActivationFieldElement(firstIssue.field);
-    window.requestAnimationFrame(() => {
-      focusTarget?.focus();
-    });
-    return;
-  }
-
-  featureActivationBusy = true;
-  state.featureActivationNotice = "";
-  try {
-    updateFeatureStudioHeader();
-    setStatus(
-      refreshOnly
-        ? "Refreshing WhatsApp webhook..."
-        : editingActiveFeature
-          ? "Saving details..."
-          : "Saving setup...",
-    );
-    const whatsapp = getSelectedFeatureWhatsApp(feature);
-    const accessToken = normalizePendingAccessToken(whatsapp.access_token);
-    const response = await apiRequest("/api/whatsapp/connection", {
-      method: "POST",
-      body: {
-        business_account_id: whatsapp.business_account_id,
-        phone_number_id: whatsapp.phone_number_id,
-        ...(accessToken ? { access_token: accessToken } : {}),
-        owner_wa_id: whatsapp.owner_wa_id,
-      },
-    });
-
-    applyWhatsAppConnectionToFeatures(response.connection || whatsapp, { persist: false });
-    if (elements.featureActivationAccessTokenInput) {
-      elements.featureActivationAccessTokenInput.value = getAccessTokenDisplayValue(
-        normalizeFeatureWhatsApp(response.connection || whatsapp),
-      );
-    }
-    if (usesEditorSetup(feature)) {
-      await refreshFeatureActivationStates({ render: false });
-    }
-    const savedFeature = getSelectedFeature();
-    if (savedFeature) {
-      savedFeature.status = getFeatureActivationState(savedFeature);
-    }
-    state.featureActivationNotice = String(response.message || "").trim();
-    clearFeatureActivationFieldErrors();
-    persistClientState();
-    closeFeatureStudioMenu();
-    const readyFeature = getSelectedFeature();
-    const liveReady = Boolean(
-      readyFeature
-      && (isFeatureSetupComplete(readyFeature) || readyFeature.setupStatus?.ready),
-    );
-
-    if (!liveReady) {
-      state.featureStudioView = "activation";
-      setHashForTab("features", feature.id, "activation");
-      renderApp();
-      window.scrollTo(0, 0);
-      openFeatureActivationAlert(
-        "One thing left",
-        response.message || "WhatsApp details were saved, but this client number still needs its own access token before this tool can go live.",
-        {
-          eyebrow: "Almost there",
-          returnFocus: elements.featureStudioActivationButton,
-        },
-      );
-      setStatus("Setup saved, but the live WhatsApp connection still needs this client's access token.");
-      return;
-    }
-
-    if (refreshOnly || editingActiveFeature) {
-      state.featureStudioView = "activation";
-      setHashForTab("features", feature.id, "activation");
-      renderApp();
-      setStatus(refreshOnly ? "WhatsApp webhook refreshed." : "WhatsApp details saved.");
-      return;
-    }
-
-    clearFeatureActivationNotice();
-    state.featureStudioView = "editor";
-    setHashForTab("features", feature.id, "editor");
-    renderApp();
-    window.scrollTo(0, 0);
-    openAuthAlert(
-      "Setup succeeded",
-      usesEditorSetup(feature)
-        ? "Your WhatsApp delivery setup was saved. Head back to the editor and finish activating this tool when you're ready."
-        : "Your WhatsApp setup succeeded. This feature is now ready to be activated. Before turning it on, review the tool editor and make sure everything is set up to your taste.",
-      {
-        eyebrow: "Nice work",
-        buttonLabel: "Open tool editor",
-        icon: "✓",
-        tone: "success",
-        returnFocus: elements.featureStudioEditorToggleButton,
-      },
-    );
-    setStatus(
-      usesEditorSetup(feature)
-        ? "WhatsApp setup saved. Return to the editor when you're ready."
-        : "Setup saved. Review the tool editor before activating.",
-    );
-  } catch (error) {
-    const payload = error?.payload || {};
-    if (Array.isArray(payload.issues) && payload.issues.length) {
-      setFeatureActivationFieldErrors(payload.issues);
-    }
-    const message = formatApiErrorMessage(error, "WhatsApp setup could not be confirmed.");
-    state.featureActivationNotice = message;
-    updateFeatureStudioHeader();
-    openFeatureActivationAlert(
-      "Setup failed",
-      message,
-      {
-        eyebrow: "Before you continue",
-        returnFocus: elements.featureStudioActivationButton,
-      },
-    );
-    setStatus("Setup failed");
-    return;
-  } finally {
-    featureActivationBusy = false;
-    updateFeatureStudioHeader();
-  }
-}
-
-function startFeatureActivation(options = {}) {
-  const feature = getSelectedFeature();
-  if (!feature) {
-    return;
-  }
-
-  clearFeatureActivationNotice();
-  clearFeatureActivationFieldErrors();
-  state.featureStudioView = "activation";
-  closeMenu();
-  closeFeatureStudioMenu();
-  setHashForTab("features", feature.id, "activation");
-  renderApp();
-  window.scrollTo(0, 0);
-  const firstMissingKey = getMissingFeatureActivationFields(feature)[0];
-  const focusTarget = firstMissingKey ? getFeatureActivationFieldElement(firstMissingKey) : elements.featureActivationBusinessAccountIdInput;
-  window.requestAnimationFrame(() => {
-    focusTarget?.focus();
-  });
-  setStatus(String(options.statusMessage || (isFeatureActivated(feature) ? "WhatsApp details opened." : "WhatsApp setup opened.")));
-}
-
 async function deactivateSelectedFeature(options = {}) {
   if (featureActivationTransitionBusy) {
     return;
@@ -32474,8 +28061,6 @@ async function deactivateSelectedFeature(options = {}) {
 
     applyServerFeatureStates([response.feature || {}], { persist: true });
     state.paymentStatus = response.paymentStatus || state.paymentStatus;
-    clearFeatureActivationNotice();
-    clearFeatureActivationFieldErrors();
     state.featureStudioView = normalizeFeatureStudioView(options.view) || getDefaultFeatureStudioView(feature);
     closeFeatureStudioMenu();
     setHashForTab("features", feature.id, state.featureStudioView);
@@ -33017,1037 +28602,6 @@ async function runSelectedMonitorNow() {
   }
 }
 
-function formatReengagementInactivityLabel(settings = {}) {
-  const inactivityValue = normalizeReengagementInactivityValue(settings.inactivityValue);
-  const inactivityUnit = normalizeReengagementInactivityUnit(settings.inactivityUnit);
-  const singular = inactivityUnit.endsWith("s") ? inactivityUnit.slice(0, -1) : inactivityUnit;
-  return `${inactivityValue} ${inactivityValue === 1 ? singular : inactivityUnit}`;
-}
-
-function getReengagementInactivityWindowMilliseconds(settings = {}) {
-  const inactivityValue = normalizeReengagementInactivityValue(settings.inactivityValue);
-  const inactivityUnit = normalizeReengagementInactivityUnit(settings.inactivityUnit);
-  const minute = 60 * 1000;
-  const hour = 60 * minute;
-  const day = 24 * hour;
-  if (inactivityUnit === "minutes") {
-    return inactivityValue * minute;
-  }
-  if (inactivityUnit === "hours") {
-    return inactivityValue * hour;
-  }
-  if (inactivityUnit === "days") {
-    return inactivityValue * day;
-  }
-  return inactivityValue * 30 * day;
-}
-
-function formatReengagementDurationPart(value, singular, plural = `${singular}s`) {
-  return `${value} ${value === 1 ? singular : plural}`;
-}
-
-function formatReengagementElapsedDuration(milliseconds) {
-  const value = Math.max(0, Number(milliseconds) || 0);
-  const minute = 60 * 1000;
-  const hour = 60 * minute;
-  const day = 24 * hour;
-  if (value < minute) {
-    return "less than 1 minute";
-  }
-
-  const totalMinutes = Math.max(1, Math.floor(value / minute));
-  if (totalMinutes < 60) {
-    return formatReengagementDurationPart(totalMinutes, "minute");
-  }
-
-  const totalHours = Math.floor(totalMinutes / 60);
-  const remainingMinutes = totalMinutes % 60;
-  if (totalHours < 24) {
-    const label = formatReengagementDurationPart(totalHours, "hour");
-    return remainingMinutes && totalHours < 6
-      ? `${label} ${formatReengagementDurationPart(remainingMinutes, "minute")}`
-      : label;
-  }
-
-  const totalDays = Math.floor(totalHours / 24);
-  const remainingHours = totalHours % 24;
-  if (totalDays < 30) {
-    const label = formatReengagementDurationPart(totalDays, "day");
-    return remainingHours && totalDays < 3
-      ? `${label} ${formatReengagementDurationPart(remainingHours, "hour")}`
-      : label;
-  }
-
-  const totalMonths = Math.floor(totalDays / 30);
-  if (totalMonths < 12) {
-    return formatReengagementDurationPart(totalMonths, "month");
-  }
-
-  const totalYears = Math.floor(totalDays / 365);
-  const remainingMonths = Math.floor((totalDays - (totalYears * 365)) / 30);
-  const label = formatReengagementDurationPart(totalYears, "year");
-  return remainingMonths && totalYears < 3
-    ? `${label} ${formatReengagementDurationPart(remainingMonths, "month")}`
-    : label;
-}
-
-function parseReengagementDemoTimestamp(value) {
-  const text = normalizeText(value);
-  if (!text) {
-    return 0;
-  }
-  const parsed = new Date(text);
-  const time = parsed.getTime();
-  return Number.isFinite(time) ? time : 0;
-}
-
-function getReengagementDemoEvaluatedAtMilliseconds(run = {}) {
-  for (const key of ["evaluatedAt", "completedAt", "createdAt", "runAt"]) {
-    const time = parseReengagementDemoTimestamp(run?.[key]);
-    if (time) {
-      return time;
-    }
-  }
-
-  const cutoffAt = parseReengagementDemoTimestamp(run?.cutoffAt);
-  if (cutoffAt) {
-    const settings = run?.settings && typeof run.settings === "object" ? run.settings : DEFAULT_REENGAGEMENT_SETTINGS;
-    return cutoffAt + getReengagementInactivityWindowMilliseconds(settings);
-  }
-  return Date.now();
-}
-
-function getReengagementDemoCandidateInactiveMilliseconds(candidate = {}, run = {}) {
-  const inactiveSeconds = Number(candidate.inactiveSeconds ?? candidate.inactive_seconds);
-  if (Number.isFinite(inactiveSeconds) && inactiveSeconds >= 0) {
-    return inactiveSeconds * 1000;
-  }
-
-  const lastActivityAt = parseReengagementDemoTimestamp(candidate.lastMessageAt || candidate.last_message_at);
-  if (!lastActivityAt) {
-    return 0;
-  }
-  return Math.max(0, getReengagementDemoEvaluatedAtMilliseconds(run) - lastActivityAt);
-}
-
-function formatReengagementCandidateName(candidate = {}) {
-  return String(candidate.senderName || candidate.senderWaId || candidate.conversationId || "Unknown conversation").trim();
-}
-
-function formatReengagementOwnerLabel(run = {}) {
-  const explicitOwner = normalizeText(run?.ownerWaId);
-  const owner = explicitOwner || getFeatureWhatsAppOwnerLabel(getSelectedFeature());
-  if (/^\d+$/.test(owner)) {
-    return `+${owner}`;
-  }
-  return owner || "your WhatsApp";
-}
-
-function getReengagementDeliveryMode(run = {}) {
-  return normalizeText(run?.deliveryMode).toLowerCase();
-}
-
-function getReengagementConversationsChecked(run = {}) {
-  return Math.max(0, Number(run?.conversationsChecked || 0));
-}
-
-function formatReengagementCheckedConversationsLabel(run = {}) {
-  const conversationsChecked = getReengagementConversationsChecked(run);
-  return conversationsChecked === 1 ? "1 saved conversation" : `${conversationsChecked} saved conversations`;
-}
-
-function getReengagementSkippedConversations(run = {}) {
-  const skipped = run?.skippedConversations && typeof run.skippedConversations === "object"
-    ? run.skippedConversations
-    : {};
-  return {
-    missingTimestamp: Math.max(0, Number(skipped.missingTimestamp || 0)),
-    recentActivity: Math.max(0, Number(skipped.recentActivity || 0)),
-    alreadyNotified: Math.max(0, Number(skipped.alreadyNotified || 0)),
-  };
-}
-
-function formatReengagementSkippedSummary(run = {}) {
-  const skipped = getReengagementSkippedConversations(run);
-  const parts = [];
-  if (skipped.recentActivity) {
-    parts.push(`${skipped.recentActivity} ${skipped.recentActivity === 1 ? "was" : "were"} still inside the inactivity window`);
-  }
-  if (skipped.alreadyNotified) {
-    parts.push(`${skipped.alreadyNotified} ${skipped.alreadyNotified === 1 ? "was" : "were"} already handled for the latest customer activity`);
-  }
-  if (skipped.missingTimestamp) {
-    parts.push(`${skipped.missingTimestamp} had no saved activity timestamp`);
-  }
-  return parts.join("; ");
-}
-
-function hasReengagementDemoDeliveryErrors(run = {}) {
-  return Array.isArray(run?.deliveryErrors) && run.deliveryErrors.length > 0;
-}
-
-function getReengagementDemoAlertIcon(run = {}) {
-  const status = normalizeText(run?.status).toLowerCase();
-  if (status === "cancelled" || hasReengagementDemoDeliveryErrors(run)) {
-    return "!";
-  }
-  return Math.max(0, Number(run?.candidatesCount || 0)) > 0 ? "✓" : "!";
-}
-
-function getReengagementDemoAlertTone(run = {}) {
-  const status = normalizeText(run?.status).toLowerCase();
-  if (status === "cancelled" || hasReengagementDemoDeliveryErrors(run)) {
-    return "warning";
-  }
-  return Math.max(0, Number(run?.candidatesCount || 0)) > 0 ? "success" : "warning";
-}
-
-function getReengagementDemoAlertTitle(run = {}) {
-  const status = normalizeText(run?.status).toLowerCase();
-  if (status === "cancelled") {
-    return "Demo cancelled";
-  }
-  const candidatesCount = Math.max(0, Number(run?.candidatesCount || 0));
-  if (candidatesCount > 0) {
-    return candidatesCount === 1 ? "1 inactive conversation" : `${candidatesCount} inactive conversations`;
-  }
-  const notificationsSent = Math.max(0, Number(run?.notificationsSent || 0));
-  if (notificationsSent > 0) {
-    const deliveryMode = getReengagementDeliveryMode(run);
-    if (deliveryMode === "mock") {
-      return "WhatsApp report simulated";
-    }
-    if (deliveryMode === "template_prompt") {
-      return "WhatsApp prompt sent";
-    }
-    if (deliveryMode === "telegram") {
-      return "Telegram report sent";
-    }
-    if (deliveryMode === "mixed") {
-      return "Reports partly sent";
-    }
-    return "Owner report sent";
-  }
-  if (!getReengagementConversationsChecked(run) && candidatesCount <= 0) {
-    return "No saved conversations yet";
-  }
-  return "No inactive conversations";
-}
-
-function getReengagementDemoAlertMessage(run = {}, fallbackMessage = "Demo run finished.") {
-  const status = normalizeText(run?.status).toLowerCase();
-  const deliveryMode = getReengagementDeliveryMode(run);
-  const ownerLabel = formatReengagementOwnerLabel(run);
-  const candidatesCount = Math.max(0, Number(run?.candidatesCount || 0));
-  const notificationsSent = Math.max(0, Number(run?.notificationsSent || 0));
-  const conversationsChecked = getReengagementConversationsChecked(run);
-  const checkedLabel = formatReengagementCheckedConversationsLabel(run);
-  const deliveryErrors = Array.isArray(run?.deliveryErrors) ? run.deliveryErrors : [];
-  const settings = run?.settings && typeof run.settings === "object" ? run.settings : DEFAULT_REENGAGEMENT_SETTINGS;
-  const inactivityLabel = formatReengagementInactivityLabel(settings);
-
-  if (status === "cancelled") {
-    if (notificationsSent > 0) {
-      const reportLabel = deliveryMode === "telegram"
-        ? (notificationsSent === 1 ? "Telegram report" : "Telegram reports")
-        : (notificationsSent === 1 ? "WhatsApp report" : "WhatsApp reports");
-      if (deliveryMode === "mock") {
-        return `Cancelled after simulating ${notificationsSent} demo ${reportLabel} for ${ownerLabel}. Customers were not contacted.`;
-      }
-      if (deliveryMode === "template_prompt") {
-        return `Cancelled after sending a WhatsApp template prompt to ${ownerLabel}. Customers were not contacted.`;
-      }
-      return `Cancelled after sending ${notificationsSent} demo ${reportLabel}. Customers were not contacted.`;
-    }
-    return "Cancelled before any demo owner report was sent. Customers were not contacted.";
-  }
-
-  if (!conversationsChecked && candidatesCount <= 0) {
-    return "No saved conversations are available yet. Import WhatsApp history or wait for conversations to be captured, then run the demo again. Customers were not contacted.";
-  }
-
-  if (deliveryErrors.length && notificationsSent <= 0) {
-    if (candidatesCount > 0) {
-      const matchLabel = candidatesCount === 1 ? "1 inactive conversation" : `${candidatesCount} inactive conversations`;
-      return `Found ${matchLabel} and prepared the follow-up drafts below. Owner delivery failed, so nothing was sent. Customers were not contacted.`;
-    }
-    const skippedSummary = formatReengagementSkippedSummary(run);
-    const scanSummary = skippedSummary
-      ? `Checked ${checkedLabel}. ${skippedSummary}.`
-      : `Checked ${checkedLabel} against the current ${inactivityLabel} inactivity window.`;
-    return `${scanSummary} Owner delivery failed before a no-results report could be sent. Customers were not contacted.`;
-  }
-
-  if (notificationsSent > 0) {
-    const reportLabel = deliveryMode === "telegram"
-      ? (notificationsSent === 1 ? "Telegram message" : "Telegram messages")
-      : deliveryMode === "mixed"
-        ? (notificationsSent === 1 ? "owner message" : "owner messages")
-        : (notificationsSent === 1 ? "WhatsApp message" : "WhatsApp messages");
-    const matchLabel = candidatesCount === 1 ? "1 inactive conversation" : `${candidatesCount} inactive conversations`;
-    if (deliveryMode === "mock") {
-      const base = candidatesCount > 0
-        ? `Simulated ${notificationsSent} demo ${reportLabel} for ${ownerLabel} with details for ${matchLabel}.`
-        : `Simulated a no-results demo ${reportLabel} for ${ownerLabel} for the current ${inactivityLabel} inactivity window.`;
-      return `${base} Live WhatsApp delivery is not configured, so nothing reached your WhatsApp. Customers were not contacted.`;
-    }
-    if (deliveryMode === "template_prompt") {
-      const base = candidatesCount > 0
-        ? `Sent a WhatsApp template prompt to ${ownerLabel} for ${matchLabel}.`
-        : `Sent a WhatsApp template prompt to ${ownerLabel} for the current ${inactivityLabel} inactivity window.`;
-      return `${base} Tap Send details in WhatsApp to receive the generated report. Customers were not contacted.`;
-    }
-    if (deliveryMode === "telegram") {
-      const base = candidatesCount > 0
-        ? `Sent ${notificationsSent} demo ${reportLabel} with details for ${matchLabel}.`
-        : `Sent a no-results demo ${reportLabel} for the current ${inactivityLabel} inactivity window.`;
-      return `${base} Customers were not contacted.`;
-    }
-    const base = candidatesCount > 0
-      ? `Sent ${notificationsSent} demo ${reportLabel} to ${ownerLabel} with details for ${matchLabel}.`
-      : `Sent a no-results demo ${reportLabel} to ${ownerLabel} for the current ${inactivityLabel} inactivity window.`;
-    return deliveryErrors.length
-      ? `${base} Some results could not be delivered, so try again if anything looks missing. Customers were not contacted.`
-      : `${base} Customers were not contacted.`;
-  }
-
-  if (candidatesCount > 0 && deliveryMode === "none") {
-    const matchLabel = candidatesCount === 1 ? "1 inactive conversation" : `${candidatesCount} inactive conversations`;
-    return `Found ${matchLabel}. Review, edit, and copy the generated follow-up drafts below. Customers were not contacted.`;
-  }
-
-  return `${fallbackMessage} Customers were not contacted.`;
-}
-
-function getReengagementDemoCandidates(run = {}) {
-  return Array.isArray(run?.candidates) ? run.candidates : [];
-}
-
-function getReengagementDemoCandidateKey(candidate = {}, index = 0) {
-  return normalizeText(candidate.conversationId)
-    || normalizeText(candidate.senderWaId)
-    || `candidate-${index + 1}`;
-}
-
-function formatReengagementDemoSummary(run = {}, fallbackMessage = "") {
-  const status = normalizeText(run?.status).toLowerCase();
-  const candidatesCount = Math.max(0, Number(run?.candidatesCount || getReengagementDemoCandidates(run).length || 0));
-  const conversationsChecked = getReengagementConversationsChecked(run);
-  const checkedLabel = formatReengagementCheckedConversationsLabel(run);
-  const settings = run?.settings && typeof run.settings === "object" ? run.settings : DEFAULT_REENGAGEMENT_SETTINGS;
-  const inactivityLabel = formatReengagementInactivityLabel(settings);
-  const deliveryMode = getReengagementDeliveryMode(run);
-  const deliveryErrors = Array.isArray(run?.deliveryErrors) ? run.deliveryErrors : [];
-
-  if (status === "cancelled") {
-    return fallbackMessage || "The demo was cancelled before the full findings list was completed.";
-  }
-  if (!candidatesCount) {
-    if (!conversationsChecked) {
-      return "No saved conversations are available for this demo yet. Import WhatsApp history or let new conversations arrive, then run the demo again.";
-    }
-    const skippedSummary = formatReengagementSkippedSummary(run);
-    const base = `Checked ${checkedLabel}. None matched the current inactivity rule: more than ${inactivityLabel} without customer activity.`;
-    return skippedSummary ? `${base} ${skippedSummary}.` : base;
-  }
-  const matchLabel = candidatesCount === 1 ? "conversation" : "conversations";
-  const deliveryNote = deliveryErrors.length
-    ? "WhatsApp delivery failed, so no WhatsApp message was sent."
-    : deliveryMode === "none"
-    ? "No WhatsApp message was sent."
-    : "Customers were not contacted.";
-  return `Found ${candidatesCount} inactive ${matchLabel}. Review, edit, and copy the generated follow-up drafts below. ${deliveryNote}`;
-}
-
-function formatReengagementDemoCandidateMeta(candidate = {}, run = {}) {
-  const inactiveLabel = formatReengagementElapsedDuration(
-    getReengagementDemoCandidateInactiveMilliseconds(candidate, run),
-  );
-  return inactiveLabel ? `Inactive for ${inactiveLabel}` : "Inactive";
-}
-
-async function copyReengagementDemoDraft(candidateKey, candidateName, textarea) {
-  const text = String(textarea?.value || "").trim();
-  if (!text) {
-    setStatus("There is no draft text to copy.");
-    return;
-  }
-
-  try {
-    await navigator.clipboard.writeText(text);
-    state.reengagementDemoDrafts[candidateKey] = text;
-    setStatus(`Copied follow-up draft for ${candidateName}.`);
-  } catch {
-    setStatus("Copy failed in this browser.");
-  }
-}
-
-function resizeReengagementDemoDraftTextarea(textarea) {
-  if (!textarea) {
-    return;
-  }
-  textarea.style.height = "auto";
-  textarea.style.height = `${textarea.scrollHeight}px`;
-}
-
-function scheduleReengagementDemoDraftResize(textarea) {
-  resizeReengagementDemoDraftTextarea(textarea);
-  window.requestAnimationFrame(() => {
-    resizeReengagementDemoDraftTextarea(textarea);
-  });
-}
-
-function createReengagementDemoEmptyResult(run = {}) {
-  const conversationsChecked = getReengagementConversationsChecked(run);
-  const skippedSummary = formatReengagementSkippedSummary(run);
-  const empty = document.createElement("div");
-  empty.className = "reengagement-demo-empty";
-  const title = document.createElement("strong");
-  title.textContent = conversationsChecked ? "No matching conversations" : "No saved conversations yet";
-  const copy = document.createElement("p");
-  copy.textContent = conversationsChecked
-    ? skippedSummary || "Lower the inactivity window or wait for older conversations, then run the demo again."
-    : "Import real WhatsApp history or let this tool capture conversations before running the demo again.";
-  empty.append(title, copy);
-  return empty;
-}
-
-function createReengagementDemoCandidateResult(candidate = {}, index = 0, run = {}) {
-  const candidateKey = getReengagementDemoCandidateKey(candidate, index);
-  const candidateName = formatReengagementCandidateName(candidate);
-  const savedDraftText = String(state.reengagementDemoDrafts[candidateKey] || "").trim();
-  const generatedDraftText = String(candidate.draftText || "").trim();
-  const draftText = savedDraftText || generatedDraftText;
-  state.reengagementDemoDrafts[candidateKey] = draftText;
-
-  const item = document.createElement("article");
-  item.className = "reengagement-demo-result";
-
-  const header = document.createElement("div");
-  header.className = "reengagement-demo-result-head";
-  const titleGroup = document.createElement("div");
-  titleGroup.className = "reengagement-demo-result-title";
-  const title = document.createElement("h4");
-  title.textContent = candidateName;
-  const meta = document.createElement("p");
-  meta.textContent = formatReengagementDemoCandidateMeta(candidate, run);
-  titleGroup.append(title, meta);
-  header.append(titleGroup);
-  item.append(header);
-
-  const draftWrap = document.createElement("div");
-  draftWrap.className = "reengagement-demo-draft";
-  const draftHead = document.createElement("div");
-  draftHead.className = "reengagement-demo-draft-head";
-  const label = document.createElement("label");
-  const textareaId = `reengagementDemoDraft-${index}`;
-  label.setAttribute("for", textareaId);
-  label.textContent = "Draft";
-  const copyButton = document.createElement("button");
-  copyButton.className = "reengagement-demo-copy-button";
-  copyButton.type = "button";
-  copyButton.title = `Copy follow-up draft for ${candidateName}`;
-  copyButton.setAttribute("aria-label", `Copy follow-up draft for ${candidateName}`);
-  const copyIcon = document.createElement("span");
-  copyIcon.className = "copy-icon";
-  copyIcon.setAttribute("aria-hidden", "true");
-  copyButton.append(copyIcon);
-  draftHead.append(label, copyButton);
-
-  const textarea = document.createElement("textarea");
-  textarea.id = textareaId;
-  textarea.rows = 2;
-  textarea.value = draftText;
-  textarea.addEventListener("input", () => {
-    state.reengagementDemoDrafts[candidateKey] = textarea.value;
-    resizeReengagementDemoDraftTextarea(textarea);
-  });
-  copyButton.addEventListener("click", () => {
-    void copyReengagementDemoDraft(candidateKey, candidateName, textarea);
-  });
-
-  draftWrap.append(draftHead, textarea);
-  item.append(draftWrap);
-  scheduleReengagementDemoDraftResize(textarea);
-  return item;
-}
-
-function renderReengagementDemoResultItems(list, run = {}) {
-  if (!list) {
-    return;
-  }
-
-  list.innerHTML = "";
-  const candidates = getReengagementDemoCandidates(run);
-  if (!candidates.length) {
-    list.append(createReengagementDemoEmptyResult(run));
-    return;
-  }
-
-  candidates.forEach((candidate, index) => {
-    list.append(createReengagementDemoCandidateResult(candidate, index, run));
-  });
-}
-
-function createReengagementDemoAlertBody(run = {}) {
-  const body = document.createElement("div");
-  body.className = "reengagement-demo-alert-results";
-
-  const list = document.createElement("div");
-  list.className = "reengagement-demo-results-list";
-  renderReengagementDemoResultItems(list, run);
-
-  body.append(list);
-  return body;
-}
-
-function openReengagementDemoResultsAlert(run = {}, completionMessage = "Demo run finished.", returnFocus = null) {
-  const candidates = getReengagementDemoCandidates(run);
-  const hasCandidateResults = candidates.length > 0;
-  openAuthAlert(
-    getReengagementDemoAlertTitle(run),
-    getReengagementDemoAlertMessage(run, completionMessage),
-    {
-      eyebrow: "Demo results",
-      buttonLabel: "OK",
-      bodyNode: hasCandidateResults ? createReengagementDemoAlertBody(run) : null,
-      icon: getReengagementDemoAlertIcon(run),
-      tone: getReengagementDemoAlertTone(run),
-      variant: hasCandidateResults ? "demo-results" : "default",
-      returnFocus,
-    },
-  );
-}
-
-function renderReengagementDemoResults(feature = getSelectedFeature()) {
-  const card = elements.reengagementDemoResultsCard;
-  const summary = elements.reengagementDemoResultsSummary;
-  const list = elements.reengagementDemoResultsList;
-  if (!card || !summary || !list) {
-    return;
-  }
-
-  const result = state.reengagementDemoResult;
-  const run = result?.run && typeof result.run === "object" ? result.run : null;
-  const resultFeatureId = normalizeText(result?.featureId);
-  const selectedFeatureId = normalizeText(feature?.id);
-  const showResults = Boolean(isReengagementFeature(feature) && run && resultFeatureId === selectedFeatureId);
-  card.classList.toggle("is-hidden", !showResults);
-  list.innerHTML = "";
-
-  if (!showResults || !run) {
-    summary.textContent = "Run the demo to find inactive conversations and prepare follow-up drafts.";
-    return;
-  }
-
-  summary.textContent = formatReengagementDemoSummary(run, result?.message || "");
-  renderReengagementDemoResultItems(list, run);
-}
-
-function syncReengagementDemoRunOverlay() {
-  if (!reengagementDemoRunBusy) {
-    return;
-  }
-
-  let title = "Running demo";
-  let message = "Checking saved conversations and generating follow-up drafts. If WhatsApp delivery is configured, we’ll also send the owner prompt. Customers will not be contacted.";
-  let secondaryButtonLabel = "Cancel";
-  let secondaryDisabled = false;
-
-  if (reengagementDemoRunCancelling) {
-    title = "Cancelling demo";
-    message = "Stopping after the current step and before sending any more WhatsApp reports. Customers will not be contacted.";
-    secondaryButtonLabel = "Cancelling...";
-    secondaryDisabled = true;
-  } else if (reengagementDemoRunCancellationError) {
-    title = "Couldn’t cancel yet";
-    message = `${reengagementDemoRunCancellationError} The demo is still running, so you can try cancelling again or wait for it to finish.`;
-    secondaryButtonLabel = "Try again";
-  }
-
-  openAuthAlert(title, message, {
-    eyebrow: "Demo run",
-    buttonLabel: "Running...",
-    primaryDisabled: true,
-    secondaryButtonLabel,
-    secondaryDisabled,
-    closeOnSecondary: false,
-    dismissOnBackdrop: false,
-    dismissOnEscape: false,
-    focusTarget: secondaryDisabled ? "primary" : "secondary",
-    iconMode: "spinner",
-    onSecondary: () => {
-      void requestReengagementDemoRunCancellation();
-    },
-    returnFocus: elements.featureStudioMonitorRunButton || elements.featureStudioEditorToggleButton,
-    tone: "progress",
-  });
-  reengagementDemoRunOverlayVisible = true;
-}
-
-function releaseReengagementDemoRunOverlay() {
-  if (!reengagementDemoRunOverlayVisible) {
-    return;
-  }
-
-  reengagementDemoRunOverlayVisible = false;
-  closeAuthAlert();
-}
-
-async function requestReengagementDemoRunCancellation() {
-  if (reengagementDemoRunCancelling || !reengagementDemoRunBusy || !reengagementDemoRunRequestId) {
-    return;
-  }
-
-  const feature = getSelectedFeature();
-  if (!feature || feature.id !== reengagementDemoRunTargetId) {
-    return;
-  }
-
-  const requestId = reengagementDemoRunRequestId;
-  reengagementDemoRunCancelling = true;
-  reengagementDemoRunCancellationError = "";
-  updateFeatureStudioHeader();
-  syncReengagementDemoRunOverlay();
-  setStatus("Cancelling the re-engagement demo. We’ll stop before sending any more WhatsApp reports.");
-
-  try {
-    await apiRequest(`/api/features/${encodeURIComponent(feature.id)}/run`, {
-      method: "DELETE",
-      body: {
-        runRequestId: requestId,
-      },
-    });
-  } catch (error) {
-    if (!reengagementDemoRunBusy || reengagementDemoRunRequestId !== requestId) {
-      return;
-    }
-    reengagementDemoRunCancelling = false;
-    reengagementDemoRunCancellationError = formatApiErrorMessage(
-      error,
-      "We couldn’t cancel the demo just yet. You can try again in a moment.",
-    );
-    updateFeatureStudioHeader();
-    syncReengagementDemoRunOverlay();
-    setStatus(reengagementDemoRunCancellationError);
-  }
-}
-
-async function runSelectedReengagementDemo() {
-  if (reengagementDemoRunBusy) {
-    setStatus("A re-engagement demo is already running.");
-    return;
-  }
-
-  const feature = getSelectedFeature();
-  if (!feature || !isReengagementFeature(feature)) {
-    setStatus("Refresh the tool and try the demo again.");
-    return;
-  }
-
-  if (hasPendingFeatureConfigAutosave(feature.id) || hasFeatureConfigChanges(feature) || featureConfigBusy) {
-    try {
-      await flushSelectedFeatureConfigAutosave({
-        featureId: feature.id,
-        alertOnError: true,
-        returnFocus: elements.featureStudioMonitorRunButton || elements.featureStudioEditorToggleButton,
-        statusMessage: "Saving settings before the demo...",
-      });
-    } catch {
-      return;
-    }
-  }
-
-  reengagementDemoRunBusy = true;
-  reengagementDemoRunTargetId = feature.id;
-  reengagementDemoRunRequestId = createManualMonitorRunRequestId();
-  reengagementDemoRunCancelling = false;
-  reengagementDemoRunCancellationError = "";
-  state.reengagementDemoResult = null;
-  state.reengagementDemoDrafts = {};
-  try {
-    updateFeatureStudioHeader();
-    syncReengagementDemoRunOverlay();
-    setStatus("Running the re-engagement demo and preparing results.");
-    const response = await apiRequest(`/api/features/${encodeURIComponent(feature.id)}/run`, {
-      method: "POST",
-      body: {
-        runRequestId: reengagementDemoRunRequestId,
-      },
-      timeoutMs: 90000,
-    });
-
-    const completionMessage = String(response.message || "Demo run finished.");
-    state.reengagementDemoResult = {
-      featureId: feature.id,
-      message: completionMessage,
-      run: response.run && typeof response.run === "object" ? response.run : {},
-    };
-    state.reengagementDemoDrafts = {};
-    renderReengagementDemoResults(feature);
-    reengagementDemoRunOverlayVisible = false;
-    addAgentNotification({
-      title: getReengagementDemoAlertTitle(response.run),
-      message: getReengagementDemoAlertMessage(response.run, completionMessage),
-      tone: getReengagementDemoAlertTone(response.run),
-      source: "whatsapp-reengagement",
-      actionId: `feature:${feature.id}`,
-      href: getAgentResponseResultHref(response),
-      dedupeKey: `reengagement:${feature.id}:run:${response?.run?.id || response?.run?.completedAt || Date.now()}`,
-    });
-    setStatus(completionMessage);
-    openReengagementDemoResultsAlert(
-      response.run,
-      completionMessage,
-      elements.featureStudioMonitorRunButton || elements.featureStudioEditorToggleButton,
-    );
-  } catch (error) {
-    reengagementDemoRunOverlayVisible = false;
-    const errorPayload = error?.payload && typeof error.payload === "object" ? error.payload : {};
-    const errorRun = errorPayload.run && typeof errorPayload.run === "object" ? errorPayload.run : null;
-    if (errorRun) {
-      const completionMessage = String(
-        errorPayload.message
-          || formatApiErrorMessage(error, "Demo generated findings, but WhatsApp delivery failed."),
-      );
-      state.reengagementDemoResult = {
-        featureId: feature.id,
-        message: completionMessage,
-        run: errorRun,
-      };
-      state.reengagementDemoDrafts = {};
-      renderReengagementDemoResults(feature);
-      addAgentNotification({
-        title: getReengagementDemoAlertTitle(errorRun),
-        message: getReengagementDemoAlertMessage(errorRun, completionMessage),
-        tone: getReengagementDemoAlertTone(errorRun),
-        source: "whatsapp-reengagement",
-        actionId: `feature:${feature.id}`,
-        href: getAgentResponseResultHref(errorPayload),
-        dedupeKey: `reengagement:${feature.id}:run:${errorRun?.id || errorRun?.completedAt || Date.now()}`,
-      });
-      setStatus(completionMessage);
-      openReengagementDemoResultsAlert(
-        errorRun,
-        completionMessage,
-        elements.featureStudioMonitorRunButton || elements.featureStudioEditorToggleButton,
-      );
-      return;
-    }
-    const message = formatApiErrorMessage(error, "We couldn’t run the re-engagement demo right now.");
-    addAgentNotification({
-      title: "Re-engagement demo failed",
-      message,
-      tone: "error",
-      source: "whatsapp-reengagement",
-      actionId: `feature:${feature.id}`,
-      dedupeKey: `reengagement:${feature.id}:error:${message}`,
-    });
-    openFeatureActivationAlert(
-      "Couldn’t run the demo",
-      message,
-      {
-        eyebrow: "Try again",
-        returnFocus: elements.featureStudioMonitorRunButton || elements.featureStudioEditorToggleButton,
-      },
-    );
-    setStatus("Couldn’t run the re-engagement demo.");
-  } finally {
-    reengagementDemoRunBusy = false;
-    reengagementDemoRunTargetId = "";
-    reengagementDemoRunRequestId = "";
-    reengagementDemoRunCancelling = false;
-    reengagementDemoRunCancellationError = "";
-    releaseReengagementDemoRunOverlay();
-    updateFeatureStudioHeader();
-  }
-}
-
-function waitForDelay(delayMs) {
-  return new Promise((resolve) => {
-    window.setTimeout(resolve, Math.max(0, Number(delayMs) || 0));
-  });
-}
-
-function createWhatsAppSampleWaitControl() {
-  const control = {
-    action: "",
-    promise: null,
-    resolve: null,
-  };
-
-  control.promise = new Promise((resolve) => {
-    control.resolve = (action) => {
-      if (control.action) {
-        return;
-      }
-
-      control.action = normalizeText(action);
-      resolve(control.action);
-    };
-  });
-
-  return control;
-}
-
-function getWhatsAppReplySampleConfirmationState(featureId, ownerMessageId) {
-  const feature = getFeatureById(featureId);
-  const health = getFeatureWhatsAppHealth(feature);
-  const status = String(health.lastOwnerNotificationStatus || "").trim().toLowerCase();
-  const messageId = String(health.lastOwnerNotificationMessageId || "").trim();
-
-  return {
-    feature,
-    health,
-    status,
-    messageId,
-    matchesMessageId: Boolean(ownerMessageId) && messageId === ownerMessageId,
-  };
-}
-
-function getWhatsAppReplySampleSuccessMessage(feature, confirmationState) {
-  const ownerLabel = getFeatureWhatsAppOwnerLabel(feature);
-  return confirmationState.status === "read"
-    ? `WhatsApp confirmed the sample reached ${ownerLabel} and was opened.`
-    : `WhatsApp confirmed the sample reached ${ownerLabel}.`;
-}
-
-function getWhatsAppReplySampleFailureMessage(feature) {
-  const ownerLabel = getFeatureWhatsAppOwnerLabel(feature);
-  const health = getFeatureWhatsAppHealth(feature);
-  const errorText = sanitizeErrorText(health.lastOwnerNotificationError || "");
-  const issueDetails = errorText ? ` WhatsApp reported: ${errorText}.` : "";
-  return `The sample alert did not reach ${ownerLabel}.${issueDetails} Check the connected number and your WhatsApp delivery status before trying again.`;
-}
-
-function getWhatsAppReplySamplePendingMessage(feature, confirmationState) {
-  const ownerLabel = getFeatureWhatsAppOwnerLabel(feature);
-  const receiptSummary = confirmationState.matchesMessageId && confirmationState.status === "sent"
-    ? "WhatsApp accepted the sample, but no delivery receipt arrived within 30 seconds."
-    : "The sample was sent, but no delivery receipt arrived within 30 seconds.";
-  return `${receiptSummary} It may already be on ${ownerLabel}; we’ll keep updating this status when Meta sends the receipt.`;
-}
-
-function withWhatsAppSampleUserAction(confirmationState, userAction = "") {
-  return {
-    ...confirmationState,
-    userAction: normalizeText(userAction),
-  };
-}
-
-async function waitForWhatsAppReplySampleConfirmation(featureId, ownerMessageId, options = {}) {
-  const userControl = options.userControl || null;
-  let confirmationState = getWhatsAppReplySampleConfirmationState(featureId, ownerMessageId);
-  if (
-    confirmationState.matchesMessageId
-    && ["delivered", "read", "failed"].includes(confirmationState.status)
-  ) {
-    return withWhatsAppSampleUserAction(confirmationState);
-  }
-
-  const deadline = Date.now() + WHATSAPP_SAMPLE_CONFIRMATION_TIMEOUT_MS;
-  while (Date.now() < deadline) {
-    if (userControl?.action) {
-      return withWhatsAppSampleUserAction(
-        getWhatsAppReplySampleConfirmationState(featureId, ownerMessageId),
-        userControl.action,
-      );
-    }
-
-    const delayMs = Math.min(
-      WHATSAPP_SAMPLE_CONFIRMATION_POLL_MS,
-      Math.max(0, deadline - Date.now()),
-    );
-    let userAction = "";
-    if (userControl) {
-      userAction = await Promise.race([
-        waitForDelay(delayMs).then(() => ""),
-        userControl.promise,
-      ]);
-    } else {
-      await waitForDelay(delayMs);
-    }
-
-    if (userAction) {
-      return withWhatsAppSampleUserAction(
-        getWhatsAppReplySampleConfirmationState(featureId, ownerMessageId),
-        userAction,
-      );
-    }
-
-    try {
-      await refreshWhatsAppConnection({ render: false, timeoutMs: 10000 });
-    } catch {
-      // Keep waiting until timeout in case the next refresh succeeds.
-    }
-
-    if (document.body.dataset.view === "app") {
-      renderApp({ preserveStatus: true });
-    }
-
-    confirmationState = getWhatsAppReplySampleConfirmationState(featureId, ownerMessageId);
-    if (userControl?.action) {
-      return withWhatsAppSampleUserAction(confirmationState, userControl.action);
-    }
-
-    if (
-      confirmationState.matchesMessageId
-      && ["delivered", "read", "failed"].includes(confirmationState.status)
-    ) {
-      return withWhatsAppSampleUserAction(confirmationState);
-    }
-  }
-
-  return withWhatsAppSampleUserAction(getWhatsAppReplySampleConfirmationState(featureId, ownerMessageId));
-}
-
-async function sendSelectedWhatsAppReplySample() {
-  if (whatsappSampleMessageBusy) {
-    return;
-  }
-
-  const feature = getSelectedFeature();
-  if (!feature || !isWhatsAppReplyAssistantFeature(feature) || !canSendWhatsAppReplySample(feature)) {
-    setStatus("Finish WhatsApp setup before sending a sample.");
-    return;
-  }
-
-  if (hasFeatureActivationChanges(feature)) {
-    openFeatureActivationAlert(
-      "Save the latest details first",
-      "Save your WhatsApp details before sending a sample so the test goes to the right phone.",
-      {
-        eyebrow: "Almost there",
-        returnFocus: elements.featureStudioWhatsAppSampleButton || elements.featureStudioEditorToggleButton,
-      },
-    );
-    setStatus("Save the latest WhatsApp details before sending a sample.");
-    return;
-  }
-
-  whatsappSampleMessageBusy = true;
-  whatsappSampleMessageTargetId = feature.id;
-  try {
-    updateFeatureStudioHeader();
-    setStatus("Sending a sample WhatsApp alert...");
-    const response = await apiRequest(`/api/features/${encodeURIComponent(feature.id)}/sample`, {
-      method: "POST",
-      body: {},
-    });
-
-    applyWhatsAppConnectionToFeatures(response.connection || null, { persist: true });
-    renderApp({ preserveStatus: true });
-    const ownerMessageId = String(
-      response.ownerMessageId
-      || getFeatureWhatsAppHealth(getFeatureById(feature.id) || feature).lastOwnerNotificationMessageId
-      || "",
-    ).trim();
-    const waitControl = createWhatsAppSampleWaitControl();
-    openAuthAlert(
-      "Testing WhatsApp delivery",
-      "We’re sending a sample alert now and waiting for WhatsApp to confirm it reached your phone.",
-      {
-        eyebrow: "Testing now",
-        buttonLabel: "Received the msg",
-        dismissOnBackdrop: false,
-        dismissOnEscape: false,
-        iconMode: "spinner",
-        onPrimary: () => waitControl.resolve("received"),
-        onSecondary: () => waitControl.resolve("cancelled"),
-        returnFocus: elements.featureStudioWhatsAppSampleButton || elements.featureStudioEditorToggleButton,
-        secondaryButtonLabel: "Cancel",
-        tone: "progress",
-      },
-    );
-    setStatus("Waiting for WhatsApp to confirm the sample delivery...");
-
-    const confirmationState = await waitForWhatsAppReplySampleConfirmation(feature.id, ownerMessageId, { userControl: waitControl });
-    const latestFeature = getFeatureById(feature.id) || feature;
-    if (confirmationState.userAction === "cancelled") {
-      setStatus("Sample delivery check cancelled.");
-      return;
-    }
-
-    if (confirmationState.userAction === "received") {
-      openAuthAlert(
-        "Marked as received",
-        "Nice. We’ll stop waiting here and keep updating the setup if WhatsApp sends the official receipt later.",
-        {
-          eyebrow: "Got it",
-          buttonLabel: "OK",
-          icon: "✓",
-          tone: "success",
-          returnFocus: elements.featureStudioWhatsAppSampleButton || elements.featureStudioEditorToggleButton,
-        },
-      );
-      setStatus("Sample marked as received.");
-      return;
-    }
-
-    if (
-      confirmationState.matchesMessageId
-      && ["delivered", "read"].includes(confirmationState.status)
-    ) {
-      openAuthAlert(
-        "Sample delivered",
-        getWhatsAppReplySampleSuccessMessage(latestFeature, confirmationState),
-        {
-          eyebrow: "Check WhatsApp",
-          buttonLabel: "OK",
-          icon: "✓",
-          tone: "success",
-          returnFocus: elements.featureStudioWhatsAppSampleButton || elements.featureStudioEditorToggleButton,
-        },
-      );
-      setStatus("WhatsApp confirmed the sample delivery.");
-      return;
-    }
-
-    const failedByWhatsApp = confirmationState.matchesMessageId && confirmationState.status === "failed";
-    openAuthAlert(
-      failedByWhatsApp ? "Sample failed" : "Sample sent",
-      failedByWhatsApp
-        ? getWhatsAppReplySampleFailureMessage(latestFeature)
-        : getWhatsAppReplySamplePendingMessage(latestFeature, confirmationState),
-      {
-        eyebrow: failedByWhatsApp ? "Test failed" : "Delivery receipt pending",
-        buttonLabel: "OK",
-        icon: failedByWhatsApp ? "!" : "✓",
-        tone: failedByWhatsApp ? "warning" : "progress",
-        returnFocus: elements.featureStudioWhatsAppSampleButton || elements.featureStudioEditorToggleButton,
-      },
-    );
-    setStatus(
-      failedByWhatsApp
-        ? "The sample alert did not reach your phone."
-        : "The sample alert was sent; delivery receipt is still pending.",
-    );
-  } catch (error) {
-    try {
-      await refreshWhatsAppConnection({ render: false });
-    } catch {
-      // Keep the current UI if the follow-up refresh fails.
-    }
-    renderApp({ preserveStatus: true });
-    openFeatureActivationAlert(
-      "Couldn’t send the sample",
-      formatApiErrorMessage(
-        error,
-        "We couldn’t send a sample WhatsApp alert right now. Check the saved connection details and try again.",
-      ),
-      {
-        eyebrow: "Try again",
-        returnFocus: elements.featureStudioWhatsAppSampleButton || elements.featureStudioEditorToggleButton,
-      },
-    );
-    setStatus("Couldn’t send the sample WhatsApp alert.");
-  } finally {
-    whatsappSampleMessageBusy = false;
-    whatsappSampleMessageTargetId = "";
-    updateFeatureStudioHeader();
-  }
-}
-
 async function toggleSelectedFeatureEditorActivation() {
   if (featureActivationTransitionBusy) {
     return;
@@ -34103,11 +28657,14 @@ async function toggleSelectedFeatureEditorActivation() {
       return;
     }
   } else if (!isFeatureSetupComplete(feature)) {
-    startFeatureActivation({
-      statusMessage: hasFeatureWhatsAppDetails(feature)
-        ? "Finish WhatsApp setup before turning this tool on."
-        : "Start WhatsApp setup before turning this tool on.",
-    });
+    openFeatureActivationAlert(
+      "Finish setup first",
+      "Finish this tool's setup before turning it on.",
+      {
+        eyebrow: "One thing left",
+        returnFocus: elements.featureStudioEditorToggleButton,
+      },
+    );
     return;
   }
 
@@ -34128,8 +28685,6 @@ async function toggleSelectedFeatureEditorActivation() {
 
     applyServerFeatureStates([response.feature || {}], { persist: true });
     state.paymentStatus = response.paymentStatus || state.paymentStatus;
-    clearFeatureActivationNotice();
-    clearFeatureActivationFieldErrors();
     state.featureStudioView = "editor";
     closeFeatureStudioMenu();
     setHashForTab("features", feature.id, "editor");
@@ -34155,28 +28710,14 @@ async function toggleSelectedFeatureEditorActivation() {
 
     if (payload.error === "setup_required") {
       const message = payload.message || "Finish setup before turning this tool on.";
-      if (usesEditorSetup(feature)) {
-        openFeatureActivationAlert(
-          "Finish setup first",
-          message,
-          {
-            eyebrow: "One thing left",
-            returnFocus: elements.featureStudioEditorToggleButton,
-          },
-        );
-      } else {
-        startFeatureActivation({
-          statusMessage: payload.message || "Finish WhatsApp setup before turning this tool on.",
-        });
-        openFeatureActivationAlert(
-          "Finish setup first",
-          payload.message || "Finish WhatsApp setup before turning this tool on.",
-          {
-            eyebrow: "One thing left",
-            returnFocus: elements.featureStudioActivationButton,
-          },
-        );
-      }
+      openFeatureActivationAlert(
+        "Finish setup first",
+        message,
+        {
+          eyebrow: "One thing left",
+          returnFocus: elements.featureStudioEditorToggleButton,
+        },
+      );
       setStatus(message);
       return;
     }
@@ -34196,163 +28737,6 @@ async function toggleSelectedFeatureEditorActivation() {
     featureActivationTransitionAction = "";
     updateFeatureStudioHeader();
   }
-}
-
-function updateFeatureActivationFields() {
-  const feature = getSelectedFeature();
-  if (!feature) {
-    return;
-  }
-
-  updateFeatureActivationPhonePlaceholder();
-  const whatsapp = getSelectedFeatureWhatsApp(feature);
-  if (elements.featureActivationBusinessAccountIdInput) {
-    elements.featureActivationBusinessAccountIdInput.value = whatsapp.business_account_id;
-  }
-  if (elements.featureActivationPhoneNumberIdInput) {
-    elements.featureActivationPhoneNumberIdInput.value = whatsapp.phone_number_id;
-  }
-  if (elements.featureActivationAccessTokenInput && !elements.featureActivationAccessTokenInput.matches(":focus")) {
-    elements.featureActivationAccessTokenInput.value = getAccessTokenDisplayValue(whatsapp);
-  }
-  if (elements.featureActivationAccessTokenHelp) {
-    let tokenHelpText = "Paste a token with access to this WABA and phone number.";
-    if (whatsapp.workspace_access_token_configured) {
-      tokenHelpText = "A token is saved and hidden. Paste over the dots to replace it.";
-    } else if (whatsapp.backend_access_token_configured) {
-      tokenHelpText = "The Assistyca sender token is configured for owner alerts. Paste this client's token to connect their number.";
-    }
-    elements.featureActivationAccessTokenHelp.textContent = tokenHelpText;
-  }
-  if (elements.featureActivationOwnerWaIdInput) {
-    elements.featureActivationOwnerWaIdInput.value = whatsapp.owner_wa_id;
-  }
-  updateFeatureActivationCustomerNumber(whatsapp);
-}
-
-function updateFeatureActivationCustomerNumber(whatsapp = getSelectedFeatureWhatsApp()) {
-  const card = elements.featureActivationCustomerNumberCard;
-  if (!card || !elements.featureActivationCustomerNumberValue || !elements.featureActivationCustomerNumberHelp) {
-    return;
-  }
-
-  const customerNumber = formatWhatsAppHumanPhoneNumber(whatsapp.display_phone_number);
-  const verifiedName = String(whatsapp.verified_name || "").trim();
-  const phoneNumberId = String(whatsapp.phone_number_id || "").trim();
-  const ownerNumber = formatWhatsAppHumanPhoneNumber(whatsapp.owner_wa_id);
-
-  if (customerNumber) {
-    elements.featureActivationCustomerNumberValue.textContent = customerNumber;
-    elements.featureActivationCustomerNumberHelp.textContent = verifiedName
-      ? `Customers must message this number. Meta lists it as ${verifiedName}. Approval alerts go to ${ownerNumber || "your approval phone"}.`
-      : `Customers must message this number. Approval alerts go to ${ownerNumber || "your approval phone"}.`;
-    card.dataset.state = "ready";
-    return;
-  }
-
-  if (phoneNumberId) {
-    elements.featureActivationCustomerNumberValue.textContent = "Not available from Meta yet";
-    elements.featureActivationCustomerNumberHelp.textContent = `The saved Phone Number ID ${phoneNumberId} is not a WhatsApp number you can message. Open the phone number details in Meta and use the Display phone number for customer tests.`;
-    card.dataset.state = "missing";
-    return;
-  }
-
-  elements.featureActivationCustomerNumberValue.textContent = "Not shown yet";
-  elements.featureActivationCustomerNumberHelp.textContent = "After setup, this should show the real number customers need to message.";
-  card.dataset.state = "empty";
-}
-
-function updateFeatureActivationStatus(feature = getSelectedFeature()) {
-  const content = buildFeatureActivationStatusContent(feature);
-
-  if (elements.featureActivationNumberStatusTitle) {
-    elements.featureActivationNumberStatusTitle.textContent = content.number.title;
-  }
-  if (elements.featureActivationNumberStatusCopy) {
-    elements.featureActivationNumberStatusCopy.textContent = content.number.copy;
-  }
-  if (elements.featureActivationWebhookStatusTitle) {
-    elements.featureActivationWebhookStatusTitle.textContent = content.webhook.title;
-  }
-  if (elements.featureActivationWebhookStatusCopy) {
-    elements.featureActivationWebhookStatusCopy.textContent = content.webhook.copy;
-  }
-  if (elements.featureActivationInboundStatusTitle) {
-    elements.featureActivationInboundStatusTitle.textContent = content.inbound.title;
-  }
-  if (elements.featureActivationInboundStatusCopy) {
-    elements.featureActivationInboundStatusCopy.textContent = content.inbound.copy;
-  }
-  if (elements.featureActivationOwnerStatusTitle) {
-    elements.featureActivationOwnerStatusTitle.textContent = content.owner.title;
-  }
-  if (elements.featureActivationOwnerStatusCopy) {
-    elements.featureActivationOwnerStatusCopy.textContent = content.owner.copy;
-  }
-  if (elements.featureActivationWebhookHint) {
-    elements.featureActivationWebhookHint.textContent = content.note;
-    elements.featureActivationWebhookHint.classList.toggle("is-hidden", !content.note);
-  }
-}
-
-function buildFeatureActivationResultContent(feature = getSelectedFeature()) {
-  const activationBusy = isFeatureActivationBusy(feature);
-  const hasActivationChanges = hasFeatureActivationChanges(feature);
-  const canRefreshWebhook = canRefreshFeatureActivationWebhook(feature);
-  const refreshOnly = !hasActivationChanges && canRefreshWebhook;
-
-  if (activationBusy) {
-    return {
-      tone: "busy",
-      icon: "",
-      text: refreshOnly ? "Refreshing..." : "Saving...",
-    };
-  }
-
-  const notice = String(state.featureActivationNotice || "").trim();
-  if (notice) {
-    const isWarning = /failed|could not|rejected|unavailable|invalid|expired|missing|denied|error|unauthorized|network|timeout/i.test(notice);
-    const webhookSuccess = /webhook/i.test(notice) && /refreshed|saved|subscribed|accepted/i.test(notice);
-    return {
-      tone: isWarning ? "warning" : "success",
-      icon: isWarning ? "x" : "check",
-      text: isWarning ? (refreshOnly ? "Refresh failed" : "Save failed") : webhookSuccess ? "Refresh succeeded" : "Save succeeded",
-    };
-  }
-
-  const whatsapp = getSelectedFeatureWhatsApp(feature);
-  const health = getFeatureWhatsAppHealth(feature);
-  const webhookStatus = String(health.webhookSubscriptionStatus || "").trim().toLowerCase();
-  if (whatsapp.connection_status === "connected" && webhookStatus === "subscribed") {
-    return {
-      tone: "success",
-      icon: "check",
-      text: "Refresh succeeded",
-    };
-  }
-
-  return null;
-}
-
-function updateFeatureActivationResult(feature = getSelectedFeature()) {
-  const result = buildFeatureActivationResultContent(feature);
-  const element = elements.featureActivationResult;
-  if (!element || !elements.featureActivationResultIcon || !elements.featureActivationResultText) {
-    return;
-  }
-
-  if (!result) {
-    element.classList.add("is-hidden");
-    element.dataset.tone = "";
-    elements.featureActivationResultIcon.textContent = "";
-    elements.featureActivationResultText.textContent = "";
-    return;
-  }
-
-  element.classList.remove("is-hidden");
-  element.dataset.tone = result.tone;
-  elements.featureActivationResultIcon.replaceChildren(createFeatureActivationResultIcon(result.icon));
-  elements.featureActivationResultText.textContent = result.text;
 }
 
 function createFeatureActivationResultIcon(iconType) {
@@ -34394,109 +28778,6 @@ function createFeatureActivationResultIcon(iconType) {
   return svg;
 }
 
-function updateFeatureStudioWhatsAppHealthNotice(feature = getSelectedFeature()) {
-  const notice = buildFeatureEditorWhatsAppHealthNotice(feature);
-  const element = elements.featureStudioWhatsAppHealthNotice;
-  if (!element || !elements.featureStudioWhatsAppHealthNoticeTitle || !elements.featureStudioWhatsAppHealthNoticeCopy) {
-    return;
-  }
-
-  if (!notice) {
-    element.classList.add("is-hidden");
-    element.dataset.tone = "";
-    elements.featureStudioWhatsAppHealthNoticeTitle.textContent = "";
-    elements.featureStudioWhatsAppHealthNoticeCopy.textContent = "";
-    return;
-  }
-
-  element.classList.remove("is-hidden");
-  element.dataset.tone = notice.tone || "neutral";
-  elements.featureStudioWhatsAppHealthNoticeTitle.textContent = notice.title;
-  elements.featureStudioWhatsAppHealthNoticeCopy.textContent = notice.copy;
-}
-
-function renderFeatureActivationFieldErrors() {
-  const fieldStates = [
-    {
-      key: "business_account_id",
-      input: elements.featureActivationBusinessAccountIdInput,
-      error: elements.featureActivationBusinessAccountIdError,
-    },
-    {
-      key: "phone_number_id",
-      input: elements.featureActivationPhoneNumberIdInput,
-      error: elements.featureActivationPhoneNumberIdError,
-    },
-    {
-      key: "access_token",
-      input: elements.featureActivationAccessTokenInput,
-      error: elements.featureActivationAccessTokenError,
-    },
-    {
-      key: "owner_wa_id",
-      input: elements.featureActivationOwnerWaIdInput,
-      error: elements.featureActivationOwnerWaIdError,
-    },
-  ];
-
-  for (const { key, input, error } of fieldStates) {
-    if (!input || !error) {
-      continue;
-    }
-
-    const message = getFeatureActivationFieldError(key);
-    const field = input.closest(".field");
-    if (field) {
-      field.classList.toggle("has-error", Boolean(message));
-    }
-
-    input.setAttribute("aria-invalid", String(Boolean(message)));
-    error.textContent = message;
-    error.hidden = !message;
-  }
-}
-
-function syncFeatureActivationField(key) {
-  return (event) => {
-    const feature = getSelectedFeature();
-    if (!feature) {
-      return;
-    }
-
-    if (!feature.whatsapp) {
-      feature.whatsapp = { ...DEFAULT_FEATURE_WHATSAPP };
-    }
-
-    feature.whatsapp[key] = key === "access_token"
-      ? normalizePendingAccessToken(event.target.value)
-      : event.target.value;
-
-    if (!featureActivationBusy) {
-      clearFeatureActivationNotice();
-    }
-    clearFeatureActivationFieldError(key);
-    persistClientState();
-    updateFeatureStudioHeader();
-    setStatus(
-      hasFeatureActivationChanges(feature)
-        ? "Changes ready to save."
-        : canRefreshFeatureActivationWebhook(feature)
-          ? "Connection ready to refresh."
-          : "No changes to save.",
-    );
-  };
-}
-
-function handleFeatureActivationAccessTokenFocus(event) {
-  if (normalizeText(event.target.value) === SAVED_ACCESS_TOKEN_FIELD_VALUE) {
-    event.target.value = "";
-  }
-}
-
-function handleFeatureActivationAccessTokenBlur() {
-  updateFeatureActivationFields();
-}
-
 function updateFeatureStudioHeader() {
   const feature = getSelectedFeature();
   if (!feature) {
@@ -34508,25 +28789,15 @@ function updateFeatureStudioHeader() {
   const isActivated = isFeatureActivated(feature);
   const isSetupComplete = isFeatureSetupComplete(feature);
   const studioView = getSelectedFeatureStudioView(feature);
-  const activationBusy = isFeatureActivationBusy(feature);
   const transitionBusy = isFeatureActivationTransitionBusy(feature);
-  const manualRunBusy = isMonitorManualRunBusy(feature) || isReengagementDemoRunBusy(feature);
-  const hasActivationChanges = hasFeatureActivationChanges(feature);
-  const canRefreshWebhook = canRefreshFeatureActivationWebhook(feature);
-  const refreshOnly = !hasActivationChanges && canRefreshWebhook;
+  const manualRunBusy = isMonitorManualRunBusy(feature);
 
   state.featureStudioView = studioView;
 
   if (elements.featureStudioHeaderLabel) {
-    elements.featureStudioHeaderLabel.textContent = studioView === "history"
-      ? "Conversation history"
-      : studioView === "editor"
-        ? "Tool editor"
-        : studioView === "activation"
-        ? isActivated
-          ? "WhatsApp details"
-          : "WhatsApp setup"
-        : "Tool overview";
+    elements.featureStudioHeaderLabel.textContent = studioView === "editor"
+      ? "Tool editor"
+      : "Tool overview";
   }
   if (elements.featureStudioNav) {
     elements.featureStudioNav.classList.add("is-hidden");
@@ -34544,39 +28815,16 @@ function updateFeatureStudioHeader() {
   if (elements.featureStudioOverviewSection) {
     elements.featureStudioOverviewSection.classList.toggle("is-hidden", studioView !== "overview");
   }
-  if (elements.featureStudioActivationSection) {
-    elements.featureStudioActivationSection.classList.toggle("is-hidden", studioView !== "activation");
-  }
   if (elements.featureStudioEditorSection) {
     elements.featureStudioEditorSection.classList.toggle("is-hidden", studioView !== "editor");
   }
-  if (elements.whatsappHistorySection) {
-    elements.whatsappHistorySection.classList.toggle("is-hidden", studioView !== "history");
-  }
   if (elements.backToFeaturesButton) {
-    elements.backToFeaturesButton.querySelector("span:last-child").textContent = studioView === "history"
-      ? "Back to editor"
-      : studioView === "activation"
-      ? "Back to chat"
-      : "Back to tools";
+    elements.backToFeaturesButton.querySelector("span:last-child").textContent = "Back to tools";
   }
   if (elements.featureStudioStatus) {
-    elements.featureStudioStatus.classList.toggle("is-hidden", studioView === "activation");
-    if (studioView === "activation") {
-      clearFeatureActivationBadgeStyle(elements.featureStudioStatus);
-      elements.featureStudioStatus.textContent = getFeatureStudioStatusLabel(feature, studioView);
-    } else if (studioView === "history") {
-      clearFeatureActivationBadgeStyle(elements.featureStudioStatus);
-      const history = getCurrentWhatsAppHistory();
-      elements.featureStudioStatus.textContent = state.whatsappHistoryLoading
-        ? "Loading history"
-        : history
-          ? formatWhatsAppMessageCount(history.messageCount)
-          : "History";
-    } else {
-      applyFeatureActivationBadgeStyle(elements.featureStudioStatus, feature);
-      elements.featureStudioStatus.textContent = getFeatureActivationLabel(feature);
-    }
+    elements.featureStudioStatus.classList.remove("is-hidden");
+    applyFeatureActivationBadgeStyle(elements.featureStudioStatus, feature);
+    elements.featureStudioStatus.textContent = getFeatureActivationLabel(feature);
   }
   elements.featureStudioTitle.textContent = feature.name;
   elements.featureStudioDescription.textContent = feature.description || "";
@@ -34597,7 +28845,7 @@ function updateFeatureStudioHeader() {
     elements.featureStudioExampleReply.textContent = example.outgoing;
   }
   if (elements.featureStudioLaunchButton) {
-    elements.featureStudioLaunchButton.hidden = isActivated || studioView === "activation";
+    elements.featureStudioLaunchButton.hidden = isActivated;
     elements.featureStudioLaunchButton.disabled = false;
     elements.featureStudioLaunchButton.textContent = usesEditorSetup(feature)
       ? isSetupComplete
@@ -34608,64 +28856,7 @@ function updateFeatureStudioHeader() {
         : "Start setup";
   }
 
-  updateFeatureActivationStatus(feature);
-  updateFeatureActivationResult(feature);
-  void syncWhatsAppGuidedConnectVisibility();
-  updateFeatureStudioWhatsAppHealthNotice(feature);
-  renderFeatureActivationFieldErrors();
-  if (elements.featureActivationDisconnectButton) {
-    const showDisconnectButton = isWhatsAppConnectionConnected(feature) && !activationBusy;
-    elements.featureActivationDisconnectButton.hidden = !showDisconnectButton;
-    elements.featureActivationDisconnectButton.disabled = activationBusy;
-  }
-  if (elements.featureStudioActivationButton) {
-    const showActivationSaveButton = activationBusy || hasActivationChanges || canRefreshWebhook;
-    const activationActions = elements.featureStudioActivationButton.closest(".feature-activation-actions");
-    if (activationActions) {
-      activationActions.classList.remove("is-hidden");
-      activationActions.classList.toggle("is-save-visible", showActivationSaveButton);
-      activationActions.setAttribute("aria-hidden", String(!showActivationSaveButton));
-    }
-    elements.featureStudioActivationButton.hidden = false;
-    elements.featureStudioActivationButton.tabIndex = showActivationSaveButton ? 0 : -1;
-    elements.featureStudioActivationButton.textContent = activationBusy
-      ? refreshOnly
-        ? "Refreshing webhook..."
-        : isActivated
-          ? "Saving details..."
-          : "Saving setup..."
-      : isActivated
-        ? hasActivationChanges
-          ? "Save details"
-          : "Refresh webhook"
-        : hasActivationChanges
-          ? "Save setup"
-          : "Refresh webhook";
-    elements.featureStudioActivationButton.disabled = activationBusy || (!hasActivationChanges && !canRefreshWebhook);
-    elements.featureStudioActivationButton.classList.toggle("is-loading", activationBusy);
-    elements.featureStudioActivationButton.setAttribute("aria-busy", String(activationBusy));
-    elements.featureStudioActivationButton.title = refreshOnly
-      ? "Ask Meta to send WhatsApp webhooks to Assistyca again"
-      : "";
-  }
-  if (elements.featureActivationBusinessAccountIdInput) {
-    elements.featureActivationBusinessAccountIdInput.disabled = activationBusy;
-  }
-  if (elements.featureActivationPhoneNumberIdInput) {
-    elements.featureActivationPhoneNumberIdInput.disabled = activationBusy;
-  }
-  if (elements.featureActivationAccessTokenInput) {
-    elements.featureActivationAccessTokenInput.disabled = activationBusy;
-  }
-  if (elements.featureActivationOwnerWaIdInput) {
-    elements.featureActivationOwnerWaIdInput.disabled = activationBusy;
-  }
-  if (elements.featureStudioActivationSection) {
-    elements.featureStudioActivationSection.classList.toggle("is-loading", activationBusy);
-    elements.featureStudioActivationSection.setAttribute("aria-busy", String(activationBusy));
-  }
   const isEditorSetup = usesEditorSetup(feature);
-  const sampleMessageBusy = isWhatsAppReplySampleBusy(feature);
   if (elements.featureStudioEditorToggleButton) {
     elements.featureStudioEditorToggleButton.textContent = transitionBusy
       ? featureActivationTransitionAction === "deactivate"
@@ -34677,86 +28868,35 @@ function updateFeatureStudioHeader() {
           ? "Finish setup"
         : isSetupComplete
           ? "Activate tool"
-        : hasFeatureWhatsAppDetails(feature)
-            ? "Finish WhatsApp setup"
-            : "Start WhatsApp setup";
+          : "Finish setup";
     elements.featureStudioEditorToggleButton.className = isActivated ? "ghost-button danger" : "primary-button";
-    elements.featureStudioEditorToggleButton.disabled = transitionBusy || manualRunBusy || sampleMessageBusy;
+    elements.featureStudioEditorToggleButton.disabled = transitionBusy || manualRunBusy;
     elements.featureStudioEditorToggleButton.setAttribute("aria-pressed", String(isActivated));
   }
-  if (elements.featureStudioWhatsAppSampleButton) {
-    const showSampleButton = canSendWhatsAppReplySample(feature);
-    const sampleReady = showSampleButton && !hasFeatureActivationChanges(feature);
-    elements.featureStudioWhatsAppSampleButton.hidden = !showSampleButton;
-    elements.featureStudioWhatsAppSampleButton.textContent = sampleMessageBusy ? "Testing WhatsApp..." : "Send sample";
-    elements.featureStudioWhatsAppSampleButton.disabled = activationBusy || transitionBusy || sampleMessageBusy || !sampleReady;
-    elements.featureStudioWhatsAppSampleButton.classList.toggle("is-loading", sampleMessageBusy);
-    elements.featureStudioWhatsAppSampleButton.setAttribute("aria-busy", String(sampleMessageBusy));
-    elements.featureStudioWhatsAppSampleButton.title = sampleMessageBusy
-      ? "Testing WhatsApp delivery now"
-      : sampleReady
-        ? "Send a sample approval alert to your WhatsApp"
-        : "Save the latest WhatsApp details before sending a sample";
-  }
-  if (elements.featureStudioWhatsAppHistoryButton) {
-    const showHistoryButton = isWhatsAppFeature(feature);
-    elements.featureStudioWhatsAppHistoryButton.hidden = !showHistoryButton;
-    elements.featureStudioWhatsAppHistoryButton.disabled = transitionBusy || manualRunBusy || sampleMessageBusy;
-  }
   if (elements.featureStudioMonitorRunButton) {
-    const showMonitorRun = isMonitorFeature(feature) && isActivated;
-    const showReengagementDemo = isReengagementFeature(feature);
-    const showManualRun = showMonitorRun || showReengagementDemo;
-    const manualRunReady = showManualRun;
-    const reengagementBusy = isReengagementDemoRunBusy(feature);
+    const showManualRun = isMonitorFeature(feature) && isActivated;
     elements.featureStudioMonitorRunButton.hidden = !showManualRun;
-    elements.featureStudioMonitorRunButton.textContent = reengagementBusy
-      ? reengagementDemoRunCancelling
+    elements.featureStudioMonitorRunButton.textContent = manualRunBusy
+      ? monitorManualRunCancelling
         ? "Cancelling..."
-        : "Running demo..."
-      : manualRunBusy
-        ? monitorManualRunCancelling
-          ? "Cancelling..."
-          : "Running..."
-        : showReengagementDemo
-          ? "Demo run"
-          : "Run now";
-    elements.featureStudioMonitorRunButton.disabled = !manualRunReady || transitionBusy || manualRunBusy;
+        : "Running..."
+      : "Run now";
+    elements.featureStudioMonitorRunButton.disabled = !showManualRun || transitionBusy || manualRunBusy;
     elements.featureStudioMonitorRunButton.classList.toggle("is-loading", false);
     elements.featureStudioMonitorRunButton.setAttribute("aria-busy", String(manualRunBusy));
-    elements.featureStudioMonitorRunButton.title = reengagementBusy
-      ? reengagementDemoRunCancelling
-        ? "The current re-engagement demo is being cancelled"
-        : "A re-engagement demo is currently running"
-      : showReengagementDemo
-        ? "Find inactive conversations and preview follow-up drafts without sending anything"
-        : manualRunBusy
+    elements.featureStudioMonitorRunButton.title = manualRunBusy
       ? monitorManualRunCancelling
         ? "The current monitor run is being cancelled"
         : "A monitor run is currently running"
-        : manualRunReady
+      : showManualRun
         ? feature.setupStatus?.ready === false
           ? "Run a summary now. We'll check the latest setup first."
           : "Run a summary without changing the schedule"
         : String(feature.setupStatus?.message || "");
   }
-  renderReengagementDemoResults(feature);
-
-  if (studioView === "history") {
-    renderWhatsAppHistory(feature);
-    if (!getCurrentWhatsAppHistory() && !state.whatsappHistoryLoading && !state.whatsappHistoryError) {
-      void refreshWhatsAppHistory();
-    }
-  }
 }
 
 function updatePromptFields() {
-  const prompt = getSelectedPrompt();
-  elements.toneGuidance.value = prompt.toneGuidance;
-  elements.responseStyle.value = prompt.responseStyle;
-  elements.replyRules.value = prompt.replyRules;
-  elements.businessNotes.value = prompt.businessNotes;
-  elements.escalationGuidance.value = prompt.escalationGuidance;
   updateFeatureModelFields();
 }
 
@@ -34782,171 +28922,20 @@ function setDeliveryChannelOptionState(value, isVisible) {
   option.disabled = !isVisible;
 }
 
-function getWhatsAppToolPlatformOption(platformId) {
-  const normalizedId = String(platformId || "").trim().toLowerCase();
-  return getWhatsAppToolPlatformOptions().find((option) => option.id === normalizedId) || null;
-}
-
-function getWhatsAppToolPlatformOptions(feature = getSelectedFeature()) {
-  if (isWhatsAppReplyAssistantFeature(feature)) {
-    return WHATSAPP_TOOL_PLATFORM_OPTIONS.filter((option) => ["whatsapp", "telegram", "portal"].includes(option.id));
-  }
-  return WHATSAPP_TOOL_PLATFORM_OPTIONS.filter((option) => option.id !== "portal");
-}
-
-function normalizeWhatsAppToolDeliveryChannelsForFeature(feature, value, fallback = DEFAULT_WHATSAPP_TOOL_SETTINGS.deliveryChannels) {
-  const allowedPlatformIds = new Set(getWhatsAppToolPlatformOptions(feature).map((option) => option.id));
-  return normalizeWhatsAppToolDeliveryChannels(value, fallback).filter((channel) => allowedPlatformIds.has(channel));
-}
-
-function getWhatsAppToolDeliveryChannels(settings = getSelectedFeatureSettings(), feature = getSelectedFeature()) {
-  return normalizeWhatsAppToolDeliveryChannelsForFeature(
-    feature,
-    Array.isArray(settings?.deliveryChannels) ? settings.deliveryChannels : settings?.deliveryChannel,
-    [],
-  );
-}
-
-function setDeliveryPlatformMenuOpen(isOpen) {
-  if (!elements.deliveryPlatformMenu) {
-    return;
-  }
-  const shouldOpen = Boolean(isOpen);
-  elements.deliveryPlatformMenu.hidden = !shouldOpen;
-  elements.deliveryPlatformMenu.classList.toggle("is-hidden", !shouldOpen);
-  elements.deliveryPlatformMenu.classList.toggle("is-open", shouldOpen);
-  elements.deliveryPlatformAddButton?.setAttribute("aria-expanded", String(shouldOpen));
-}
-
-function updateDeliveryPlatformMenu(settings = getSelectedFeatureSettings()) {
-  if (!elements.deliveryPlatformMenu) {
-    return;
-  }
-  const channels = getWhatsAppToolDeliveryChannels(settings);
-  const selected = new Set(channels);
-  const availableOptions = getWhatsAppToolPlatformOptions();
-  const buttons = availableOptions.map((option) => {
-    const button = document.createElement("button");
-    const isSelected = selected.has(option.id);
-    button.type = "button";
-    button.setAttribute("role", "menuitem");
-    button.dataset.deliveryPlatformOption = option.id;
-    button.disabled = isSelected;
-    button.setAttribute("aria-disabled", String(isSelected));
-    button.textContent = option.label;
-    return button;
-  });
-  elements.deliveryPlatformMenu.replaceChildren(...buttons);
-  if (elements.deliveryPlatformAddButton) {
-    const hasAvailablePlatform = availableOptions.some((option) => !selected.has(option.id));
-    elements.deliveryPlatformAddButton.disabled = !hasAvailablePlatform;
-    elements.deliveryPlatformAddButton.textContent = hasAvailablePlatform ? "+ Add platform" : "All platforms added";
-    if (!hasAvailablePlatform) {
-      setDeliveryPlatformMenuOpen(false);
-    }
-  }
-}
-
-function renderDeliveryPlatformList(settings = getSelectedFeatureSettings()) {
-  if (!elements.deliveryPlatformList) {
-    return;
-  }
-  const channels = getWhatsAppToolDeliveryChannels(settings);
-  const rows = [];
-
-  if (!channels.length) {
-    const empty = document.createElement("div");
-    empty.className = "delivery-platform-empty";
-    empty.setAttribute("role", "listitem");
-    empty.textContent = "No platforms added yet";
-    rows.push(empty);
-  }
-
-  for (const channel of channels) {
-    const option = getWhatsAppToolPlatformOption(channel);
-    if (!option) {
-      continue;
-    }
-    const row = document.createElement("div");
-    row.className = "delivery-platform-row";
-    row.setAttribute("role", "listitem");
-
-    const badge = document.createElement("span");
-    badge.className = `delivery-platform-badge is-${option.id}`;
-    badge.setAttribute("aria-hidden", "true");
-    badge.textContent = option.shortLabel;
-
-    const copy = document.createElement("span");
-    copy.className = "delivery-platform-copy";
-    const label = document.createElement("strong");
-    label.textContent = option.label;
-    const caption = document.createElement("span");
-    if (option.id === "whatsapp") {
-      caption.textContent = getFeatureWhatsAppConnectedLabel();
-    } else {
-      const chatId = String(settings?.telegramChatId || "").trim();
-      caption.textContent = chatId ? `Chat ${chatId}` : "Chat id missing";
-    }
-    copy.append(label, caption);
-
-    const removeButton = document.createElement("button");
-    removeButton.type = "button";
-    removeButton.className = "delivery-platform-remove";
-    removeButton.dataset.deliveryPlatformRemove = option.id;
-    removeButton.setAttribute("aria-label", `Remove ${option.label}`);
-    removeButton.textContent = "×";
-
-    row.append(badge, copy, removeButton);
-    rows.push(row);
-  }
-
-  elements.deliveryPlatformList.replaceChildren(...rows);
-  updateDeliveryPlatformMenu(settings);
-}
-
 function updateMonitorFieldVisibility(settings = getSelectedFeatureSettings()) {
   const feature = getSelectedFeature();
   const isMonitor = isMonitorFeature(feature);
-  const isWhatsAppTool = isWhatsAppFeature(feature);
-  const whatsappDeliverySelection = getWhatsAppDeliverySelection(settings);
-  const usesWhatsAppDelivery = isWhatsAppTool && ["whatsapp", "both"].includes(whatsappDeliverySelection);
-  const usesTelegramDelivery = isWhatsAppTool && ["telegram", "both"].includes(whatsappDeliverySelection);
-  const sharedPromptCards = [
-    elements.featureToneCard,
-    elements.featureRulesCard,
-    elements.featureContextCard,
-  ];
-
-  for (const card of sharedPromptCards) {
-    if (card) {
-      card.classList.toggle("is-hidden", isMonitor);
-    }
-  }
 
   setDeliveryChannelOptionState("email", isMonitor);
   setDeliveryChannelOptionState("telegram", true);
   setDeliveryChannelOptionState("whatsapp", true);
   if (elements.monitorDeliveryChannelField) {
-    elements.monitorDeliveryChannelField.classList.toggle("is-hidden", isWhatsAppTool);
-  }
-  if (elements.deliveryPlatformManager) {
-    elements.deliveryPlatformManager.classList.toggle("is-hidden", !isWhatsAppTool);
-    if (!isWhatsAppTool) {
-      setDeliveryPlatformMenuOpen(false);
-    } else {
-      renderDeliveryPlatformList(settings);
-    }
+    elements.monitorDeliveryChannelField.classList.remove("is-hidden");
   }
 
   setMonitorDeliveryPanelState(elements.monitorEmailField, isMonitor && settings.deliveryChannel === "email");
-  setMonitorDeliveryPanelState(
-    elements.monitorTelegramField,
-    isMonitor ? settings.deliveryChannel === "telegram" : usesTelegramDelivery,
-  );
-  setMonitorDeliveryPanelState(
-    elements.monitorWhatsAppField,
-    isMonitor ? settings.deliveryChannel === "whatsapp" : usesWhatsAppDelivery,
-  );
+  setMonitorDeliveryPanelState(elements.monitorTelegramField, isMonitor && settings.deliveryChannel === "telegram");
+  setMonitorDeliveryPanelState(elements.monitorWhatsAppField, isMonitor && settings.deliveryChannel === "whatsapp");
 }
 
 function getMonitorNextRunLabel(feature) {
@@ -34983,11 +28972,10 @@ function getMonitorNextRunLabel(feature) {
 function updateMonitorFields() {
   const feature = getSelectedFeature();
   const isMonitor = isMonitorFeature(feature);
-  const supportsOwnerDelivery = isMonitor || isWhatsAppFeature(feature);
-  const isScheduledTool = isMonitor || isReengagementFeature(feature);
+  const supportsOwnerDelivery = isMonitor;
   if (elements.featureStudioEditorSection) {
     elements.featureStudioEditorSection.classList.toggle("is-monitor-flow", isMonitor);
-    elements.featureStudioEditorSection.classList.toggle("is-scheduled-flow", isScheduledTool);
+    elements.featureStudioEditorSection.classList.toggle("is-scheduled-flow", isMonitor);
   }
   if (elements.monitorTargetCard) {
     elements.monitorTargetCard.classList.toggle("is-hidden", !isMonitor);
@@ -35045,9 +29033,7 @@ function updateMonitorFields() {
     }
   }
   if (elements.monitorDeliveryChannel) {
-    elements.monitorDeliveryChannel.value = isMonitor
-      ? monitorSettings.deliveryChannel
-      : getWhatsAppDeliverySelection(monitorSettings);
+    elements.monitorDeliveryChannel.value = monitorSettings.deliveryChannel;
   }
   if (elements.monitorEmailSummary) {
     const emailSummary = activeEmail || "Workspace account email";
@@ -35058,71 +29044,6 @@ function updateMonitorFields() {
     elements.monitorTelegramChatId.value = monitorSettings.telegramChatId;
   }
   updateMonitorFieldVisibility(monitorSettings);
-}
-
-function getReengagementNextRunLabel(feature) {
-  if (!feature || !isReengagementFeature(feature)) {
-    return "";
-  }
-
-  if (!isFeatureActivated(feature)) {
-    return "Activate to schedule";
-  }
-
-  const nextRunAt = String(feature.nextRunAt || feature.setupStatus?.nextRunAt || "").trim();
-  if (!nextRunAt) {
-    return hasFeatureConfigChanges(feature) ? "Saving changes..." : "Next run will appear soon";
-  }
-
-  const formatted = formatMonitorNextRunDate(nextRunAt, getReengagementScheduleTimezone(feature));
-  if (!formatted) {
-    return "Next run will appear soon";
-  }
-
-  const parsed = new Date(nextRunAt);
-  if (!Number.isNaN(parsed.getTime()) && parsed.getTime() <= Date.now()) {
-    return `Due now · ${formatted}`;
-  }
-  return formatted;
-}
-
-function updateReengagementFields() {
-  const feature = getSelectedFeature();
-  const isReengagement = isReengagementFeature(feature);
-  if (elements.reengagementScheduleCard) {
-    elements.reengagementScheduleCard.classList.toggle("is-hidden", !isReengagement);
-  }
-  if (elements.reengagementNextRun) {
-    elements.reengagementNextRun.hidden = !isReengagement;
-  }
-  if (!isReengagement) {
-    return;
-  }
-
-  const settings = getSelectedFeatureSettings(feature);
-  if (elements.reengagementIntervalDays) {
-    elements.reengagementIntervalDays.value = String(settings.intervalDays);
-  }
-  if (elements.reengagementScheduleTime) {
-    elements.reengagementScheduleTime.value = getReengagementScheduleTime(feature);
-  }
-  if (elements.reengagementScheduleTimezoneLabel) {
-    const scheduleTimezone = getReengagementScheduleTimezone(feature);
-    elements.reengagementScheduleTimezoneLabel.textContent = scheduleTimezone === getWorkspaceTimeZone()
-      ? "Workspace time"
-      : "Saved time zone";
-    elements.reengagementScheduleTimezoneLabel.title = scheduleTimezone;
-  }
-  if (elements.reengagementInactivityValue) {
-    elements.reengagementInactivityValue.value = String(settings.inactivityValue);
-  }
-  if (elements.reengagementInactivityUnit) {
-    elements.reengagementInactivityUnit.value = settings.inactivityUnit;
-  }
-  if (elements.reengagementNextRunValue) {
-    elements.reengagementNextRunValue.textContent = getReengagementNextRunLabel(feature);
-    elements.reengagementNextRunValue.title = String(feature.nextRunAt || feature.setupStatus?.nextRunAt || "");
-  }
 }
 
 function getFeatureModelOptions() {
@@ -35222,8 +29143,6 @@ function updatePanelVisibility() {
   const inStudio = state.activeTab === "features" && Boolean(state.selectedFeatureId);
   const inBilling = state.activeTab === "billing";
   const inPricing = state.activeTab === "pricing";
-  const feature = inStudio ? getSelectedFeature() : null;
-  const studioView = inStudio ? getSelectedFeatureStudioView(feature) : "overview";
   elements.appBar.classList.toggle("is-hidden", inStudio || inBilling || inPricing);
   elements.appView.classList.toggle("is-feature-page", inStudio);
   const isChatWorkspace = state.activeTab === "features" && !inStudio;
@@ -35233,17 +29152,12 @@ function updatePanelVisibility() {
   elements.featuresPanel.classList.toggle("is-hidden", state.activeTab !== "features" || inStudio);
   elements.opportunitiesPanel?.classList.toggle("is-hidden", state.activeTab !== "opportunities");
   elements.turnsPanel?.classList.toggle("is-hidden", state.activeTab !== "turns");
-  elements.accountTypesPanel?.classList.toggle("is-hidden", state.activeTab !== "account-types");
+  elements.featureSwitchesPanel?.classList.toggle("is-hidden", state.activeTab !== "feature-switches");
   elements.clientsPanel?.classList.toggle("is-hidden", state.activeTab !== "clients");
   elements.personalDetailsPanel.classList.toggle("is-hidden", state.activeTab !== "personal-details");
   elements.featureStudioPanel.classList.toggle("is-hidden", !inStudio);
-  elements.previewPanel.classList.toggle("is-hidden", state.activeTab !== "preview");
-  elements.simulatorPanel.classList.toggle("is-hidden", state.activeTab !== "simulator");
   elements.billingPanel.classList.toggle("is-hidden", state.activeTab !== "billing");
   elements.pricingPanel.classList.toggle("is-hidden", state.activeTab !== "pricing");
-  if (elements.featureStudioActivationSection && feature) {
-    elements.featureStudioActivationSection.classList.toggle("is-hidden", studioView !== "activation");
-  }
   syncSettingsPanelState();
 }
 
@@ -35292,16 +29206,6 @@ function syncSettingsPanelState() {
   }, SETTINGS_PANEL_ANIMATION_MS);
 }
 
-function updatePreview() {
-  const prompt = getSelectedPrompt();
-  const scenario = SCENARIOS[prompt.scenario] ?? SCENARIOS.availability;
-  elements.scenarioSelect.value = prompt.scenario;
-  elements.approvalSender.textContent = scenario.sender || "Customer";
-  elements.scenarioMessage.textContent = scenario.user;
-  elements.responseMessage.textContent = buildResponseText(prompt);
-  elements.compiledPrompt.textContent = buildCompiledPrompt();
-}
-
 function updateSettingsFields() {
   elements.signedInEmail.textContent = activeEmail;
   elements.displayNameInput.value = clientState.settings.displayName;
@@ -35316,9 +29220,6 @@ function updatePersonalDetailsFields() {
   const hasContent = hasAccountProfileContent();
   if (elements.profileBusinessSummaryInput) {
     elements.profileBusinessSummaryInput.value = clientState.profile.businessSummary;
-  }
-  if (elements.profileCustomerNotesInput) {
-    elements.profileCustomerNotesInput.value = clientState.profile.customerNotes;
   }
   if (elements.profileAssistantGuidanceInput) {
     elements.profileAssistantGuidanceInput.value = clientState.profile.assistantGuidance;
@@ -35343,20 +29244,15 @@ function renderApp(options = {}) {
   updateFeatureList();
   updateOpportunitiesPanel();
   updateTurnsPanel();
-  updateAccountTypesPanel();
-  updateFeatureActivationFields();
+  updateFeatureSwitchesPanel();
   populateMonitorTimezoneOptions();
   updateMonitorFields();
-  updateReengagementFields();
   updatePromptFields();
-  updatePreview();
-  updateSimulatorPanel();
   updateBillingPanel();
   updatePricingPanel();
   updateSettingsButtons();
   updateSettingsFields();
   updatePersonalDetailsFields();
-  syncWhatsAppConnectionPolling();
   syncScheduledActionsPolling();
   if (options.preserveStatus !== true) {
     setStatus("Saved");
@@ -35401,7 +29297,6 @@ function refreshView() {
     if (route.tab === "settings") {
       // Treat the settings drawer as transient UI, not a reload destination.
       state.selectedFeatureId = null;
-      state.selectedSimulatorId = null;
       closeFeatureStudioMenu();
       state.settingsOpen = false;
       state.activeTab = restoredPrimaryTab;
@@ -35414,14 +29309,8 @@ function refreshView() {
       state.selectedFeatureId = route.tab === "features" && route.featureId
         ? route.featureId
         : null;
-      state.selectedSimulatorId = route.tab === "simulator" && route.featureId
-        ? route.featureId
-        : clientState.simulator.selectedApprovalId || clientState.simulator.approvals[0]?.approvalId || null;
       if (state.selectedFeatureId && !getFeatureById(state.selectedFeatureId)) {
         state.selectedFeatureId = clientState.features[0]?.id || null;
-      }
-      if (state.selectedSimulatorId && !clientState.simulator.approvals.some((approval) => approval.approvalId === state.selectedSimulatorId)) {
-        state.selectedSimulatorId = clientState.simulator.approvals[0]?.approvalId || null;
       }
       if (state.activeTab === "features" && state.selectedFeatureId) {
         const feature = getFeatureById(state.selectedFeatureId);
@@ -35435,8 +29324,6 @@ function refreshView() {
       persistLastPrimaryTab();
       if (!route.tab) {
         setHashForTab(state.activeTab);
-      } else if (state.activeTab === "simulator" && state.selectedSimulatorId) {
-        setHashForTab("simulator", state.selectedSimulatorId);
       } else if (rawHash && rawHash !== route.tab) {
         setHashForTab(route.tab);
       }
@@ -35723,7 +29610,6 @@ function completeSignIn(session) {
   activeEmail = email;
   clientState = loadClientState(activeEmail);
   applyRemoteAccountProfile(session);
-  state.selectedSimulatorId = clientState.simulator.selectedApprovalId || clientState.simulator.approvals[0]?.approvalId || null;
   syncAgentStateFromClientState({ recordOpen: true, persistOpen: false });
   authSession = {
     email: activeEmail,
@@ -35760,7 +29646,6 @@ function completeSignIn(session) {
   setView("app");
   renderApp();
   void refreshBillingReport();
-  void refreshWhatsAppConnection();
   void refreshFeatureActivationStates();
   void refreshPlatformConnections()
     .then(() => { consumeCalendarOAuthReturn(); consumeEmailOAuthReturn(); })
@@ -35937,7 +29822,6 @@ async function signOut({ everywhere = false } = {}) {
   clearAuthChallenge();
   activeEmail = "";
   clientState = loadClientState(activeEmail);
-  state.selectedSimulatorId = clientState.simulator.selectedApprovalId || clientState.simulator.approvals[0]?.approvalId || null;
   syncAgentStateFromClientState();
   state.billingReport = null;
   state.billingLoading = false;
@@ -35946,7 +29830,6 @@ async function signOut({ everywhere = false } = {}) {
   state.pricingLoading = false;
   state.pricingError = "";
   state.paymentStatus = null;
-  state.whatsappConnection = null;
   state.whatsappLinkedPhones = [];
   state.whatsappLinkedPhonesError = "";
   state.whatsappLinkCode = null;
@@ -35970,23 +29853,6 @@ async function signOut({ everywhere = false } = {}) {
   setView("auth");
   renderAuth(previousEmail);
   closeAuthAlert();
-}
-
-function syncPromptField(key) {
-  return (event) => {
-    const feature = getSelectedFeature();
-
-    if (!feature) {
-      return;
-    }
-
-    feature.prompt[key] = event.target.value;
-    persistClientState();
-    updateHeader();
-    updateFeatureStudioHeader();
-    updatePreview();
-    scheduleSelectedFeatureConfigAutosave(feature);
-  };
 }
 
 function syncFeatureModelField(event) {
@@ -36021,29 +29887,15 @@ function syncFeatureModelField(event) {
 function syncDeliverySettingsField(key) {
   return (event) => {
     const feature = getSelectedFeature();
-    if (!feature || (!isMonitorFeature(feature) && !isWhatsAppFeature(feature))) {
+    if (!feature || !isMonitorFeature(feature)) {
       return;
     }
 
     const currentSettings = getSelectedFeatureSettings(feature);
-    let nextSettings;
-    if (isMonitorFeature(feature)) {
-      nextSettings = buildMonitorSettingsForSave(feature, {
-        ...currentSettings,
-        [key]: event.target.value,
-      });
-    } else {
-      const deliveryPatch = key === "deliveryChannel"
-        ? { deliveryChannels: normalizeWhatsAppToolDeliveryChannels(event.target.value) }
-        : { [key]: event.target.value };
-      const nextSource = {
-        ...currentSettings,
-        ...deliveryPatch,
-      };
-      nextSettings = buildSettingsForSave(feature, nextSource);
-    }
-
-    feature.settings = nextSettings;
+    feature.settings = buildMonitorSettingsForSave(feature, {
+      ...currentSettings,
+      [key]: event.target.value,
+    });
     updateMonitorFields();
     persistClientState();
     updateFeatureStudioHeader();
@@ -36053,66 +29905,6 @@ function syncDeliverySettingsField(key) {
       noChangesMessage: false,
     }).catch(() => {});
   };
-}
-
-function saveWhatsAppToolDeliveryChannels(nextChannels) {
-  const feature = getSelectedFeature();
-  if (!feature || !isWhatsAppFeature(feature)) {
-    return false;
-  }
-
-  const currentSettings = getSelectedFeatureSettings(feature);
-  const deliveryChannels = normalizeWhatsAppToolDeliveryChannelsForFeature(feature, nextChannels, []);
-  if (JSON.stringify(deliveryChannels) === JSON.stringify(getWhatsAppToolDeliveryChannels(currentSettings))) {
-    updateMonitorFields();
-    return false;
-  }
-
-  const nextSource = {
-    ...currentSettings,
-    deliveryChannels,
-  };
-  feature.settings = buildSettingsForSave(feature, nextSource);
-  updateMonitorFields();
-  persistClientState();
-  updateFeatureStudioHeader();
-  void flushSelectedFeatureConfigAutosave({
-    featureId: feature.id,
-    alertOnError: false,
-    noChangesMessage: false,
-  }).catch(() => {});
-  return true;
-}
-
-function addWhatsAppToolDeliveryPlatform(platformId) {
-  const option = getWhatsAppToolPlatformOption(platformId);
-  if (!option) {
-    return false;
-  }
-  const currentChannels = getWhatsAppToolDeliveryChannels();
-  if (currentChannels.includes(option.id)) {
-    return false;
-  }
-  const didSave = saveWhatsAppToolDeliveryChannels([...currentChannels, option.id]);
-  if (didSave) {
-    setStatus(`${option.label} platform added.`);
-  }
-  setDeliveryPlatformMenuOpen(false);
-  return didSave;
-}
-
-function removeWhatsAppToolDeliveryPlatform(platformId) {
-  const option = getWhatsAppToolPlatformOption(platformId);
-  if (!option) {
-    return false;
-  }
-  const currentChannels = getWhatsAppToolDeliveryChannels();
-  const nextChannels = currentChannels.filter((channel) => channel !== option.id);
-  const didSave = saveWhatsAppToolDeliveryChannels(nextChannels);
-  if (didSave) {
-    setStatus(`${option.label} platform removed.`);
-  }
-  return didSave;
 }
 
 function syncMonitorIntervalDaysField(event) {
@@ -36243,182 +30035,6 @@ function finalizeMonitorIntervalDaysField(event) {
     }
   }
 
-  if (hasPendingFeatureConfigAutosave(feature.id)) {
-    void flushSelectedFeatureConfigAutosave({
-      featureId: feature.id,
-      alertOnError: false,
-      noChangesMessage: false,
-    }).catch(() => {});
-  }
-}
-
-function syncReengagementIntervalDaysField(event) {
-  const feature = getSelectedFeature();
-  if (!feature || !isReengagementFeature(feature)) {
-    return;
-  }
-
-  const rawValue = String(event.target.value || "").trim();
-  if (!rawValue) {
-    return;
-  }
-
-  const currentSettings = getSelectedFeatureSettings(feature);
-  const normalizedIntervalDays = normalizeMonitorIntervalDays(rawValue, currentSettings.intervalDays);
-  const normalizedValue = String(normalizedIntervalDays);
-  if (event.target.value !== normalizedValue) {
-    event.target.value = normalizedValue;
-  }
-  if (currentSettings.intervalDays === normalizedIntervalDays) {
-    return;
-  }
-
-  feature.settings = buildReengagementSettingsForSave(feature, {
-    ...currentSettings,
-    intervalDays: normalizedIntervalDays,
-  });
-  persistClientState();
-  updateReengagementFields();
-  updateFeatureStudioHeader();
-  scheduleSelectedFeatureConfigAutosave(feature);
-}
-
-function syncReengagementScheduleTimeField(event) {
-  const feature = getSelectedFeature();
-  if (!feature || !isReengagementFeature(feature)) {
-    return;
-  }
-
-  const rawValue = String(event.target.value || "").trim();
-  const normalizedTime = normalizeMonitorScheduleTime(rawValue, "");
-  if (!normalizedTime) {
-    return;
-  }
-  if (event.type !== "input" && event.target.value !== normalizedTime) {
-    event.target.value = normalizedTime;
-  }
-
-  const currentSettings = getSelectedFeatureSettings(feature);
-  const nextTimezone = getWorkspaceTimeZone();
-  if (
-    normalizeMonitorScheduleTime(currentSettings.scheduleTimeLocal) === normalizedTime
-    && normalizeMonitorScheduleTimezone(currentSettings.scheduleTimezone) === nextTimezone
-  ) {
-    updateReengagementFields();
-    return;
-  }
-
-  feature.settings = buildReengagementSettingsForSave(feature, {
-    ...currentSettings,
-    scheduleTimeLocal: normalizedTime,
-    scheduleTimezone: nextTimezone,
-  });
-  persistClientState();
-  updateReengagementFields();
-  updateFeatureStudioHeader();
-  scheduleSelectedFeatureConfigAutosave(feature);
-}
-
-function syncReengagementInactivityValueField(event) {
-  const feature = getSelectedFeature();
-  if (!feature || !isReengagementFeature(feature)) {
-    return;
-  }
-
-  const rawValue = String(event.target.value || "").trim();
-  if (!rawValue) {
-    return;
-  }
-
-  const currentSettings = getSelectedFeatureSettings(feature);
-  const normalizedValue = normalizeReengagementInactivityValue(rawValue, currentSettings.inactivityValue);
-  if (event.target.value !== String(normalizedValue)) {
-    event.target.value = String(normalizedValue);
-  }
-  if (currentSettings.inactivityValue === normalizedValue) {
-    return;
-  }
-
-  feature.settings = buildReengagementSettingsForSave(feature, {
-    ...currentSettings,
-    inactivityValue: normalizedValue,
-  });
-  persistClientState();
-  updateReengagementFields();
-  updateFeatureStudioHeader();
-  scheduleSelectedFeatureConfigAutosave(feature);
-}
-
-function syncReengagementInactivityUnitField(event) {
-  const feature = getSelectedFeature();
-  if (!feature || !isReengagementFeature(feature)) {
-    return;
-  }
-
-  const currentSettings = getSelectedFeatureSettings(feature);
-  const inactivityUnit = normalizeReengagementInactivityUnit(event.target.value, currentSettings.inactivityUnit);
-  if (event.target.value !== inactivityUnit) {
-    event.target.value = inactivityUnit;
-  }
-  if (currentSettings.inactivityUnit === inactivityUnit) {
-    return;
-  }
-
-  feature.settings = buildReengagementSettingsForSave(feature, {
-    ...currentSettings,
-    inactivityUnit,
-  });
-  persistClientState();
-  updateReengagementFields();
-  updateFeatureStudioHeader();
-  scheduleSelectedFeatureConfigAutosave(feature);
-}
-
-function finalizeReengagementIntervalDaysField(event) {
-  const feature = getSelectedFeature();
-  if (!feature || !isReengagementFeature(feature)) {
-    return;
-  }
-  const currentSettings = getSelectedFeatureSettings(feature);
-  const rawValue = String(event.target.value || "").trim();
-  event.target.value = rawValue
-    ? String(normalizeMonitorIntervalDays(rawValue, currentSettings.intervalDays))
-    : String(currentSettings.intervalDays);
-  if (hasPendingFeatureConfigAutosave(feature.id)) {
-    void flushSelectedFeatureConfigAutosave({
-      featureId: feature.id,
-      alertOnError: false,
-      noChangesMessage: false,
-    }).catch(() => {});
-  }
-}
-
-function finalizeReengagementScheduleTimeField(event) {
-  const feature = getSelectedFeature();
-  if (!feature || !isReengagementFeature(feature)) {
-    return;
-  }
-  const normalizedTime = normalizeMonitorScheduleTime(event.target.value, getReengagementScheduleTime(feature));
-  event.target.value = normalizedTime || getReengagementScheduleTime(feature);
-  if (hasPendingFeatureConfigAutosave(feature.id)) {
-    void flushSelectedFeatureConfigAutosave({
-      featureId: feature.id,
-      alertOnError: false,
-      noChangesMessage: false,
-    }).catch(() => {});
-  }
-}
-
-function finalizeReengagementInactivityValueField(event) {
-  const feature = getSelectedFeature();
-  if (!feature || !isReengagementFeature(feature)) {
-    return;
-  }
-  const currentSettings = getSelectedFeatureSettings(feature);
-  const rawValue = String(event.target.value || "").trim();
-  event.target.value = rawValue
-    ? String(normalizeReengagementInactivityValue(rawValue, currentSettings.inactivityValue))
-    : String(currentSettings.inactivityValue);
   if (hasPendingFeatureConfigAutosave(feature.id)) {
     void flushSelectedFeatureConfigAutosave({
       featureId: feature.id,
@@ -36589,7 +30205,6 @@ function getMonitorFieldElement(field) {
     scheduleTimeLocal: elements.monitorScheduleTime,
     scheduleTimezone: elements.monitorScheduleTime,
     deliveryChannel: elements.monitorDeliveryChannel,
-    deliveryChannels: elements.deliveryPlatformAddButton || elements.monitorDeliveryChannel,
     telegramChatId: elements.monitorTelegramChatId,
   };
 
@@ -36662,7 +30277,6 @@ async function bootstrapAuthState() {
   authChallenge = normalizeStoredChallenge(loadJson(AUTH_CHALLENGE_KEY, null));
   activeEmail = normalizeEmail(storedSession?.email || authChallenge?.email || "");
   clientState = loadClientState("");
-  state.selectedSimulatorId = clientState.simulator.selectedApprovalId || clientState.simulator.approvals[0]?.approvalId || null;
   syncAgentStateFromClientState();
 
   const applyRestoredSession = (response, fallbackSession = null) => {
@@ -36679,7 +30293,6 @@ async function bootstrapAuthState() {
     syncAgentStateFromClientState({ recordOpen: true, persistOpen: false });
     resetAgentWorkspaceRemoteState({ loading: true });
     applyRemoteAccountProfile(response);
-    state.selectedSimulatorId = clientState.simulator.selectedApprovalId || clientState.simulator.approvals[0]?.approvalId || null;
     clearAuthChallenge();
     persistJson(AUTH_SESSION_KEY, authSession);
     state.billingReport = null;
@@ -36692,7 +30305,6 @@ async function bootstrapAuthState() {
     resetAdminState();
     refreshView();
     void refreshBillingReport();
-    void refreshWhatsAppConnection();
     void refreshFeatureActivationStates();
     void refreshPlatformConnections()
       .then(() => { consumeCalendarOAuthReturn(); consumeEmailOAuthReturn(); })
@@ -36730,7 +30342,6 @@ async function bootstrapAuthState() {
   activeEmail = normalizeEmail(authChallenge?.email || storedSession?.email || "");
   state.requestCountryCode = normalizeCountryCode(storedSession?.requestCountry);
   clientState = loadClientState(activeEmail);
-  state.selectedSimulatorId = clientState.simulator.selectedApprovalId || clientState.simulator.approvals[0]?.approvalId || null;
   syncAgentStateFromClientState();
   state.billingReport = null;
   state.billingLoading = false;
@@ -36773,18 +30384,6 @@ function bindEvents() {
   });
   elements.closeSettingsButton.addEventListener("click", closeSettings);
   elements.backToFeaturesButton.addEventListener("click", () => {
-    if (state.featureStudioView === "history") {
-      setFeatureStudioView("editor");
-      return;
-    }
-
-    if (state.featureStudioView === "activation") {
-      // WhatsApp details are a setup detour from the conversational workspace.
-      // Return the user to the chat rather than another tool-editor step.
-      setActiveTab("features");
-      return;
-    }
-
     closeFeatureStudio();
   });
   if (elements.billingRefreshButton) {
@@ -36805,34 +30404,8 @@ function bindEvents() {
         return;
       }
 
-      if (usesEditorSetup(feature) || isFeatureSetupComplete(feature)) {
-        setFeatureStudioView("editor");
-        setStatus(usesEditorSetup(feature) && !isFeatureSetupComplete(feature) ? "Continue setup in the tool editor." : "Tool editor opened.");
-        return;
-      }
-
-      startFeatureActivation();
-    });
-  }
-  if (elements.featureStudioActivationSection) {
-    elements.featureStudioActivationSection.addEventListener("click", (event) => {
-      const activationButton = event.target.closest("#featureStudioActivationButton");
-      if (!activationButton || activationButton.disabled) {
-        return;
-      }
-
-      event.preventDefault();
-      void activateSelectedFeature();
-    });
-  }
-  if (elements.featureStudioActivationButton) {
-    elements.featureStudioActivationButton.addEventListener("click", () => {
-      void activateSelectedFeature();
-    });
-  }
-  if (elements.featureActivationDisconnectButton) {
-    elements.featureActivationDisconnectButton.addEventListener("click", () => {
-      openWhatsAppDisconnectConfirmation();
+      setFeatureStudioView("editor");
+      setStatus(!isFeatureSetupComplete(feature) ? "Continue setup in the tool editor." : "Tool editor opened.");
     });
   }
   if (elements.featureStudioOverviewButton) {
@@ -36850,95 +30423,14 @@ function bindEvents() {
       void toggleSelectedFeatureEditorActivation();
     });
   }
-  if (elements.featureStudioWhatsAppSampleButton) {
-    elements.featureStudioWhatsAppSampleButton.addEventListener("click", () => {
-      void sendSelectedWhatsAppReplySample();
-    });
-  }
-  if (elements.featureStudioWhatsAppHistoryButton) {
-    elements.featureStudioWhatsAppHistoryButton.addEventListener("click", () => {
-      openWhatsAppHistory();
-    });
-  }
-  if (elements.whatsappHistoryFileInput) {
-    elements.whatsappHistoryFileInput.addEventListener("change", () => {
-      state.whatsappHistoryImportError = "";
-      const fileCount = elements.whatsappHistoryFileInput.files?.length || 0;
-      if (fileCount) {
-        state.whatsappHistoryImportStatus = `Reading ${fileCount} chat file${fileCount === 1 ? "" : "s"}...`;
-        renderWhatsAppHistory();
-        void importWhatsAppHistoryExports();
-        return;
-      }
-      state.whatsappHistoryImportStatus = "";
-      renderWhatsAppHistory();
-    });
-  }
-  if (elements.whatsappHistoryDeleteButton) {
-    elements.whatsappHistoryDeleteButton.addEventListener("click", () => {
-      deleteSelectedWhatsAppHistoryConversation();
-    });
-  }
-  if (elements.whatsappHistoryConversationList) {
-    elements.whatsappHistoryConversationList.addEventListener("click", (event) => {
-      const target = getEventTargetElement(event);
-      const item = target?.closest("[data-conversation-id]");
-      if (!item) {
-        return;
-      }
-
-      selectWhatsAppHistoryConversation(item.dataset.conversationId);
-    });
-  }
   if (elements.featureStudioMonitorRunButton) {
     elements.featureStudioMonitorRunButton.addEventListener("click", () => {
       if (monitorManualRunBusy && getSelectedFeature()?.id === monitorManualRunTargetId) {
         void requestMonitorManualRunCancellation();
         return;
       }
-      if (isReengagementFeature(getSelectedFeature())) {
-        void runSelectedReengagementDemo();
-        return;
-      }
       void runSelectedMonitorNow();
     });
-  }
-  if (elements.featureActivationBusinessAccountIdHelpButton) {
-    elements.featureActivationBusinessAccountIdHelpButton.addEventListener("click", () => {
-      openWhatsAppIdsHelp(elements.featureActivationBusinessAccountIdHelpButton);
-    });
-  }
-  if (elements.featureActivationPhoneNumberIdHelpButton) {
-    elements.featureActivationPhoneNumberIdHelpButton.addEventListener("click", () => {
-      openWhatsAppIdsHelp(elements.featureActivationPhoneNumberIdHelpButton);
-    });
-  }
-  if (elements.featureActivationBusinessAccountIdInput) {
-    elements.featureActivationBusinessAccountIdInput.addEventListener("input", syncFeatureActivationField("business_account_id"));
-  }
-  if (elements.featureActivationPhoneNumberIdInput) {
-    elements.featureActivationPhoneNumberIdInput.addEventListener("input", syncFeatureActivationField("phone_number_id"));
-  }
-  if (elements.featureActivationAccessTokenInput) {
-    elements.featureActivationAccessTokenInput.addEventListener("input", syncFeatureActivationField("access_token"));
-  }
-
-  if (elements.whatsappGuidedConnectButton) {
-    elements.whatsappGuidedConnectButton.addEventListener("click", () => {
-      void startWhatsAppGuidedConnect();
-    });
-  }
-
-  if (elements.whatsappManualToggle) {
-    elements.whatsappManualToggle.addEventListener("click", toggleWhatsAppManualFields);
-  }
-
-  if (elements.featureActivationAccessTokenInput) {
-    elements.featureActivationAccessTokenInput.addEventListener("focus", handleFeatureActivationAccessTokenFocus);
-    elements.featureActivationAccessTokenInput.addEventListener("blur", handleFeatureActivationAccessTokenBlur);
-  }
-  if (elements.featureActivationOwnerWaIdInput) {
-    elements.featureActivationOwnerWaIdInput.addEventListener("input", syncFeatureActivationField("owner_wa_id"));
   }
   if (elements.billingHelpCloseButton) {
     elements.billingHelpCloseButton.addEventListener("click", () => {
@@ -37019,11 +30511,6 @@ function bindEvents() {
 
     elements.adminUsersPane.addEventListener("change", (event) => {
       const target = event.target;
-      if (target instanceof HTMLSelectElement && target.dataset.adminAccountTypeUser) {
-        void saveAdminUserAccountType(target.dataset.adminAccountTypeUser || "", target.value);
-        return;
-      }
-
       if (target instanceof HTMLSelectElement && target.dataset.adminClientTypeUser) {
         void saveAdminUserClientType(target.dataset.adminClientTypeUser || "", target.value);
         return;
@@ -37584,17 +31071,17 @@ function bindEvents() {
     });
   }
 
-  if (elements.accountTypesRefreshButton) {
-    elements.accountTypesRefreshButton.addEventListener("click", () => {
-      void refreshAccountTypes();
+  if (elements.featureSwitchesRefreshButton) {
+    elements.featureSwitchesRefreshButton.addEventListener("click", () => {
+      void refreshFeatureSwitches();
     });
   }
 
-  if (elements.accountTypesContent) {
-    elements.accountTypesContent.addEventListener("change", (event) => {
+  if (elements.featureSwitchesContent) {
+    elements.featureSwitchesContent.addEventListener("change", (event) => {
       const target = event.target;
-      if (target instanceof HTMLInputElement && target.dataset.accountTypeFeature) {
-        void saveAccountTypeFeature(target.dataset.accountType || "", target.dataset.accountTypeFeature, target.checked);
+      if (target instanceof HTMLInputElement && target.dataset.featureSwitch) {
+        void saveFeatureSwitch(target.dataset.featureSwitch, target.checked);
       }
     });
   }
@@ -37666,15 +31153,6 @@ function bindEvents() {
     }
 
     if (
-      elements.deliveryPlatformMenu
-      && elements.deliveryPlatformManager
-      && !elements.deliveryPlatformMenu.hidden
-      && !elements.deliveryPlatformManager.contains(event.target)
-    ) {
-      setDeliveryPlatformMenuOpen(false);
-    }
-
-    if (
       state.agentAdminMenuOpen
       && elements.agentAdminMenu
       && elements.agentAdminButton
@@ -37722,11 +31200,6 @@ function bindEvents() {
         return;
       }
 
-      if (elements.deliveryPlatformMenu && !elements.deliveryPlatformMenu.hidden) {
-        setDeliveryPlatformMenuOpen(false);
-        return;
-      }
-
       if (state.agentAdminMenuOpen) {
         setAgentAdminMenuOpen(false);
         return;
@@ -37756,7 +31229,6 @@ function bindEvents() {
 
     if (route.tab === "settings") {
       state.selectedFeatureId = null;
-      state.selectedSimulatorId = null;
       if (!state.settingsOpen) {
         openSettings(state.settingsMode);
       }
@@ -37772,22 +31244,14 @@ function bindEvents() {
       state.selectedFeatureId = route.tab === "features" && route.featureId
         ? route.featureId
         : null;
-      state.selectedSimulatorId = route.tab === "simulator" && route.featureId
-        ? route.featureId
-        : state.selectedSimulatorId;
       if (state.selectedFeatureId && !getFeatureById(state.selectedFeatureId)) {
         state.selectedFeatureId = clientState.features[0]?.id || null;
-      }
-      if (state.selectedSimulatorId && !clientState.simulator.approvals.some((approval) => approval.approvalId === state.selectedSimulatorId)) {
-        state.selectedSimulatorId = clientState.simulator.approvals[0]?.approvalId || null;
       }
       if (state.activeTab === "features" && state.selectedFeatureId) {
         const feature = getFeatureById(state.selectedFeatureId);
         const defaultView = getDefaultFeatureStudioView(feature);
         state.featureStudioView = normalizeFeatureStudioView(route.subview) || defaultView;
         setHashForTab("features", state.selectedFeatureId, state.featureStudioView);
-      } else if (state.activeTab === "simulator" && state.selectedSimulatorId) {
-        setHashForTab("simulator", state.selectedSimulatorId);
       } else if (rawHash && rawHash !== route.tab) {
         setHashForTab(route.tab);
       }
@@ -37841,12 +31305,6 @@ function bindEvents() {
     digitInput.addEventListener("paste", handleOtpDigitPaste);
   }
 
-  elements.toneGuidance.addEventListener("input", syncPromptField("toneGuidance"));
-  elements.responseStyle.addEventListener("change", syncPromptField("responseStyle"));
-  elements.replyRules.addEventListener("input", syncPromptField("replyRules"));
-  elements.businessNotes.addEventListener("input", syncPromptField("businessNotes"));
-  elements.escalationGuidance.addEventListener("input", syncPromptField("escalationGuidance"));
-  elements.scenarioSelect.addEventListener("change", syncPromptField("scenario"));
   if (elements.featureModelSelect) {
     elements.featureModelSelect.addEventListener("change", syncFeatureModelField);
   }
@@ -37900,61 +31358,8 @@ function bindEvents() {
   if (elements.monitorDeliveryChannel) {
     elements.monitorDeliveryChannel.addEventListener("change", syncDeliverySettingsField("deliveryChannel"));
   }
-  if (elements.deliveryPlatformAddButton) {
-    elements.deliveryPlatformAddButton.addEventListener("click", (event) => {
-      event.preventDefault();
-      if (elements.deliveryPlatformAddButton.disabled) {
-        return;
-      }
-      const isOpen = !elements.deliveryPlatformMenu?.hidden;
-      setDeliveryPlatformMenuOpen(!isOpen);
-    });
-  }
-  if (elements.deliveryPlatformMenu) {
-    elements.deliveryPlatformMenu.addEventListener("click", (event) => {
-      const target = getEventTargetElement(event);
-      const optionButton = target?.closest("[data-delivery-platform-option]");
-      if (!optionButton || optionButton.disabled) {
-        return;
-      }
-      event.preventDefault();
-      addWhatsAppToolDeliveryPlatform(optionButton.dataset.deliveryPlatformOption || "");
-    });
-  }
-  if (elements.deliveryPlatformList) {
-    elements.deliveryPlatformList.addEventListener("click", (event) => {
-      const target = getEventTargetElement(event);
-      const removeButton = target?.closest("[data-delivery-platform-remove]");
-      if (!removeButton) {
-        return;
-      }
-      event.preventDefault();
-      removeWhatsAppToolDeliveryPlatform(removeButton.dataset.deliveryPlatformRemove || "");
-    });
-  }
   if (elements.monitorTelegramChatId) {
     elements.monitorTelegramChatId.addEventListener("input", syncDeliverySettingsField("telegramChatId"));
-  }
-  if (elements.monitorWhatsAppSetupButton) {
-    elements.monitorWhatsAppSetupButton.addEventListener("click", () => {
-      startFeatureActivation({ statusMessage: "WhatsApp setup opened." });
-    });
-  }
-  if (elements.reengagementIntervalDays) {
-    elements.reengagementIntervalDays.addEventListener("input", syncReengagementIntervalDaysField);
-    elements.reengagementIntervalDays.addEventListener("blur", finalizeReengagementIntervalDaysField);
-  }
-  if (elements.reengagementScheduleTime) {
-    elements.reengagementScheduleTime.addEventListener("input", syncReengagementScheduleTimeField);
-    elements.reengagementScheduleTime.addEventListener("change", syncReengagementScheduleTimeField);
-    elements.reengagementScheduleTime.addEventListener("blur", finalizeReengagementScheduleTimeField);
-  }
-  if (elements.reengagementInactivityValue) {
-    elements.reengagementInactivityValue.addEventListener("input", syncReengagementInactivityValueField);
-    elements.reengagementInactivityValue.addEventListener("blur", finalizeReengagementInactivityValueField);
-  }
-  if (elements.reengagementInactivityUnit) {
-    elements.reengagementInactivityUnit.addEventListener("change", syncReengagementInactivityUnitField);
   }
 
   elements.displayNameInput.addEventListener("input", syncSettingsField("displayName"));
@@ -37972,95 +31377,9 @@ function bindEvents() {
   if (elements.profileBusinessSummaryInput) {
     elements.profileBusinessSummaryInput.addEventListener("input", syncAccountProfileField("businessSummary"));
   }
-  if (elements.profileCustomerNotesInput) {
-    elements.profileCustomerNotesInput.addEventListener("input", syncAccountProfileField("customerNotes"));
-  }
   if (elements.profileAssistantGuidanceInput) {
     elements.profileAssistantGuidanceInput.addEventListener("input", syncAccountProfileField("assistantGuidance"));
   }
-
-  if (elements.simulatorPresetSelect) {
-    elements.simulatorPresetSelect.addEventListener("change", (event) => {
-      applySimulatorPreset(event.target.value);
-    });
-  }
-
-  if (elements.simulatorLoadSampleButton) {
-    elements.simulatorLoadSampleButton.addEventListener("click", () => {
-      applySimulatorPreset(elements.simulatorPresetSelect?.value || DEFAULT_SIMULATOR.composer.scenario);
-    });
-  }
-
-  if (elements.simulatorQueueButton) {
-    elements.simulatorQueueButton.addEventListener("click", queueSimulatorApproval);
-  }
-
-  if (elements.simulatorReplyInput) {
-    elements.simulatorReplyInput.addEventListener("input", syncSimulatorReplyDraft);
-  }
-
-  if (elements.simulatorEditButton) {
-    elements.simulatorEditButton.addEventListener("click", () => {
-      const approval = getSelectedSimulatorApproval();
-      if (!approval) {
-        return;
-      }
-
-      const editUrl = buildSimulatorEditUrl(approval);
-      if (editUrl) {
-        window.open(editUrl, "_blank", "noopener,noreferrer");
-        updateStatusFromSimulator("Opened approval page");
-        return;
-      }
-
-      if (elements.simulatorReplyInput) {
-        elements.simulatorReplyInput.focus();
-        if (typeof elements.simulatorReplyInput.select === "function") {
-          elements.simulatorReplyInput.select();
-        }
-      }
-
-      updateStatusFromSimulator("Focused the local reply draft");
-    });
-  }
-
-  if (elements.simulatorSendButton) {
-    elements.simulatorSendButton.addEventListener("click", markSimulatorApprovalSent);
-  }
-
-  for (const field of [
-    ["simulatorSenderNameInput", "senderName"],
-    ["simulatorSenderWaIdInput", "senderWaId"],
-    ["simulatorMessageInput", "latestMessage"],
-    ["simulatorContextInput", "threadContext"],
-    ["simulatorApprovalUrlInput", "approvalUrl"],
-  ]) {
-    const [elementKey, stateKey] = field;
-    const element = elements[elementKey];
-
-    if (element) {
-      element.addEventListener("input", syncSimulatorComposerField(stateKey));
-    }
-  }
-
-  elements.copyButton.addEventListener("click", async () => {
-    try {
-      await navigator.clipboard.writeText(buildCompiledPrompt());
-      setStatus("Instruction preview copied");
-    } catch {
-      setStatus("Copy failed in this browser");
-    }
-  });
-
-  document.addEventListener("click", (event) => {
-    const activationButton = event.target.closest("#featureStudioActivationButton");
-    if (!activationButton || activationButton.disabled) {
-      return;
-    }
-
-    event.preventDefault();
-    void activateSelectedFeature();
-  });
 }
 
 bindEvents();

@@ -1,4 +1,4 @@
-"""Account types: business or family, and which features each may use."""
+"""The feature switches: one set, for every account."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ from unittest import mock
 from packages.infrastructure.account_types import ACCOUNT_FEATURES
 from packages.infrastructure.account_types import account_feature_allowed
 from packages.infrastructure.account_types import blocked_tools
-from packages.infrastructure.account_types import describe_account_types
+from packages.infrastructure.account_types import describe_features
 from packages.infrastructure.account_types import feature_allowed
 from packages.infrastructure.agent_loop import ACCOUNT_RIGHTS_TOOLS
 from packages.infrastructure.agent_loop import LoopContext
@@ -34,9 +34,9 @@ class CatalogueTests(unittest.TestCase):
             present = [tool in TOOLS_BY_NAME for tool in feature.tools]
             self.assertTrue(all(present) or not any(present), f"{feature.feature_id} names a tool that does not exist")
 
-    def test_the_grid_leaves_out_a_feature_this_build_does_not_have(self) -> None:
-        grid = describe_account_types({}, {}, {"read_inbox", "send_email"})
-        ids = [feature["featureId"] for feature in grid["features"]]
+    def test_the_list_leaves_out_a_feature_this_build_does_not_have(self) -> None:
+        listed = describe_features({}, {"read_inbox", "send_email"})
+        ids = [feature["featureId"] for feature in listed["features"]]
         self.assertIn("mail", ids)
         self.assertIn("inbox_watch", ids)
         self.assertNotIn("receipts", ids)
@@ -47,19 +47,16 @@ class CatalogueTests(unittest.TestCase):
             self.assertNotIn(tool, gated)
 
     def test_nothing_is_switched_off_until_someone_does(self) -> None:
-        self.assertTrue(feature_allowed({}, "family", "receipts"))
-        self.assertTrue(feature_allowed(None, "", "receipts"))
-        self.assertEqual(blocked_tools({}, "family"), {})
+        self.assertTrue(feature_allowed({}, "receipts"))
+        self.assertTrue(feature_allowed(None, "receipts"))
+        self.assertEqual(blocked_tools({}), {})
 
-    def test_a_switch_applies_to_its_own_type_only(self) -> None:
-        permissions = {"family": {"receipts": False}, "business": {}}
-        self.assertEqual(set(blocked_tools(permissions, "family")), {"search_receipts", "open_receipts"})
-        self.assertEqual(blocked_tools(permissions, "business"), {})
-        # An account with no type reads as a business.
-        self.assertEqual(blocked_tools(permissions, ""), {})
+    def test_a_switch_takes_its_tools_with_it(self) -> None:
+        self.assertEqual(set(blocked_tools({"receipts": False})), {"search_receipts", "open_receipts"})
+        self.assertEqual(blocked_tools({"receipts": True}), {})
 
     def test_a_store_that_cannot_answer_leaves_the_feature_on(self) -> None:
-        self.assertTrue(account_feature_allowed(object(), user_id=1, feature_id="receipts"))
+        self.assertTrue(account_feature_allowed(object(), feature_id="receipts"))
 
 
 class StoreTests(unittest.TestCase):
@@ -70,51 +67,41 @@ class StoreTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.temp_dir.cleanup()
 
-    def test_a_new_account_is_a_business_until_set_otherwise(self) -> None:
-        database = PortalDatabase(self.db_path)
-        database.register_user("a@example.com")
-        self.assertEqual((database.get_user("a@example.com") or {})["accountType"], "business")
-        updated = database.update_user_account_type("a@example.com", account_type="family")
-        self.assertEqual(updated["accountType"], "family")
-        self.assertEqual(database.get_account_type(email="a@example.com"), "family")
-        listed = next(user for user in database.list_users() if user["email"] == "a@example.com")
-        self.assertEqual(listed["accountType"], "family")
-        self.assertEqual(database.count_accounts_by_type(), {"business": 0, "family": 1})
-        with self.assertRaises(ValueError):
-            database.update_user_account_type("a@example.com", account_type="enterprise")
-
     def test_switches_are_kept_and_moved_back(self) -> None:
         database = PortalDatabase(self.db_path)
-        permissions = database.set_account_type_feature(account_type="family", feature_id="mail", allowed=False)
-        self.assertEqual(permissions, {"business": {}, "family": {"mail": False}})
-        permissions = database.set_account_type_feature(account_type="family", feature_id="mail", allowed=True)
-        self.assertEqual(permissions["family"], {"mail": True})
+        switches = database.set_feature_switch(feature_id="mail", allowed=False)
+        self.assertEqual(switches, {"mail": False})
+        switches = database.set_feature_switch(feature_id="mail", allowed=True)
+        self.assertEqual(switches, {"mail": True})
         with self.assertRaises(ValueError):
-            database.set_account_type_feature(account_type="family", feature_id="teleport", allowed=False)
+            database.set_feature_switch(feature_id="teleport", allowed=False)
 
-    def test_accounts_opened_as_a_family_before_the_column_existed_are_found(self) -> None:
+    def test_the_family_column_of_the_old_grid_becomes_the_switches(self) -> None:
+        # Switches used to be kept per kind of account. Only families are
+        # left, so what the house switched off for them carries over and the
+        # business column is forgotten with the table.
         database = PortalDatabase(self.db_path)
-        database.register_user("fam@example.com")
-        database.register_user("biz@example.com")
-        fam_id = int((database.get_user("fam@example.com") or {})["id"])
-        biz_id = int((database.get_user("biz@example.com") or {})["id"])
         conn = sqlite3.connect(self.db_path)
         conn.execute(
-            "INSERT INTO whatsapp_signups (wa_id, status, user_id, registration_json, started_at, updated_at) VALUES (?, 'completed', ?, ?, 'x', 'x')",
-            ("972500000001", fam_id, json.dumps({"kind": "family"})),
+            "CREATE TABLE account_type_features (account_type TEXT NOT NULL, feature_id TEXT NOT NULL, allowed INTEGER NOT NULL DEFAULT 1, "
+            "updated_by TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL, PRIMARY KEY(account_type, feature_id))"
         )
-        conn.execute(
-            "INSERT INTO whatsapp_signups (wa_id, status, user_id, registration_json, started_at, updated_at) VALUES (?, 'completed', ?, ?, 'x', 'x')",
-            ("972500000002", biz_id, json.dumps({"kind": "business"})),
-        )
-        # An older store: the column is not there yet.
-        conn.execute("ALTER TABLE users DROP COLUMN account_type")
+        conn.execute("INSERT INTO account_type_features VALUES ('family', 'mail', 0, 'boss@example.com', 'x')")
+        conn.execute("INSERT INTO account_type_features VALUES ('business', 'lists', 0, 'boss@example.com', 'x')")
         conn.commit()
         conn.close()
 
         reopened = PortalDatabase(self.db_path)
-        self.assertEqual(reopened.get_account_type(email="fam@example.com"), "family")
-        self.assertEqual(reopened.get_account_type(email="biz@example.com"), "business")
+        self.assertEqual(reopened.get_feature_switches(), {"mail": False})
+        conn = sqlite3.connect(self.db_path)
+        tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+        conn.close()
+        self.assertNotIn("account_type_features", tables)
+
+    def test_a_user_row_carries_no_account_type(self) -> None:
+        database = PortalDatabase(self.db_path)
+        database.register_user("a@example.com")
+        self.assertNotIn("accountType", database.get_user("a@example.com") or {})
 
 
 class LoopTests(unittest.TestCase):
@@ -170,7 +157,6 @@ class AdminEndpointTests(unittest.TestCase):
         self.database = self.server.database
         self.database.register_user("boss@example.com", is_admin=True)
         self.database.register_user("fam@example.com")
-        self.database.update_user_account_type("fam@example.com", account_type="family")
         self.admin_token = self._sign_in("boss@example.com")
         self.family_token = self._sign_in("fam@example.com")
 
@@ -197,51 +183,56 @@ class AdminEndpointTests(unittest.TestCase):
             with urllib_request.urlopen(request, timeout=15) as response:
                 return int(response.status), json.loads(response.read().decode("utf-8"))
         except urllib_error.HTTPError as exc:
-            return int(exc.code), json.loads(exc.read().decode("utf-8"))
+            body = exc.read().decode("utf-8")
+            try:
+                return int(exc.code), json.loads(body)
+            except json.JSONDecodeError:
+                return int(exc.code), {"raw": body}
 
-    def test_the_grid_starts_all_on_and_a_switch_sticks(self) -> None:
-        status, payload = self._request("GET", "/api/admin/account-types", self.admin_token)
+    def test_the_switches_start_all_on_and_a_switch_sticks(self) -> None:
+        status, payload = self._request("GET", "/api/admin/features", self.admin_token)
         self.assertEqual(status, 200, payload)
-        self.assertEqual([entry["value"] for entry in payload["accountTypes"]], ["business", "family"])
-        counts = {entry["value"]: entry["accountCount"] for entry in payload["accountTypes"]}
-        self.assertEqual(counts, {"business": 1, "family": 1})
-        self.assertTrue(all(all(feature["allowed"].values()) for feature in payload["features"]))
+        self.assertNotIn("accountTypes", payload)
+        self.assertTrue(all(feature["allowed"] is True for feature in payload["features"]))
+        self.assertTrue(payload["alwaysOn"])
 
         status, payload = self._request(
-            "POST", "/api/admin/account-types", self.admin_token,
-            {"accountType": "family", "featureId": "voice_notes", "allowed": False},
+            "POST", "/api/admin/features", self.admin_token,
+            {"featureId": "voice_notes", "allowed": False},
         )
         self.assertEqual(status, 200, payload)
         voice = next(feature for feature in payload["features"] if feature["featureId"] == "voice_notes")
-        self.assertEqual(voice["allowed"], {"business": True, "family": False})
+        self.assertFalse(voice["allowed"])
 
-    def test_a_client_cannot_see_or_move_the_switches(self) -> None:
-        status, _ = self._request("GET", "/api/admin/account-types", self.family_token)
+    def test_a_switch_needs_a_feature_and_a_yes_or_no(self) -> None:
+        status, payload = self._request("POST", "/api/admin/features", self.admin_token, {"featureId": "teleport", "allowed": False})
+        self.assertEqual(status, 400, payload)
+        status, payload = self._request("POST", "/api/admin/features", self.admin_token, {"featureId": "mail", "allowed": "no"})
+        self.assertEqual(status, 400, payload)
+
+    def test_a_family_cannot_see_or_move_the_switches(self) -> None:
+        status, _ = self._request("GET", "/api/admin/features", self.family_token)
         self.assertEqual(status, 403)
-        status, _ = self._request(
-            "POST", "/api/admin/account-types", self.family_token,
-            {"accountType": "family", "featureId": "mail", "allowed": True},
-        )
+        status, _ = self._request("POST", "/api/admin/features", self.family_token, {"featureId": "mail", "allowed": True})
         self.assertEqual(status, 403)
 
-    def test_an_admin_moves_a_client_between_types(self) -> None:
-        status, payload = self._request(
-            "POST", "/api/admin/users/fam%40example.com/account-type", self.admin_token, {"accountType": "business"},
-        )
+    def test_the_old_per_account_type_route_is_gone(self) -> None:
+        status, _ = self._request("POST", "/api/admin/users/fam%40example.com/account-type", self.admin_token, {"accountType": "business"})
+        self.assertEqual(status, 404)
+        status, payload = self._request("GET", "/api/admin/users", self.admin_token)
         self.assertEqual(status, 200, payload)
-        self.assertEqual(payload["user"]["accountType"], "business")
-        self.assertEqual(self.database.get_account_type(email="fam@example.com"), "business")
+        self.assertTrue(all("accountType" not in user for user in payload["users"]))
 
     def test_a_switched_off_voice_note_is_refused_before_it_is_transcribed(self) -> None:
-        self.database.set_account_type_feature(account_type="family", feature_id="voice_notes", allowed=False)
+        self.database.set_feature_switch(feature_id="voice_notes", allowed=False)
         with mock.patch("packages.infrastructure.portal_auth.server.transcribe_voice_note") as transcribe:
             status, payload = self._request("POST", "/api/agent/transcribe", self.family_token, {"voiceNote": {}})
         self.assertEqual(status, 403, payload)
         self.assertEqual(payload["error"], "not_included")
         transcribe.assert_not_called()
 
-    def test_the_loop_hides_a_switched_off_feature_from_a_family(self) -> None:
-        self.database.set_account_type_feature(account_type="family", feature_id="lists", allowed=False)
+    def test_the_loop_hides_a_switched_off_feature(self) -> None:
+        self.database.set_feature_switch(feature_id="lists", allowed=False)
         descriptions: dict[str, str] = {}
 
         def model(**kwargs):

@@ -13,8 +13,8 @@ DEFAULT_LAUNCH_URL = ""
 DEFAULT_PROMPT = {
     "toneGuidance": "Warm, direct, and practical. Keep replies human, short, and grounded.",
     "replyRules": "Acknowledge the request first. Ask one clarifying question only when needed. Never guess prices or availability.",
-    "businessNotes": "Service area, hours, pricing hints, and any details the agent should know before replying.",
-    "escalationGuidance": "Hand off when the customer is upset, the answer needs a human decision, or the request is urgent.",
+    "businessNotes": "Anything about this family the tool should know before it writes: where they live, the school, who is who.",
+    "escalationGuidance": "Stop and ask when the answer needs the person's own decision, or when something looks urgent.",
     "exampleReplies": "",
     "responseStyle": "balanced",
     "scenario": "approval",
@@ -42,28 +42,6 @@ def parse_bool(value: Any, default: bool = False) -> bool:
 
 
 def load_default_feature_catalog() -> list[dict[str, Any]]:
-    whatsapp_store_id = (
-        normalize_text(os.getenv("LEMON_SQUEEZY_WHATSAPP_REPLY_ASSISTANT_STORE_ID"))
-        or normalize_text(os.getenv("LEMON_SQUEEZY_ACTIVATION_STORE_ID"))
-        or normalize_text(os.getenv("LEMON_SQUEEZY_STORE_ID"))
-    )
-    whatsapp_variant_id = (
-        normalize_text(os.getenv("LEMON_SQUEEZY_WHATSAPP_REPLY_ASSISTANT_VARIANT_ID"))
-        or normalize_text(os.getenv("LEMON_SQUEEZY_ACTIVATION_VARIANT_ID"))
-        or normalize_text(os.getenv("LEMON_SQUEEZY_VARIANT_ID"))
-    )
-    whatsapp_product_id = normalize_text(os.getenv("LEMON_SQUEEZY_WHATSAPP_REPLY_ASSISTANT_PRODUCT_ID"))
-    whatsapp_follow_up_store_id = (
-        normalize_text(os.getenv("LEMON_SQUEEZY_WHATSAPP_FOLLOW_UP_STORE_ID"))
-        or normalize_text(os.getenv("LEMON_SQUEEZY_ACTIVATION_STORE_ID"))
-        or normalize_text(os.getenv("LEMON_SQUEEZY_STORE_ID"))
-    )
-    whatsapp_follow_up_variant_id = (
-        normalize_text(os.getenv("LEMON_SQUEEZY_WHATSAPP_FOLLOW_UP_VARIANT_ID"))
-        or normalize_text(os.getenv("LEMON_SQUEEZY_ACTIVATION_VARIANT_ID"))
-        or normalize_text(os.getenv("LEMON_SQUEEZY_VARIANT_ID"))
-    )
-    whatsapp_follow_up_product_id = normalize_text(os.getenv("LEMON_SQUEEZY_WHATSAPP_FOLLOW_UP_PRODUCT_ID"))
     scheduled_monitor_store_id = (
         normalize_text(os.getenv("LEMON_SQUEEZY_SCHEDULED_MONITOR_STORE_ID"))
         or normalize_text(os.getenv("LEMON_SQUEEZY_ACTIVATION_STORE_ID"))
@@ -77,66 +55,6 @@ def load_default_feature_catalog() -> list[dict[str, Any]]:
     scheduled_monitor_product_id = normalize_text(os.getenv("LEMON_SQUEEZY_SCHEDULED_MONITOR_PRODUCT_ID"))
 
     return [
-        {
-            "featureId": "whatsapp-business-reply-suggestion-assistant",
-            "name": "WhatsApp Reply Assistant",
-            "description": "Turns incoming WhatsApp questions into quick, human-reviewed replies that help you quote faster and book more work.",
-            "channel": "WhatsApp",
-            "mode": "Human-reviewed",
-            "launchUrl": DEFAULT_LAUNCH_URL,
-            "sortOrder": 100,
-            "isActive": True,
-            "prompt": dict(DEFAULT_PROMPT),
-            "pricing": dict(DEFAULT_FEATURE_PRICING),
-            "requirements": {
-                "requiresWhatsAppConnection": True,
-            },
-            "billing": {
-                "required": True,
-                "provider": "lemon_squeezy",
-                "storeId": whatsapp_store_id,
-                "productId": whatsapp_product_id,
-                "variantId": whatsapp_variant_id,
-            },
-            "metadata": {
-                "catalogSource": "default_feature_catalog",
-                "deliveryChannels": ["portal", "whatsapp", "telegram"],
-            },
-        },
-        {
-            "featureId": "whatsapp-business-follow-up-outreach-writer",
-            "name": "WhatsApp Re-engagement Assistant",
-            "description": "Helps you reconnect with past customers using ready-to-send WhatsApp follow-ups, so more quiet conversations turn back into active work.",
-            "channel": "WhatsApp",
-            "mode": "Weekly follow-up",
-            "launchUrl": DEFAULT_LAUNCH_URL,
-            "sortOrder": 110,
-            "isActive": True,
-            "prompt": {
-                **DEFAULT_PROMPT,
-                "replyRules": "Use the saved conversation to write a warm, low-pressure re-engagement message. Keep it concise, specific, and easy to copy into WhatsApp.",
-                "businessNotes": "Reference real context from the previous conversation when it helps. Never invent discounts, availability, or promises.",
-                "scenario": "reengagement",
-            },
-            "pricing": dict(DEFAULT_FEATURE_PRICING),
-            "requirements": {
-                "requiresWhatsAppConnection": True,
-            },
-            "billing": {
-                "required": True,
-                "provider": "lemon_squeezy",
-                "storeId": whatsapp_follow_up_store_id,
-                "productId": whatsapp_follow_up_product_id,
-                "variantId": whatsapp_follow_up_variant_id,
-            },
-            "metadata": {
-                "catalogSource": "default_feature_catalog",
-                "automation": {
-                    "schedule": "sunday_morning",
-                    "inactivityMonths": 6,
-                },
-            },
-        },
         {
             "featureId": "scheduled-web-monitor-notifier",
             "name": "Scheduled Web Monitor",

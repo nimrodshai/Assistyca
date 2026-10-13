@@ -1,8 +1,8 @@
 # WhatsApp Agent Conversation
 
-The portal chat has a WhatsApp counterpart: a client texts the Assistyca
-number from their own registered phone and talks to the same agent that runs
-the portal chat. The web flow is unchanged; this is a second front door onto
+The portal chat has a WhatsApp counterpart: a person texts the Assistyca
+number from their own phone and talks to the same agent that runs the portal
+chat. The web flow is unchanged; this is a second front door onto
 the same agent.
 
 ## How a message is routed
@@ -11,30 +11,18 @@ An inbound webhook event to the Assistyca sender number resolves to a portal
 user in one of three ways, all giving the `platform_owner_alert` route:
 
 * **A linked number** in `user_whatsapp_numbers` — the normal path, and the
-  only one that scales. Anyone can link their own phone; see below. This runs
-  *before* the client-connection lookup, because the Assistyca number and a
-  client's number can be the same number while Assistyca is its own first
-  customer, and reading those messages as customer traffic would file them for
-  approval instead of answering them.
+  only one that scales. Anyone can link their own phone; see below.
 * **A number configured on the server** — `ASSISTYCA_WHATSAPP_OWNER_NUMBERS`,
   as `number:email` pairs. A bootstrap for before any number is linked, and a
   way back in if linking ever breaks. Not the mechanism to build on.
-* **A saved `owner_wa_id`** on a client's WhatsApp connection, as before.
+* **A saved `owner_wa_id`** on the account's WhatsApp connection row, as before.
 
-An inbound message from a phone none of those recognise is dropped with
-`No portal workspace is connected to this phone number ID` and nothing is sent
-back — unless it carries a claim code. From there the split is:
-
-1. **Approval flow keeps everything that is plainly its own**: interactive
-   button taps, replies that target an approval, approval refs, re-engagement
-   report requests, and bare commands (`Send`, `Skip`, `Edit`, ...) while an
-   approval is pending or awaiting an edit.
-2. **Everything else is a conversation with the agent.** Before this flow,
-   those messages got generic help text.
-
-The split lives in `_whatsapp_owner_event_targets_approvals`
-(`packages/infrastructure/portal_auth/server.py`); the conversation itself in
-`packages/infrastructure/whatsapp_agent_chat.py`.
+The Assistyca number is the only number anyone writes to; a message to any
+other number resolves to nothing. A message from a phone none of those
+recognise carries a claim code, a family invitation code, or is a stranger
+opening an account (see below). Every recognised message is a conversation
+with the agent, in `packages/infrastructure/whatsapp_agent_chat.py`; a group
+message goes to the group's own thread.
 
 ## Linking a phone
 
@@ -90,9 +78,8 @@ status on the inbound message (it also marks it read), so it needs that
 message's id and nothing comes back to record. Meta clears it after 25
 seconds or when the reply lands, whichever is first, and a turn that runs a
 model can outlast that, so `assistyca_typing` renews it every 20 seconds from
-a background thread until the block that sends the reply ends. The signup
-concierge does the same around its model call. A failed indicator is logged
-and not retried; the reply is never held back by it. In mock-send mode
+a background thread until the block that sends the reply ends. A failed
+indicator is logged and not retried; the reply is never held back by it. In mock-send mode
 nothing is sent to Meta.
 
 A scheduled message created this way is also **delivered** over WhatsApp: the
@@ -120,8 +107,8 @@ local clock.
   `ASSISTYCA_WHATSAPP_PHONE_NUMBER_ID`) for live replies;
   `WHATSAPP_ALLOW_MOCK_SEND=1` simulates sends in development.
 - A phone reaches the agent once it is linked to an account — by signing up
-  over WhatsApp, by sending a claim code, or by a saved `owner_wa_id` on a
-  client connection. A number is only ever linked to one account.
+  over WhatsApp, by sending a claim code, or by a saved `owner_wa_id` on the
+  account's connection row. A number is only ever linked to one account.
 
 ## Testing without Meta
 
@@ -156,37 +143,30 @@ WhatsApp send mocked at their module seams.
 
 ## Signing up by texting
 
-A phone nobody knows can open an account in the conversation. The public link
-is one link, forever — `https://wa.me/<number>?text=Hi%20Assistyca` — and
-anyone who taps it (or simply texts the number) is answered, not handed a form.
+A phone nobody knows opens an account in the conversation, on its first
+message. The public link is one link, forever —
+`https://wa.me/<number>?text=Hi%20Assistyca` — and anyone who taps it (or
+simply texts the number) is answered by the assistant itself, not handed a
+form and not asked for anything.
 
-The pre-account replies are written by a small model (`whatsapp_signup_concierge`,
-the cheapest tier, unbilled — house cost, exactly as the About-page intake agent
-is) from a fixed summary of what Assistyca does. Someone who asks "how can you
-help me?" gets that answered, and in the same message is told an email is
-needed to set up their account. The steer gets firmer each turn rather than
-being repeated. The fixed sentence stands in whenever the model does not.
+Every account is a family's and none needs an email: the account is keyed on a
+handle made from the phone (`wa-<digits>@whatsapp.assistyca.com`), which is
+never shown, written to or signed in with. The first message opens the account
+with the default free trial (see `docs/free-trials.md`), links the phone, and
+is then routed on to the account that now exists, so the assistant answers it.
+Nothing has been said to this person yet, so `chatFlow.introduce` is set on
+that first turn and the assistant introduces itself - who it is and what it
+does for a family - before answering and starting to get to know them.
 
-Two things the model is never allowed to be: the source of the email, and a
-narrator of one. The address is found in code from what the person typed; a
-model reply that contains an address is discarded for the fixed line, so no
-model can cause an account or quote one back. Every message is read as the
-answer. A new address creates the account
-with the default free trial (see `docs/free-trials.md`), links the phone that
-has been texting all along, and welcomes them; from then on that phone is an
-ordinary client talking to the agent. If their opening message already
-contains an address, the question is skipped.
+A claim code always wins over signup, because an existing account linking a
+second phone is texting from a number we do not know either; so does a family
+invitation code.
 
-An address that **already has an account is refused**, and they are pointed at
-a portal-issued code instead. Without that refusal, typing someone else's
-address would attach a stranger's phone to their workspace.
-
-A claim code always wins over signup, because an existing client linking a
-second phone is texting from a number we do not know either.
-
-Five turns without an email and the signup is abandoned for a day: more
-messages — and more model calls — from us would only cost money. Nothing else is ever sent to a phone
-that is not mid-signup.
+A phone whose account was erased within the last day is told once that it is
+gone (`SIGNUP_AFTER_ERASURE_TEXT`), so a "thanks" after the goodbye never
+silently reopens an account; the message after that opens a fresh one. A
+message that was sent before the erasure and only delivered after it opens
+nothing.
 
 ### Bounding it
 
@@ -205,15 +185,13 @@ the public door is one request away.
 
 ## Registering on the web
 
-`/register` (`portal/register.html`) is the other door: a name, a WhatsApp
-number, and what they do. No email — accounts are keyed on an email, and the
-chat asks for it, so the page opens no account. `POST /api/register` records
-an ordinary `awaiting_email` signup for the phone that already carries the
-name and business (`registration_json` on `whatsapp_signups`), and the agent
-sends the **first** message: a welcome the model writes from what they typed
-(`build_registration_welcome_prompt`, cheapest tier, unbilled, fixed sentence
-as the fallback), ending with a line saying to ignore it if they did not
-register.
+`/register` (`portal/register.html`) is the other door: a name and a WhatsApp
+number, nothing else. No email, so no account yet: `POST /api/register`
+records an `awaiting_email` signup row for the phone that already carries the
+name (`registration_json` on `whatsapp_signups`), and Assistyca sends the
+**first** message: the approved `assistyca_welcome_family` template, in the
+language the name was typed in, with the earlier approved English template
+standing behind it while Meta reviews the new (`registration_welcome.py`).
 
 The phone is structured on the page rather than typed free: a country from a
 list, the national number as they would dial it, the trunk zero dropped and
@@ -221,21 +199,19 @@ the dial code added in the browser, the result shown back before it is sent.
 The server normalises it again and refuses anything outside international
 length.
 
-From there it is the texting signup. The reply from that phone is a stranger
-with a signup already open: the concierge sees `registeredOnTheWebsite` in
-its context, addresses them by name and fits its examples to their work, and
-asks for the email. When the account opens, the typed name becomes the display
-name, the business becomes the profile summary, and both become account facts
-— what the agent already reads — so the first real turn knows who it is
-talking to. Reopening a stale signup keeps the registration.
+From there it is the texting signup: the reply from that phone opens the
+account at once, the typed name becomes the display name and a pinned account
+fact, and the welcome that went out is the first line of the conversation the
+assistant reads, so it does not introduce itself a second time. Reopening a
+stale signup keeps the registration.
 
-We speak first, outside Meta's 24-hour window, so the welcome goes out as the
-approved `notification_message` template on one line (a template parameter
-may carry no newline; a message written as lines is folded into sentences,
-see `flatten_template_parameter`). If it cannot be sent — no sender token, a bad number —
-the registration still stands and the page shows the public `wa.me` link, so
-saying hi from that phone lands in the same signup. The link is returned in
-every case as the "didn't get it?" fallback.
+We speak first, outside Meta's 24-hour window, so the welcome can only go out
+as an approved template (a template parameter may carry no newline; a message
+written as lines is folded into sentences, see `flatten_template_parameter`).
+If it cannot be sent — no sender token, a bad number — the registration still
+stands and the page shows the public `wa.me` link, so saying hi from that
+phone opens the account that knows their name. The link is returned in every
+case as the "didn't get it?" fallback.
 
 A number already linked to an account is refused at the page, and the signup
 kill switch and daily cap apply to this door too (`503 registration_closed`,
@@ -314,8 +290,7 @@ runs a model and reads a calendar is never quick. Every inbound message to the
 Assistyca number is therefore claimed by its WhatsApp message id in
 `whatsapp_processed_messages` before anything else happens, and the claim is
 marked finished once the webhook has answered. A redelivery of a finished claim
-is answered `duplicate` and does nothing. (Traffic to a client's own number
-keeps its existing dedupe in `save_whatsapp_message`.)
+is answered `duplicate` and does nothing.
 
 A claim is also stamped with the name of the server process that took it
 (`SERVER_BOOT_ID`, new on every start). That is what tells a duplicate from a
@@ -499,14 +474,10 @@ model with the offer in view as an ordinary `openQuestion` of kind
 calendar picker, that question is settled first and theirs rides along as
 `resumeQuestion`, asked once the picker is done.
 
-## A fresh morning is a fresh conversation
+## What can you do
 
-The signup concierge gets firmer each turn the email is not given. That count
-now resets after an hour's gap, and a message that is a *question* - "how can
-you help me?" - always gets the full, warm answer with three or four concrete
-things the person could ask, however many times the email has been asked for.
-The capability pitch lives once, in `ASSISTANT_CAPABILITIES_PITCH`, and both
-the concierge and the working agent describe the same product from it.
+The capability pitch lives once, in `ASSISTANT_CAPABILITIES_PITCH`, and every
+prompt that describes the product reads it.
 "What actions can I do here?" (2026-09-06) was answered with the diary, the
 mail and the receipts pile and never mentioned that the person keeps lists,
 or that lists and receipts each have a page of their own. The pitch now
@@ -515,10 +486,8 @@ receipts page replaced), the loop instructions say a what-can-you-do answer
 covers every kind of thing the person has - diary, mail, receipts, reminders,
 lists - and carries `listsPage` and `receiptsPage` each on its own line
 (buttons on WhatsApp), and the WhatsApp example prompts are spread across
-those rather than all drawn from the mailbox. The business typed on the
-register page reaches the working agent as the known fact keyed `what they
-do`; the answer and every example prompt are told to fit that line of work,
-the same way the signup concierge and the welcome message already did.
+those rather than all drawn from the mailbox. The answer and every example
+prompt are told to fit this family, from `household` and `knownFacts`.
 
 ## When something gets in the way
 
@@ -555,7 +524,7 @@ Where the reports come from:
   then `assistant_unclear`. Either way the endpoint answers **200** with
   `outcome: message`, `recovered: true`, `recoveryCode`, and - for the
   operator - the old `diagnostic` payload with the provider's code, so a
-  billing problem is still visible without being spoken to a customer. The
+  billing problem is still visible without being spoken to the person. The
   rejected text is logged in full, because a rejection logged without it can
   only be reproduced, never read.
 * The WhatsApp chat reports to `POST /api/agent/recover` for everything the

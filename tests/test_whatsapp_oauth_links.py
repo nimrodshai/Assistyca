@@ -19,7 +19,6 @@ import base64
 from packages.infrastructure.portal_auth.server import PortalConfig, create_server, sign_oauth_state_payload
 from packages.infrastructure.whatsapp_agent_chat import (
     build_connect_links_line,
-    build_link_existing_account_text,
     infer_mail_provider,
 )
 
@@ -66,10 +65,8 @@ class ProviderInferenceTests(unittest.TestCase):
         self.assertNotIn("https://m", line)
         self.assertIn("Google", line)
 
-    def test_no_configured_provider_falls_back_to_the_portal_only_for_linking(self) -> None:
+    def test_no_configured_provider_offers_no_line_at_all(self) -> None:
         self.assertEqual(build_connect_links_line("dana@gmail.com", {}), "")
-        self.assertIn("assistyca.com", build_link_existing_account_text("dana@gmail.com", {}))
-        self.assertNotIn("assistyca.com", build_link_existing_account_text("dana@gmail.com", {"google": "https://g"}))
 
 
 class WhatsAppOAuthLinkTests(unittest.TestCase):
@@ -186,38 +183,6 @@ class WhatsAppOAuthLinkTests(unittest.TestCase):
         return interactive["body"]["text"], parameters["display_text"], parameters["url"]
 
     # --- the links themselves -------------------------------------------
-
-    def test_a_new_account_is_welcomed_with_a_sign_in_link_not_a_website(self) -> None:
-        self._webhook("hi", message_id="wamid.a1")
-        result = self._webhook("dana@gmail.com", message_id="wamid.a2")
-        self.assertEqual(result["results"][0]["action"], "signup_completed")
-        # The sign-in goes as a button: the long signed address stays out of the words.
-        body, label, url = self._last_button()
-        self.assertEqual(label, "Sign in with Google")
-        self.assertIn("https://assistyca.example/connect/google?s=", url)
-        self.assertNotIn("https://", body)
-        self.assertNotIn("assistyca.com", body)
-        self.assertNotIn("Settings", body)
-        # An Outlook address gets the Microsoft door instead.
-        self._webhook("hi", sender="447700900999", message_id="wamid.a3")
-        self._webhook("dana@outlook.com", sender="447700900999", message_id="wamid.a4")
-        _, label, url = self._last_button()
-        self.assertEqual(label, "Microsoft sign-in")
-        self.assertIn("/connect/microsoft?", url)
-
-    def test_an_existing_address_gets_a_sign_in_link_to_prove_it_is_theirs(self) -> None:
-        self.database.register_user("owner@gmail.com")
-        self._webhook("hi", message_id="wamid.b1")
-        result = self._webhook("owner@gmail.com", message_id="wamid.b2")
-        self.assertEqual(result["results"][0]["action"], "signup_email_taken")
-        body, label, url = self._last_button()
-        self.assertIn("already has an Assistyca account", body)
-        self.assertTrue(body.endswith("link this phone to it."), body)
-        self.assertEqual(label, "Sign in with Google")
-        self.assertIn("https://assistyca.example/connect/google?", url)
-        self.assertNotIn("assistyca.com", body)
-        # And the phone is not linked by the claim alone.
-        self.assertEqual(self.database.get_user_id_for_whatsapp_number(PHONE), 0)
 
     def test_the_agent_is_handed_the_links_for_a_linked_phone(self) -> None:
         # Under the loop the link is a tool result, not part of the prompt:

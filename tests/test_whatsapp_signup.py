@@ -15,14 +15,14 @@ from types import SimpleNamespace
 from unittest import mock
 
 from packages.infrastructure.portal_auth.server import PortalConfig, create_server
-from packages.infrastructure.whatsapp_agent_chat import build_signup_concierge_prompt
+from packages.infrastructure.whatsapp_agent_chat import SIGNUP_AFTER_ERASURE_TEXT
 from packages.infrastructure.whatsapp_agent_chat import build_whatsapp_signup_link
-from packages.infrastructure.whatsapp_agent_chat import normalize_signup_concierge_reply
 
 
 PLATFORM = "platform-phone-1"
 APP_SECRET = "signup-test-secret"
 NEW_PHONE = "447700900123"
+NEW_HANDLE = f"wa-{NEW_PHONE}@whatsapp.assistyca.com"
 
 
 def payload(text, *, sender=NEW_PHONE, message_id="wamid.s1", name="Dana", timestamp="1756700000"):
@@ -44,13 +44,11 @@ class WhatsAppSignupTests(unittest.TestCase):
         self.base_url = f"http://127.0.0.1:{self.server.server_address[1]}"
         self.database = self.server.database
         self.env = mock.patch.dict("os.environ", {
-            "PORTAL_WHATSAPP_STORE_ROOT": str(Path(self.temp_dir.name) / "portal-whatsapp"),
             "WHATSAPP_APP_SECRET": APP_SECRET,
             "WHATSAPP_ALLOW_MOCK_SEND": "1",
             "ASSISTYCA_WHATSAPP_PHONE_NUMBER_ID": PLATFORM,
             "ASSISTYCA_WHATSAPP_ACCESS_TOKEN": "platform-token",
             "ASSISTYCA_WHATSAPP_DISPLAY_NUMBER": "972559196101",
-            "PORTAL_DEFAULT_TRIAL_DAYS": "2",
         }, clear=False)
         self.env.start()
         self.send_patch = mock.patch(
@@ -58,19 +56,13 @@ class WhatsAppSignupTests(unittest.TestCase):
             return_value="wamid.reply",
         )
         self.sent = self.send_patch.start()
-        # The concierge writes every pre-account line; give it a voice by
-        # default so the flow reads like a conversation in these tests too.
+        # The assistant answers the first message itself; the model is the
+        # assistant's voice for these tests.
         self.model_patch = mock.patch(
             "packages.infrastructure.portal_auth.server.call_openai_response",
-            side_effect=self._concierge,
+            return_value=SimpleNamespace(output_text=json.dumps({"outcome": "message", "reply": "Hi, I'm Assistyca. Who is at home?"})),
         )
         self.model = self.model_patch.start()
-
-    def _concierge(self, **kwargs):
-        prompt = str(kwargs.get("prompt") or "")
-        if '"account_created"' in prompt or "account has just been created" in prompt:
-            return SimpleNamespace(output_text=json.dumps({"reply": "Welcome aboard — you asked how I can help, so let's start there."}))
-        return SimpleNamespace(output_text=json.dumps({"reply": "I read your inbox and calendar once you connect them. I need an email to set up your account first — what is it?"}))
 
     def tearDown(self) -> None:
         self.model_patch.stop()
@@ -92,55 +84,44 @@ class WhatsAppSignupTests(unittest.TestCase):
     def replies(self) -> list[str]:
         return [call.kwargs["message_text"] for call in self.sent.call_args_list]
 
-    def test_a_stranger_is_asked_for_an_email_then_gets_an_account_and_a_trial(self) -> None:
+    def turn_text(self) -> str:
+        return json.dumps(self.model.call_args.kwargs["input"], ensure_ascii=False)
+
+    def test_a_strangers_first_message_opens_an_account_and_is_answered(self) -> None:
         first = self.post("How can you help me???", message_id="wamid.s1")
-        self.assertEqual(first["results"][0]["action"], "signup_started")
-        # Answered, not ignored: the model wrote the line, and it carries the
-        # person's actual question into the prompt.
-        self.assertIn("read your inbox and calendar", self.replies()[0])
-        prompt = self.model.call_args.kwargs["prompt"]
-        self.assertIn("How can you help me???", prompt)
-        self.assertIn("whatAssistycaDoes", prompt)
-        self.assertNotIn("billing_email", self.model.call_args.kwargs, "a stranger is never a billing identity")
 
-        second = self.post("it's dana@example.com", message_id="wamid.s2")
-        self.assertEqual(second["results"][0]["action"], "signup_completed")
-        self.assertIn("Welcome aboard", self.replies()[1])
-        # The chat that created the account is not billed to the account.
-        self.assertTrue(all("billing_email" not in c.kwargs for c in self.model.call_args_list))
+        # No email asked for, nothing to collect: the account opens on the
+        # phone and the same message is answered by the assistant.
+        self.assertEqual(
+            [result["action"] for result in first["results"]],
+            ["signup_completed_without_email", "agent_chat_reply"],
+        )
+        self.assertEqual(self.replies(), ["Hi, I'm Assistyca. Who is at home?"])
+        self.assertNotIn("email", " ".join(self.replies()).lower())
 
-        user = self.database.get_user("dana@example.com") or {}
-        self.assertTrue(user, "the account should exist now")
-        self.assertEqual(user["trialDays"], 2)
+        user = self.database.get_user(NEW_HANDLE) or {}
+        self.assertTrue(user, "the account should exist now, keyed on the phone")
+        self.assertEqual(user["displayName"], "Dana")
+        self.assertEqual(user["trialDays"], 14, "two weeks free, then it pays")
         self.assertTrue(user["trialStartedAt"])
+        self.assertNotIn("accountType", user)
         self.assertEqual(self.database.get_user_id_for_whatsapp_number(NEW_PHONE), int(user["id"]))
+        self.assertEqual((self.database.get_whatsapp_signup(NEW_PHONE) or {}).get("status"), "completed")
 
-        # From here on the phone is simply a client talking to the agent.
-        with mock.patch(
-            "packages.infrastructure.portal_auth.server.call_openai_response",
-            return_value=SimpleNamespace(output_text=json.dumps({"outcome": "message", "reply": "Hello Dana."})),
-        ):
-            third = self.post("what can you do?", message_id="wamid.s3")
-        self.assertEqual(third["results"][0]["action"], "agent_chat_reply")
-        self.assertEqual(third["results"][0]["reply_text"], "Hello Dana.")
+        # Nobody has introduced the assistant, so its first turn does, and
+        # goes straight on into getting to know the family.
+        turn = self.turn_text()
+        self.assertIn("texted the Assistyca number without registering", turn)
+        self.assertIn("Getting to know this family", turn)
+        self.assertIn("How can you help me???", turn)
+        self.assertEqual(self.model.call_args.kwargs.get("billing_email"), NEW_HANDLE, "the account pays for its own turns")
 
-    def test_an_opening_message_that_already_has_the_email_skips_the_question(self) -> None:
-        result = self.post("dana@example.com", message_id="wamid.s1")
-        self.assertEqual(result["results"][0]["action"], "signup_completed")
-        self.assertIsNotNone(self.database.get_user("dana@example.com"))
-
-    def test_an_existing_address_is_refused_not_hijacked(self) -> None:
-        # The account that already owns this address must not gain a
-        # stranger's phone just because the stranger typed it.
-        self.database.register_user("owner@example.com")
-        owner = self.database.get_user("owner@example.com") or {}
+    def test_once_answered_the_assistant_does_not_introduce_itself_again(self) -> None:
         self.post("hi", message_id="wamid.s1")
-        result = self.post("owner@example.com", message_id="wamid.s2")
-
-        self.assertEqual(result["results"][0]["action"], "signup_email_taken")
-        self.assertIn("already has an Assistyca account", self.replies()[-1])
-        self.assertEqual(self.database.get_user_id_for_whatsapp_number(NEW_PHONE), 0)
-        self.assertEqual(self.database.list_user_whatsapp_numbers(user_id=int(owner["id"])), [])
+        second = self.post("my wife is Stav", message_id="wamid.s2")
+        self.assertEqual(second["results"][0]["action"], "agent_chat_reply")
+        self.assertNotIn("texted the Assistyca number without registering", self.turn_text())
+        self.assertIn("my wife is Stav", self.turn_text())
 
     def test_a_message_sent_before_the_account_was_deleted_opens_nothing(self) -> None:
         # A deploy cut the turn off, Meta redelivered the message, and by then
@@ -154,33 +135,23 @@ class WhatsAppSignupTests(unittest.TestCase):
         self.assertEqual(result["results"][0]["reason"], "sent_before_erasure")
         self.assertEqual(self.sent.call_count, 0)
         self.assertEqual(self.model.call_count, 0)
-        self.assertIsNone(self.database.get_whatsapp_signup(NEW_PHONE))
+        self.assertIsNone(self.database.get_user(NEW_HANDLE))
 
-    def test_after_a_deletion_the_chat_knows_the_account_is_gone(self) -> None:
+    def test_after_a_deletion_the_phone_is_told_once_and_the_next_message_starts_over(self) -> None:
+        # "Thanks" after the goodbye must not silently reopen the account they
+        # just asked to be rid of; the message after that is a fresh start.
         self.database.mark_whatsapp_phones_erased([NEW_PHONE])
         after = str(int((datetime.now(timezone.utc) + timedelta(seconds=5)).timestamp()))
 
-        result = self.post("are we deleted?", message_id="wamid.after", timestamp=after)
+        told = self.post("thanks", message_id="wamid.after", timestamp=after)
+        self.assertEqual(told["results"][0]["action"], "signup_after_erasure")
+        self.assertEqual(self.replies(), [SIGNUP_AFTER_ERASURE_TEXT])
+        self.assertEqual(self.model.call_count, 0)
+        self.assertIsNone(self.database.get_user(NEW_HANDLE))
 
-        self.assertEqual(result["results"][0]["action"], "signup_started")
-        prompt = self.model.call_args.kwargs["prompt"]
-        self.assertIn('"accountDeletedMinutesAgo":0', prompt)
-        self.assertIn("nothing remains to delete", prompt)
-        self.assertIn("say plainly that it is already done", prompt)
-
-    def test_a_hello_after_a_deletion_is_a_fresh_start(self) -> None:
-        # The goodbye says "just write" to start again; a "hi" is them doing
-        # that, and it must not be answered with the deletion.
-        self.database.mark_whatsapp_phones_erased([NEW_PHONE])
-        after = str(int((datetime.now(timezone.utc) + timedelta(seconds=5)).timestamp()))
-
-        result = self.post("hi", message_id="wamid.hi", timestamp=after)
-
-        self.assertEqual(result["results"][0]["action"], "signup_started")
-        prompt = self.model.call_args.kwargs["prompt"]
-        self.assertIn("treat this as a fresh start", prompt)
-        self.assertIn("do not mention the deletion", prompt)
-        self.assertIn("ask for their email as the one thing you need to open their account", prompt)
+        fresh = self.post("ok let's start again", message_id="wamid.again", timestamp=after)
+        self.assertEqual(fresh["results"][0]["action"], "signup_completed_without_email")
+        self.assertTrue(self.database.get_user(NEW_HANDLE))
 
     def test_a_deletion_is_forgotten_after_a_day(self) -> None:
         self.database.mark_whatsapp_phones_erased([NEW_PHONE])
@@ -192,107 +163,9 @@ class WhatsAppSignupTests(unittest.TestCase):
         self.assertIsNone(self.database.whatsapp_phone_erased_at(NEW_PHONE))
         self.assertTrue(stored and NEW_PHONE not in stored[0], "only a hash of the number is kept")
 
-    def test_asking_about_a_deletion_older_than_a_day_is_never_told_it_did_not_happen(self) -> None:
-        # The account was deleted two days ago, so the record of it is gone
-        # and the phone looks new. "Was I deleted?" must not be met with a
-        # cheerful "no" the prompt has no grounds for - only with what is
-        # held now, which is nothing.
-        self.database.mark_whatsapp_phones_erased([NEW_PHONE])
-        with self.database._connection() as conn:
-            conn.execute("UPDATE erased_whatsapp_phones SET erased_at = ?",
-                         ((datetime.now(timezone.utc) - timedelta(days=2)).isoformat(),))
-            conn.commit()
-
-        result = self.post("was I deleted?", message_id="wamid.later")
-
-        self.assertEqual(result["results"][0]["action"], "signup_started")
-        prompt = self.model.call_args.kwargs["prompt"]
-        self.assertIn('"accountDeletedMinutesAgo":null', prompt)
-        self.assertIn("Never say that they were not deleted", prompt)
-        self.assertIn("there is no account for this phone", prompt)
-        self.assertNotIn("their name, what they told you when they registered", prompt)
-
-    def _answers(self, *outputs):
-        """The concierge says these, in order, one per turn."""
-
-        queue = list(outputs)
-        self.model.side_effect = lambda **kw: SimpleNamespace(output_text=json.dumps(queue.pop(0)))
-
-    def test_asking_to_be_forgotten_needs_no_email_and_erases_after_a_yes(self) -> None:
-        # Someone who registered on the web and never gave an email still
-        # holds a name, a line about their work and a conversation with us.
-        self.database.start_web_registration(wa_id=NEW_PHONE, name="Nimrod Shai", business="Plumbing")
-        self._answers(
-            {"reply": "I can erase your name, your registration and this chat. Reply yes to confirm.", "erase": "ask"},
-            {"reply": "", "erase": "yes"},
-        )
-
-        asked = self.post("Delete my account", message_id="wamid.e1")
-        self.assertEqual(asked["results"][0]["action"], "signup_erase_confirm")
-        prompt = self.model.call_args.kwargs["prompt"]
-        self.assertIn("do not ask for an email", prompt)
-        self.assertIn("what they told you when they registered", prompt)
-        self.assertEqual(self.database.get_whatsapp_signup(NEW_PHONE)["status"], "confirming_erasure")
-        self.assertNotIn("email", self.replies()[-1].lower())
-
-        done = self.post("yes", message_id="wamid.e2")
-        self.assertEqual(done["results"][0]["action"], "signup_erased")
-        self.assertIn('"erasureAwaitingTheirYes":true', self.model.call_args.kwargs["prompt"])
-        self.assertIsNone(self.database.get_whatsapp_signup(NEW_PHONE), "nothing may stay under the number")
-        self.assertIsNotNone(self.database.whatsapp_phone_erased_at(NEW_PHONE))
-        self.assertIn("erased", self.replies()[-1])
-
-    def test_a_no_to_the_erasure_keeps_everything(self) -> None:
-        self.database.start_web_registration(wa_id=NEW_PHONE, name="Dana", business="Bakery")
-        self._answers(
-            {"reply": "I can erase what I hold for this phone. Shall I?", "erase": "ask"},
-            {"reply": "Nothing was deleted.", "erase": "no"},
-        )
-        self.post("forget me", message_id="wamid.n1")
-        kept = self.post("actually no", message_id="wamid.n2")
-        self.assertEqual(kept["results"][0]["action"], "signup_erase_declined")
-        signup = self.database.get_whatsapp_signup(NEW_PHONE) or {}
-        self.assertEqual(signup["status"], "awaiting_email")
-        self.assertEqual(signup["registration"]["name"], "Dana")
-
-    def test_something_else_while_the_erasure_waits_keeps_the_question_open(self) -> None:
-        self._answers(
-            {"reply": "I can erase what I hold for this phone. Shall I?", "erase": "ask"},
-            {"reply": "It's the assistant on WhatsApp. The deletion still waits for your yes.", "erase": "none"},
-            {"reply": "", "erase": "yes"},
-        )
-        self.post("delete my data", message_id="wamid.o1")
-        aside = self.post("wait, what is this service?", message_id="wamid.o2")
-        self.assertEqual(aside["results"][0]["action"], "signup_erase_confirm")
-        self.assertEqual(self.database.get_whatsapp_signup(NEW_PHONE)["status"], "confirming_erasure")
-        done = self.post("ok yes delete", message_id="wamid.o3")
-        self.assertEqual(done["results"][0]["action"], "signup_erased")
-
-    def test_a_deletion_request_on_the_last_turn_is_not_swallowed_by_giving_up(self) -> None:
-        for i, text in enumerate(["hi", "what?", "no", "hmm"], start=1):
-            self.post(text, message_id=f"wamid.g{i}")
-        self._answers({"reply": "I can erase what I hold for this phone. Shall I?", "erase": "ask"})
-        result = self.post("delete everything about me", message_id="wamid.g5")
-        self.assertEqual(result["results"][0]["action"], "signup_erase_confirm")
-
-    def test_a_yes_without_a_pending_question_erases_nothing(self) -> None:
-        self._answers({"reply": "Happy to help. What email should I use?", "erase": "yes"})
-        result = self.post("yes", message_id="wamid.y1")
-        self.assertEqual(result["results"][0]["action"], "signup_started")
-        self.assertIsNotNone(self.database.get_whatsapp_signup(NEW_PHONE))
-
-    def test_enough_non_answers_and_it_stops_spending(self) -> None:
-        for i, text in enumerate(["hi", "what?", "no", "hmm"], start=1):
-            self.post(text, message_id=f"wamid.s{i}")
-        gave_up = self.post("stop", message_id="wamid.s5")
-        self.assertEqual(gave_up["results"][0]["action"], "signup_abandoned")
-        sent_before = self.sent.call_count
-        model_before = self.model.call_count
-
-        ignored = self.post("hello?", message_id="wamid.s6")
-        self.assertEqual(self.model.call_count, model_before, "an abandoned signup must not keep paying for a model either")
-        self.assertEqual(ignored["results"][0]["action"], "signup_ignored")
-        self.assertEqual(self.sent.call_count, sent_before, "an abandoned signup must not keep costing replies")
+        # And a phone that writes then is simply new.
+        result = self.post("hi", message_id="wamid.new")
+        self.assertEqual(result["results"][0]["action"], "signup_completed_without_email")
 
     def test_the_daily_cap_closes_the_door_quietly(self) -> None:
         with mock.patch.dict("os.environ", {"PORTAL_WHATSAPP_SIGNUP_DAILY_CAP": "1"}, clear=False):
@@ -302,6 +175,7 @@ class WhatsAppSignupTests(unittest.TestCase):
         self.assertEqual(capped["results"][0]["action"], "signup_capped")
         self.assertEqual(self.sent.call_count, sent_before)
         self.assertIsNone(self.database.get_whatsapp_signup("447700900002"))
+        self.assertIsNone(self.database.get_user("wa-447700900002@whatsapp.assistyca.com"))
 
     def test_the_kill_switch_restores_silence(self) -> None:
         with mock.patch.dict("os.environ", {"PORTAL_WHATSAPP_SIGNUP_ENABLED": "0"}, clear=False):
@@ -310,7 +184,7 @@ class WhatsAppSignupTests(unittest.TestCase):
         self.sent.assert_not_called()
 
     def test_a_claim_code_still_wins_over_signup(self) -> None:
-        # An existing client linking a second phone sends a code from an
+        # An existing account linking a second phone sends a code from an
         # unknown number. That is a link, not a new account.
         self.database.register_user("owner@example.com")
         owner = self.database.get_user("owner@example.com") or {}
@@ -322,46 +196,6 @@ class WhatsAppSignupTests(unittest.TestCase):
         self.assertIsNone(self.database.get_whatsapp_signup(NEW_PHONE))
         self.assertEqual(self.database.get_user_id_for_whatsapp_number(NEW_PHONE), int(owner["id"]))
 
-    def test_when_the_model_is_down_the_fixed_line_still_asks(self) -> None:
-        # Losing the model costs the phrasing, never the signup.
-        from packages.infrastructure.openai_api import OpenAIError
-        self.model.side_effect = OpenAIError("down")
-        result = self.post("hello there", message_id="wamid.f1")
-        self.assertEqual(result["results"][0]["action"], "signup_started")
-        self.assertIn("What email", self.replies()[0])
-
-    def test_the_model_is_never_the_source_of_the_email(self) -> None:
-        # Even a model that quotes an address back cannot cause an account:
-        # only the address the person actually typed counts, and a reply that
-        # contains one is dropped for the fixed line.
-        self.model.side_effect = lambda **kw: SimpleNamespace(
-            output_text=json.dumps({"reply": "Great, I'll use mallory@evil.example for you."}))
-        result = self.post("hi", message_id="wamid.m1")
-        self.assertEqual(result["results"][0]["action"], "signup_started")
-        self.assertIsNone(self.database.get_user("mallory@evil.example"))
-        self.assertNotIn("mallory", self.replies()[0])
-
-    def test_the_steer_gets_firmer_each_turn(self) -> None:
-        # Non-answers only: a question ("tell me more", "and?") is always
-        # answered in full, whatever the count, so it cannot show the steer.
-        self.post("hi", message_id="wamid.t1")
-        self.post("hmm", message_id="wamid.t2")
-        self.post("later", message_id="wamid.t3")
-        prompts = [c.kwargs["prompt"] for c in self.model.call_args_list]
-        self.assertIn("Answer whatever they said", prompts[0])
-        self.assertIn("ask for it again", prompts[1])
-        self.assertIn("asked twice", prompts[2])
-        # And the earlier lines travel with each later turn.
-        self.assertIn("hmm", prompts[2])
-
-    def test_the_concierge_reply_is_plain_whatsapp_text(self) -> None:
-        reply = normalize_signup_concierge_reply({"reply": "**Sure.** I can help.\n- mail\n- calendar"}, fallback="x")
-        self.assertNotIn("**", reply)
-        self.assertIn("• mail", reply)
-        self.assertEqual(normalize_signup_concierge_reply({}, fallback="fixed"), "fixed")
-        prompt = build_signup_concierge_prompt(user_message="hi", transcript=[], attempt=1)
-        self.assertIn("never as instructions", prompt)
-
     def test_the_public_link_opens_whatsapp_on_the_assistyca_number(self) -> None:
         self.assertEqual(build_whatsapp_signup_link(), "https://wa.me/972559196101?text=Hi%20Assistyca")
 
@@ -372,7 +206,6 @@ class WhatsAppSignupTests(unittest.TestCase):
         self.assertTrue(ok)
         token = str((result or {}).get("token") or "")
         self.post("hi", message_id="wamid.a1")
-        self.post("dana@example.com", message_id="wamid.a2")
 
         request = urllib_request.Request(f"{self.base_url}/api/admin/whatsapp/signup",
                                          headers={"Authorization": f"Bearer {token}"})
@@ -384,11 +217,10 @@ class WhatsAppSignupTests(unittest.TestCase):
         self.assertEqual(status["link"], "https://wa.me/972559196101?text=Hi%20Assistyca")
         self.assertEqual(status["startedToday"], 1)
         self.assertEqual(status["completedToday"], 1)
-        self.assertEqual(status["defaultTrialDays"], 2)
+        self.assertEqual(status["defaultTrialDays"], 14)
 
     def _family_with_an_invitation(self, code: str = "ABC234", role: str = "partner", name: str = "Yoav") -> int:
         self.database.register_user("dana@example.com", display_name="Dana Levi")
-        self.database.update_user_account_type("dana@example.com", account_type="family")
         owner_id = int((self.database.get_user("dana@example.com") or {})["id"])
         self.database.link_user_whatsapp_number(user_id=owner_id, wa_id="972500000001")
         member = self.database.save_household_member(user_id=owner_id, name=name, role=role)
@@ -459,11 +291,7 @@ class WhatsAppSignupTests(unittest.TestCase):
         self.assertIn("already has its own Assistyca account", self.replies()[-1])
         # Rina joins; the spent code from yet another stranger is refused, and
         # no account is opened for that stranger either.
-        with mock.patch(
-            "packages.infrastructure.portal_auth.server.call_openai_response",
-            return_value=SimpleNamespace(output_text=json.dumps({"outcome": "message", "reply": "Hi Rina."})),
-        ):
-            joined = self.post("Assistyca family RNA333", message_id="wamid.w3", name="Rina")
+        joined = self.post("Assistyca family RNA333", message_id="wamid.w3", name="Rina")
         self.assertEqual(joined["results"][0]["action"], "member_joined")
         self.assertEqual(joined["results"][0]["role"], "other")
         self.assertEqual(self.database.get_household_member_by_wa_id(NEW_PHONE, user_id=owner_id)["name"], "Rina")
@@ -471,6 +299,7 @@ class WhatsAppSignupTests(unittest.TestCase):
         self.assertEqual((late["results"][0]["action"], late["results"][0]["reason"]), ("join_rejected", "already_claimed"))
         self.assertIn("already been used", self.replies()[-1])
         self.assertIsNone(self.database.get_whatsapp_signup("447700900999"))
+        self.assertIsNone(self.database.get_user("wa-447700900999@whatsapp.assistyca.com"))
 
 
 if __name__ == "__main__":

@@ -293,14 +293,8 @@
               <button class="menu-item" type="button" role="menuitem" data-admin-tab="clients">
                 Clients
               </button>
-              <button class="menu-item" type="button" role="menuitem" data-admin-tab="account-types">
-                Account types
-              </button>
-              <button class="menu-item" type="button" role="menuitem" data-admin-tab="preview">
-                Preview
-              </button>
-              <button class="menu-item" type="button" role="menuitem" data-admin-tab="simulator">
-                Simulator
+              <button class="menu-item" type="button" role="menuitem" data-admin-tab="feature-switches">
+                Features
               </button>
               <button class="menu-item" type="button" role="menuitem" data-admin-tab="turns">
                 Turns
@@ -397,7 +391,7 @@
             <div id="accountMenu" class="menu-popover is-hidden" role="menu">
               <button class="menu-item" type="button" data-menu-action="billing">Billing</button>
               <button class="menu-item" type="button" data-menu-action="pricing">Pricing</button>
-              <button class="menu-item" type="button" data-menu-action="personal-details">About your business</button>
+              <button class="menu-item" type="button" data-menu-action="personal-details">About your family</button>
               <button class="menu-item" type="button" data-menu-action="lists">Lists</button>
               <button class="menu-item" type="button" data-menu-action="receipts">Receipts</button>
               <button class="menu-item" type="button" data-menu-action="settings">Settings</button>
@@ -424,9 +418,6 @@
                 </button>
                 <button class="ghost-button small" type="button" data-agent-prompt="Send me a summary of my meetings every morning.">
                   Send me a summary of my meetings every morning
-                </button>
-                <button class="ghost-button small" type="button" data-agent-prompt="Generate smart replies for clients in my WhatsApp Business account.">
-                  Generate smart replies for clients in my WhatsApp Business account
                 </button>
                 <button id="agentReceiptsQuickAction" class="ghost-button small" type="button" data-agent-prompt="Pull all my receipts from last month.">
                   Pull all my receipts from last month
@@ -582,25 +573,26 @@
         <div id="turnsList" class="opportunities-list turns-list"></div>
       </section>
 
-      <section id="accountTypesPanel" class="tab-panel opportunities-panel account-types-panel is-hidden">
+      <section id="featureSwitchesPanel" class="tab-panel opportunities-panel feature-switches-panel is-hidden">
         <div class="panel-intro opportunities-intro">
           <div>
             <p class="eyebrow">Admin</p>
-            <h1>Account types</h1>
+            <h1>Features</h1>
             <p class="lede compact">
-              Who an account is for, and which features it may use. A feature switched off is gone from the
-              assistant for that kind of account, in the chat and on WhatsApp.
+              What the assistant can do. A switch turned off takes that feature away from every account, in the
+              chat and on WhatsApp; what people already saved stays where it is, and comes back when the switch
+              is turned on again.
             </p>
           </div>
 
           <div class="opportunities-actions">
-            <button id="accountTypesRefreshButton" class="ghost-button small" type="button">
+            <button id="featureSwitchesRefreshButton" class="ghost-button small" type="button">
               Refresh
             </button>
           </div>
         </div>
 
-        <div id="accountTypesContent" class="account-types-content" aria-live="polite"></div>
+        <div id="featureSwitchesContent" class="feature-switches-content" aria-live="polite"></div>
       </section>
 
       <section id="clientsPanel" class="tab-panel clients-panel is-hidden">
@@ -635,9 +627,9 @@
         <div class="panel-intro">
           <div>
             <p class="eyebrow">Better replies</p>
-            <h1>About your business</h1>
+            <h1>About your family</h1>
             <p class="lede compact">
-              Share a few simple details so your assistant can answer customers more like you would.
+              Share a few simple details so your assistant knows who is at home and what matters to you.
             </p>
           </div>
         </div>
@@ -645,23 +637,13 @@
         <div class="personal-details-layout">
           <article class="glass-card settings-card personal-details-form-card">
             <label class="field">
-              <span>What do you do?</span>
+              <span>Who is at home?</span>
               <textarea
                 id="profileBusinessSummaryInput"
                 rows="6"
-                placeholder="What kind of work do you do? Where do you work? What do customers usually come to you for?"
+                placeholder="Who lives with you, how old the kids are, which school or kindergarten they go to, and who else helps out."
               ></textarea>
-              <small class="field-help">Example: “We install and repair air conditioners for homes in central Israel.”</small>
-            </label>
-
-            <label class="field">
-              <span>Who are your customers?</span>
-              <textarea
-                id="profileCustomerNotesInput"
-                rows="5"
-                placeholder="Who usually contacts you, and what do they usually care about?"
-              ></textarea>
-              <small class="field-help">Example: “Most people contact us after hours about urgent repairs, prices, or appointment times.”</small>
+              <small class="field-help">Example: “Two kids, Maya (9) at Gordon school and Noam (5) at the kindergarten on Herzl. Grandma picks up on Tuesdays.”</small>
             </label>
 
             <label class="field">
@@ -671,7 +653,7 @@
                 rows="5"
                 placeholder="Anything you'd like your assistant to be careful about, say more often, or avoid saying?"
               ></textarea>
-              <small class="field-help">Example: “Be warm and clear. Don't promise same-day service until a person confirms it.”</small>
+              <small class="field-help">Example: “Noam has a peanut allergy. Never agree to a change of plans with the other parents before checking with me.”</small>
             </label>
           </article>
 
@@ -713,20 +695,20 @@
             </nav>
           </div>
           <div class="feature-page-header-actions">
-            <span id="featureStudioStatus" class="feature-status">WhatsApp setup</span>
+            <span id="featureStudioStatus" class="feature-status">non-active</span>
           </div>
         </header>
 
         <div id="featureStudioOverviewSection" class="feature-page-intro">
           <div class="feature-page-intro-main">
             <p class="eyebrow">Tool overview</p>
-            <h1 id="featureStudioTitle">WhatsApp Reply Assistant</h1>
+            <h1 id="featureStudioTitle">Scheduled Web Monitor</h1>
             <p id="featureStudioDescription" class="feature-page-description">
-              Turns incoming WhatsApp questions into quick, human-reviewed replies that help you quote faster and book more work.
+              Searches the web on a daily, weekly, or monthly schedule and sends source-backed alerts about the events, dates, and opportunities you care about.
             </p>
 
             <p id="featureStudioPitch" class="feature-page-description feature-page-pitch">
-              WhatsApp Reply Assistant helps you respond faster without sounding rushed. It turns incoming messages into clear, polished reply drafts that keep leads warm, reduce missed opportunities after hours, and make follow-up feel consistent and professional. You stay in control of every send while moving quicker, quoting with more confidence, and turning more conversations into booked work.
+              Scheduled Web Monitor keeps watch for the dates, opportunities, and public updates that matter to you. It turns a plain-language brief into recurring web research, then sends concise alerts with source links so you hear about events, holidays, deadlines, or niche developments before they slip by.
             </p>
 
             <div class="feature-page-actions">
@@ -736,13 +718,13 @@
             </div>
           </div>
 
-          <aside class="feature-page-example phone-shell whatsapp-preview" aria-label="WhatsApp conversation example">
+          <aside class="feature-page-example phone-shell whatsapp-preview" aria-label="Example alert">
             <div class="whatsapp-preview-topbar">
               <div class="whatsapp-preview-contact">
-                <span id="featureStudioExampleAvatar" class="whatsapp-avatar">MC</span>
+                <span id="featureStudioExampleAvatar" class="whatsapp-avatar">SM</span>
                 <div class="whatsapp-preview-contact-copy">
-                  <span id="featureStudioExampleSender" class="phone-name">Maya Cohen</span>
-                  <span id="featureStudioExampleMeta" class="whatsapp-preview-meta">After-hours quote request</span>
+                  <span id="featureStudioExampleSender" class="phone-name">Scheduled monitor</span>
+                  <span id="featureStudioExampleMeta" class="whatsapp-preview-meta">Weekly web search</span>
                 </div>
               </div>
 
@@ -750,227 +732,28 @@
 
             <div class="whatsapp-preview-body approval-thread">
               <div class="approval-field">
-                <span class="approval-label">Latest message</span>
+                <span class="approval-label">What you asked to watch</span>
                 <div id="featureStudioExampleMessage" class="example-message-thread"></div>
               </div>
 
               <div class="approval-field">
-                <span class="approval-label">Suggested reply</span>
+                <span class="approval-label">Example alert</span>
                 <div id="featureStudioExampleReply" class="bubble outgoing"></div>
               </div>
             </div>
 
             <div class="whatsapp-preview-footer">
               <span class="status-dot" aria-hidden="true"></span>
-              Manual send stays in your hands
+              Alerts land in your notifications
             </div>
           </aside>
         </div>
 
-        <section id="featureStudioActivationSection" class="feature-activation-grid is-hidden">
-          <header class="feature-activation-hero">
-            <div class="feature-activation-hero-copy">
-              <p class="eyebrow">WhatsApp setup</p>
-              <h2>Connect your WhatsApp number</h2>
-              <p class="feature-page-description">
-                We use this to watch for new customer messages and send approval alerts to your phone.
-              </p>
-
-              <div class="feature-activation-status-grid" aria-live="polite">
-                <article class="feature-activation-status-card">
-                  <p class="feature-activation-status-label">Number check</p>
-                  <h3 id="featureActivationNumberStatusTitle">Add your details</h3>
-                  <p id="featureActivationNumberStatusCopy" class="feature-activation-status-copy">
-                    Save the WABA ID, Phone Number ID, access token, and approval phone.
-                  </p>
-                </article>
-
-                <article class="feature-activation-status-card">
-                  <p class="feature-activation-status-label">Webhook</p>
-                  <h3 id="featureActivationWebhookStatusTitle">Waiting for setup</h3>
-                  <p id="featureActivationWebhookStatusCopy" class="feature-activation-status-copy">
-                    After you save, Assistyca will ask Meta to forward messages to this workspace.
-                  </p>
-                </article>
-
-                <article class="feature-activation-status-card">
-                  <p class="feature-activation-status-label">Live messages</p>
-                  <h3 id="featureActivationInboundStatusTitle">Waiting for the first live message</h3>
-                  <p id="featureActivationInboundStatusCopy" class="feature-activation-status-copy">
-                    Once someone messages your connected WhatsApp number, we’ll show that Assistyca received it here.
-                  </p>
-                </article>
-
-                <article class="feature-activation-status-card">
-                  <p class="feature-activation-status-label">Approval alerts</p>
-                  <h3 id="featureActivationOwnerStatusTitle">No approval alert sent yet</h3>
-                  <p id="featureActivationOwnerStatusCopy" class="feature-activation-status-copy">
-                    The first live message will trigger an approval alert to your phone.
-                  </p>
-                </article>
-              </div>
-
-              <p id="featureActivationWebhookHint" class="feature-activation-note is-hidden"></p>
-            </div>
-
-            <div class="feature-activation-hero-form">
-              <div id="whatsappGuidedConnect" class="whatsapp-guided-connect is-hidden">
-                <p class="whatsapp-guided-connect-copy">
-                  Connect straight from WhatsApp. You will sign in with Facebook and pick the
-                  number Assistyca should answer on. Nothing to copy or paste.
-                </p>
-                <button id="whatsappGuidedConnectButton" class="primary-button" type="button">
-                  Connect WhatsApp
-                </button>
-                <p id="whatsappGuidedConnectStatus" class="feature-activation-note is-hidden" role="status"></p>
-                <button
-                  id="whatsappManualToggle"
-                  class="text-button"
-                  type="button"
-                  aria-expanded="false"
-                  aria-controls="whatsappManualFields"
-                >
-                  Enter the details manually instead
-                </button>
-              </div>
-              <div id="whatsappManualFields" class="activation-form-grid">
-                <label class="field">
-                  <div class="field-label">
-                    <span>WhatsApp Business Account ID</span>
-                    <button
-                      id="featureActivationBusinessAccountIdHelpButton"
-                      class="field-help-button"
-                      type="button"
-                      aria-label="Where to find your WhatsApp Business Account ID"
-                    >
-                      ?
-                    </button>
-                  </div>
-                  <input
-                    id="featureActivationBusinessAccountId"
-                    type="text"
-                    inputmode="numeric"
-                    autocomplete="off"
-                    placeholder="123456789012345"
-                  />
-                  <small class="field-help">
-                    Meta path: Business Settings &gt; Accounts &gt; WhatsApp Accounts.
-                    <a
-                      class="field-help-link"
-                      href="https://business.facebook.com/latest/settings/whatsapp_account"
-                      target="_blank"
-                      rel="noreferrer"
-                    >
-                      Open Meta
-                    </a>
-                  </small>
-                  <span id="featureActivationBusinessAccountIdError" class="field-error" hidden></span>
-                </label>
-
-                <label class="field">
-                  <div class="field-label">
-                    <span>Phone number ID</span>
-                    <button
-                      id="featureActivationPhoneNumberIdHelpButton"
-                      class="field-help-button"
-                      type="button"
-                      aria-label="Where to find your Phone number ID"
-                    >
-                      ?
-                    </button>
-                  </div>
-                  <input
-                    id="featureActivationPhoneNumberId"
-                    type="text"
-                    inputmode="numeric"
-                    autocomplete="off"
-                    placeholder="123456789012345"
-                  />
-                  <small class="field-help">Copy the Phone Number ID Meta shows for this WhatsApp number.</small>
-                  <span id="featureActivationPhoneNumberIdError" class="field-error" hidden></span>
-                </label>
-
-                <section
-                  id="featureActivationCustomerNumberCard"
-                  class="feature-activation-customer-number"
-                  aria-live="polite"
-                  data-state="missing"
-                >
-                  <p class="feature-activation-customer-number-label">Customer WhatsApp number</p>
-                  <strong id="featureActivationCustomerNumberValue">Not shown yet</strong>
-                  <p id="featureActivationCustomerNumberHelp">
-                    This is the real number customers should message. The Phone Number ID above is only a Meta ID.
-                  </p>
-                </section>
-
-                <label class="field">
-                  <span>Access token</span>
-                  <input
-                    id="featureActivationAccessToken"
-                    type="password"
-                    autocomplete="off"
-                    placeholder="Paste a WhatsApp access token"
-                  />
-                  <small id="featureActivationAccessTokenHelp" class="field-help">Paste a token with access to this WABA and phone number.</small>
-                  <span id="featureActivationAccessTokenError" class="field-error" hidden></span>
-                </label>
-
-                <label class="field">
-                  <span>Approval phone number</span>
-                  <input
-                    id="featureActivationOwnerWaId"
-                    type="text"
-                    inputmode="numeric"
-                    autocomplete="off"
-                    placeholder="15551234567"
-                  />
-                  <small class="field-help">We’ll send suggested replies here for review.</small>
-                  <span id="featureActivationOwnerWaIdError" class="field-error" hidden></span>
-                </label>
-              </div>
-
-              <div class="feature-page-actions feature-activation-actions">
-                <section
-                  id="featureActivationResult"
-                  class="feature-activation-result is-hidden"
-                  role="status"
-                  aria-live="polite"
-                >
-                  <span id="featureActivationResultIcon" class="feature-activation-result-icon" aria-hidden="true"></span>
-                  <span id="featureActivationResultText" class="feature-activation-result-text"></span>
-                </section>
-                <button id="featureStudioActivationButton" class="primary-button" type="button">
-                  Save setup
-                </button>
-                <button
-                  id="featureActivationDisconnectButton"
-                  class="ghost-button danger"
-                  type="button"
-                  hidden
-                >
-                  Disconnect WhatsApp
-                </button>
-              </div>
-            </div>
-          </header>
-        </section>
-
         <div id="toolEditorSection" class="studio-fields">
-          <section id="featureStudioWhatsAppHealthNotice" class="feature-inline-notice is-hidden" aria-live="polite">
-            <p id="featureStudioWhatsAppHealthNoticeTitle" class="feature-inline-notice-title"></p>
-            <p id="featureStudioWhatsAppHealthNoticeCopy" class="feature-inline-notice-copy"></p>
-          </section>
-
           <div class="editor-activation-row">
             <div class="feature-page-actions editor-activation-actions" aria-label="Tool actions">
               <button id="featureStudioEditorToggleButton" class="primary-button" type="button">
                 Activate tool
-              </button>
-              <button id="featureStudioWhatsAppSampleButton" class="ghost-button" type="button" hidden>
-                Send sample
-              </button>
-              <button id="featureStudioWhatsAppHistoryButton" class="ghost-button" type="button" hidden>
-                View history
               </button>
               <button id="featureStudioMonitorRunButton" class="ghost-button" type="button" hidden>
                 Test now
@@ -1061,21 +844,6 @@
                 </select>
               </label>
 
-              <div id="deliveryPlatformManager" class="delivery-platform-manager is-hidden">
-                <div class="delivery-platform-head">
-                  <span>Platforms</span>
-                  <button
-                    id="deliveryPlatformAddButton"
-                    class="ghost-button small delivery-platform-add"
-                    type="button"
-                    aria-controls="deliveryPlatformMenu"
-                    aria-expanded="false"
-                  >+ Add platform</button>
-                </div>
-                <div id="deliveryPlatformList" class="delivery-platform-list" role="list"></div>
-                <div id="deliveryPlatformMenu" class="delivery-platform-menu is-hidden" role="menu" hidden></div>
-              </div>
-
               <div class="monitor-delivery-detail">
                 <div id="monitorEmailField" class="field compact monitor-delivery-panel is-active" aria-hidden="false">
                   <span>Email delivery</span>
@@ -1096,74 +864,11 @@
                 <div id="monitorWhatsAppField" class="field compact monitor-delivery-panel" aria-hidden="true">
                   <span>WhatsApp delivery</span>
                   <div class="monitor-delivery-surface">
-                    <p class="monitor-delivery-caption">Using the connected workspace number</p>
-                    <div class="monitor-delivery-inline">
-                      <p class="monitor-delivery-value">WhatsApp on file</p>
-                      <button id="monitorWhatsAppSetupButton" class="ghost-button small monitor-delivery-link" type="button" disabled>Open setup</button>
-                    </div>
+                    <p class="monitor-delivery-caption">Alerts will go to</p>
+                    <p class="monitor-delivery-value">Your linked WhatsApp number</p>
                   </div>
                 </div>
               </div>
-            </div>
-          </article>
-
-          <article id="reengagementScheduleCard" class="glass-card config-card is-hidden">
-            <div class="card-head">
-              <h3>Schedule</h3>
-            </div>
-
-            <div class="monitor-settings-grid reengagement-settings-grid">
-              <div class="monitor-schedule-controls">
-                <label class="field compact monitor-schedule-inline-field">
-                  <span class="monitor-schedule-inline-copy">Run every</span>
-                  <input
-                    id="reengagementIntervalDays"
-                    type="number"
-                    min="1"
-                    max="365"
-                    inputmode="numeric"
-                    aria-label="Run every number of days"
-                  />
-                  <span class="monitor-schedule-inline-copy">days</span>
-                </label>
-
-                <label class="field compact monitor-schedule-inline-field monitor-schedule-time-field">
-                  <span class="monitor-schedule-inline-copy">Run at</span>
-                  <input
-                    id="reengagementScheduleTime"
-                    type="time"
-                    aria-label="Run at"
-                  />
-                  <span id="reengagementScheduleTimezoneLabel" class="monitor-schedule-inline-meta">Workspace time</span>
-                </label>
-
-                <label class="field compact monitor-schedule-inline-field reengagement-inactivity-field">
-                  <span class="monitor-schedule-inline-copy">Inactive for more than</span>
-                  <input
-                    id="reengagementInactivityValue"
-                    type="number"
-                    min="1"
-                    max="10000"
-                    inputmode="numeric"
-                    aria-label="Inactive for more than"
-                  />
-                  <select id="reengagementInactivityUnit" aria-label="Inactivity unit">
-                    <option value="minutes">minutes</option>
-                    <option value="hours">hours</option>
-                    <option value="days">days</option>
-                    <option value="months">months</option>
-                  </select>
-                </label>
-              </div>
-
-              <div id="reengagementNextRun" class="monitor-next-run" hidden>
-                <span>Next run date</span>
-                <strong id="reengagementNextRunValue">Activate to schedule</strong>
-              </div>
-
-              <p class="monitor-delivery-caption reengagement-context-note">
-                Drafts use the latest 100 saved messages.
-              </p>
             </div>
           </article>
 
@@ -1188,340 +893,8 @@
             </div>
           </article>
 
-          <article id="featureToneCard" class="glass-card config-card">
-            <div class="card-head">
-              <h3>Tone</h3>
-            </div>
-
-            <label class="field">
-              <span>How it should sound</span>
-              <textarea
-                id="toneGuidance"
-                rows="4"
-                placeholder="Warm, direct, and practical. Keep replies human, short, and grounded."
-              ></textarea>
-            </label>
-
-            <label class="field compact">
-              <span>Reply style</span>
-              <select id="responseStyle">
-                <option value="short">Short</option>
-                <option value="balanced">Balanced</option>
-                <option value="detailed">Detailed</option>
-              </select>
-            </label>
-          </article>
-
-          <article id="featureRulesCard" class="glass-card config-card">
-            <div class="card-head">
-              <h3>Reply rules</h3>
-            </div>
-
-            <label class="field">
-              <span>What it should do</span>
-              <textarea
-                id="replyRules"
-                rows="4"
-                placeholder="Acknowledge the request first. Ask one clarifying question only when needed. Never guess prices or availability."
-              ></textarea>
-            </label>
-
-            <label class="field">
-              <span>Escalation rules</span>
-              <textarea
-                id="escalationGuidance"
-                rows="3"
-                placeholder="Hand off when the customer is upset, the answer needs a human decision, or the request is urgent."
-              ></textarea>
-            </label>
-          </article>
-
-          <article id="featureContextCard" class="glass-card config-card">
-            <div class="card-head">
-              <h3>Business context</h3>
-            </div>
-
-            <label class="field">
-              <span>What it should know</span>
-              <textarea
-                id="businessNotes"
-                rows="3"
-                placeholder="Service area, hours, pricing hints, and any details the agent should know before replying."
-              ></textarea>
-              <small class="field-help">We’ll also use the details from your business page automatically.</small>
-            </label>
-          </article>
         </div>
 
-        <section id="whatsappHistorySection" class="whatsapp-history-page is-hidden" aria-live="polite">
-          <header class="whatsapp-history-header">
-            <div>
-              <p class="eyebrow">Saved WhatsApp history</p>
-              <h2>Conversations</h2>
-            </div>
-            <div class="whatsapp-history-header-actions">
-              <label class="ghost-button small whatsapp-history-file-button">
-                <input id="whatsappHistoryFileInput" type="file" accept=".txt,text/plain" multiple />
-                <span>Choose WhatsApp .txt export</span>
-              </label>
-              <p class="whatsapp-history-import-help">Only .txt files exported from WhatsApp are supported.</p>
-            </div>
-          </header>
-
-          <p id="whatsappHistoryImportStatus" class="whatsapp-history-import-status" aria-live="polite"></p>
-
-          <div id="whatsappHistoryDiagnostics" class="whatsapp-history-diagnostics is-hidden"></div>
-
-          <div class="whatsapp-history-layout">
-            <aside class="whatsapp-history-conversation-panel">
-              <div id="whatsappHistoryConversationList" class="whatsapp-history-conversation-list" role="list"></div>
-            </aside>
-
-            <article class="whatsapp-history-thread-panel">
-              <div class="whatsapp-history-thread-head">
-                <div class="whatsapp-history-contact">
-                  <span id="whatsappHistorySelectedAvatar" class="whatsapp-avatar">WA</span>
-                  <div>
-                    <h3 id="whatsappHistorySelectedTitle">Select a conversation</h3>
-                    <p id="whatsappHistorySelectedMeta" class="whatsapp-history-selected-meta"></p>
-                  </div>
-                </div>
-                <div class="whatsapp-history-thread-actions">
-                  <span id="whatsappHistorySelectedCount" class="feature-status">0 messages</span>
-                  <button id="whatsappHistoryDeleteButton" class="ghost-button danger small" type="button">
-                    Delete
-                  </button>
-                </div>
-              </div>
-
-              <div id="whatsappHistoryMessages" class="whatsapp-history-messages"></div>
-            </article>
-          </div>
-        </section>
-      </section>
-
-      <section id="previewPanel" class="tab-panel is-hidden">
-        <div class="panel-intro">
-          <div>
-            <p class="eyebrow">Preview</p>
-            <h1>See the draft before it goes live.</h1>
-            <p class="lede compact">
-              Clients can test a scenario, review the generated instruction, and copy
-              the compiled prompt if needed.
-            </p>
-          </div>
-        </div>
-
-        <div class="card-grid preview-grid">
-          <article class="glass-card preview-card">
-            <div class="card-head">
-              <h3>Choose a conversation</h3>
-            </div>
-
-            <label class="field compact">
-              <span>Test scenario</span>
-              <select id="scenarioSelect">
-                <option value="approval">Hot lead asking for a quote</option>
-                <option value="availability">New lead asking about availability</option>
-                <option value="pricing">Customer asking about price</option>
-                <option value="reschedule">Existing client wants to reschedule</option>
-                <option value="urgent">Urgent request that should escalate</option>
-              </select>
-            </label>
-
-            <div class="phone-shell">
-              <div class="phone-status">
-                <span id="approvalSender" class="phone-name">Jim Hopper</span>
-                <span class="phone-badge">WhatsApp style</span>
-              </div>
-
-              <div class="approval-thread">
-                <div class="approval-field">
-                  <span class="approval-label">Latest message</span>
-                  <div class="bubble incoming" id="scenarioMessage"></div>
-                </div>
-                <div class="approval-field">
-                  <span class="approval-label">Suggested reply</span>
-                  <div class="bubble outgoing" id="responseMessage"></div>
-                </div>
-              </div>
-
-              <div class="approval-actions">
-                <button class="primary-button small" type="button">Send</button>
-                <button class="ghost-button small" type="button">Edit</button>
-              </div>
-
-              <p class="approval-note">Edit stays manual in this preview.</p>
-            </div>
-          </article>
-
-          <article class="glass-card preview-card">
-            <div class="card-head">
-              <h3>The instruction sent to the agent</h3>
-            </div>
-
-            <div class="preview-actions">
-              <button class="ghost-button" id="copyButton" type="button">Copy text</button>
-            </div>
-
-            <details class="prompt-details">
-              <summary>Show compiled prompt</summary>
-              <pre id="compiledPrompt"></pre>
-            </details>
-          </article>
-        </div>
-      </section>
-
-      <section id="simulatorPanel" class="tab-panel is-hidden">
-        <div class="panel-intro">
-          <div>
-            <p class="eyebrow">Simulator</p>
-            <h1>Queue mock WhatsApp messages locally.</h1>
-            <p class="lede compact">
-              Build a pending approval without a server. The inbox, reply draft, and send
-              action all stay inside your browser.
-            </p>
-          </div>
-          <div class="panel-spotlight">
-            <span class="status-pill">
-              <span class="status-dot"></span>
-              Browser-local only
-            </span>
-          </div>
-        </div>
-
-        <div class="card-grid simulator-grid">
-          <article class="glass-card preview-card simulator-compose-card">
-            <div class="card-head">
-              <h3>Create a mock inbound message</h3>
-              <span class="feature-status">Local demo</span>
-            </div>
-
-            <label class="field compact">
-              <span>Example scenario</span>
-              <select id="simulatorPresetSelect">
-                <option value="approval">Hot lead asking for a quote</option>
-                <option value="availability">New lead asking about availability</option>
-                <option value="pricing">Customer asking about price</option>
-                <option value="reschedule">Existing client wants to reschedule</option>
-                <option value="urgent">Urgent request that should escalate</option>
-              </select>
-            </label>
-
-            <div class="simulator-form-grid">
-              <label class="field">
-                <span>Sender name</span>
-                <input id="simulatorSenderNameInput" type="text" placeholder="Jim Hopper" />
-              </label>
-
-              <label class="field">
-                <span>WhatsApp ID</span>
-                <input id="simulatorSenderWaIdInput" type="text" placeholder="15551230000" />
-              </label>
-
-              <label class="field">
-                <span>Latest message</span>
-                <textarea
-                  id="simulatorMessageInput"
-                  rows="4"
-                  placeholder="Hey, are you available today?"
-                ></textarea>
-              </label>
-
-              <label class="field">
-                <span>Conversation context</span>
-                <textarea
-                  id="simulatorContextInput"
-                  rows="5"
-                  placeholder="Customer asked about availability last week.
-Owner said afternoons are easier."
-                ></textarea>
-              </label>
-
-              <label class="field compact">
-                <span>Edit URL</span>
-                <input
-                  id="simulatorApprovalUrlInput"
-                  type="url"
-                  placeholder="https://approval.example.com/review"
-                />
-              </label>
-            </div>
-
-            <div class="preview-actions">
-              <button id="simulatorQueueButton" class="primary-button" type="button">
-                Queue approval
-              </button>
-              <button id="simulatorLoadSampleButton" class="ghost-button" type="button">
-                Load sample
-              </button>
-            </div>
-
-            <p class="approval-note">
-              Nothing is sent to WhatsApp. This creates a mock approval record in your browser.
-            </p>
-          </article>
-
-          <article class="glass-card preview-card simulator-inbox-card">
-            <div class="card-head">
-              <h3>Approval inbox</h3>
-              <span id="simulatorQueueCount" class="feature-status">0 pending</span>
-            </div>
-
-            <div id="simulatorQueueList" class="simulator-queue"></div>
-          </article>
-
-          <article class="glass-card preview-card simulator-detail-card">
-            <div class="card-head">
-              <h3 id="simulatorDetailTitle">Select a queued approval</h3>
-              <span id="simulatorDetailStatus" class="feature-status">Empty</span>
-            </div>
-
-            <div class="phone-shell simulator-shell">
-              <div class="phone-status">
-                <span id="simulatorDetailSender" class="phone-name">No sender</span>
-                <span class="phone-badge">Local approval</span>
-              </div>
-
-              <div class="approval-thread">
-                <div class="approval-field">
-                  <span class="approval-label">Latest message</span>
-                  <div id="simulatorDetailMessage" class="bubble incoming">
-                    Queue a message to see it here.
-                  </div>
-                </div>
-
-                <div class="approval-field">
-                  <span class="approval-label">Suggested reply</span>
-                  <textarea
-                    id="simulatorReplyInput"
-                    class="simulator-reply"
-                    rows="4"
-                    placeholder="Suggested reply will appear here."
-                  ></textarea>
-                </div>
-              </div>
-
-              <div class="approval-actions">
-                <button id="simulatorEditButton" class="ghost-button small" type="button">
-                  Edit
-                </button>
-                <button id="simulatorSendButton" class="primary-button small" type="button">
-                  Send
-                </button>
-              </div>
-
-              <p id="simulatorApprovalNote" class="approval-note">
-                Edit keeps the reply local in this simulator.
-              </p>
-            </div>
-
-            <div class="simulator-context-block">
-              <span class="approval-label">Conversation context</span>
-              <div id="simulatorContextList" class="simulator-context-list"></div>
-            </div>
-          </article>
-        </div>
       </section>
 
       <section id="billingPanel" class="tab-panel billing-page is-hidden">
@@ -1758,7 +1131,7 @@ Owner said afternoons are easier."
             <article class="glass-card settings-card">
               <label class="field">
                 <span>Display name</span>
-                <input id="displayNameInput" type="text" placeholder="Handyman team" />
+                <input id="displayNameInput" type="text" placeholder="Your name" />
               </label>
 
               <label class="field">
@@ -1873,6 +1246,6 @@ Owner said afternoons are easier."
 
     <script src="https://accounts.google.com/gsi/client" async defer data-google-identity-services="true"></script>
     <script src="./connection-identity.js?v=1"></script>
-    <script src="./app.js?v=223"></script>
+    <script src="./app.js?v=224"></script>
   </body>
 </html>

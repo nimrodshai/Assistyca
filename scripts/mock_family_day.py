@@ -292,11 +292,11 @@ class Run:
             owner_names=[user.get("displayName") or ""],
         )
         flow = describe_chat_flow(
-            account_type=user.get("accountType") or user.get("account_type"), profile=profile, connected=[],
+            profile=profile, connected=[],
             today=SUNDAY.isoformat(), household_block=block,
         )
         return {
-            "accountOpen": True, "userId": uid, "accountType": user.get("accountType") or user.get("account_type"),
+            "accountOpen": True, "userId": uid,
             "gettingToKnow": profile.get("gettingToKnow"), "weekReady": flow.get("weekReady"),
             "weekGaps": flow.get("weekGaps"), "flow": flow.get("flow") or flow.get("stage"),
             "members": members, "activities": activities,
@@ -304,8 +304,8 @@ class Run:
 
     def setup(self) -> None:
         owner = self.family["owner"]
-        self.db.start_web_registration(wa_id=owner["phone"], name=owner["name"], business=self.family["line"], kind="family")
-        welcome = registration_welcome_plan(name=owner["name"], kind="family")[0].message
+        self.db.start_web_registration(wa_id=owner["phone"], name=owner["name"])
+        welcome = registration_welcome_plan(name=owner["name"])[0].message
         self.db.append_whatsapp_signup_message(wa_id=owner["phone"], role="assistant", text=welcome)
         self.transcript.append({"role": "assistant", "text": welcome})
         self.say(f"welcome: {welcome!r}")
@@ -431,9 +431,7 @@ class Run:
 def main() -> int:
     only = set(sys.argv[1:])
     families = [f for f in FAMILIES if not only or f["id"] in only]
-    store_root = Path(tempfile.mkdtemp(prefix="mock-families-")) / "portal-whatsapp"
     environment = {
-        "PORTAL_WHATSAPP_STORE_ROOT": str(store_root),
         "WHATSAPP_APP_SECRET": SIMULATED_APP_SECRET,
         "ASSISTYCA_WHATSAPP_PHONE_NUMBER_ID": SIMULATED_PLATFORM_PHONE_NUMBER_ID,
         "ASSISTYCA_WHATSAPP_ACCESS_TOKEN": "simulator-token",
@@ -443,7 +441,6 @@ def main() -> int:
     }
     patches = [
         mock.patch("packages.infrastructure.whatsapp_agent_chat.send_whatsapp_message", side_effect=capture_send),
-        mock.patch("packages.infrastructure.whatsapp_portal_service.send_whatsapp_message", side_effect=capture_send),
         mock.patch("packages.infrastructure.whatsapp_agent_chat.send_whatsapp_typing_indicator", return_value=None),
         mock.patch("packages.infrastructure.scheduled_actions.send_whatsapp_notification", side_effect=capture_send),
         mock.patch("packages.infrastructure.notification_delivery.send_whatsapp_notification", side_effect=capture_send),

@@ -162,7 +162,7 @@ class InboxWatchScheduler:
                 quiet_start=self.config.quiet_start_hour,
                 quiet_end=self.config.quiet_end_hour,
             )
-            if not account_feature_allowed(self.database, user_id=user_id, feature_id="inbox_watch"):
+            if not account_feature_allowed(self.database, feature_id="inbox_watch"):
                 # Switched off for this kind of account: checked again later,
                 # so switching it back on picks the account up without a reconnect.
                 paused += 1

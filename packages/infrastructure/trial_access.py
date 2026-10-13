@@ -17,7 +17,8 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 
-DEFAULT_TRIAL_DAYS = 2
+# Two weeks free for every new account, then it pays (decided 2026-10-13).
+DEFAULT_TRIAL_DAYS = 14
 
 
 def normalize_text(value: Any) -> str:

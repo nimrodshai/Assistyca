@@ -23,8 +23,7 @@ REQUIRED_FILES = [
     PACKAGES_DIR / "tools" / "__init__.py",
     PACKAGES_DIR / "tools" / "scheduled_monitor" / "__init__.py",
     PACKAGES_DIR / "tools" / "scheduled_monitor" / "monitor.py",
-    PACKAGES_DIR / "tools" / "whatsapp_reply_approval" / "__init__.py",
-    PACKAGES_DIR / "tools" / "whatsapp_reply_approval" / "server.py",
+    PACKAGES_DIR / "infrastructure" / "whatsapp_messaging.py",
 ]
 
 FORBIDDEN_PATHS = [
@@ -33,9 +32,7 @@ FORBIDDEN_PATHS = [
     PACKAGES_DIR / "portal_auth" / "__init__.py",
     PACKAGES_DIR / "portal_auth" / "server.py",
     PACKAGES_DIR / "portal_db.py",
-    PACKAGES_DIR / "whatsapp_reply_approval",
-    PACKAGES_DIR / "whatsapp_reply_approval" / "__init__.py",
-    PACKAGES_DIR / "whatsapp_reply_approval" / "server.py",
+    PACKAGES_DIR / "whatsapp_messaging.py",
 ]
 
 

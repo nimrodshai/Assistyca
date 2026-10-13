@@ -4,7 +4,7 @@ Phase 4 of the conversation runtime: one record per turn, three numbers on a
 page, one alert, the judge in the pipeline, and a weekly sample of real turns.
 The failure that started this work - a reply cut off by a token budget, logged
 as a parse error with no text - would have been visible on the page and would
-have raised the alert before a customer saw it.
+have raised the alert before a person saw it.
 
 ## One record per turn
 
@@ -34,7 +34,7 @@ message (`/api/agent/proposals/run`, `/api/agent/answer/compose`,
 `/api/agent/recover`), so a lookup that failed and the recovery reply the
 person finally got are on the same row as the turn that produced them. A call
 that carries no id gets its own row: a lookup the browser ran from a card is
-`tool_only`, counted for tool errors but not as a customer turn.
+`tool_only`, counted for tool errors but not as a person's turn.
 
 `fallback_used` is true when the reply came from the recovery composer or the
 assembled sentence instead of the normal path. The reason is the situation
@@ -46,7 +46,7 @@ was assembled from the report.
 `GET /api/admin/agent-turns` and **Admin > Turns** in the portal show, over the
 last day and the last week:
 
-- **Fallback rate** - fallback replies over customer turns, with the reasons.
+- **Fallback rate** - fallback replies over people's turns, with the reasons.
 - **Incomplete-response rate** - turns where a model reply came back cut off.
 - **Tool error rate** - failed tool calls over all tool calls, by error code.
 
@@ -105,7 +105,7 @@ the best assistants actually meet.
 Every model call a turn makes writes its usage row with the turn's `channel`
 and `turn_id` (`usage_context` in `openai_api.py`, entered by the recorder),
 so **Admin > Clients** can say what this month cost the house in total and per
-client, split into web, WhatsApp and background work. A conversation row from
+account, split into web, WhatsApp and background work. A conversation row from
 before rows carried a channel is placed by the turn whose time window holds
 it; one with no such turn shows as untracked.
 

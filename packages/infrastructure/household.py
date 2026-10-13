@@ -23,7 +23,6 @@ from datetime import timedelta
 from typing import Any
 from typing import Iterable
 
-ACCOUNT_KINDS = ("business", "family")
 MEMBER_ROLES = ("partner", "child", "other")
 # Who may change the week: the two parents, which is the account holder and
 # the partner. A grandparent who joined gets the pickups that are theirs and
@@ -87,10 +86,6 @@ def name_key(value: Any) -> str:
     """How two spellings of one name are told to be the same person."""
 
     return clean(value, MAX_NAME_LENGTH).casefold()
-
-
-def normalize_account_kind(value: Any) -> str:
-    return "family" if clean(value).lower() == "family" else "business"
 
 
 def normalize_role(value: Any) -> str:
@@ -840,7 +835,6 @@ def describe_household(
                 "at": found["at"], "inside": describe_work_hours(found["work"]), "days": found["days"],
             }
     described: dict[str, Any] = {} if group_name else {
-        "accountKind": normalize_account_kind(profile.get("accountKind")),
         "gettingToKnow": {
             "status": clean(profile.get("gettingToKnow")) or "not_started",
             "askAgainOn": clean(profile.get("askAgainOn")) or None,
@@ -921,15 +915,7 @@ def describe_household(
     return described
 
 
-def should_describe_household(profile: dict[str, Any] | None, members: list[Any], activities: list[Any]) -> bool:
-    """A family account always has the block; any other account once it
-    keeps someone or something, so a business owner's partner is known too."""
-
-    return normalize_account_kind((profile or {}).get("accountKind")) == "family" or bool(members) or bool(activities)
-
-
 __all__ = [
-    "ACCOUNT_KINDS",
     "GETTING_TO_KNOW_STATUSES",
     "INVITE_TTL_DAYS",
     "MEMBER_THREAD_PREFIX",
@@ -967,13 +953,11 @@ __all__ = [
     "name_key",
     "next_birthday",
     "normalize_birthday",
-    "normalize_account_kind",
     "normalize_days",
     "normalize_email_address",
     "normalize_role",
     "normalize_time",
     "own_week_gaps",
-    "should_describe_household",
     "weekday_code",
     "week_is_ready",
     "week_setup_gaps",

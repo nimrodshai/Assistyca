@@ -357,7 +357,7 @@ class GroupLookupTests(unittest.TestCase):
 
 class GroupSendTests(unittest.TestCase):
     def test_a_group_message_is_addressed_to_the_group(self) -> None:
-        from packages.tools.whatsapp_reply_approval.server import send_whatsapp_message
+        from packages.infrastructure.whatsapp_messaging import send_whatsapp_message
 
         class Response:
             def __enter__(self):
@@ -370,7 +370,7 @@ class GroupSendTests(unittest.TestCase):
                 return b'{"messages":[{"id":"wamid.sent"}]}'
 
         with mock.patch(
-            "packages.tools.whatsapp_reply_approval.server.urllib_request.urlopen",
+            "packages.infrastructure.whatsapp_messaging.urllib_request.urlopen",
             return_value=Response(),
         ) as urlopen:
             sent = send_whatsapp_message(
@@ -388,7 +388,7 @@ class GroupSendTests(unittest.TestCase):
         self.assertEqual(body["to"], "GROUP1")
 
     def test_buttons_are_refused_rather_than_sent_into_a_group(self) -> None:
-        from packages.tools.whatsapp_reply_approval.server import send_whatsapp_message
+        from packages.infrastructure.whatsapp_messaging import send_whatsapp_message
 
         with self.assertRaises(RuntimeError):
             send_whatsapp_message(

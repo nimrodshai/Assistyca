@@ -135,42 +135,15 @@ class PortalStaticPageTests(unittest.TestCase):
             markup = response.read().decode("utf-8")
 
         self.assertNotIn("http-equiv=\"refresh\"", markup)
-        # Who the assistant is for is asked here, not on the registration page:
-        # both doors lead to /register carrying the answer.
-        self.assertIn('href="/register/business"', markup)
-        self.assertIn('href="/register/family"', markup)
+        # One door, for families: the business side is gone.
+        self.assertNotIn('href="/register/business"', markup)
+        self.assertNotIn('class="panel business"', markup)
+        self.assertIn('href="/register"', markup)
         self.assertIn('href="/portal/"', markup)
         self.assertIn('href="/privacy.html"', markup)
         self.assertIn('href="/about"', markup)
         self.assertIn('<link rel="canonical" href="https://assistyca.com/" />', markup)
         self.assertNotIn("noindex", markup)
-
-    def test_the_landing_page_speaks_to_families_as_much_as_to_businesses(self) -> None:
-        """The top of the page is for everyone; below it, a family and a business each get their own.
-
-        A switch under the phone picks who is reading. Only what sits beneath it
-        changes - the example conversation, what it helps with, and the way in,
-        which carries the choice into the registration. The switch is CSS only:
-        the landing page carries no script.
-        """
-        markup = (self.root / "index.html").read_text(encoding="utf-8")
-
-        self.assertNotIn("Small business assistant", markup)
-        self.assertIn("Your life, organized.", markup)
-
-        self.assertIn('for="for-family"', markup)
-        self.assertIn('for="for-business"', markup)
-        family = re.search(r'<div class="panel family">.*?(?=<div class="panel business">)', markup, re.S)
-        business = re.search(r'<div class="panel business">.*?</section>', markup, re.S)
-        self.assertIsNotNone(family, "the family half should be on the page")
-        self.assertIsNotNone(business, "the business half should be on the page")
-        self.assertIn('href="/register/family"', family.group(0))
-        self.assertNotIn("/register/business", family.group(0))
-        self.assertIn('href="/register/business"', business.group(0))
-        self.assertNotIn("/register/family", business.group(0))
-
-        # Nothing goes out without a yes, and the business example says so.
-        self.assertIn("for approval first", business.group(0))
 
     def test_landing_page_assets_are_served(self) -> None:
         markup = (self.root / "index.html").read_text(encoding="utf-8")
@@ -237,140 +210,6 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn("function buildAgentMailboxContext", script)
         self.assertIn("mailboxes: buildAgentMailboxContext(),", script)
         self.assertIn("getConnectedMailboxForProvider(EMAIL_PROVIDER_OUTLOOK)", script)
-
-    def test_reengagement_demo_results_use_completion_popup_not_editor_card(self) -> None:
-        html = (self.root / "portal" / "index.html").read_text(encoding="utf-8")
-        script = (self.root / "portal" / "app.js").read_text(encoding="utf-8")
-        styles = (self.root / "portal" / "styles.css").read_text(encoding="utf-8")
-
-        self.assertNotIn('id="reengagementDemoResultsCard"', html)
-        self.assertNotIn('id="reengagementDemoResultsSummary"', html)
-        self.assertNotIn('id="reengagementDemoResultsList"', html)
-        self.assertIn('id="authAlertBody"', html)
-        self.assertIn("function formatReengagementSkippedSummary", script)
-        self.assertIn("skippedConversations", script)
-        self.assertIn("function formatReengagementCheckedConversationsLabel", script)
-        self.assertIn("No saved conversations are available yet", script)
-        self.assertNotIn("WhatsApp delivery also failed", script)
-        self.assertNotIn("Demo results ready", script)
-        self.assertIn("state.reengagementDemoResult =", script)
-        self.assertIn("const errorPayload = error?.payload", script)
-        self.assertIn("const errorRun = errorPayload.run", script)
-        self.assertIn("function createReengagementDemoAlertBody", script)
-        self.assertIn("function openReengagementDemoResultsAlert", script)
-        self.assertIn('label.textContent = "Draft";', script)
-        self.assertIn("textarea.rows = 2;", script)
-        self.assertIn("header.append(titleGroup);", script)
-        self.assertIn("function resizeReengagementDemoDraftTextarea", script)
-        self.assertIn("scheduleReengagementDemoDraftResize(textarea);", script)
-        self.assertIn("function formatReengagementElapsedDuration", script)
-        self.assertIn("function getReengagementDemoCandidateInactiveMilliseconds", script)
-        self.assertIn("return inactiveLabel ? `Inactive for ${inactiveLabel}` : \"Inactive\";", script)
-        self.assertNotIn("return `Inactive for ${formatReengagementInactivityLabel(settings)}`;", script)
-        self.assertNotIn("Last active ${lastMessageAt}", script)
-        self.assertNotIn("Fallback draft", script)
-        self.assertNotIn("AI draft", script)
-        self.assertNotIn("used for draft context", script)
-        self.assertNotIn("reengagement-demo-preview", script)
-        self.assertNotIn("reengagement-demo-badge", script)
-        self.assertNotIn('badge.textContent = "Matched";', script)
-        self.assertNotIn("saved ${messageCount === 1 ? \"message\" : \"messages\"}", script)
-        self.assertIn("getReengagementDemoAlertIcon(run)", script)
-        self.assertIn("openReengagementDemoResultsAlert(", script)
-        self.assertIn('variant: hasCandidateResults ? "demo-results" : "default"', script)
-        self.assertIn("openAuthAlert(", script)
-        self.assertIn('.auth-alert-dialog[data-variant="demo-results"]', styles)
-        self.assertIn(".reengagement-demo-alert-results", styles)
-
-    def test_whatsapp_delivery_uses_platform_list(self) -> None:
-        html = (self.root / "portal" / "index.html").read_text(encoding="utf-8")
-        script = (self.root / "portal" / "app.js").read_text(encoding="utf-8")
-        styles = (self.root / "portal" / "styles.css").read_text(encoding="utf-8")
-
-        self.assertIn('id="deliveryPlatformManager"', html)
-        self.assertIn('id="deliveryPlatformList"', html)
-        self.assertNotIn('data-delivery-platform-option="telegram"', html)
-        self.assertIn('id="monitorWhatsAppSetupButton"', html)
-        self.assertNotIn('id="featureStudioWhatsAppDetailsButton"', html)
-        self.assertNotIn(">WhatsApp details<", html)
-        self.assertNotIn('<option value="both">WhatsApp + Telegram</option>', html)
-        self.assertIn("function renderDeliveryPlatformList", script)
-        self.assertIn("elements.deliveryPlatformMenu.replaceChildren(...buttons)", script)
-        self.assertIn("function normalizeFeatureWhatsAppReplyAssistantSettings", script)
-        self.assertIn('deliveryChannels: hasExplicitDelivery ? normalized.deliveryChannels : ["portal"]', script)
-        self.assertIn('return WHATSAPP_TOOL_PLATFORM_OPTIONS.filter((option) => ["whatsapp", "telegram", "portal"].includes(option.id))', script)
-        self.assertIn('id: "portal"', script)
-        self.assertIn('kind: "whatsapp-reply-suggestion"', script)
-        self.assertIn('/api/approvals?status=pending&delivery=portal', script)
-        self.assertIn('data-agent-whatsapp-action', script)
-        self.assertIn('saveAndActivateAgentWhatsAppProposal', script)
-        self.assertIn('WhatsApp reply assistant is active.', script)
-        self.assertIn(".agent-message-whatsapp-card", styles)
-        self.assertIn("dataset.deliveryPlatformRemove", script)
-        self.assertIn("No platforms added yet", script)
-        self.assertIn(".delivery-platform-row", styles)
-
-    def test_agent_scheduled_whatsapp_request_uses_scheduled_action_flow(self) -> None:
-        html = (self.root / "portal" / "index.html").read_text(encoding="utf-8")
-        script = (self.root / "portal" / "app.js").read_text(encoding="utf-8")
-        styles = (self.root / "portal" / "styles.css").read_text(encoding="utf-8")
-        server_source = (self.root / "packages" / "infrastructure" / "portal_auth" / "server.py").read_text(encoding="utf-8")
-
-        self.assertIn('type: "scheduled-message"', script)
-        self.assertIn("function isAgentScheduledMessageRequest", script)
-        self.assertLess(
-            script.index("if (isAgentScheduledMessageRequest(value))"),
-            script.index('return AGENT_BLUEPRINTS.whatsappReplies;'),
-        )
-        self.assertIn("function buildAgentScheduledMessageDetails", script)
-        self.assertIn("function getWhatsAppConnectionSetupState", script)
-        self.assertIn("function isWhatsAppConnectionReady", script)
-        self.assertIn("function canRefreshFeatureActivationWebhook", script)
-        self.assertIn('const refreshOnly = !hasActivationChanges && canRefreshWebhook;', script)
-        self.assertIn('"Refresh webhook"', script)
-        self.assertIn("featureActivationWebhookStatusTitle", script)
-        self.assertIn('"Webhook refreshed"', script)
-        self.assertIn('"Business number verified"', script)
-        self.assertIn("Customer messages must be sent to", script)
-        self.assertIn("only receives approval alerts", script)
-        self.assertIn("messages webhook field", script)
-        self.assertIn('id="featureActivationCustomerNumberCard"', html)
-        self.assertIn("Customer WhatsApp number", html)
-        self.assertIn("function updateFeatureActivationCustomerNumber", script)
-        self.assertIn("formatWhatsAppHumanPhoneNumber", script)
-        self.assertIn(".feature-activation-customer-number", styles)
-        self.assertIn('"whatsapp_webhook_subscription_refreshed"', server_source)
-        self.assertIn('setStatus(refreshOnly ? "WhatsApp webhook refreshed." : "WhatsApp details saved.");', script)
-        self.assertIn("function buildAgentToolContext", script)
-        self.assertIn("function isAgentWhatsAppMonitoringRequest", script)
-        self.assertIn('show-whatsapp-setup', script)
-        self.assertIn('open-whatsapp-setup', script)
-        self.assertIn('kind: "connection-setup"', script)
-        self.assertIn("function createAgentConnectionSetupCard", script)
-        self.assertIn("toolContext: buildAgentToolContext()", script)
-        self.assertIn("Needs details", script)
-        self.assertIn(".agent-message-connection-card", styles)
-        self.assertIn("function scheduleAgentScheduledMessageProposal", script)
-        self.assertIn('apiRequest("/api/agent/turn"', script)
-        self.assertIn('apiRequest("/api/scheduled-actions"', script)
-        self.assertIn('apiRequest("/api/scheduled-actions?limit=100"', script)
-        self.assertIn("function renderAgentActions", script)
-        self.assertIn("function getScheduledActionCreatedTime", script)
-        self.assertIn("function sortScheduledActionsByCreatedAt", script)
-        self.assertIn("sortScheduledActionsByCreatedAt(", script)
-        self.assertIn("Number.NEGATIVE_INFINITY", script)
-        self.assertIn("function isAgentActionsInitialLoading", script)
-        self.assertIn("scheduledActionsInitialLoadPending", script)
-        self.assertIn("sourceActionsInitialLoadPending", script)
-        self.assertIn('renderScheduledActionLoadingList(elements.agentPendingActionList, "Loading actions…");', script)
-        self.assertIn("resetAgentWorkspaceRemoteState({ loading: true });", script)
-        self.assertIn("function renderScheduledActionList", script)
-        action_item_renderer = script[
-            script.index("function renderScheduledActionItemContent"):
-            script.index("function createScheduledActionItem")
-        ]
-        self.assertIn("item.replaceChildren(trigger, expansion);", action_item_renderer)
-        self.assertNotIn("item.append(trigger, expansion);", action_item_renderer)
 
     def test_google_tool_shows_the_calendars_it_reads_and_asks_which_they_are(self) -> None:
         script = (self.root / "portal" / "app.js").read_text(encoding="utf-8")
@@ -1335,7 +1174,6 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn("function createAgentAddToolLogo", script)
         self.assertIn("function createAgentToolIconOption", script)
         self.assertIn("function createPlatformConnectionIconOption", script)
-        self.assertIn('icon: "whatsapp"', script)
         self.assertIn('icon: "web-monitor"', script)
         self.assertIn("icon.append(createAgentAddToolLogo(createAgentToolIconOption(feature)))", script)
         self.assertIn("icon.append(createAgentAddToolLogo(createPlatformConnectionIconOption(connection)))", script)
@@ -1685,8 +1523,6 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn('title: "Meeting summary ready"', script)
         self.assertIn('title: "Email digest ready"', script)
         self.assertIn('source: "web-monitor"', script)
-        self.assertIn('source: "whatsapp-reengagement"', script)
-        self.assertIn("getReengagementDemoAlertTitle(response.run)", script)
         self.assertIn('{ value: "portal", label: "Notifications" }', script)
         self.assertIn('return "the notification center";', script)
         self.assertIn(".notification-center-popover", styles)
@@ -1766,21 +1602,9 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn("app.js?v=", html)
         self.assertIn("https://accounts.google.com/gsi/client", html)
         self.assertIn('data-google-identity-services="true"', html)
-        self.assertIn('id="featureActivationResult"', html)
-        self.assertIn('id="featureActivationResultIcon"', html)
-        self.assertIn('id="featureActivationResultText"', html)
-        self.assertIn("function updateFeatureActivationResult", script)
-        self.assertIn('text: refreshOnly ? "Refreshing..." : "Saving..."', script)
-        self.assertIn('icon: isWarning ? "x" : "check"', script)
         self.assertIn("function createFeatureActivationResultIcon", script)
         self.assertIn('createSvgElement("svg"', script)
-        self.assertIn("featureActivationResultIcon.replaceChildren", script)
-        self.assertIn('webhookSuccess ? "Refresh succeeded" : "Save succeeded"', script)
-        self.assertIn("getFeatureWhatsAppHealth(feature)", script)
         self.assertNotIn("getSelectedFeatureWhatsAppMetadata", script)
-        self.assertIn(".feature-activation-result {", styles)
-        self.assertIn(".feature-activation-result-icon {", styles)
-        self.assertIn(".feature-activation-result-icon svg {", styles)
         agent_turn_request = script[
             script.index('const turn = await apiRequest("/api/agent/turn"'):
             script.index('await applyAgentTurnResponse(turn, cleanText);')
@@ -1821,7 +1645,6 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn("function normalizeAgentSourceUrl", script)
         self.assertIn("function attachAgentSourceUrl", script)
         self.assertIn('agentSourceAttachment?.sourceType === "url"', script)
-        self.assertIn("config.owner_wa_id || config.display_phone_number", script)
         self.assertIn("elements.agentAttachSourceFileOption.addEventListener", script)
         self.assertIn("elements.agentAttachSourceUrlOption.addEventListener", script)
         self.assertIn("elements.agentSourceUrlAttachButton.addEventListener", script)
@@ -2427,109 +2250,6 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertEqual(duplicates, [], f"declared more than once in app.js: {duplicates}")
 
 
-def _run_reengagement_live_action_script(feature_literal: str) -> Any:
-    """Build the follow-up action card in node, with its feature state fixed."""
-
-    script = (Path(__file__).resolve().parents[1] / "portal" / "app.js").read_text(encoding="utf-8")
-    builders = script[
-        script.index("function isAgentReengagementLiveAction"):
-        script.index("function getRenderableAgentActions")
-    ]
-    harness = "\n".join([
-        'const REENGAGEMENT_FEATURE_ID = "whatsapp-business-follow-up-outreach-writer";',
-        "function isAgentFeatureLiveAction(action) { return action?.payload?.source === \"feature\"; }",
-        "function createMonitorFeatureLiveAction() { return null; }",
-        "function normalizeMonitorIntervalDays(value) { return Number(value) || 7; }",
-        "function isReengagementFeature(feature) { return feature?.id === REENGAGEMENT_FEATURE_ID; }",
-        "function isFeatureActivated(feature) { return Boolean(feature?.activated); }",
-        "function getSavedFeatureSettings(feature) { return feature?.savedSettings || {}; }",
-        "function getReengagementScheduleTimezone(feature) { return feature?.savedSettings?.scheduleTimezone || \"UTC\"; }",
-        "function getReengagementScheduleTime(feature) { return feature?.savedSettings?.scheduleTimeLocal || \"09:00\"; }",
-        "function formatReengagementInactivityLabel(settings) { return `${settings.inactivityValue} ${settings.inactivityUnit}`; }",
-        f"const clientState = {{ features: [{feature_literal}] }};",
-        builders,
-        "console.log(JSON.stringify(getAgentFeatureLiveActions()));",
-    ])
-    completed = subprocess.run(
-        ["node", "-e", harness],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    return json.loads(completed.stdout)
-
-
-ACTIVE_REENGAGEMENT_FEATURE = """{
-  id: "whatsapp-business-follow-up-outreach-writer",
-  description: "Helps you reconnect with past customers.",
-  activated: true,
-  activatedAt: "2026-08-01T09:00:00+00:00",
-  settingsSavedAt: "2026-08-01T09:00:00+00:00",
-  lastRunAt: "2026-08-30T06:00:00+00:00",
-  lastRunStatus: "completed",
-  nextRunAt: "2026-09-06T06:00:00+00:00",
-  savedSettings: {
-    intervalDays: 7,
-    scheduleTimeLocal: "09:00",
-    scheduleTimezone: "Asia/Jerusalem",
-    inactivityValue: 6,
-    inactivityUnit: "months",
-  },
-}"""
-
-
-@unittest.skipUnless(shutil.which("node"), "node is needed to run the portal script")
-class AgentReengagementActionCardTests(unittest.TestCase):
-    """The weekly follow-up writer runs on a schedule, so it belongs in Actions."""
-
-    def test_an_active_follow_up_tool_gets_a_recurring_card(self) -> None:
-        actions = _run_reengagement_live_action_script(ACTIVE_REENGAGEMENT_FEATURE)
-
-        self.assertEqual(len(actions), 1)
-        action = actions[0]
-        self.assertEqual(action["status"], "running")
-        self.assertEqual(action["payload"]["title"], "WhatsApp follow-ups")
-        self.assertEqual(action["runAt"], "2026-09-06T06:00:00+00:00")
-        self.assertEqual(action["payload"]["lastRunAt"], "2026-08-30T06:00:00+00:00")
-        # Nothing about this action is manual, so it must not land in On demand.
-        self.assertFalse(action["payload"]["manualOnly"])
-
-    def test_a_weekly_schedule_is_not_reported_as_manual(self) -> None:
-        # The monitor's formatter reads a manualOnly flag the follow-up writer
-        # never sets, which made a weekly schedule read as "manual only".
-        actions = _run_reengagement_live_action_script(ACTIVE_REENGAGEMENT_FEATURE)
-
-        self.assertEqual(actions[0]["payload"]["frequency"], "weekly")
-
-    def test_a_tool_that_was_never_set_up_stays_out_of_the_list(self) -> None:
-        actions = _run_reengagement_live_action_script("""{
-          id: "whatsapp-business-follow-up-outreach-writer",
-          activated: false,
-          savedSettings: { intervalDays: 7, inactivityValue: 6, inactivityUnit: "months" },
-        }""")
-
-        self.assertEqual(actions, [])
-
-    def test_stopping_it_leaves_the_card_in_place(self) -> None:
-        # Otherwise the card disappears on Stop and there is nowhere to start it.
-        actions = _run_reengagement_live_action_script("""{
-          id: "whatsapp-business-follow-up-outreach-writer",
-          activated: false,
-          settingsSavedAt: "2026-08-01T09:00:00+00:00",
-          lastRunAt: "2026-08-30T06:00:00+00:00",
-          savedSettings: {
-            intervalDays: 7,
-            scheduleTimeLocal: "09:00",
-            inactivityValue: 6,
-            inactivityUnit: "months",
-          },
-        }""")
-
-        self.assertEqual(len(actions), 1)
-        self.assertEqual(actions[0]["status"], "paused")
-
-
-
 class AdminFreeTrialControlTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp_dir = tempfile.TemporaryDirectory()
@@ -2606,9 +2326,9 @@ class AdminFreeTrialControlTests(unittest.TestCase):
 
         # Dropped here, the whole control would silently render "No limit".
         self.assertIn("trial: normalizeAdminTrial(user.trial || null),", script)
-        self.assertIn('for (const heading of ["Client", "Email", "Account type", "Client type", "Free trial",', script)
+        self.assertIn('for (const heading of ["Client", "Email", "Client type", "Free trial",', script)
         self.assertIn("trialCell.append(createAdminTrialControl(user, {", script)
-        self.assertIn("row.append(nameCell, emailCell, accountTypeCell, clientTypeCell, trialCell, spendCell,", script)
+        self.assertIn("row.append(nameCell, emailCell, clientTypeCell, trialCell, spendCell,", script)
 
     def test_the_control_posts_the_day_count_to_the_trial_route(self) -> None:
         script = (self.root / "portal" / "app.js").read_text(encoding="utf-8")

@@ -18,6 +18,7 @@ import sys
 import tempfile
 import threading
 import unittest
+from datetime import date
 from datetime import datetime
 from datetime import timedelta
 from datetime import timezone
@@ -47,10 +48,10 @@ ZONE = ZoneInfo(JERUSALEM)
 OWNER_WA_ID = "972507322341"
 
 
-def _finding(key: str, detector: str = "unpaid_invoice", score: float = 90, **extra) -> dict:
+def _finding(key: str, detector: str = "bill_due", score: float = 90, **extra) -> dict:
     base = {
         "key": key, "detector": detector, "title": key, "counterparty": "Acme Ltd", "amount": 1200.0, "currency": "ILS",
-        "date": "2026-07-20", "dueOn": "", "reference": "INV-17", "ageDays": 50, "sources": [{"mailbox": "m", "messageId": "x", "subject": "Invoice 17"}],
+        "date": "2026-09-01", "dueOn": "2026-09-15", "daysUntil": 7, "reference": "INV-17", "sources": [{"mailbox": "m", "messageId": "x", "subject": "Invoice 17"}],
         "score": score,
     }
     base.update(extra)
@@ -110,7 +111,7 @@ class ScanQueueTests(unittest.TestCase):
 
     def test_facts_are_remembered_per_message_and_read_back_by_window(self) -> None:
         entries = [
-            {"mailbox": "m", "messageId": "1", "factsVersion": "v1", "messageDate": "2026-07-20", "kind": "invoice_sent", "amount": 1200, "currency": "ILS", "counterparty": "Acme"},
+            {"mailbox": "m", "messageId": "1", "factsVersion": "v1", "messageDate": "2026-07-20", "kind": "bill", "amount": 1200, "currency": "ILS", "counterparty": "Acme"},
             {"mailbox": "m", "messageId": "2", "factsVersion": "v1", "messageDate": "2025-01-01", "kind": "charge", "amount": 5, "currency": "ILS"},
             {"mailbox": "m", "messageId": "3", "factsVersion": "v1", "messageDate": "2026-08-01", "kind": "none"},
         ]
@@ -298,7 +299,7 @@ class ScanEndpointTests(unittest.TestCase):
         self.assertTrue(ok, error)
         self.session_token = str((result or {}).get("token") or "")
         self.mailbox = FakeMailbox([
-            {"id": "g1", "from": "Green Invoice <no-reply@greeninvoice.co.il>", "subject": "Invoice 17 to Acme Ltd", "date": "Mon, 20 Jul 2026 10:00:00 +0300", "bodyText": "Invoice 17: 1,200 ILS"},
+            {"id": "g1", "from": "Acme Ltd <billing@acme.co.il>", "subject": "Invoice 17 to Acme Ltd", "date": "Mon, 20 Jul 2026 10:00:00 +0300", "bodyText": "Invoice 17: 1,200 ILS, due next week"},
             {"id": "g2", "from": "Netflix", "subject": "Your receipt", "date": "Tue, 1 Sep 2026 10:00:00 +0300", "bodyText": "49.90 ILS monthly plan"},
             {"id": "g3", "from": "Shop", "subject": "Sale!", "date": "Tue, 1 Sep 2026 11:00:00 +0300", "bodyText": "50% off"},
         ])
@@ -315,7 +316,7 @@ class ScanEndpointTests(unittest.TestCase):
                 for candidate in json.loads(prompt.split("CONTEXT\n", 1)[1])["messages"]:
                     subject = candidate.get("subject", "")
                     if "Invoice 17" in subject:
-                        facts.append({"ref": candidate["ref"], "kind": "invoice_sent", "counterparty": "Acme Ltd", "amount": 1200, "currency": "ILS", "documentDate": "2026-07-20", "reference": "17"})
+                        facts.append({"ref": candidate["ref"], "kind": "bill", "counterparty": "Acme Ltd", "amount": 1200, "currency": "ILS", "documentDate": "2026-07-20", "reference": "17", "dueOn": (date.today() + timedelta(days=7)).isoformat()})
                     elif "receipt" in subject:
                         facts.append({"ref": candidate["ref"], "kind": "charge", "counterparty": "Netflix", "amount": 49.9, "currency": "ILS", "recurring": True})
                     else:
@@ -358,9 +359,9 @@ class ScanEndpointTests(unittest.TestCase):
         self.assertEqual(len(self.asks), 1)
         self.assertNotIn("g1", self.asks[0])
         self.assertEqual(self.mailbox.runs[0]["query"].newer_than_days, 365)
-        self.assertEqual([finding["detector"] for finding in first["findings"]], ["unpaid_invoice"])
+        self.assertEqual([finding["detector"] for finding in first["findings"]], ["bill_due"])
         self.assertEqual(first["findings"][0]["status"], "new")
-        self.assertEqual(first["newKeys"], ["unpaid_invoice:owner@example.com:g1"])
+        self.assertEqual(first["newKeys"], ["bill_due:owner@example.com:g1"])
         self.assertEqual(self.database.count_mail_facts(user_id=self.user_id), 3)
 
         status, daily = self._post("/api/findings/scan", {"kind": "daily", "timezone": JERUSALEM})
@@ -401,12 +402,12 @@ class ScanEndpointTests(unittest.TestCase):
             user_id=self.user_id, timezone_name=JERUSALEM, tool_context={"gmail": {"platformConnected": True, "connectionStatus": "connected"}},
             channel="whatsapp", sender_wa_id=OWNER_WA_ID,
         )
-        result = run_agent_loop(context=context, call_model=model, user_message="That Acme invoice was paid in cash, drop it", conversation=[], today="2026-09-08")
+        result = run_agent_loop(context=context, call_model=model, user_message="That Acme bill was paid in cash, drop it", conversation=[], today="2026-09-08")
 
         outputs = [json.loads(item["output"]) for item in inputs[-1] if item.get("type") == "function_call_output"]
         listed, dropped = outputs[0], outputs[1]
         self.assertTrue(listed["ok"])
-        self.assertEqual(listed["findings"][0]["kind"], "unpaid_invoice")
+        self.assertEqual(listed["findings"][0]["kind"], "bill_due")
         self.assertIn("1,200 ILS", listed["findings"][0]["summary"])
         self.assertEqual(listed["findings"][0]["emails"], ["Invoice 17 to Acme Ltd"])
         self.assertEqual(dropped["dismissed"], 1)

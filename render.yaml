@@ -41,18 +41,6 @@ services:
         value: "50"
       - key: TOKEN_PRICES_API_OPENAI_PRICES_URL
         value: https://token-prices-api.onrender.com/api/openai/prices
-      - key: PORTAL_WHATSAPP_REENGAGEMENT_ENABLED
-        value: "0"
-      - key: PORTAL_WHATSAPP_REENGAGEMENT_TIMEZONE
-        value: Asia/Jerusalem
-      - key: PORTAL_WHATSAPP_REENGAGEMENT_WEEKDAY
-        value: sunday
-      - key: PORTAL_WHATSAPP_REENGAGEMENT_HOUR
-        value: "9"
-      - key: PORTAL_WHATSAPP_REENGAGEMENT_MINUTE
-        value: "0"
-      - key: PORTAL_WHATSAPP_REENGAGEMENT_INACTIVITY_MONTHS
-        value: "6"
       - key: PORTAL_SCHEDULED_MONITOR_ENABLED
         value: "0"
       - key: PORTAL_SCHEDULED_MONITOR_POLL_SECONDS
@@ -130,7 +118,7 @@ services:
         value: "50"
       # How many free days a newly created account starts with.
       - key: PORTAL_DEFAULT_TRIAL_DAYS
-        value: "2"
+        value: "14"
       # The Assistyca WhatsApp number in plain digits, used to build the
       # tap-to-open wa.me link handed out with a claim code.
       - key: ASSISTYCA_WHATSAPP_DISPLAY_NUMBER
@@ -142,46 +130,6 @@ services:
         sync: false
       - key: WHATSAPP_ALLOW_MOCK_SEND
         value: "0"
-      - key: WHATSAPP_SAMPLE_TEMPLATE_NAME
-        sync: false
-      - key: WHATSAPP_SAMPLE_TEMPLATE_LANGUAGE
-        value: en_US
-      - key: WHATSAPP_REPLY_ASSISTANT_FIRST_TEMPLATE_NAME
-        value: whatsapp_reply_assistant_1
-      - key: WHATSAPP_REPLY_ASSISTANT_REPEAT_TEMPLATE_NAME
-        value: whatsapp_reply_assistant_2
-      - key: WHATSAPP_REPLY_ASSISTANT_TEMPLATE_NAME
-        sync: false
-      - key: WHATSAPP_REPLY_ASSISTANT_TEMPLATE_LANGUAGE
-        value: en
-      - key: WHATSAPP_REPLY_ASSISTANT_TEMPLATE_BUTTON_INDEX
-        value: "0"
-      - key: WHATSAPP_REPLY_ASSISTANT_TEMPLATE_BUTTON_TYPE
-        value: quick_reply
-      - key: WHATSAPP_REPLY_ASSISTANT_TEMPLATE_BUTTON_ACTION
-        value: generate
-      - key: WHATSAPP_REPLY_ASSISTANT_TEMPLATE_DISABLE_BUTTON_INDEX
-        value: "1"
-      - key: WHATSAPP_REPLY_ASSISTANT_TEMPLATE_DISABLE_BUTTON_ACTION
-        value: disable_contact
-      - key: WHATSAPP_REPLY_ASSISTANT_TEMPLATE_URL_MODE
-        value: path
-      - key: WHATSAPP_REENGAGEMENT_REPORT_TEMPLATE_NAME
-        value: whatsapp_reengagement_report_prompt
-      - key: WHATSAPP_REENGAGEMENT_REPORT_TEMPLATE_LANGUAGE
-        value: en
-      - key: WHATSAPP_REENGAGEMENT_REPORT_TEMPLATE_BUTTON_INDEX
-        value: "0"
-      - key: WHATSAPP_REENGAGEMENT_REPORT_TEMPLATE_BUTTON_ACTION
-        value: send
-      # WhatsApp Embedded Signup. Both are public identifiers handed to the
-      # browser; the flow stays hidden until all three (these plus
-      # WHATSAPP_APP_SECRET) are present, and until Meta approves the app as a
-      # Tech Provider.
-      - key: META_APP_ID
-        sync: false
-      - key: WHATSAPP_EMBEDDED_SIGNUP_CONFIG_ID
-        sync: false
       - key: WHATSAPP_VERIFY_TOKEN
         sync: false
       - key: WHATSAPP_APP_SECRET

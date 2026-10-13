@@ -345,7 +345,7 @@ class FindingScanScheduler:
             if not claimed:
                 continue
             processed += 1
-            if not account_feature_allowed(self.database, user_id=int(claimed.get("userId") or 0), feature_id="mailbox_findings"):
+            if not account_feature_allowed(self.database, feature_id="mailbox_findings"):
                 # Switched off for this kind of account. Tomorrow's scan is
                 # still lined up, so switching it back on needs nothing else.
                 self.database.finish_finding_scan(scan_id=int(claimed["id"]), status="done", summary={"skipped": "not_included"})

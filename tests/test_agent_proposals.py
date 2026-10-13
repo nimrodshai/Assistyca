@@ -816,7 +816,6 @@ class AgentProposalRevisionTests(unittest.TestCase):
         )
 
         self.assertIn("Never ask for Gmail or mailbox access", prompt)
-        self.assertIn("whatsapp-replies", prompt)
         self.assertIn("web-monitor", prompt)
         self.assertIn("scheduled-message", prompt)
 
@@ -1016,7 +1015,6 @@ class AgentProposalRevisionTests(unittest.TestCase):
             tool_context=context,
         )
         self.assertIn('"toolContext":{"whatsapp":{"ready":true', prompt)
-        self.assertIn("do not ask which WhatsApp number or account", prompt)
         self.assertNotIn("secret", prompt)
 
     def test_agent_tool_context_includes_calendar_health_without_credentials(self) -> None:
@@ -1302,7 +1300,7 @@ class AgentProposalRevisionTests(unittest.TestCase):
         self.assertIn("calendar-summary", prompt)
         self.assertIn("Never ask for Gmail or mailbox access", prompt)
 
-    def test_prompts_keep_the_agent_on_business_topics(self) -> None:
+    def test_prompts_keep_the_agent_on_the_household(self) -> None:
         turn_prompt = build_agent_turn_prompt(
             user_message="Can you tell me how to bake a cake?",
             conversation=[
@@ -1315,7 +1313,7 @@ class AgentProposalRevisionTests(unittest.TestCase):
         self.assertIn("Anything else is outside your job", AGENT_TURN_INSTRUCTIONS)
         self.assertIn("recipes", AGENT_TURN_INSTRUCTIONS)
         self.assertIn("does not put the next one in scope", AGENT_TURN_INSTRUCTIONS)
-        self.assertIn("A message that is not about running this business is outcome=message", turn_prompt)
+        self.assertIn("A message that is not about running this household is outcome=message", turn_prompt)
         self.assertIn("do not carry scope over from an earlier turn", turn_prompt)
 
     def test_prompts_still_answer_a_message_about_the_users_safety(self) -> None:

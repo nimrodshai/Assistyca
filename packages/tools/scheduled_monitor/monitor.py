@@ -130,7 +130,8 @@ def safe_int(value: Any, default: int) -> int:
 
 def load_scheduled_monitor_config() -> ScheduledMonitorConfig:
     return ScheduledMonitorConfig(
-        enabled=parse_bool(os.getenv("PORTAL_SCHEDULED_MONITOR_ENABLED"), default=True),
+        # Off unless switched on: kept for later, not offered to families (2026-10-13).
+        enabled=parse_bool(os.getenv("PORTAL_SCHEDULED_MONITOR_ENABLED"), default=False),
         poll_seconds=max(30, safe_int(os.getenv("PORTAL_SCHEDULED_MONITOR_POLL_SECONDS"), DEFAULT_MONITOR_POLL_SECONDS)),
         model=normalize_text(os.getenv("PORTAL_SCHEDULED_MONITOR_MODEL")) or DEFAULT_MONITOR_MODEL,
         search_context_size=normalize_search_context_size(

@@ -7,8 +7,8 @@
         "month": "2026-07",
         "tools": [
           {
-            "toolId": "whatsapp-business-reply-suggestion-assistant",
-            "toolName": "WhatsApp Reply Assistant",
+            "toolId": "family-week",
+            "toolName": "Family week",
             "models": [
               {
                 "model": "gpt-5.4",
@@ -21,6 +21,17 @@
                 "base_cost_usd": 43.2
               }
             ]
+          },
+          {
+            "toolId": "receipts",
+            "toolName": "Receipts",
+            "models": [
+              {
+                "model": "gpt-5.4",
+                "tokens": 120000,
+                "base_cost_usd": 2.4
+              }
+            ]
           }
         ]
       },
@@ -28,8 +39,8 @@
         "month": "2026-06",
         "tools": [
           {
-            "toolId": "whatsapp-business-reply-suggestion-assistant",
-            "toolName": "WhatsApp Reply Assistant",
+            "toolId": "family-week",
+            "toolName": "Family week",
             "models": [
               {
                 "model": "gpt-5.4",
@@ -49,8 +60,8 @@
         "month": "2026-05",
         "tools": [
           {
-            "toolId": "whatsapp-business-reply-suggestion-assistant",
-            "toolName": "WhatsApp Reply Assistant",
+            "toolId": "family-week",
+            "toolName": "Family week",
             "models": [
               {
                 "model": "gpt-5.4",
@@ -70,8 +81,8 @@
         "month": "2026-04",
         "tools": [
           {
-            "toolId": "whatsapp-business-reply-suggestion-assistant",
-            "toolName": "WhatsApp Reply Assistant",
+            "toolId": "receipts",
+            "toolName": "Receipts",
             "models": [
               {
                 "model": "gpt-5.4",

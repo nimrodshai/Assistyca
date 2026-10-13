@@ -1,34 +1,31 @@
 # Assistyca Portal
 
-This folder holds the client-facing portal for reviewing assigned features, opening a feature studio, editing reply settings, previewing agent responses, and reviewing billing.
+This folder holds the portal a family signs in to: the assistant chat, the features an account can use, and billing.
 
-It is intentionally separate from the reusable spec and client config layers.
+It is intentionally separate from the reusable spec and per-client config layers under `clients/`.
 
 ## What lives here
 
 - `index.html` for the tabbed app shell
 - `styles.css` for the interface
-- `app.js` for the OTP sign-in flow, tab state, account menu, and preview behavior
-- The backend now owns the feature catalog, activation state, and billing entitlements. Every client can use every active tool, so there is nothing to assign per client. The browser keeps only local editor and draft setup state.
+- `app.js` for the OTP sign-in flow, tab state, account menu, and the tool editor
+- The backend owns the feature catalog, activation state, and billing entitlements. Every account can use every feature that is switched on (Admin > Features turns one off for everyone at once), so there is nothing to assign per account. The browser keeps only local editor and draft setup state.
 
 ## Portal layout
 
-- `Features` for the client account and the tools it can use. Click one to open the tool preview or editor.
-- `About your business` in the account menu for shared business or personal context that should follow the user across tools.
-- `Preview` and `Simulator` panels still exist in the portal code, but they are hidden from the main nav for now
-- The Tool page uses inner navigation for overview, WhatsApp setup, and editor inside the portal itself
-- The WhatsApp screen stores the client-owned Business Platform connection: WABA ID, Phone Number ID, access token, and owner approval phone. The backend uses those details to verify the phone number, subscribe the WABA to the shared webhook, and route inbound webhooks by phone number ID.
+- `Agent` for the account and the tools it can use. Click one to open the tool overview or editor.
+- `About your family` in the account menu for the household context that should follow the person across tools: who is at home, which school, anything the assistant should know.
+- The Tool page has an overview and an editor inside the portal itself
 - The Scheduled Web Monitor runs in the backend on a recurring day interval, uses the shared OpenAI gateway plus the web search tool, and sends alerts by email, Telegram, or WhatsApp
-- WhatsApp approval pages and webhook handling now live inside the portal backend at `/approval/<approval_id>` and `/webhooks/whatsapp`
+- The WhatsApp webhook lives inside the portal backend at `/webhooks/whatsapp`
 - `Settings` opens as a modal overlay for account details and portal preferences
-- `/register` is the public registration page: a name, a structured WhatsApp number and what they do, and the agent texts the person first; the email, and the account, come in the chat. See `docs/whatsapp-agent-chat.md`, "Registering on the web".
+- `/register` is the public registration page: a name and a structured WhatsApp number, and the agent texts the person first; the account opens in the chat. See `docs/whatsapp-agent-chat.md`, "Registering on the web".
 - `Billing` is available from the account menu and shows the current month, per-tool usage, per-model usage, and historical monthly charges
-- The top-right menu opens business details, billing, settings, and log out actions
-- The simulator's Edit button opens [`../approval.html`](../approval.html), a reusable local approval page that is now only a debug fallback.
+- The top-right menu opens the family details, billing, settings, and log out actions
 
 ## Sign-in flow
 
-- Clients sign in with email and a one-time code.
+- People sign in with email and a one-time code.
 - The code is now issued by `scripts/run_portal_server.py` and verified by the server instead of being mocked in the browser.
 - Set either the SMTP variables or the Resend variables so the server can actually email the code.
 - The same mail configuration is also used when a Scheduled Web Monitor alert is configured for email delivery.
@@ -37,7 +34,6 @@ It is intentionally separate from the reusable spec and client config layers.
 - Set `PORTAL_DB_SEED_ADMIN_EMAILS` to promote bootstrap users to admin on startup. `PORTAL_ADMIN_EMAILS` is still accepted as a legacy alias.
 - Set `PORTAL_DB_SEED_PAID_EMAILS` to mark specific portal users as entitled for all billing-required tools on startup. `PORTAL_PAID_EMAILS` is still accepted as a legacy alias.
 - Set `PORTAL_SUPPORT_PHONE` to the phone number shown to anyone who is not registered.
-- The simulator is still browser-local, so it can be tested before any WhatsApp webhook or approval server exists, but the real approval flow is now routed through the Meta connection and backend webhook setup.
 
 ## Recommended test hosting
 
@@ -51,8 +47,8 @@ Why this setup works:
 
 Important:
 
-- Render free web services use ephemeral local storage, so portal users, feature assignments, WhatsApp connection state, billing data stored in SQLite, and WhatsApp approval thread history stored in local JSON can disappear after a restart or redeploy.
-- For persistent portal data, run the web service on a paid Render plan, attach a persistent disk, and point `PORTAL_DB_PATH` at the disk mount such as `/var/data/portal.db`. The portal will keep its WhatsApp approval JSON state and the receipt bundles behind workspace folders beside that database by default, for example under `/var/data/portal-whatsapp/` and `/var/data/agent-receipts/`.
+- Render free web services use ephemeral local storage, so portal users, feature state and billing data stored in SQLite can disappear after a restart or redeploy.
+- For persistent portal data, run the web service on a paid Render plan, attach a persistent disk, and point `PORTAL_DB_PATH` at the disk mount such as `/var/data/portal.db`. The portal will keep the receipt bundles behind workspace folders beside that database by default, for example under `/var/data/agent-receipts/`.
 
 When you are ready for always-on hosting, you can upgrade the Render service to a paid plan and keep the same code.
 
@@ -71,30 +67,25 @@ Required environment variables on Render:
 - `PORTAL_SUPPORT_PHONE` for the phone number shown to blocked sign-in attempts
 - `PORTAL_SESSION_SECRET` **required in production**. At least 32 characters, random, and dedicated to this purpose. It signs session tokens and Google OAuth state. There is no longer a fallback to the Resend API key or SMTP password: that fallback meant the mail credential could mint a valid session for any registered email, including an admin. With no secret set the server still boots but sessions are held in memory only, so every user is signed out on restart or redeploy.
 - `WHATSAPP_APP_SECRET` **required if you receive WhatsApp webhooks**. Signature verification fails closed, so `/webhooks/whatsapp` rejects every request while this is unset.
-- `ASSISTYCA_WHATSAPP_ACCESS_TOKEN`, `WHATSAPP_SENDER_ACCESS_TOKEN`, or legacy `WHATSAPP_ACCESS_TOKEN` for live WhatsApp Cloud API sends from the Assistyca-owned sender number. Owner alerts can also use the portal-saved client WhatsApp connection token when no Assistyca sender token is configured.
+- `ASSISTYCA_WHATSAPP_ACCESS_TOKEN`, `WHATSAPP_SENDER_ACCESS_TOKEN`, or legacy `WHATSAPP_ACCESS_TOKEN` for live WhatsApp Cloud API sends from the Assistyca-owned sender number.
 - `ASSISTYCA_WHATSAPP_PHONE_NUMBER_ID` optional override for the Assistyca-owned sender number. If unset, the backend uses `1186653017865246`.
 - `WHATSAPP_SCHEDULED_NOTIFICATION_TEMPLATE_NAME` approved Meta template for scheduled WhatsApp notifications. Defaults to `notification_message`; its body must contain one text variable (`{{1}}`) for the requested message.
 - `WHATSAPP_SCHEDULED_NOTIFICATION_TEMPLATE_LANGUAGE` exact language code approved with that template. Defaults to `en_US`.
-- `WHATSAPP_REENGAGEMENT_REPORT_TEMPLATE_NAME` approved Meta template used to ask the owner whether to receive generated re-engagement report details outside the 24-hour window. Defaults to `whatsapp_reengagement_report_prompt`.
-- `WHATSAPP_REENGAGEMENT_REPORT_TEMPLATE_LANGUAGE` language code for that template. Defaults to `en`.
-- `WHATSAPP_REENGAGEMENT_REPORT_TEMPLATE_BUTTON_INDEX` quick-reply button index for the "Send details" button. Defaults to `0`.
-- `WHATSAPP_REENGAGEMENT_REPORT_TEMPLATE_BUTTON_ACTION` quick-reply payload action. Defaults to `send`.
-- `WHATSAPP_ALLOW_MOCK_SEND=0` in production so demos and owner alerts fail loudly unless WhatsApp Cloud API delivery is actually configured.
+- `WHATSAPP_ALLOW_MOCK_SEND=0` in production so sends fail loudly unless WhatsApp Cloud API delivery is actually configured.
 - `PORTAL_WHATSAPP_SIGNUP_ENABLED` whether a phone nobody knows can open an account by texting the Assistyca number. Defaults to `1`; set `0` to restore silence to unknown numbers.
 - `PORTAL_WHATSAPP_SIGNUP_DAILY_CAP` how many signups may start in any 24 hours. Defaults to `50`; `0` removes the cap. See `docs/whatsapp-agent-chat.md`.
-- `PORTAL_DEFAULT_TRIAL_DAYS` how many free days a newly created account starts with. Defaults to `2`. Set a length per client with `POST /api/admin/users/<email>/trial`; `0` means no limit, which is what every account created before trials existed carries. See `docs/free-trials.md`.
+- `PORTAL_DEFAULT_TRIAL_DAYS` how many free days a newly created account starts with. Defaults to `14`. Set a length per account with `POST /api/admin/users/<email>/trial`; `0` means no limit, which is what every account created before trials existed carries. See `docs/free-trials.md`.
 - `ASSISTYCA_WHATSAPP_DISPLAY_NUMBER` the Assistyca WhatsApp number in plain digits (`972559196101`). Used only to build the `wa.me` tap-to-open link handed out with a claim code; without it the code still works, typed by hand.
 - `ASSISTYCA_WHATSAPP_OWNER_NUMBERS` maps phone numbers to portal accounts, as comma-separated `number:email` pairs (`972507322341:owner@example.com`). Punctuation and the local `05x` form are normalised, so `+972 50-732-2341` and `050-7322341` both work. This is a bootstrap and a way back in, **not** the normal path: people link their own phone by sending a claim code from it (see `docs/whatsapp-agent-chat.md`), which needs no configuration and no redeploy.
-- `WHATSAPP_AGENT_CHAT_ENABLED` controls the WhatsApp agent conversation: an owner message to the Assistyca number that targets no approval reaches the same agent as the portal chat and gets answered over WhatsApp (see `docs/whatsapp-agent-chat.md`). The default is `1`; set `0` to restore the old help-text behaviour.
+- `WHATSAPP_AGENT_CHAT_ENABLED` controls the WhatsApp agent conversation: a message to the Assistyca number reaches the same agent as the portal chat and gets answered over WhatsApp (see `docs/whatsapp-agent-chat.md`). The default is `1`; set `0` to restore the old help-text behaviour.
 - `PORTAL_AGENT_FALLBACK_ALERT_RATE` and `PORTAL_AGENT_FALLBACK_ALERT_MIN_TURNS` set the line and the floor for the assistant fallback alert: when more than this share of the last day's turns (default `0.02`) ended in a fallback reply, on at least this many turns (default `10`), every admin gets one notification for the day. See `docs/agent-turns.md`.
 - `PORTAL_AGENT_TURN_SAMPLING_ENABLED` (default `1`), `PORTAL_AGENT_TURN_SAMPLING_WEEKDAY`, `_HOUR`, `_MINUTE`, `_TIMEZONE`, `_SIZE` (default `20`) and `_THRESHOLD` (default `3`) control the weekly sample of real assistant turns scored by the judge and reported to admins. See `docs/agent-turns.md`.
 - `WHATSAPP_VERIFY_TOKEN` for Meta webhook verification
 - `WHATSAPP_APP_SECRET` for webhook signature verification
 - `OPENAI_API_KEY` for Scheduled Web Monitor searches and any other backend OpenAI-powered tool execution
 - `TELEGRAM_BOT_TOKEN` when you want Scheduled Web Monitor alerts to be delivered through Telegram
-- `PORTAL_WHATSAPP_STORE_ROOT` optional override for the per-user WhatsApp approval JSON files. If unset, the portal uses `PORTAL_DATA_ROOT/portal-whatsapp`.
 - `PORTAL_AGENT_OUTPUT_DIR` optional override for the receipt bundles actions write to disk. If unset, the portal uses `PORTAL_DATA_ROOT/agent-receipts`, so workspace folders keep their files across restarts.
-- `PUBLIC_BASE_URL` recommended for production so approval links and the connection payload always point at the public portal hostname
+- `PUBLIC_BASE_URL` recommended for production so links the assistant sends always point at the public portal hostname
 - `PORTAL_SCHEDULED_MONITOR_ENABLED` enables the recurring Scheduled Web Monitor worker. The default is `1`.
 - `PORTAL_SCHEDULED_MONITOR_POLL_SECONDS` controls how often the backend checks for due monitor runs. The default is `300`.
 - `PORTAL_SCHEDULED_MONITOR_MODEL` overrides the OpenAI model used for recurring monitor searches. The default is `gpt-5.5`.
@@ -111,9 +102,6 @@ Required environment variables on Render:
 - `LEMON_SQUEEZY_API_KEY` for subscription lookups and hosted checkout creation
 - `LEMON_SQUEEZY_STORE_ID` for the Lemon Squeezy store
 - `LEMON_SQUEEZY_ACTIVATION_VARIANT_ID` for the subscription or plan that should unlock feature activation
-- `LEMON_SQUEEZY_WHATSAPP_REPLY_ASSISTANT_STORE_ID` optional per-feature override for the WhatsApp Reply Assistant store ID
-- `LEMON_SQUEEZY_WHATSAPP_REPLY_ASSISTANT_VARIANT_ID` optional per-feature override for the WhatsApp Reply Assistant plan or variant ID
-- `LEMON_SQUEEZY_WHATSAPP_REPLY_ASSISTANT_PRODUCT_ID` optional per-feature product matcher when you want entitlement checks to follow a specific Lemon Squeezy product
 - `LEMON_SQUEEZY_SCHEDULED_MONITOR_STORE_ID` optional per-feature override for the Scheduled Web Monitor store ID
 - `LEMON_SQUEEZY_SCHEDULED_MONITOR_VARIANT_ID` optional per-feature override for the Scheduled Web Monitor plan or variant ID
 - `LEMON_SQUEEZY_SCHEDULED_MONITOR_PRODUCT_ID` optional per-feature product matcher when you want entitlement checks to follow a specific Lemon Squeezy product
@@ -122,7 +110,7 @@ Required environment variables on Render:
 - `FEATURE_ACTIVATION_PAYMENT_STATUS_CACHE_TTL_SECONDS` optional cache TTL for backend payment-status refreshes. The default is `120`.
 
 The `PORTAL_RESEND_API_KEY` and `PORTAL_RESEND_FROM_EMAIL` values should be added as secrets in the Render dashboard.
-If you want portal state to survive restarts on Render, add a persistent disk in the Render dashboard and mount it at `/var/data` or another absolute path you control, then set `PORTAL_DB_PATH` to a file inside that mount. The portal will place its WhatsApp approval store and the receipt bundles behind workspace folders in the same persistent area unless you explicitly override them.
+If you want portal state to survive restarts on Render, add a persistent disk in the Render dashboard and mount it at `/var/data` or another absolute path you control, then set `PORTAL_DB_PATH` to a file inside that mount. The portal will place the receipt bundles behind workspace folders in the same persistent area unless you explicitly override them.
 Portal sessions now default to 180 days and survive server restarts when the signing secret stays stable.
 
 ## Local usage
@@ -137,47 +125,13 @@ PORTAL_SMTP_FROM_EMAIL=sign-in@example.com \
 python3 scripts/run_portal_server.py --port 8000
 ```
 
-For local WhatsApp testing, edit `scripts/run_portal_server.local.sh`, replace the placeholder values, and run:
-
-```bash
-./scripts/run_portal_server.local.sh
-```
-
 Then visit `http://localhost:8000/portal/`.
 
-The portal setup form saves the WhatsApp Business Platform fields needed per workspace:
-
-- `business_account_id` required WABA ID
-- `phone_number_id` required
-- `access_token` required for that client-owned WhatsApp Business Account. It must be able to access the phone number and subscribe the WABA to webhooks, so use a System User token with `whatsapp_business_messaging` and `whatsapp_business_management`.
-- `owner_wa_id` required
-
-Clients can find the WABA ID in Meta Business Settings at Accounts > WhatsApp Accounts, or by opening `https://business.facebook.com/latest/settings/whatsapp_account` and selecting the correct WhatsApp Business Account.
-
-### Connecting a client's WhatsApp
-
-Two routes exist. **Embedded Signup** is the one clients should use: they press
-Connect WhatsApp, sign in with Facebook, pick their number, and the portal
-receives the business account id, phone number id, and an access token scoped to
-them. Nothing is copied or pasted, and the client can revoke the token from their
-own Meta settings.
-
-It needs `META_APP_ID` and `WHATSAPP_EMBEDDED_SIGNUP_CONFIG_ID` alongside
-`WHATSAPP_APP_SECRET`, and it needs the Meta app approved as a Tech Provider.
-Until all of that is in place the portal hides the button and falls back to the
-manual form below, which is also still reachable behind "Enter the details
-manually instead".
-
-The one thing Embedded Signup does not return is the approval phone
-(`owner_wa_id`), because Meta has no notion of it. It stays an optional field.
-
-`WHATSAPP_VERIFY_TOKEN` and `WHATSAPP_APP_SECRET` stay server-side in environment variables for webhook verification and signature checks. Client access tokens are never returned to the browser after save.
-The saved client `phone_number_id` is used to route inbound webhooks and to send approved replies from the client's number. Owner alerts, sample alerts, Scheduled Web Monitor WhatsApp notifications, and scheduled assistant messages are sent from the Assistyca sender number instead. Scheduled assistant messages resolve the destination from the saved approval phone, use the approved `notification_message` template, and never read the client connection token or client sender number.
-The browser no longer persists these WhatsApp setup fields in local storage; the portal backend is the source of truth.
+People link their own phone to the account from Settings: the portal hands out a claim code, they send it to the Assistyca WhatsApp number, and that phone is theirs (`/api/whatsapp/my-numbers`). The account never connects a WhatsApp Business Account of its own; Assistyca's number is the only sender.
 
 For Scheduled Web Monitor delivery:
 
-- Clients add a simple watch list in the tool editor, one item per line, then choose how many days should pass between checks.
+- People add a simple watch list in the tool editor, one item per line, then choose how many days should pass between checks.
 - Findings land in the owner's in-app notification feed. Email, Telegram and WhatsApp owner alerting were removed in favour of that single durable surface, so no delivery credentials are needed.
 
 To inspect the registered users table from the terminal, run `python3 scripts/portal_db.py list-users`.

@@ -61,13 +61,11 @@ class DeclaredTaskComplexityTests(unittest.TestCase):
     """Every task that calls an LLM must declare how demanding it is."""
 
     def test_all_llm_tasks_declare_a_complexity(self) -> None:
-        from packages.infrastructure import whatsapp_reengagement
         from packages.infrastructure.portal_auth import server
         from packages.tools.scheduled_monitor import monitor
 
         declared = {
             "scheduled monitor": monitor.MONITOR_COMPLEXITY,
-            "whatsapp re-engagement": whatsapp_reengagement.REENGAGEMENT_COMPLEXITY,
             "contact intake agent": server.CONTACT_AGENT_COMPLEXITY,
             "agent proposal revision": server.AGENT_PROPOSAL_REVISION_COMPLEXITY,
             "conversational portal agent": server.AGENT_TURN_COMPLEXITY,
@@ -77,16 +75,11 @@ class DeclaredTaskComplexityTests(unittest.TestCase):
                 self.assertIsInstance(level, TaskComplexity)
 
     def test_tool_defaults_match_their_declared_complexity(self) -> None:
-        from packages.infrastructure import whatsapp_reengagement
         from packages.tools.scheduled_monitor import monitor
 
         self.assertEqual(
             monitor.DEFAULT_MONITOR_MODEL,
             model_for_complexity(monitor.MONITOR_COMPLEXITY),
-        )
-        self.assertEqual(
-            whatsapp_reengagement.DEFAULT_REENGAGEMENT_MODEL,
-            model_for_complexity(whatsapp_reengagement.REENGAGEMENT_COMPLEXITY),
         )
 
 

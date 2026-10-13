@@ -9,7 +9,7 @@ import tempfile
 import threading
 import unittest
 import urllib.request as urllib_request
-from datetime import datetime, timedelta, timezone
+
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -26,7 +26,6 @@ from packages.infrastructure.whatsapp_agent_chat import (
     build_calendar_choice_text,
     calendars_missing_colour,
     color_dot,
-    looks_like_a_question,
     parse_calendar_choice,
 )
 
@@ -161,13 +160,6 @@ class HelperTests(unittest.TestCase):
         self.assertEqual(connection_display_name(records[1]), "Gmail (nimrod@gmail.com)")
         self.assertEqual(connection_display_name(records[2]), "Outlook (nimrod@outlook.com)")
         self.assertEqual(connection_display_name(records[0]), "Google Calendar")
-
-    def test_a_question_is_recognised_however_the_email_count_stands(self) -> None:
-        self.assertTrue(looks_like_a_question("How can you help me?"))
-        self.assertTrue(looks_like_a_question("what can you do"))
-        self.assertFalse(looks_like_a_question("nimrod@example.com"))
-        self.assertFalse(looks_like_a_question("ok"))
-
 
 def _loop_round(*items: dict, reply: dict | None = None) -> SimpleNamespace:
     """One model round as the loop reads it: tool calls, or the final reply."""
@@ -687,63 +679,6 @@ class DisconnectOverWhatsAppTests(unittest.TestCase):
         self.assertIn("nothing to disconnect", self._texts()[-1])
         self.assertIsNone(self.database.get_whatsapp_agent_pending(user_id=int(self.user["id"])), "no yes is asked for something that would do nothing")
         self.assertEqual(self._connected(), ["calendar", "email"])
-
-
-class SignupWarmthTests(unittest.TestCase):
-    def setUp(self) -> None:
-        self.temp_dir = tempfile.TemporaryDirectory()
-        self.server = create_server("127.0.0.1", 0, Path(__file__).resolve().parents[1], PortalConfig(
-            db_path=Path(self.temp_dir.name) / "portal.db", session_secret="warm-secret"))
-        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True); self.thread.start()
-        self.base_url = f"http://127.0.0.1:{self.server.server_address[1]}"
-        self.database = self.server.database
-        self.env = mock.patch.dict("os.environ", {
-            "PORTAL_WHATSAPP_STORE_ROOT": str(Path(self.temp_dir.name) / "portal-whatsapp"),
-            "WHATSAPP_APP_SECRET": APP_SECRET, "WHATSAPP_ALLOW_MOCK_SEND": "1",
-            "ASSISTYCA_WHATSAPP_PHONE_NUMBER_ID": PLATFORM, "ASSISTYCA_WHATSAPP_ACCESS_TOKEN": "platform-token",
-        }, clear=False); self.env.start()
-        self.send_patch = mock.patch("packages.infrastructure.whatsapp_agent_chat.send_whatsapp_message", return_value="wamid.r"); self.send_patch.start()
-        self.model_patch = mock.patch("packages.infrastructure.portal_auth.server.call_openai_response",
-                                      return_value=SimpleNamespace(output_text=json.dumps({"reply": "Hello!"}))); self.model = self.model_patch.start()
-
-    def tearDown(self) -> None:
-        self.model_patch.stop(); self.send_patch.stop(); self.env.stop()
-        self.server.shutdown(); self.server.server_close(); self.thread.join(timeout=5); self.temp_dir.cleanup()
-
-    def _post(self, text, message_id):
-        payload = {"object": "whatsapp_business_account", "entry": [{"id": "waba-1", "changes": [{"field": "messages", "value": {
-            "messaging_product": "whatsapp", "metadata": {"display_phone_number": "1555", "phone_number_id": PLATFORM},
-            "contacts": [{"profile": {"name": "Dana"}, "wa_id": "447700900123"}],
-            "messages": [{"from": "447700900123", "id": message_id, "timestamp": "1756700000", "type": "text", "text": {"body": text}}]}}]}]}
-        body = json.dumps(payload).encode("utf-8")
-        sig = hmac.new(APP_SECRET.encode("utf-8"), body, hashlib.sha256).hexdigest()
-        request = urllib_request.Request(f"{self.base_url}/webhooks/whatsapp", data=body, method="POST",
-                                         headers={"Content-Type": "application/json", "X-Hub-Signature-256": f"sha256={sig}"})
-        with urllib_request.urlopen(request, timeout=30) as response:
-            return json.loads(response.read().decode("utf-8"))
-
-    def _age_signup(self, hours: float, attempts: int) -> None:
-        with self.database._connection() as conn:  # noqa: SLF001 - fixture setup
-            conn.execute("UPDATE whatsapp_signups SET updated_at = ?, attempts = ? WHERE wa_id = ?",
-                         ((datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat(), attempts, "447700900123"))
-            conn.commit()
-
-    def test_coming_back_the_next_morning_is_a_fresh_conversation(self) -> None:
-        self._post("hi", message_id="wamid.w1")
-        self._age_signup(hours=8, attempts=4)
-        self._post("How can you help me?", message_id="wamid.w2")
-        prompt = self.model.call_args.kwargs["prompt"]
-        self.assertIn("Answer whatever they said or asked", prompt)
-        self.assertNotIn("asked twice", prompt)
-        self.assertIn("three or four concrete things", prompt)
-
-    def test_a_question_gets_the_full_answer_even_mid_escalation(self) -> None:
-        self._post("hi", message_id="wamid.q1")
-        self._age_signup(hours=0.1, attempts=3)
-        self._post("what can you actually do?", message_id="wamid.q2")
-        prompt = self.model.call_args.kwargs["prompt"]
-        self.assertIn("Answer whatever they said or asked", prompt)
-        self.assertIn("flights to Lisbon", prompt)
 
 
 if __name__ == "__main__":

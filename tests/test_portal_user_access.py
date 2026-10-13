@@ -8,12 +8,8 @@ from pathlib import Path
 
 from packages.infrastructure.account_erasure import erase_account
 from packages.infrastructure.portal_db import PortalDatabase
-from packages.infrastructure.whatsapp_portal_service import delete_portal_whatsapp_store_for_connection
-from packages.infrastructure.whatsapp_portal_service import portal_whatsapp_store_path_for_connection
 
 
-DEFAULT_FEATURE_ID = "whatsapp-business-reply-suggestion-assistant"
-FOLLOW_UP_FEATURE_ID = "whatsapp-business-follow-up-outreach-writer"
 MONITOR_FEATURE_ID = "scheduled-web-monitor-notifier"
 
 
@@ -56,10 +52,9 @@ class PortalUserAccessTests(unittest.TestCase):
 
         self.assertEqual(
             [feature["featureId"] for feature in available_features],
-            [DEFAULT_FEATURE_ID, FOLLOW_UP_FEATURE_ID, MONITOR_FEATURE_ID],
+            [MONITOR_FEATURE_ID],
         )
-        for feature_id in (DEFAULT_FEATURE_ID, FOLLOW_UP_FEATURE_ID, MONITOR_FEATURE_ID):
-            self.assertIsNotNone(self.database.get_available_feature("owner@example.com", feature_id))
+        self.assertIsNotNone(self.database.get_available_feature("owner@example.com", MONITOR_FEATURE_ID))
 
     def test_available_tool_carries_the_settings_this_client_saved(self) -> None:
         self.database.register_user("owner@example.com")
@@ -87,7 +82,13 @@ class PortalUserAccessTests(unittest.TestCase):
             features[MONITOR_FEATURE_ID]["assignment"]["metadata"]["settings"]["watchItems"],
             ["Court holidays", "Criminal law conferences"],
         )
-        self.assertNotIn("assignment", features[FOLLOW_UP_FEATURE_ID])
+
+        self.database.register_user("other@example.com")
+        other_features = {
+            feature["featureId"]: feature
+            for feature in self.database.list_available_features("other@example.com")
+        }
+        self.assertNotIn("assignment", other_features[MONITOR_FEATURE_ID])
 
     def test_delete_user_removes_account_and_related_records(self) -> None:
         self.database.register_user("owner@example.com", is_admin=True)
@@ -143,7 +144,7 @@ class PortalUserAccessTests(unittest.TestCase):
         self.assertIsNotNone(self.database.get_whatsapp_connection("better@example.com"))
         self.assertEqual(
             [feature["featureId"] for feature in self.database.list_available_features("better@example.com")],
-            [DEFAULT_FEATURE_ID, FOLLOW_UP_FEATURE_ID, MONITOR_FEATURE_ID],
+            [MONITOR_FEATURE_ID],
         )
 
     def test_update_user_identity_rejects_duplicate_email(self) -> None:
@@ -181,7 +182,7 @@ class PortalUserAccessTests(unittest.TestCase):
         self.assertTrue(reactivated_user["isActive"])
         self.assertEqual(
             [feature["featureId"] for feature in self.database.list_available_features("owner@example.com")],
-            [DEFAULT_FEATURE_ID, FOLLOW_UP_FEATURE_ID, MONITOR_FEATURE_ID],
+            [MONITOR_FEATURE_ID],
         )
 
     def test_update_user_status_rejects_disabling_last_active_admin(self) -> None:
@@ -220,7 +221,7 @@ class PortalUserAccessTests(unittest.TestCase):
         self.assertNotIn("default_assigned", feature_columns)
         self.assertEqual(
             [feature["featureId"] for feature in reopened.list_available_features("owner@example.com")],
-            [DEFAULT_FEATURE_ID, FOLLOW_UP_FEATURE_ID, MONITOR_FEATURE_ID],
+            [MONITOR_FEATURE_ID],
         )
         self.assertEqual(
             reopened.get_feature_assignment("owner@example.com", MONITOR_FEATURE_ID)["metadata"]["settings"],
@@ -276,41 +277,6 @@ class PortalUserAccessTests(unittest.TestCase):
         self.assertEqual(deleted_user["email"], "owner@example.com")
         self.assertIsNone(self.database.get_user("owner@example.com"))
 
-    def test_portal_whatsapp_store_path_follows_the_database_it_is_given(self) -> None:
-        # A server built on a temporary database must keep its approval store
-        # beside that database, not in the checked-out portal/ folder.
-        root = Path(self.temp_dir.name)
-        db_path = root / "runtime" / "portal.db"
-
-        with mock.patch.dict(os.environ, {}, clear=False):
-            os.environ.pop("PORTAL_WHATSAPP_STORE_ROOT", None)
-            os.environ.pop("PORTAL_DATA_ROOT", None)
-            store_path = portal_whatsapp_store_path_for_connection(root, {"userId": 7}, db_path=db_path)
-
-        self.assertEqual(store_path, root / "runtime" / "portal-whatsapp" / "user-7.json")
-
-    def test_delete_portal_whatsapp_store_for_connection_removes_cached_file(self) -> None:
-        connection = {
-            "userId": 7,
-            "email": "owner@example.com",
-        }
-        store_cache = {}
-        store_path = portal_whatsapp_store_path_for_connection(Path(self.temp_dir.name), connection)
-        store_path.parent.mkdir(parents=True, exist_ok=True)
-        store_path.write_text('{"threads":{},"approvals":{}}\n', encoding="utf-8")
-        store_cache[str(store_path.resolve())] = object()
-
-        deleted_path = delete_portal_whatsapp_store_for_connection(
-            root=Path(self.temp_dir.name),
-            connection=connection,
-            store_cache=store_cache,
-        )
-
-        self.assertEqual(deleted_path, store_path.resolve())
-        self.assertFalse(store_path.exists())
-        self.assertEqual(store_cache, {})
-
-
     def test_erase_account_removes_receipt_bundles_and_contact_submissions(self) -> None:
         self.database.register_user("owner@example.com")
         self.database.create_contact_opportunity(
@@ -328,9 +294,6 @@ class PortalUserAccessTests(unittest.TestCase):
         neighbour_folder = receipt_root / "another-owner-key"
         neighbour_folder.mkdir(parents=True)
         (neighbour_folder / "receipts.xlsx").write_text("rows", encoding="utf-8")
-        store_path = portal_whatsapp_store_path_for_connection(root, {"userId": 1, "email": "owner@example.com"})
-        store_path.parent.mkdir(parents=True, exist_ok=True)
-        store_path.write_text('{"threads":{},"approvals":{}}\n', encoding="utf-8")
 
         erasure = erase_account(
             database=self.database,
@@ -342,13 +305,9 @@ class PortalUserAccessTests(unittest.TestCase):
 
         self.assertIsNone(self.database.get_user("owner@example.com"))
         self.assertFalse((receipt_root / "owner-key").exists())
-        self.assertFalse(store_path.exists())
         self.assertEqual(erasure.contact_submissions_removed, 1)
         self.assertEqual(erasure.failed_paths, [])
-        self.assertEqual(
-            {path.name for path in erasure.removed_paths},
-            {"owner-key", store_path.name},
-        )
+        self.assertEqual({path.name for path in erasure.removed_paths}, {"owner-key"})
         # Nothing outside the account being erased is touched.
         self.assertTrue((neighbour_folder / "receipts.xlsx").exists())
         self.assertEqual(len(self.database.list_contact_opportunities()), 1)

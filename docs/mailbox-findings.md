@@ -4,11 +4,8 @@ What the assistant tells the person about their mail without being asked.
 
 ## What it looks for
 
-Four things, all derived from a year of mail read together:
+Three things, all derived from a year of mail read together:
 
-- **Unpaid invoices.** An invoice the person sent (directly or through an
-  invoicing service) that no payment from that customer follows within
-  thirty days. Matched by invoice reference, or by customer and amount.
 - **Bills coming due.** A bill with a due date in the next thirty days, or
   overdue by up to three weeks, with no charge to that vendor after it.
 - **Renewals and expiries.** Anything renewing or ending in the next

@@ -1,16 +1,12 @@
-// The registration page: a name, a phone, for a business a line about what it
-// does, one request, and a message on WhatsApp. They are asked one at a time, the way the assistant
-// would ask them: an answered question slides off to the left and the next
-// arrives from the right. Who this is for - a business or a family - is asked
-// on the landing page and arrives in the address, and it is what the rest of
-// the page is written around: a family is never asked what it does, so its
-// last question is the phone, and the first WhatsApp message follows it too. It is only asked here when nobody has.
-// The phone is structured rather than typed
+// The registration page for a family: a name, a phone, one request, and a
+// message on WhatsApp. The two questions are asked one at a time, the way the
+// assistant would ask them: an answered question slides off to the left and
+// the next arrives from the right, and the phone is the last question, so the
+// first WhatsApp message follows it. The phone is structured rather than typed
 // free: a country picked from a list, a national number typed as they would
 // dial it, and the full international number assembled here and shown back
 // before it is sent. The server records the registration and sends the first
-// message; the account itself opens in the chat, once they give an email
-// there.
+// message; the account itself opens in the chat.
 window.addEventListener("DOMContentLoaded", () => {
   const form = document.querySelector("[data-register-form]");
   const done = document.querySelector("[data-register-done]");
@@ -112,11 +108,8 @@ window.addEventListener("DOMContentLoaded", () => {
   // font lands, or the window changes width.
   const flow = form.querySelector("[data-flow]");
   const viewport = form.querySelector("[data-viewport]");
-  const allSteps = [...form.querySelectorAll("[data-step]")];
-  const allDots = [...form.querySelectorAll("[data-progress] li")];
-  // The questions this person is asked, which the choice of kind can change.
-  let steps = allSteps;
-  let dots = allDots;
+  const steps = [...form.querySelectorAll("[data-step]")];
+  const dots = [...form.querySelectorAll("[data-progress] li")];
   const backButtons = [...form.querySelectorAll("[data-back]")];
   let current = 0;
 
@@ -141,12 +134,7 @@ window.addEventListener("DOMContentLoaded", () => {
     measure();
     if (focus) {
       // The text field, not the country list: the country is already guessed.
-      // On a question answered by picking, the card they picked - landing on
-      // the first card instead would ring a choice they did not make.
-      const control =
-        steps[current].querySelector("input:checked") ||
-        steps[current].querySelector("input") ||
-        steps[current].querySelector("select");
+      const control = steps[current].querySelector("input") || steps[current].querySelector("select");
       if (control) {
         control.focus({ preventScroll: true });
       }
@@ -160,7 +148,7 @@ window.addEventListener("DOMContentLoaded", () => {
 
   if (window.ResizeObserver) {
     const observer = new ResizeObserver(() => measure());
-    allSteps.forEach((step) => observer.observe(step));
+    steps.forEach((step) => observer.observe(step));
   }
 
   // Alphabetical by name, so a country is found where the eye expects it.
@@ -230,22 +218,16 @@ window.addEventListener("DOMContentLoaded", () => {
     preview.textContent = displayNumber() ? `I'll text ${displayNumber()}` : "";
   };
 
-  // Tidy the text fields when they leave them: each word of the name with a
-  // capital, what the business does with a capital first letter. The server does the
-  // same, so what is stored matches what they saw.
+  // Tidy the name when they leave it: each word with a capital. The server
+  // does the same, so what is stored matches what they saw.
   const capitalizeName = (value) => value
     .trim()
     .split(/\s+/)
     .filter(Boolean)
     .map((word) => word.split("-").map((part) => part.charAt(0).toUpperCase() + part.slice(1)).join("-"))
     .join(" ");
-  const capitalizeSentence = (value) => {
-    const text = value.trim();
-    return text.charAt(0).toUpperCase() + text.slice(1);
-  };
   const firstNameInput = form.querySelector('input[name="firstName"]');
   const lastNameInput = form.querySelector('input[name="lastName"]');
-  const businessInput = form.querySelector('input[name="business"]');
   // Two fields, one answer: what the server is told is still a single name.
   const fullName = () => [capitalizeName(firstNameInput.value), capitalizeName(lastNameInput.value)]
     .filter(Boolean)
@@ -255,75 +237,6 @@ window.addEventListener("DOMContentLoaded", () => {
       input.value = capitalizeName(input.value);
     });
   });
-  businessInput.addEventListener("blur", () => {
-    businessInput.value = capitalizeSentence(businessInput.value);
-  });
-
-  const KINDS = ["business", "family"];
-  const kindChoices = [...form.querySelectorAll("[data-kind-choice]")];
-  const phoneStep = form.querySelector('[data-step="phone"]');
-
-  const chosenKind = () => {
-    const picked = kindChoices.find((choice) => choice.checked);
-    return picked && KINDS.includes(picked.value) ? picked.value : "";
-  };
-
-  // A business is asked what it does; a family is not, so for a family that
-  // question leaves the flow, with its dash, and the phone becomes the last
-  // question and sends. Written out whenever the choice changes, which only
-  // happens on the first question, so where they are in the flow holds.
-  const applyKind = () => {
-    const family = chosenKind() === "family";
-    steps = allSteps.filter((step) => !(family && step.getAttribute("data-step") === "business"));
-    dots = allDots.filter((dot) => dot.isConnected && !(family && dot.getAttribute("data-dot") === "business"));
-    allSteps.forEach((step) => {
-      step.hidden = !steps.includes(step);
-    });
-    allDots.forEach((dot) => {
-      dot.hidden = !dots.includes(dot);
-    });
-    phoneStep.setAttribute("data-kind", family ? "family" : "business");
-    measure();
-  };
-
-  kindChoices.forEach((choice) => {
-    // This question costs one click: the card is the answer, so a tap picks
-    // and moves on in the same motion - even when they came back and picked
-    // the same card again, which fires no change at all. The keyboard keeps
-    // its own pace: arrowing through the options rewrites the page without
-    // jumping off it, and Enter moves on. Arrowing a radio group fires a
-    // click too, with no pointer behind it - detail is 0 there and 1 for a
-    // hand, which is what tells the two apart.
-    choice.addEventListener("change", applyKind);
-    choice.addEventListener("click", (event) => {
-      applyKind();
-      if (event.detail > 0) {
-        advance();
-      }
-    });
-  });
-
-  // Who this is for is decided on the landing page, which links here with the
-  // answer in the address: /register/family or /register/business. The head
-  // script has already read it and marked the page, so the stylesheet kept
-  // the question out of the first paint; here it leaves the flow for good,
-  // with its dash, and the page carries on from the name. Someone who came
-  // straight to /register - a link passed on by hand, a typed address - is
-  // still asked here rather than guessed at.
-  const requestedKind = document.documentElement.getAttribute("data-kind-known") || "";
-  const presetChoice = kindChoices.find((choice) => choice.value === requestedKind);
-  const kindIndex = steps.findIndex((step) => step.getAttribute("data-step") === "kind");
-  if (presetChoice && kindIndex >= 0) {
-    presetChoice.checked = true;
-    allSteps.splice(kindIndex, 1)[0].remove();
-    const dot = allDots.splice(kindIndex, 1)[0];
-    if (dot) {
-      dot.remove();
-    }
-    steps = allSteps;
-    dots = allDots;
-  }
-
   countrySelect.addEventListener("change", syncPhone);
   nationalInput.addEventListener("input", () => {
     // Digits only, but keep it readable while they type.
@@ -398,15 +311,9 @@ window.addEventListener("DOMContentLoaded", () => {
 
   // What is wrong with one question's answer, if anything. Each question is
   // checked on its own so nobody is told about a field they cannot see.
-  // Each question is known by its name rather than by where it sits: the
-  // first one is dropped when the landing page has already asked it, and
-  // everything after it moves up.
   const stepErrors = (index) => {
     const step = steps[index];
     const name = step ? step.getAttribute("data-step") : "";
-    if (name === "kind") {
-      return chosenKind() ? {} : { kind: "Pick the one that fits you." };
-    }
     if (name === "name") {
       if (capitalizeName(firstNameInput.value).length < 2) {
         return { name: "Enter your first name." };
@@ -419,10 +326,6 @@ window.addEventListener("DOMContentLoaded", () => {
     if (name === "phone") {
       const problem = phoneProblem();
       return problem ? { phone: problem } : {};
-    }
-    if (name === "business") {
-      const about = businessInput.value.trim();
-      return about.length < 2 ? { business: "Tell me what you do, in a few words." } : {};
     }
     return {};
   };
@@ -437,9 +340,6 @@ window.addEventListener("DOMContentLoaded", () => {
     if (name === "name") {
       firstNameInput.value = capitalizeName(firstNameInput.value);
       lastNameInput.value = capitalizeName(lastNameInput.value);
-    }
-    if (name === "business") {
-      businessInput.value = capitalizeSentence(businessInput.value);
     }
   };
 
@@ -471,7 +371,7 @@ window.addEventListener("DOMContentLoaded", () => {
   // Enter is how a conversation moves on: to the next question, or on the
   // last one to sending. Asked for outright rather than left to the browser,
   // which only submits on its own when a form looks like an ordinary one.
-  allSteps.forEach((step) => {
+  steps.forEach((step) => {
     step.querySelectorAll("input").forEach((input) => {
       input.addEventListener("keydown", (event) => {
         if (event.key !== "Enter") {
@@ -487,7 +387,6 @@ window.addEventListener("DOMContentLoaded", () => {
     });
   });
 
-  applyKind();
   render(false);
   flow.setAttribute("data-ready", "true");
 
@@ -577,11 +476,9 @@ window.addEventListener("DOMContentLoaded", () => {
 
     const data = new FormData(form);
     const values = {
-      kind: chosenKind() || "business",
       name: fullName(),
       phone: internationalNumber(),
       country: countrySelect.value,
-      business: chosenKind() === "family" ? "" : capitalizeSentence(String(data.get("business") || "")),
       companyWebsite: String(data.get("companyWebsite") || "").trim(),
     };
 

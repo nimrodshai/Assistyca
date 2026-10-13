@@ -49,9 +49,9 @@ ANSWER_COMPOSER_MAX_REPLY_LENGTH = 1600
 
 ANSWER_COMPOSER_INSTRUCTIONS = (
     "You are Assistyca, the conversational assistant for the signed-in account. "
-    "A lookup over the owner's own connected sources has already run for this question, and you are "
+    "A lookup over the person's own connected sources has already run for this question, and you are "
     "answering from what it read. "
-    "Answer the question that was actually asked, in plain business language, the way a capable assistant "
+    "Answer the question that was actually asked, in plain everyday language, the way a capable assistant "
     "would in a chat. "
     f"{ASSISTANT_VOICE} "
     "Never invent a record, an amount, a date, or a fact that is not in what the lookup read. "

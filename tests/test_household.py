@@ -11,11 +11,13 @@ import unittest
 import urllib.error as urllib_error
 import urllib.request as urllib_request
 from datetime import date
+from datetime import timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
 from packages.infrastructure import household
 from packages.infrastructure.agent_loop import LoopContext
+from packages.infrastructure.agent_loop import _household_today
 from packages.infrastructure.agent_loop import TOOLS_BY_NAME
 from packages.infrastructure.agent_loop import build_loop_context_text
 from packages.infrastructure.portal_db import ACCOUNT_FACT_LIMIT
@@ -174,7 +176,7 @@ class RulesTests(unittest.TestCase):
         )
 
         block = household.describe_household(
-            profile={"accountKind": "family", "gettingToKnow": "in_progress"},
+            profile={"gettingToKnow": "in_progress"},
             members=members, activities=week, today=date(2026, 9, 24),
         )
         self.assertTrue(block["weekReady"], "a week they can be run is ready; this is a question, not a hole")
@@ -187,7 +189,7 @@ class RulesTests(unittest.TestCase):
 
         # And once they have said that is everything, it is never asked again.
         closed = household.describe_household(
-            profile={"accountKind": "family", "gettingToKnow": "done"},
+            profile={"gettingToKnow": "done"},
             members=members, activities=week, today=date(2026, 9, 24),
         )
         self.assertNotIn("weekGaps", closed)
@@ -229,7 +231,7 @@ class RulesTests(unittest.TestCase):
         self.assertEqual(household.own_week_gaps(members, week + [by_name], owner_names=["Dana Levi"]), [])
 
         block = household.describe_household(
-            profile={"accountKind": "family", "gettingToKnow": "in_progress"},
+            profile={"gettingToKnow": "in_progress"},
             members=members, activities=week + [work], today=date(2026, 9, 24),
         )
         self.assertTrue(block["weekReady"])
@@ -239,12 +241,12 @@ class RulesTests(unittest.TestCase):
         self.assertNotIn("weekGaps", block, "the children are in and the parent has answered")
 
         asked = household.describe_household(
-            profile={"accountKind": "family", "gettingToKnow": "in_progress"},
+            profile={"gettingToKnow": "in_progress"},
             members=members, activities=week, today=date(2026, 9, 24),
         )
         self.assertEqual(asked["weekGaps"], [{"missing": "own_week", "who": "me"}])
         with_calendar = household.describe_household(
-            profile={"accountKind": "family", "gettingToKnow": "in_progress"},
+            profile={"gettingToKnow": "in_progress"},
             members=members, activities=week, today=date(2026, 9, 24), calendar_connected=True,
         )
         self.assertNotIn("weekGaps", with_calendar)
@@ -255,7 +257,7 @@ class RulesTests(unittest.TestCase):
         # month on - with its own questions of who collects - never brings
         # the question of their own week back with it.
         self.assertEqual(household.own_week_gaps(members, week, asked=True), [])
-        already_asked = {"accountKind": "family", "gettingToKnow": "in_progress", "ownWeekAskedOn": "2026-09-10"}
+        already_asked = {"gettingToKnow": "in_progress", "ownWeekAskedOn": "2026-09-10"}
         self.assertNotIn("weekGaps", household.describe_household(
             profile=already_asked, members=members, activities=week, today=date(2026, 9, 24),
         ))
@@ -276,11 +278,10 @@ class RulesTests(unittest.TestCase):
         )
         self.assertNotIn("weekGaps", block)
 
-    def test_a_family_account_is_described_even_before_anyone_is_known(self) -> None:
-        self.assertTrue(household.should_describe_household({"accountKind": "family"}, [], []))
-        self.assertFalse(household.should_describe_household({"accountKind": "business"}, [], []))
-        self.assertFalse(household.should_describe_household(None, [], []))
-        self.assertTrue(household.should_describe_household(None, [{"name": "Shirly"}], []))
+    def test_an_account_is_described_even_before_anyone_is_known(self) -> None:
+        block = household.describe_household(profile={}, members=[], activities=[], today=date(2026, 9, 20))
+        self.assertEqual(block["gettingToKnow"]["status"], "not_started")
+        self.assertNotIn("accountKind", block)
 
 
 class StoreTests(unittest.TestCase):
@@ -414,11 +415,10 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(pinned, {"their family": True, "vendor": False})
         self.assertEqual(reopened.save_household_member(user_id=self.user_id, name="Tom", birthday="10-12")["birthday"], "--10-12")
 
-    def test_the_kind_of_account_is_the_one_signup_and_the_admin_set(self) -> None:
+    def test_every_account_starts_with_the_family_still_to_be_met(self) -> None:
         profile = self.database.get_household_profile(user_id=self.user_id) or {}
-        self.assertEqual((profile["accountKind"], profile["gettingToKnow"]), ("business", "not_started"))
-        self.database.update_user_account_type("parent@example.com", account_type="family")
-        self.assertEqual((self.database.get_household_profile(user_id=self.user_id) or {})["accountKind"], "family")
+        self.assertEqual(profile["gettingToKnow"], "not_started")
+        self.assertNotIn("accountKind", profile)
 
     def test_a_member_is_filled_in_over_time_and_keeps_their_spelling(self) -> None:
         self.database.save_household_member(user_id=self.user_id, name="Shirly", role="partner")
@@ -639,7 +639,7 @@ class ToolTests(unittest.TestCase):
 
     def test_the_family_travels_in_the_context_and_the_rules_say_how_to_ask(self) -> None:
         block = household.describe_household(
-            profile={"accountKind": "family", "gettingToKnow": "in_progress"},
+            profile={"gettingToKnow": "in_progress"},
             members=[{"name": "Tom", "role": "child", "age": 4, "ageNotedOn": "2026-09-17"}],
             activities=[],
             today=date(2026, 9, 17),
@@ -702,6 +702,54 @@ class ToolTests(unittest.TestCase):
         done = self.run_tool("set_getting_to_know", status="done", ask_again_in_days=None)
         self.assertEqual(done["weekPage"], "https://assistyca.com/week/open/abc")
 
+    def test_asking_to_see_a_day_or_the_week_is_answered_with_the_picture_not_the_page(self) -> None:
+        # "What's on today?" / "show me this week" used to get the week page
+        # link. The page is for changing the week; seeing it is the picture.
+        self.run_tool("save_family_member", name="Tom", previous_name=None, role="child", age=4, school=None, email=None, phone=None, notes=None)
+        self.run_tool(
+            "save_week_activity", id=None, title="Football", who=["Tom"], days=["tue"], start_time="17:00",
+            end_time="18:00", place=None, drop_off_by="me", pick_up_by="", notes=None,
+        )
+        asked: list[tuple] = []
+        self.context.week_link = lambda: "https://assistyca.com/week/open/abc"
+        self.context.week_picture = lambda first, last, title: (
+            asked.append((first, last, title)) or f"https://assistyca.com/week/image/{title}.png"
+        )
+        today = _household_today(self.context)
+        sunday = today - timedelta(days=(today.weekday() + 1) % 7)
+
+        shown = self.run_tool("show_family_week", picture="today")
+        self.assertEqual(shown["picture"]["url"], "https://assistyca.com/week/image/today.png")
+        self.assertIn("Do not offer the week page", shown["picture"]["note"])
+        self.assertNotIn("weekPage", shown)
+        self.assertIn("byDay", shown, "the facts stay, so the caption can say what still has nobody")
+        self.assertEqual(self.context.pictures, ["https://assistyca.com/week/image/today.png"])
+        self.assertEqual(asked[-1], (today, today, "today"))
+
+        self.run_tool("show_family_week", picture="tomorrow")
+        self.assertEqual(asked[-1], (today + timedelta(days=1), today + timedelta(days=1), "tomorrow"))
+        self.run_tool("show_family_week", picture="this_week")
+        self.assertEqual(asked[-1], (sunday, sunday + timedelta(days=6), "this_week"))
+        self.run_tool("show_family_week", picture="next_week")
+        self.assertEqual(asked[-1], (sunday + timedelta(days=7), sunday + timedelta(days=13), "week_ahead"))
+        self.assertEqual(len(self.context.pictures), 4)
+
+        # A question about one thing is not a request to see the day.
+        plain = self.run_tool("show_family_week", picture="none")
+        self.assertNotIn("picture", plain)
+        self.assertEqual(plain["weekPage"], "https://assistyca.com/week/open/abc")
+        self.assertEqual(len(asked), 4)
+
+    def test_a_picture_that_cannot_be_drawn_falls_back_to_words_and_the_page(self) -> None:
+        self.context.week_link = lambda: "https://assistyca.com/week/open/abc"
+        for builder in (None, lambda *a: "", lambda *a: (_ for _ in ()).throw(RuntimeError("no fonts"))):
+            self.context.week_picture = builder
+            shown = self.run_tool("show_family_week", picture="today")
+            self.assertNotIn("picture", shown)
+            self.assertIn("answer in words", shown["pictureNote"])
+            self.assertEqual(shown["weekPage"], "https://assistyca.com/week/open/abc")
+        self.assertEqual(self.context.pictures, [])
+
 
 class _NoRedirect(urllib_request.HTTPRedirectHandler):
     def redirect_request(self, *args, **kwargs):  # noqa: ANN002, ANN003
@@ -753,7 +801,6 @@ class WeekPageTests(unittest.TestCase):
     def test_the_nudger_can_ask_for_one_day_of_the_owners_calendar(self) -> None:
         # Read over loopback with a session for the account, like the inbox
         # watch poll. Nothing connected is an empty day, not an error.
-        self.database.update_user_account_type("parent@example.com", account_type="family")
         status, body = self.request("POST", "/api/family-week/calendar-day", {"day": "2026-09-21", "timezone": "Asia/Jerusalem"})
         self.assertEqual((status, body["ok"], body["day"], body["events"]), (200, True, "2026-09-21", []))
         status, body = self.request("POST", "/api/family-week/calendar-day", {"day": "tomorrow", "timezone": "Asia/Jerusalem"})
@@ -841,7 +888,6 @@ class FamilyOnTheirOwnPhonesTests(unittest.TestCase):
         self.path = Path(self.temp_dir.name) / "portal.db"
         self.database = PortalDatabase(self.path)
         self.database.register_user("parent@example.com", display_name="Dana Levi")
-        self.database.update_user_account_type("parent@example.com", account_type="family")
         self.user_id = int((self.database.get_user("parent@example.com") or {})["id"])
         self.yoav = self.database.save_household_member(user_id=self.user_id, name="Yoav", role="partner")
         self.rina = self.database.save_household_member(user_id=self.user_id, name="Rina", role="other")
@@ -885,7 +931,7 @@ class FamilyOnTheirOwnPhonesTests(unittest.TestCase):
         self.assertEqual(household.invite_candidates(members)[0]["theyGet"], ("morning", "evening", "rides"))
         joined = [{**m, "waId": "972500000002"} if m["name"] == "Yoav" else m for m in members]
         self.assertEqual([c["name"] for c in household.invite_candidates(joined)], ["Rina"])
-        block = household.describe_household(profile={"accountKind": "family"}, members=joined, activities=[], today=date(2026, 9, 20))
+        block = household.describe_household(profile={}, members=joined, activities=[], today=date(2026, 9, 20))
         self.assertEqual([m.get("onWhatsApp") for m in block["members"]], [True, None, None])
 
     def test_an_invitation_brings_a_phone_onto_the_account_as_that_person(self) -> None:
@@ -1135,14 +1181,14 @@ class DrivesDuringWorkTests(unittest.TestCase):
 
     def test_the_block_marks_the_drive_and_what_was_accepted(self) -> None:
         described = household.describe_household(
-            profile={"accountKind": "family"}, members=self.members, activities=[self.work, self.school],
+            profile={}, members=self.members, activities=[self.work, self.school],
             today=date(2026, 9, 20), owner_names=["Dana"],
         )
         school = next(entry for entry in described["week"] if entry["id"] == 2)
         self.assertEqual(school["driveDuringWork"], {"pick_up": {"at": "13:30", "inside": "Work at the office 09:00-17:00", "days": ["mon", "tue"]}})
         self.assertNotIn("fineDuringWork", school)
         settled = household.describe_household(
-            profile={"accountKind": "family"}, members=self.members,
+            profile={}, members=self.members,
             activities=[self.work, dict(self.school, fineDuringWork=["pick_up"])], today=date(2026, 9, 20), owner_names=["Dana"],
         )
         school = next(entry for entry in settled["week"] if entry["id"] == 2)

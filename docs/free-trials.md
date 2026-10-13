@@ -1,8 +1,8 @@
 # Free Trials
 
 A new account may use Assistyca for a fixed number of days before it has to
-pay. Days rather than messages, because days are what you can quote to a client
-and what they can plan around.
+pay. Days rather than messages, because days are what you can tell a family
+and what they can plan around. Two weeks, since 2026-10-13.
 
 ## The rule
 
@@ -17,7 +17,7 @@ nothing rather than costing slightly less. The three paths that reach a model �
 the conversation turn, the lookup runner, and the answer composer — each check
 this, and they all return `402` with `error: "trial_expired"`. The browser shows
 that message in the chat; the WhatsApp flow sends it as an ordinary message,
-because the person reading it is a client whose trial ran out, not a caller who
+because the person reading it is a family whose trial ran out, not a caller who
 did something wrong.
 
 ## Length is per account
@@ -28,11 +28,11 @@ should not hand back the days already spent, so raising the length leaves the
 start where it is. Restarting is asked for explicitly.
 
 `0` means unlimited, and it is what every account created before trials existed
-carries — introducing this cannot switch off a client who is already working.
+carries — introducing this cannot switch off an account that is already working.
 
 ## Setting it
 
-* The clients screen in the portal shows where each account stands and takes
+* The accounts screen in the portal (Admin > Clients) shows where each account stands and takes
   the length in days beside it. Setting `0` there removes the limit.
   Restarting the clock is not offered on that screen.
 * `POST /api/admin/users/<email>/trial` with `{"trialDays": 14}` sets the
@@ -42,7 +42,7 @@ carries — introducing this cannot switch off a client who is already working.
   It defaults to `2`.
 
 Every admin user record carries a `trial` object (`onTrial`, `allowed`,
-`expired`, `trialDays`, `endsAt`, `daysLeft`) so the client list can show where
+`expired`, `trialDays`, `endsAt`, `daysLeft`) so the account list can show where
 each account stands.
 
 ## Tests

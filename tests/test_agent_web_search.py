@@ -92,7 +92,7 @@ class AgentWebSearchTests(unittest.TestCase):
         self.assertIn("a hotel, a concert or a price is search_web", by_name["search_news"]["description"])
 
     def test_news_and_web_search_switch_off_separately(self) -> None:
-        blocked = blocked_tools({"family": {"news_search": False}}, "family")
+        blocked = blocked_tools({"news_search": False})
 
         self.assertIn("search_news", blocked)
         self.assertNotIn("search_web", blocked)

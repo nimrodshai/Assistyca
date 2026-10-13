@@ -263,41 +263,6 @@ class PortalDatabaseModelPriceTests(unittest.TestCase):
         self.assertIsNotNone(summary)
         self.assertAlmostEqual(summary["currentMonth"]["usageUsd"], 0.05)
 
-    def test_whatsapp_conversation_summary_includes_message_count(self) -> None:
-        database = PortalDatabase(self.db_path)
-        database.register_user("owner@example.com")
-
-        database.save_whatsapp_message(
-            email="owner@example.com",
-            conversation_id="15551230000",
-            direction="inbound",
-            text="Hi, are you available today?",
-            sender_name="Maya Cohen",
-            sender_wa_id="15551230000",
-            message_id="wamid.1",
-            message_at="2026-07-24T08:00:00+00:00",
-        )
-        database.save_whatsapp_message(
-            email="owner@example.com",
-            conversation_id="15551230000",
-            direction="outbound",
-            text="Yes, I can help this afternoon.",
-            sender_name="Maya Cohen",
-            sender_wa_id="15551230000",
-            message_id="wamid.2",
-            message_at="2026-07-24T08:03:00+00:00",
-        )
-
-        conversations = database.list_whatsapp_conversations(email="owner@example.com")
-        messages = database.list_whatsapp_conversation_messages(
-            "15551230000",
-            email="owner@example.com",
-        )
-
-        self.assertEqual(len(conversations), 1)
-        self.assertEqual(conversations[0]["messageCount"], 2)
-        self.assertEqual(len(messages), 2)
-
     def test_whatsapp_connection_preserves_access_token_when_omitted(self) -> None:
         database = PortalDatabase(self.db_path)
         database.register_user("owner@example.com")

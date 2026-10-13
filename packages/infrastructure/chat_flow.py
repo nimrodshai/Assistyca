@@ -1,35 +1,29 @@
-"""What the opening of the conversation is for, per kind of account.
+"""What the opening of the conversation is for.
 
-An account registers as a business or as a family, and the two want
-different things from their first days here.
-
-A business gets little out of the assistant until its mail and its calendar
-are connected: the invoices, the receipts to chase, the replies due, the
-meetings and the free hours all live in there. So until both are in, every
-conversation carries one offer to connect what is missing - once, worded as
-the thing it would let the assistant do for them, and dropped the moment
-they say not now.
-
-A family is the other way round. Nothing they came for is in a mailbox: it
-is who is at home, when each child comes back, who drives to ballet on
-Tuesday and who is collecting. That is asked for and kept here, in the
-conversation, never read out of a calendar, and the asking goes on until the
-week is whole - code works out what is still missing rather than leaving the
-assistant to decide it has heard enough. Once the children are placed, the
-parent is asked about their own week too - when they work, which is when
-they cannot be the one collecting - and offered their calendar as the other
-way to give that answer, since it is already written there. Only once the
-week is in does the assistant suggest connecting a calendar and a mailbox
-for their own sake, as the extra they are for a family, and nothing they
-have is ever held back until they do.
+Nothing a family came for is in a mailbox: it is who is at home, when each
+child comes back, who drives to ballet on Tuesday and who is collecting. That
+is asked for and kept here, in the conversation, never read out of a
+calendar, and the asking goes on until the week is whole - code works out
+what is still missing rather than leaving the assistant to decide it has
+heard enough. Once the children are placed, the parent is asked about their
+own week too - when they work, which is when they cannot be the one
+collecting - and offered their calendar as the other way to give that answer,
+since it is already written there. Only once the week is in does the
+assistant suggest connecting a calendar and a mailbox for their own sake, as
+the extra they are for a family, and nothing they have is ever held back
+until they do.
 
 Where each of those stands is kept on the account, so someone who said not
 now is not asked again the next morning, and a family whose week is already
 in is never taken back to the beginning.
 
+Someone who simply texted the number, with no registration page before it,
+has never been told who is talking to them. Their first turn says so, and
+the assistant introduces itself before anything else.
+
 Nothing here touches the database or the network: the caller hands in the
-account's kind, its profile row and what is connected, and gets back the
-block the assistant reads and the rules that go with it.
+account's profile row and what is connected, and gets back the block the
+assistant reads and the rules that go with it.
 """
 
 from __future__ import annotations
@@ -37,7 +31,6 @@ from __future__ import annotations
 from typing import Any
 from typing import Iterable
 
-from packages.infrastructure.account_types import normalize_account_type
 from packages.infrastructure.household import GETTING_TO_KNOW_STATUSES
 from packages.infrastructure.household import clean
 from packages.infrastructure.household import week_setup_gaps
@@ -49,7 +42,7 @@ CONNECT_SOURCES = ("mailbox", "calendar")
 
 # The goals an opening can have. "family" is getting to know them; "connect"
 # is the offer to connect the mail and the calendar; "done" is an account
-# with nothing left to open with, which still says what kind it is.
+# with nothing left to open with.
 FLOW_GOALS = ("family", "connect", "done")
 FLOW_STATUSES = GETTING_TO_KNOW_STATUSES
 # How many of the week's gaps travel with the block. They are asked about one
@@ -60,59 +53,67 @@ MAX_WEEK_GAPS_SHOWN = 8
 
 def describe_chat_flow(
     *,
-    account_type: Any,
     profile: dict[str, Any] | None,
     connected: Iterable[str],
     today: str,
     family_flow_allowed: bool = True,
     household_block: dict[str, Any] | None = None,
+    first_contact: bool = False,
 ) -> dict[str, Any]:
     """Where this account's opening stands, as the assistant reads it each turn.
 
     family_flow_allowed is false when the house switched the family and week
-    feature off for this kind of account: the tools that keep a family are
-    refused, so there is nothing to get to know either, and a family account
-    opens on connecting like a business.
+    feature off: the tools that keep a family are refused, so there is
+    nothing to get to know either, and the account opens on connecting.
 
     household_block is the family as the assistant reads it. What it is for
     here is the list of what the week still lacks: code works that out from
     what is kept, so the asking ends when the week is actually ready rather
     than when the conversation happens to run out of steam.
+
+    first_contact is true when nothing has ever been said to this person: no
+    welcome went out and no turn has answered them yet. The assistant then
+    introduces itself first.
     """
 
-    kind = normalize_account_type(account_type)
     profile = profile or {}
     missing = [source for source in CONNECT_SOURCES if source not in set(connected or ())]
     gaps = week_gaps(household_block)
     ready = week_ready(household_block, gaps)
 
-    if kind == "family" and family_flow_allowed:
+    if family_flow_allowed:
         status = _status(profile.get("gettingToKnow"))
         if status != "done":
-            flow = _flow("family", kind, status, profile.get("askAgainOn"), today)
+            flow = _flow("family", status, profile.get("askAgainOn"), today)
             flow["weekReady"] = ready
             if gaps:
                 flow["weekGaps"] = gaps
+            if first_contact:
+                flow["introduce"] = True
             return flow
 
     connect_status = _status(profile.get("connectOffer"))
     if missing and connect_status != "done":
-        flow = _flow("connect", kind, connect_status, profile.get("connectAskAgainOn"), today)
+        flow = _flow("connect", connect_status, profile.get("connectAskAgainOn"), today)
         flow["notConnected"] = missing
-        if kind == "family" and family_flow_allowed:
+        if family_flow_allowed:
             # A week they have called finished is never reopened as a round of
             # questions, but what nobody is down for still travels, so it can
             # be raised on the day it matters.
             flow["weekReady"] = ready
             if gaps:
                 flow["weekGaps"] = gaps
+        if first_contact:
+            flow["introduce"] = True
         return flow
 
-    flow = {"accountType": kind, "goal": "done"}
-    if kind == "family" and family_flow_allowed:
+    flow: dict[str, Any] = {"goal": "done"}
+    if family_flow_allowed:
         flow["weekReady"] = ready
         if gaps:
             flow["weekGaps"] = gaps
+    if first_contact:
+        flow["introduce"] = True
     return flow
 
 
@@ -149,13 +150,12 @@ def _status(value: Any) -> str:
     return status if status in FLOW_STATUSES else "not_started"
 
 
-def _flow(goal: str, account_type: str, status: str, ask_again_on: Any, today: str) -> dict[str, Any]:
+def _flow(goal: str, status: str, ask_again_on: Any, today: str) -> dict[str, Any]:
     """askNow is the whole point of the postponed status: it is false while a
     "not now" is still standing, and true again on the day it named."""
 
     ask_again = clean(ask_again_on)[:10]
     flow: dict[str, Any] = {
-        "accountType": account_type,
         "goal": goal,
         "status": status,
         "askNow": status != "postponed" or not ask_again or ask_again <= str(today or "")[:10],
@@ -167,19 +167,15 @@ def _flow(goal: str, account_type: str, status: str, ask_again_on: Any, today: s
 
 # -- the rules that travel with the block --------------------------------------
 
-# A family account reads the same instructions as a business one, which are
-# written for someone running a business. This puts them right, and stays
-# with the account for good - long after the opening is over.
+# What is true of every account, long after the opening is over.
 FAMILY_ACCOUNT_RULES = (
-    "This account registered as a family, not a business. What you help them run is their household and "
-    "their week: the people in it, where the children are each day, who drives and who collects, the "
-    "errands and the appointments and what the week costs them. Read every mention of their business in "
-    "these instructions as their household, and knownFacts as what they told you about their family life. "
-    "Never call them a business, never speak of their customers or their clients, and when a message is "
-    "not something you help with, name something you could do for their week instead. An entry in "
-    "household.week marked grownUp is a grown-up's own week - their work hours, the partner's shift - and "
-    "nobody takes or collects them; what it is for is the pickups: when one lands inside it, that grown-up "
-    "cannot be the one, so say so and ask who can rather than putting them down for it.\n"
+    "What you help them run is their household and their week: the people in it, where the children are each "
+    "day, who drives and who collects, the errands and the appointments and what the week costs them. "
+    "knownFacts is what they told you about their family life. When a message is not something you help "
+    "with, name something you could do for their week instead. An entry in household.week marked grownUp is "
+    "a grown-up's own week - their work hours, the partner's shift - and nobody takes or collects them; what "
+    "it is for is the pickups: when one lands inside it, that grown-up cannot be the one, so say so and ask "
+    "who can rather than putting them down for it.\n"
     "The account is the family's, not one person's. Any grown-up in household.members who is not marked "
     "onWhatsApp can be brought onto it from their own phone with invite_family_member: it costs nothing more "
     "and there is nothing for them to set up, because the week is already in. The partner gets the whole "
@@ -190,6 +186,17 @@ FAMILY_ACCOUNT_RULES = (
     "new who drives is added - in one line and once, never as a pitch, and when the person asks for it or "
     "says yes, call invite_family_member with the name and put the link it returns on its own line exactly as "
     "given, saying it is for them to forward to that person: the link is theirs to pass on, not to open.\n"
+)
+
+# The first words to someone who texted the number out of the blue.
+_INTRODUCTION = (
+    "CONTEXT.chatFlow.introduce is set: this person texted the Assistyca number without registering anywhere "
+    "first, and nothing has been said to them yet. Before anything else, say in one or two short lines who you "
+    "are - Assistyca, an assistant for their family that lives in this chat - and what you do for a family: "
+    "keep the week, who drives and who collects, a word before each pickup, the lists and the reminders. "
+    "Then answer whatever they wrote, and carry straight on into getting to know them. Warm and brief; no "
+    "list of features, no welcome speech. The account is already open - never ask for an email, a sign-up "
+    "or anything to set up.\n"
 )
 
 _FAMILY_GETTING_TO_KNOW = (
@@ -257,26 +264,18 @@ _FAMILY_GETTING_TO_KNOW = (
     "invite_family_member. After done, never start asking about the family again.\n"
 )
 
-_CONNECT_OPENING = {
-    "business": (
-        "Almost everything worth doing for this business is behind their mail and their calendar: the "
-        "invoices and receipts, the replies that are due, the meetings and the hours that are actually "
-        "free. Getting those two connected is the one thing to make progress on in these first "
-        "conversations. CONTEXT.chatFlow.notConnected says which is still missing."
-    ),
-    "family": (
-        "Their family and their week are in, and their week is yours to run from here - it lives with you, "
-        "not in a calendar, and nothing about it waits on anything being connected. So a calendar and a "
-        "mailbox are an extra, worth one offer and nothing more: their week laid into their own diary, an "
-        "invitation the other parent actually gets, the mail from school and the clubs read for the dates "
-        "that matter, the bills and receipts gathered without them looking. CONTEXT.chatFlow.notConnected "
-        "says which is still missing. Never say, or imply, that you cannot help them until they connect "
-        "something; everything they came for already works. If household has no email for the other parent "
-        "and an invitation is what they want, ask for it in the same breath as the calendar and save it on "
-        "them with save_family_member. A calendar they connected while you were getting to know them, for "
-        "their own week, is already in: then only the mailbox is left to offer."
-    ),
-}
+_CONNECT_OPENING = (
+    "Their family and their week are in, and their week is yours to run from here - it lives with you, "
+    "not in a calendar, and nothing about it waits on anything being connected. So a calendar and a "
+    "mailbox are an extra, worth one offer and nothing more: their week laid into their own diary, an "
+    "invitation the other parent actually gets, the mail from school and the clubs read for the dates "
+    "that matter, the bills and receipts gathered without them looking. CONTEXT.chatFlow.notConnected "
+    "says which is still missing. Never say, or imply, that you cannot help them until they connect "
+    "something; everything they came for already works. If household has no email for the other parent "
+    "and an invitation is what they want, ask for it in the same breath as the calendar and save it on "
+    "them with save_family_member. A calendar they connected while you were getting to know them, for "
+    "their own week, is already in: then only the mailbox is left to offer."
+)
 
 _CONNECT_RULES = (
     "Answer whatever they wrote first. Then, once in a conversation - never in every message, never twice "
@@ -294,17 +293,16 @@ _CONNECT_RULES = (
 
 
 def chat_flow_rules(flow: dict[str, Any] | None) -> str:
-    """The lines about this account's kind and its opening, for this turn."""
+    """The lines about this account's opening, for this turn."""
 
     if not flow:
         return ""
-    account_type = normalize_account_type(flow.get("accountType"))
     goal = str(flow.get("goal") or "done")
-    rules = FAMILY_ACCOUNT_RULES if account_type == "family" else ""
+    rules = FAMILY_ACCOUNT_RULES + (_INTRODUCTION if flow.get("introduce") else "")
     if goal == "family":
         return f"{rules}{_FAMILY_GETTING_TO_KNOW}"
     if goal == "connect":
-        return f"{rules}{_CONNECT_OPENING[account_type]} {_CONNECT_RULES}"
+        return f"{rules}{_CONNECT_OPENING} {_CONNECT_RULES}"
     return rules
 
 
