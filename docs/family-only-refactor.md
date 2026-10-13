@@ -30,7 +30,7 @@ Three facts shape all the work below.
 
 ## 0. Decisions
 
-Answered by Nimrod on 2026-10-13 unless marked open.
+All answered by Nimrod on 2026-10-13.
 
 - [x] **Existing accounts: erase them.** None of the accounts that read as business
       are real clients. Run the account-erasure path over every row whose
@@ -43,8 +43,9 @@ Answered by Nimrod on 2026-10-13 unless marked open.
 - [x] **Every new account gets two weeks free, then pays.** Today the default is
       two days (`PORTAL_DEFAULT_TRIAL_DAYS=2`, `render.yaml:132`,
       `trial_access.py:21`). Set it to 14 in code and on both Render services.
-- [ ] **The admin feature grid.** Open. Recommendation: keep it as one column of
-      global on/off switches (see 2d).
+- [x] **The admin feature grid becomes one column of global switches.** Keep the
+      page and the table so features can be switched on and off by hand without a
+      deploy; drop the per-type column and the per-user type selector (see 2d).
 - [x] **The Scheduled Web Monitor: keep the code, switch it off.** Flip its default
       to off (`monitor.py:133`), set `PORTAL_SCHEDULED_MONITOR_ENABLED=0` on prod,
       and take it out of the proposal types so the assistant never offers it.
@@ -52,8 +53,8 @@ Answered by Nimrod on 2026-10-13 unless marked open.
       and the Opportunities tab stay with it (section 1f is deferred, not deleted).
 - [x] **Meta templates: retire** `assistyca_welcome1` and the reply-assistant
       templates once the new family pair is approved.
-- [ ] **`clients/`, the spec scripts and their docs.** Open. Recommendation:
-      delete; git history keeps them.
+- [x] **`clients/`, the spec scripts and their docs: remove them.** Git history
+      keeps every file if anything is ever wanted back (see 1g).
 - [x] **Paid business features in production.** Nobody real is on them, so no
       subscriptions to cancel; drop the rows and tokens with the tables.
 
