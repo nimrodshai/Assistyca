@@ -5,7 +5,9 @@ Outside it only a template Meta has approved gets through, and the template
 is chosen by what the message is, not by one generic wrapper: a morning
 digest opens with "Good morning", a reminder with "Heads-up", the evening
 look at tomorrow with "Tomorrow at a glance", and the week ahead with the
-week's picture on top. Each kind exists in Hebrew and in English under the
+week's picture on top. The word before a drive of their own is a reminder
+with a button under it, offering one more word five minutes before
+(remind_again), so it has a template of its own. Each kind exists in Hebrew and in English under the
 same template name, so only the language code changes between people
 (see message_language). The assistant's words ride in the single body
 variable, one line, as before.
@@ -27,12 +29,16 @@ TEMPLATE_KIND_MORNING_DIGEST = "morning_digest"
 TEMPLATE_KIND_REMINDER = "reminder"
 TEMPLATE_KIND_EVENING_GLANCE = "evening_glance"
 TEMPLATE_KIND_WEEK_AHEAD = "week_ahead"
+# The reminder with a button under it offering one more word five minutes
+# before (remind_again): the ride word rides this one.
+TEMPLATE_KIND_REMINDER_AGAIN = "reminder_again"
 DEFAULT_TEMPLATE_KIND = TEMPLATE_KIND_REMINDER
 TEMPLATE_KINDS = (
     TEMPLATE_KIND_MORNING_DIGEST,
     TEMPLATE_KIND_REMINDER,
     TEMPLATE_KIND_EVENING_GLANCE,
     TEMPLATE_KIND_WEEK_AHEAD,
+    TEMPLATE_KIND_REMINDER_AGAIN,
 )
 TEMPLATE_KIND_PAYLOAD_KEY = "templateKind"
 
@@ -42,6 +48,7 @@ TEMPLATE_NAMES = {
     TEMPLATE_KIND_REMINDER: "assistyca_reminder",
     TEMPLATE_KIND_EVENING_GLANCE: "assistyca_evening_glance",
     TEMPLATE_KIND_WEEK_AHEAD: "assistyca_week_ahead",
+    TEMPLATE_KIND_REMINDER_AGAIN: "assistyca_reminder_again",
 }
 # The same kinds with a picture on top: the morning's day, tomorrow's for
 # the evening, the week for Saturday. A kind not here that carries a
@@ -95,6 +102,7 @@ __all__ = [
     "TEMPLATE_KIND_MORNING_DIGEST",
     "TEMPLATE_KIND_PAYLOAD_KEY",
     "TEMPLATE_KIND_REMINDER",
+    "TEMPLATE_KIND_REMINDER_AGAIN",
     "TEMPLATE_KIND_WEEK_AHEAD",
     "TEMPLATE_NAMES",
     "image_template_for",

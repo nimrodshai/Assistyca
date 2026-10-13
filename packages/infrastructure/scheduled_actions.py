@@ -15,6 +15,9 @@ from zoneinfo import ZoneInfoNotFoundError
 from packages.infrastructure.list_due_nudges import describe_due
 from packages.infrastructure.message_language import resolve_message_language
 from packages.infrastructure.notification_templates import TEMPLATE_KIND_PAYLOAD_KEY
+from packages.infrastructure.notification_templates import TEMPLATE_KIND_REMINDER
+from packages.infrastructure.notification_templates import TEMPLATE_KIND_REMINDER_AGAIN
+from packages.infrastructure.notification_templates import TEMPLATE_NAMES
 from packages.infrastructure.notification_templates import image_template_for
 from packages.infrastructure.notification_templates import normalize_template_kind
 from packages.infrastructure.notification_templates import template_for
@@ -30,6 +33,7 @@ from packages.infrastructure.standing_tasks import MESSAGE_SHAPE_SINGLE_LINE
 from packages.infrastructure.standing_tasks import NothingNewToSend
 from packages.infrastructure import household
 from packages.infrastructure.family_week_nudges import owner_phone
+from packages.infrastructure.remind_again import remind_again_button
 from packages.infrastructure.standing_tasks import is_standing_task
 from packages.infrastructure.standing_tasks import next_task_run_at
 
@@ -557,8 +561,21 @@ class ScheduledActionScheduler:
 
         refusals: list[str] = []
         image_url = normalize_text(payload.get("imageUrl"))
+        language = resolve_message_language(self.database, user_id=user_id)
+        # A word that offers one more word five minutes before ends with
+        # that question and a button to say yes: under the plain text
+        # inside the window, in the template made for it outside.
+        again = remind_again_button(action, language) if not image_url else {}
         if self._service_window_open(user_id, thread_id=self._thread_for_phone(user_id, recipient_ref)):
             try:
+                if again:
+                    provider_message_id = send_whatsapp_notification(
+                        recipient_wa_id=recipient_ref,
+                        message_text=f"{message_text}\n\n{again['question']}",
+                        reply_buttons=[(again["id"], again["label"])],
+                    )
+                    payload["whatsappSendMode"] = "buttons"
+                    return provider_message_id
                 provider_message_id = send_whatsapp_notification(
                     recipient_wa_id=recipient_ref,
                     message_text=message_text,
@@ -567,8 +584,7 @@ class ScheduledActionScheduler:
                 payload["whatsappSendMode"] = "image" if image_url else "text"
                 return provider_message_id
             except Exception as exc:  # noqa: BLE001 - the template is the next thing to try
-                refusals.append(f"{'picture' if image_url else 'plain text'}: {exc}")
-        language = resolve_message_language(self.database, user_id=user_id)
+                refusals.append(f"{'buttons' if again else 'picture' if image_url else 'plain text'}: {exc}")
         kind = normalize_template_kind(payload.get(TEMPLATE_KIND_PAYLOAD_KEY))
         if image_url:
             image_template_name, image_template_language = image_template_for(kind, language)
@@ -585,21 +601,25 @@ class ScheduledActionScheduler:
             except Exception as exc:  # noqa: BLE001 - the plain template with a link is the next thing to try
                 refusals.append(f"template {image_template_name} ({image_template_language}): {exc}")
         plain_text = f"{message_text} {image_url}".strip() if image_url else message_text
-        attempts = [
-            template_for(kind, language),
-            (self.config.whatsapp_template_name, self.config.whatsapp_template_language),
-        ]
+        attempts = [template_for(kind, language)]
+        if kind == TEMPLATE_KIND_REMINDER_AGAIN:
+            # Until Meta approves the template with the button, the plain
+            # reminder carries the word; the offer waits with it.
+            attempts.append(template_for(TEMPLATE_KIND_REMINDER, language))
+        attempts.append((self.config.whatsapp_template_name, self.config.whatsapp_template_language))
         tried: set[tuple[str, str]] = set()
         for template_name, template_language in attempts:
             if not template_name or (template_name, template_language) in tried:
                 continue
             tried.add((template_name, template_language))
+            with_button = bool(again) and template_name == TEMPLATE_NAMES[TEMPLATE_KIND_REMINDER_AGAIN]
             try:
                 provider_message_id = send_whatsapp_notification(
                     recipient_wa_id=recipient_ref,
                     message_text=plain_text,
                     template_name=template_name,
                     template_language=template_language,
+                    template_button_payloads=[again["id"]] if with_button else None,
                 )
                 payload["whatsappSendMode"] = "template_with_link" if image_url else "template"
                 payload["whatsappTemplate"] = f"{template_name}:{template_language}"

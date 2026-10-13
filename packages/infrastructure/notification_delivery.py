@@ -39,6 +39,12 @@ DEFAULT_ASSISTYCA_WHATSAPP_PHONE_NUMBER_ID = "1186653017865246"
 NOTIFICATION_TONES = frozenset({"info", "success", "warning", "error"})
 
 
+# Meta's limits on a reply button under a message: three buttons, a title
+# of twenty characters, a body of a thousand and twenty-four.
+REPLY_BUTTON_TITLE_MAX = 20
+REPLY_BUTTON_BODY_MAX = 1024
+
+
 def normalize_text(value: Any) -> str:
     return str(value or "").strip()
 
@@ -195,7 +201,9 @@ def send_whatsapp_notification(
     template_language: str | None = None,
     template_parameters: Sequence[Any] | None = None,
     template_header_image_url: str | None = None,
+    template_button_payloads: Sequence[str] | None = None,
     image_url: str | None = None,
+    reply_buttons: Sequence[tuple[str, str]] | None = None,
 ) -> str:
     """Send one owner notification over WhatsApp through the Assistyca sender.
 
@@ -208,7 +216,11 @@ def send_whatsapp_notification(
     message, so `template_header_image_url` has to be an address Meta can
     fetch. Without a template name it sends plain text, or - with
     `image_url` - that picture with the text as its caption, which Meta takes
-    only inside the service window. Raises rather than pretending, so the
+    only inside the service window. `reply_buttons` are (id, title) pairs
+    put under plain text as tap-to-answer buttons, which Meta also takes
+    only inside the window; the id comes back as the tap. A template with
+    quick-reply buttons takes each button's payload in order in
+    `template_button_payloads`. Raises rather than pretending, so the
     caller can fall back to the in-app feed and say which channel actually
     carried the message.
     """
@@ -262,6 +274,13 @@ def send_whatsapp_notification(
             "type": "body",
             "parameters": [{"type": "text", "text": value} for value in body_parameters],
         })
+        for index, button_payload in enumerate(template_button_payloads or ()):
+            components.append({
+                "type": "button",
+                "sub_type": "quick_reply",
+                "index": str(index),
+                "parameters": [{"type": "payload", "payload": normalize_text(button_payload)}],
+            })
         template = {
             "name": resolved_template_name,
             "language": {"code": resolved_template_language},
@@ -269,13 +288,28 @@ def send_whatsapp_notification(
         }
 
     resolved_image_url = normalize_text(image_url)
+    interactive = None
+    buttons = [
+        (normalize_text(button_id), normalize_text(title)[:REPLY_BUTTON_TITLE_MAX])
+        for button_id, title in (reply_buttons or ())
+    ]
+    buttons = [(button_id, title) for button_id, title in buttons if button_id and title]
+    if buttons and template is None and not resolved_image_url:
+        interactive = {
+            "type": "button",
+            "body": {"text": normalize_text(message_text)[:REPLY_BUTTON_BODY_MAX]},
+            "action": {
+                "buttons": [{"type": "reply", "reply": {"id": button_id, "title": title}} for button_id, title in buttons[:3]],
+            },
+        }
     return send_whatsapp_message(
         access_token=resolved_access_token,
         phone_number_id=resolved_phone_number_id,
         api_version=resolved_api_version,
         recipient_wa_id=resolved_recipient,
-        message_text=None if template is not None else message_text,
+        message_text=None if template is not None or interactive is not None else message_text,
         template=template,
+        interactive=interactive,
         image={"link": resolved_image_url} if resolved_image_url and template is None else None,
     )
 

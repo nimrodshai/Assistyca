@@ -24,7 +24,10 @@ Three moments, each once, on the person's own clock:
   the account holder and to a partner on their own phone - and that word
   asks who is doing it rather than telling anyone to leave. The evening
   before asked, the morning said so; this is the last word before the
-  child is standing at the gate;
+  child is standing at the gate. A word about a drive of their own ends by
+  asking whether they want one more word five minutes before, with a
+  button to say yes (remind_again); a word that asks who does a drive is
+  a question already, and carries no second one;
 * a birthday a month away, with an offer of the ready-made list to get
   ready for it;
 * Saturday evening: the whole of the coming week as one picture - a
@@ -69,11 +72,14 @@ from zoneinfo import ZoneInfoNotFoundError
 from packages.infrastructure.notification_templates import TEMPLATE_KIND_EVENING_GLANCE
 from packages.infrastructure.notification_templates import TEMPLATE_KIND_MORNING_DIGEST
 from packages.infrastructure.notification_templates import TEMPLATE_KIND_PAYLOAD_KEY
+from packages.infrastructure.notification_templates import TEMPLATE_KIND_REMINDER_AGAIN
 from packages.infrastructure.notification_templates import TEMPLATE_KIND_WEEK_AHEAD
 from packages.infrastructure.notification_templates import normalize_template_kind
 from packages.infrastructure import household
 from packages.infrastructure.account_types import account_feature_allowed
 from packages.infrastructure.portal_db import normalize_text
+from packages.infrastructure.remind_again import REMIND_AGAIN_PAYLOAD_KEY
+from packages.infrastructure.remind_again import remind_again_offer
 from packages.infrastructure.schedule_exceptions import activities_not_excepted
 from packages.infrastructure.schedule_exceptions import family_week_paused
 from packages.infrastructure.school_days import SchoolCalendar
@@ -569,11 +575,13 @@ def ride_fact(ride: dict[str, Any], who: str) -> str:
     return f"nobody is down yet to {fact}" if ride.get("open") else fact
 
 
-def leave_words(facts: list[str], open_count: int, *, reader: str = "") -> dict[str, str]:
+def leave_words(facts: list[str], open_count: int, *, reader: str = "", again_offered: bool = False) -> dict[str, str]:
     """The title, instruction and fallback for the word before a drive -
     or before a pickup nobody has taken, which asks instead of reminding.
     reader is a family member's first name when the message is for their
-    phone; empty for the account holder."""
+    phone; empty for the account holder. again_offered says the message
+    ends, under the words, with the question whether to say so again five
+    minutes before and a button for it, so the words do not ask that."""
 
     language = "the language the family writes to you in" if reader else "the language they write to you in"
     them = "them"
@@ -602,10 +610,15 @@ def leave_words(facts: list[str], open_count: int, *, reader: str = "") -> dict[
         "somebody else - easy to answer with a name."
         if open_count else ""
     )
+    again_note = (
+        " Under the message there is already a question whether to say so again five minutes before, with a "
+        "button for it: end on the drive, and do not ask or offer that yourself."
+        if again_offered else ""
+    )
     if len(facts) == 1:
         instruction = (
             whose + f"In one short sentence, in {language}, remind them what it is and when. "
-            "The fact is exact; add nothing, and use no tool." + open_note + "\nDRIVE: " + facts[0]
+            "The fact is exact; add nothing, and use no tool." + open_note + again_note + "\nDRIVE: " + facts[0]
         )
         fallback = f"Soon: {facts[0]}."
     else:
@@ -613,7 +626,7 @@ def leave_words(facts: list[str], open_count: int, *, reader: str = "") -> dict[
             whose + "These runs of theirs fall close together, so they are one trip. In one or two short sentences, "
             f"in {language}, remind them of all of them in time order as one plan"
             + (" - at the same time means taking everyone together and dropping one, then the other" if not reader else "")
-            + ". Say each once. The facts are exact; add nothing, and use no tool." + open_note + "\nDRIVES:\n" + "\n".join(facts)
+            + ". Say each once. The facts are exact; add nothing, and use no tool." + open_note + again_note + "\nDRIVES:\n" + "\n".join(facts)
         )
         fallback = "Soon, one trip:\n" + "\n".join(f"• {fact}" for fact in facts)
     if open_count:
@@ -755,12 +768,16 @@ class FamilyWeekNudger:
     def _queue(
         self, *, user_id: int, now: datetime, timezone_name: str, title: str, instruction: str, fallback: str,
         offer: str = "", recipient_wa_id: str = "", image_url: str = "", kind: str = "",
+        remind_again: dict[str, Any] | None = None,
     ) -> None:
         """Queue one message for the account holder, or - with recipient_wa_id
         - for a family member's own phone on the same account. image_url is
         a picture the message carries, which the worker sends as one. kind
         names the template that carries it outside the service window
-        (notification_templates); unnamed, it goes as a reminder."""
+        (notification_templates); unnamed, it goes as a reminder.
+        remind_again is the offer of one more word five minutes before
+        (remind_again_offer): the worker puts the question and its button
+        under the message, and the tap is answered from what is kept here."""
 
         connection = self.database.get_whatsapp_connection_by_user_id(user_id) or {}
         owner_wa_id = normalize_text(connection.get("ownerWaId")) or owner_phone(self.database, user_id)
@@ -779,6 +796,9 @@ class FamilyWeekNudger:
         if image_url:
             payload["imageUrl"] = image_url
             payload["resultUrl"] = image_url
+        if remind_again:
+            payload[REMIND_AGAIN_PAYLOAD_KEY] = dict(remind_again)
+            payload[TEMPLATE_KIND_PAYLOAD_KEY] = normalize_template_kind(kind or TEMPLATE_KIND_REMINDER_AGAIN)
         self.database.create_scheduled_action(
             user_id=user_id,
             action_type=STANDING_TASK_ACTION_TYPE,
@@ -1058,18 +1078,23 @@ class FamilyWeekNudger:
                 lead_minutes=self.config.ride_lead_minutes, merge_minutes=self.config.ride_merge_minutes,
                 digest_at=self._morning_moment(local_now), digest_gap_minutes=self.config.ride_digest_gap_minutes,
             )
-            facts, open_count = [], 0
+            facts, open_count, said = [], 0, []
             for ride in together:
                 activity = ride["activity"]
                 if not claim(f"ride:{today.isoformat()}:{activity['id']}:{ride['leg']}"):
                     continue
                 facts.append(ride_fact(ride, _who(activity) or "them"))
                 open_count += 1 if ride.get("open") else 0
+                said.append(ride)
             if facts:
-                words = leave_words(facts, open_count)
+                # Their own drives end with the offer of one more word five
+                # minutes before; a word that asks who does a drive does not.
+                again = remind_again_offer(said, local_now=local_now, facts=facts) if not open_count else {}
+                words = leave_words(facts, open_count, again_offered=bool(again))
                 self._queue(
                     user_id=user_id, now=reference, timezone_name=timezone_name,
                     title=words["title"], instruction=words["instruction"], fallback=words["fallback"],
+                    remind_again=again or None,
                 )
                 counts["rides"] += 1
 
@@ -1428,19 +1453,22 @@ class FamilyWeekNudger:
                 digest_at=self._morning_moment(local_now) if "morning" in wants else None,
                 digest_gap_minutes=self.config.ride_digest_gap_minutes,
             )
-            facts, open_count = [], 0
+            facts, open_count, said = [], 0, []
             for ride in together:
                 activity = ride["activity"]
                 if not claim(f"ride:{today.isoformat()}:{activity['id']}:{ride['leg']}{suffix}"):
                     continue
                 facts.append(ride_fact(ride, _who(activity, owner_names, names) or "them"))
                 open_count += 1 if ride.get("open") else 0
+                said.append(ride)
             if not facts:
                 continue
-            words = leave_words(facts, open_count, reader=first)
+            again = remind_again_offer(said, local_now=local_now, facts=facts, reader=first) if not open_count else {}
+            words = leave_words(facts, open_count, reader=first, again_offered=bool(again))
             self._queue(
                 user_id=user_id, now=reference, timezone_name=timezone_name, recipient_wa_id=wa_id,
                 title=words["title"], instruction=words["instruction"], fallback=words["fallback"],
+                remind_again=again or None,
             )
             counts["rides"] += 1
 
