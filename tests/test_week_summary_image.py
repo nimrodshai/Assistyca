@@ -37,7 +37,7 @@ class WeekSummaryFactsTests(unittest.TestCase):
     def test_each_person_has_one_colour_and_the_key_shows_only_who_appears(self) -> None:
         days = week({0: [plan("School", ["Lahav"], "08:00", "12:45", "me", "Stav"), plan("Work", ["me"], "09:00", "17:00", "", "")]})
         summary = build_week_summary(week_start=SUNDAY, days=days, members=MEMBERS, owner_names=OWNER)
-        self.assertEqual([name for name, _ in summary.legend], ["Nimrod", "Lahav"], "Laor has nothing this week")
+        self.assertEqual([name for name, _ in summary.legend], ["Nimrod", "Stav", "Lahav"], "Stav collects; Laor has nothing this week")
         colours = {name: colour for name, colour in summary.legend}
         self.assertNotEqual(colours["Nimrod"], colours["Lahav"])
         # The owner's two name forms share one colour and take one slot.

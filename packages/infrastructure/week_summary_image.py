@@ -57,6 +57,9 @@ MIN_HOUR_HEIGHT = 30.0
 MIN_BLOCK_HEIGHT = 14.0
 BLOCK_INSET = 2.0
 BLOCK_PAD = 4.0
+# The tag a taker's or collector's name is drawn in, in their colour.
+TAG_HEIGHT = 10.0
+TAG_PAD = 3.0
 # Device pixels per point: 1000pt becomes 2000px, sharp on a phone when
 # zoomed and well under WhatsApp's size limit.
 RASTER_SCALE = 2.0
@@ -187,12 +190,14 @@ def person_colours(
         key = household.name_key(name)
         if key and key not in {k for k, _ in order}:
             order.append((key, name))
+    # Whoever a plan is for, and whoever takes or collects - a grandparent,
+    # a neighbour - so the tag with their name has a colour of its own.
     for activity in activities:
-        for name in activity.get("who") or ():
+        for name in list(activity.get("who") or ()) + [activity.get("dropOffBy"), activity.get("pickUpBy")]:
             key = household.name_key(name)
-            if household.is_self(name, owner_names):
+            if not key or household.is_self(name, owner_names) or household.nobody_drives(name):
                 continue
-            if key and key not in {k for k, _ in order}:
+            if key not in {k for k, _ in order}:
                 order.append((key, normalize_text(name)))
     # The self words all mean the account holder.
     aliases = {household.name_key(word): order[0][0] for word in household._SELF_WORDS}  # noqa: SLF001 - the one list of self words
@@ -306,7 +311,12 @@ def build_week_summary(
         lines = []
         for plan in day.plans:
             head, legs, is_open, colour = _plan_lines(plan, members=members, owner_names=owner_names, colours=colours, language=language)
-            for name in plan.get("who") or ():
+            named = list(plan.get("who") or ())
+            if not household.is_grown_up_activity(plan, members, owner_names):
+                named += [plan.get("dropOffBy"), plan.get("pickUpBy")]
+            for name in named:
+                if not household.name_key(name) or household.nobody_drives(name):
+                    continue
                 shown, shade = _person(name, colours, owner_names, language)
                 if shown and (shown, shade) not in seen and shade != INK_SOFT:
                     seen.append((shown, shade))
@@ -460,12 +470,25 @@ class _Page:
 
 
 @dataclass
+class _Leg:
+    """One line of a block about a drive: the label ("takes:"), the word
+    after it, and the colour of the person it names - empty for the bus
+    or for nobody, which are words rather than people."""
+
+    label: str
+    text: str
+    colour: str = ""
+    is_open: bool = False
+
+
+@dataclass
 class _Block:
     start: int  # minutes from midnight
     end: int
     head: str
     who: str
-    legs: list[str]
+    place: str
+    legs: list[_Leg]
     is_open: bool
     colour: str
     # A grown-up's own hours - work, a shift - are drawn as a faint band
@@ -517,16 +540,29 @@ def _blocks_for_day(
     timed: list[_Block] = []
     untimed: list[_Block] = []
     for plan in day.plans:
-        _head, legs, is_open, colour = _plan_lines(plan, members=members, owner_names=owner_names, colours=colours, language=language)
+        _head, _legs, is_open, colour = _plan_lines(plan, members=members, owner_names=owner_names, colours=colours, language=language)
         title = normalize_text(plan.get("title"))
         who = ", ".join(
             _person(name, colours, owner_names, language)[0] for name in (plan.get("who") or ()) if household.name_key(name)
         )
-        leg_lines = [segment for segment in legs.split(" · ") if segment] if legs else []
         band = household.is_grown_up_activity(plan, members, owner_names)
+        legs: list[_Leg] = []
+        if not band:
+            words = WORDS[language]
+            for label, key in ((words["takes"], "dropOffBy"), (words["collects"], "pickUpBy")):
+                text, leg_open = _leg_word(plan.get(key), colours, owner_names, language)
+                is_person = not leg_open and not household.nobody_drives(text)
+                legs.append(_Leg(
+                    label=f"{label}:", text=text,
+                    colour=_person(plan.get(key), colours, owner_names, language)[1] if is_person else "",
+                    is_open=leg_open,
+                ))
         start = _minutes(plan.get("startTime"))
         end = _minutes(plan.get("endTime"))
-        block = _Block(start=0, end=0, head=title, who=who, legs=leg_lines, is_open=is_open, colour=colour, band=band)
+        block = _Block(
+            start=0, end=0, head=title, who=who, place=normalize_text(plan.get("place")), legs=legs,
+            is_open=is_open, colour=colour, band=band,
+        )
         if start is None and end is None:
             untimed.append(block)
             continue
@@ -664,22 +700,47 @@ def render_week_pdf(
             text_width = width - 3 - 2 * BLOCK_PAD
             # What, who, when, then each leg: every line wrapped to the
             # block's width rather than cut, and drawn while there is room.
-            lines: list[tuple[str, str, float, str]] = []
+            lines: list[tuple[str, str, float, str] | _Leg] = []
             for line in _wrap(block.head, "WeekSans-Medium", 8, text_width)[:2]:
                 lines.append((line, "WeekSans-Medium", 8, INK))
             if block.who:
                 for line in _wrap(block.who, "WeekSans-Medium", 7.2, text_width):
                     lines.append((line, "WeekSans-Medium", 7.2, INK))
             lines.append((_time_label(block), "WeekSans", 7.2, INK_SOFT))
+            if block.place:
+                for line in _wrap(block.place, "WeekSans", 7.2, text_width):
+                    lines.append((line, "WeekSans", 7.2, INK_SOFT))
             for leg in block.legs:
-                open_line = block.is_open and WORDS[summary.language]["nobody"] in leg
-                for line in _wrap(leg, "WeekSans", 7.2, text_width):
-                    lines.append((line, "WeekSans", 7.2, OPEN_LEG if open_line else INK_SOFT))
+                if leg.colour:
+                    lines.append(leg)
+                else:
+                    for line in _wrap(f"{leg.label} {leg.text}", "WeekSans", 7.2, text_width):
+                        lines.append((line, "WeekSans", 7.2, OPEN_LEG if leg.is_open else INK_SOFT))
             room = block_height - 2 * BLOCK_PAD
             first_line_y = top + 0.75 + BLOCK_PAD + 7
             line_y = first_line_y
             drawn = 0
-            for text, font, size, colour in lines:
+            for item in lines:
+                if isinstance(item, _Leg):
+                    # The label, then the person's name as a tag in their
+                    # colour; on the next line when the two will not fit.
+                    label_width = _width(item.label, "WeekSans", 7.2)
+                    tag_width = _width(item.text, "WeekSans-Medium", 6.6) + 2 * TAG_PAD
+                    beside = label_width + 3 + tag_width <= text_width
+                    step = 7.2 + 2.4
+                    needed = step if beside else 2 * step
+                    if drawn > 0 and (line_y - first_line_y) + needed > room:
+                        break
+                    page.text(text_x, line_y, item.label, font="WeekSans", size=7.2, colour=INK_SOFT)
+                    tag_x = text_x + label_width + 3 if beside else text_x
+                    tag_y = line_y if beside else line_y + step
+                    page.box(tag_x, tag_y - 7.6, min(tag_width, text_width), TAG_HEIGHT, _hex(item.colour), radius=2.5)
+                    page.text(tag_x + TAG_PAD, tag_y - 0.4, _clip(item.text, "WeekSans-Medium", 6.6, text_width - 2 * TAG_PAD),
+                              font="WeekSans-Medium", size=6.6, colour=PAPER)
+                    line_y += needed
+                    drawn += 1 if beside else 2
+                    continue
+                text, font, size, colour = item
                 step = size + 2.4
                 if drawn > 0 and (line_y - first_line_y) + step > room:
                     break
