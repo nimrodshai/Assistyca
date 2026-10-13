@@ -28,34 +28,34 @@ Three facts shape all the work below.
    agent. A fourth, the Scheduled Web Monitor, is worded for business and overlaps
    `schedule_task` + `search_news`.
 
-## 0. Decisions to make first
+## 0. Decisions
 
-These are not settled by "drop business" and change what the code does.
+Answered by Nimrod on 2026-10-13 unless marked open.
 
-- [ ] **Existing accounts.** `users.account_type` holds `''` and `'business'` for
-      every account that is not an explicit family. Flip all to family? Only active
-      ones? Erase the genuine business clients (Dor, Bisi, demo accounts)? Count
-      first: `SELECT account_type, COUNT(*) FROM users GROUP BY account_type`.
-- [ ] **Converted accounts and the family flow.** A flipped account starts getting
-      getting-to-know, week nudges and family rules. Reset
-      `household_profiles.getting_to_know` for them, or mark it done?
-- [ ] **Strangers who text the number.** Today they get the ask-for-email signup
-      (`server.py:15110-15190`); families skip email
-      (`_open_family_account_without_email`, `server.py:15397`). Does every
-      stranger now open a family account with no email?
-- [ ] **The admin feature grid.** `account_type_features` is keyed per type. Keep it
-      as one column of global feature switches, or remove it?
-- [ ] **The Scheduled Web Monitor.** Delete, or fold into `schedule_task`?
-- [ ] **The about page.** `about/` is Nimrod's consultancy page "for Business
-      Owners" with its own intake agent. Keep as a separate consulting page,
-      rewrite, or retire?
-- [ ] **Paid business features in production.** Cancel live Lemon Squeezy
-      subscriptions in `billing_customers` / `feature_entitlements`? Revoke client
-      WABA tokens stored in `whatsapp_connections`?
-- [ ] **Grandfathered trials.** Legacy accounts carry `trial_days=0` (unlimited).
-      Stay grandfathered or get a trial?
-- [ ] **`clients/`, the spec scripts and their docs.** Delete, or archive to
-      another repo?
+- [x] **Existing accounts: erase them.** None of the accounts that read as business
+      are real clients. Run the account-erasure path over every row whose
+      `users.account_type` is not `'family'`, after a count and a look at the list
+      (the owner's own prod account, user 7, is one of them: keep it and flip it).
+- [x] **Strangers who text the number open a family account, no email.** The
+      assistant introduces itself, says what it does, and goes straight into the
+      first flow (getting to know the family). The email-asking concierge
+      (`server.py:15124-15190`) goes.
+- [x] **Every new account gets two weeks free, then pays.** Today the default is
+      two days (`PORTAL_DEFAULT_TRIAL_DAYS=2`, `render.yaml:132`,
+      `trial_access.py:21`). Set it to 14 in code and on both Render services.
+- [ ] **The admin feature grid.** Open. Recommendation: keep it as one column of
+      global on/off switches (see 2d).
+- [x] **The Scheduled Web Monitor: keep the code, switch it off.** Flip its default
+      to off (`monitor.py:133`), set `PORTAL_SCHEDULED_MONITOR_ENABLED=0` on prod,
+      and take it out of the proposal types so the assistant never offers it.
+- [x] **The about page stays** as the consultancy page for now. Its intake agent
+      and the Opportunities tab stay with it (section 1f is deferred, not deleted).
+- [x] **Meta templates: retire** `assistyca_welcome1` and the reply-assistant
+      templates once the new family pair is approved.
+- [ ] **`clients/`, the spec scripts and their docs.** Open. Recommendation:
+      delete; git history keeps them.
+- [x] **Paid business features in production.** Nobody real is on them, so no
+      subscriptions to cancel; drop the rows and tokens with the tables.
 
 ## 1. Delete the business-only products
 
