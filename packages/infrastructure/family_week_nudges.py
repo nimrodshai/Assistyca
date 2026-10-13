@@ -80,6 +80,7 @@ from packages.infrastructure.school_days import SchoolCalendar
 from packages.infrastructure.school_days import describe_day
 from packages.infrastructure.standing_tasks import STANDING_TASK_ACTION_TYPE
 from packages.infrastructure.week_summary_image import WeekDayPlan
+from packages.infrastructure.week_summary_image import build_day_summary
 from packages.infrastructure.week_summary_image import build_week_summary
 from packages.infrastructure.week_summary_image import next_week_start
 from packages.infrastructure.week_summary_image import render_week_image
@@ -94,6 +95,12 @@ DEFAULT_WEEK_AHEAD_HOUR = 20
 DEFAULT_WEEK_AHEAD_MINUTE = 30
 WEEK_AHEAD_WINDOW_HOURS = 2
 WEEK_IMAGE_PATH_PREFIX = "/week/image/"
+# Said to the evening's writer when tomorrow goes out as a picture.
+PICTURE_OF_TOMORROW = (
+    "Tomorrow is attached as a picture: the day as a column, each plan a block at its time in its person's "
+    "colour, who takes and who collects on each, and a leg with nobody marked in red. Do not list tomorrow: "
+    "the picture does. "
+)
 DEFAULT_RIDE_LEAD_MINUTES = 30
 # Drives of the owner's that follow one another within this many minutes
 # of the first due are said together, as one trip.
@@ -673,6 +680,7 @@ class FamilyWeekNudger:
         tomorrow's drives; without one, no clash is ever looked for."""
 
         self.database = database
+        self._day_pictures: dict[tuple[int, str, str], str] = {}
         self.config = config or load_family_week_nudge_config()
         self.school_calendar = school_calendar
         self.calendar_reader = calendar_reader
@@ -950,27 +958,16 @@ class FamilyWeekNudger:
                         describe_activity_line(activity, owner_names, members, during_work=inside_work.get(int(activity.get("id") or 0)))
                         for activity in todays
                     ]
+                    image_url = self._draw_day(
+                        user_id=user_id, day=today, plans=todays, status=today_calendar, members=members,
+                        owner_names=owner_names, title="today",
+                    )
                     self._queue(
                         user_id=user_id, now=reference, timezone_name=timezone_name,
-                        title="Today in your family's week", kind=TEMPLATE_KIND_MORNING_DIGEST,
-                        instruction=(
-                            "It is the morning. Write the person one short WhatsApp message with what today holds for "
-                            "their family, in the language they write to you in: one bullet per thing, each a few words "
-                            "- its time, who it is for, where, who takes and who collects - and where nobody is down "
-                            "for a drop-off or pickup yet, say so in that bullet. Say each fact once: no opening line, "
-                            "no sign-off, and no closing line that repeats what the bullets already say. 'you' is the "
-                            "person. "
-                            + (
-                                "Where a drive of theirs is marked as falling inside their own work hours and not "
-                                "settled yet, say so in that bullet in a few words and, at the end, ask in one line "
-                                "who could take it or whether it is fine as it is. " if inside_work else ""
-                            )
-                            + (
-                                "CALENDAR is what the school calendar says about today: mention it in a few words only "
-                                "where it bears on what is listed, such as an earlier finish. " if today_calendar else ""
-                            )
-                            + "The facts are exact; add none, and use no tool.\nTODAY:\n" + "\n".join(lines)
-                            + (f"\nCALENDAR: {describe_day(today, today_calendar)}" if today_calendar else "")
+                        title="Today in your family's week", kind=TEMPLATE_KIND_MORNING_DIGEST, image_url=image_url,
+                        instruction=self._morning_instruction(
+                            lines=lines, inside_work=bool(inside_work), today=today, today_calendar=today_calendar,
+                            with_picture=bool(image_url),
                         ),
                         fallback="Today:\n" + "\n".join(f"• {line}" for line in lines),
                     )
@@ -991,7 +988,7 @@ class FamilyWeekNudger:
                     or work_clash_lines(usual_tomorrow, members, owner_names, tomorrow)
                     or wants_calendar
                 ):
-                    tomorrow_on, _ = self._on_day(
+                    tomorrow_on, tomorrow_calendar = self._on_day(
                         user_id=user_id, timezone_name=timezone_name, day=tomorrow, activities=activities,
                         exceptions=exceptions, day_drives=day_drives,
                     )
@@ -1008,6 +1005,10 @@ class FamilyWeekNudger:
                         )
             if tomorrow_gaps or tomorrow_clashes or tomorrow_work:
                 if claim(f"evening:{tomorrow.isoformat()}"):
+                    image_url = self._draw_day(
+                        user_id=user_id, day=tomorrow, plans=tomorrow_on, status=tomorrow_calendar, members=members,
+                        owner_names=owner_names, title="tomorrow",
+                    )
                     about = []
                     if tomorrow_gaps:
                         about.append("what tomorrow still has nobody down for")
@@ -1031,9 +1032,10 @@ class FamilyWeekNudger:
                     ]
                     self._queue(
                         user_id=user_id, now=reference, timezone_name=timezone_name,
-                        title="Tomorrow still needs someone", kind=TEMPLATE_KIND_EVENING_GLANCE,
+                        title="Tomorrow still needs someone", kind=TEMPLATE_KIND_EVENING_GLANCE, image_url=image_url,
                         instruction=(
-                            "It is the evening. In one or two short sentences, in the language the person writes to you "
+                            "It is the evening. " + (PICTURE_OF_TOMORROW if image_url else "")
+                            + "In one or two short sentences, in the language the person writes to you "
                             "in, tell them " + ", and ".join(about) + ". "
                             + (
                                 "This is a question, not a report: end by asking them to decide now who does each "
@@ -1150,6 +1152,94 @@ class FamilyWeekNudger:
                 except Exception as exc:  # noqa: BLE001 - the picture is a courtesy; the week's other nudges go on
                     print(f"[family-week] week ahead failed user={user_id} error={exc!r}", flush=True)
         return {"ok": True, **counts}
+
+    def _draw_day(
+        self, *, user_id: int, day: date, plans: list[dict[str, Any]], status: dict[str, Any] | None,
+        members: list[dict[str, Any]], owner_names: list[str], title: str,
+    ) -> str:
+        """The day as a picture - the same page as the week, one column -
+        kept under a code and given back as an address Meta can fetch, or
+        nothing: a picture that cannot be drawn is a courtesy missed, and
+        the day's words go out without it. The page names people, never
+        "you", so one drawing serves every phone in the family: a poll
+        that draws today for the account holder hands the same picture to
+        a parent on their own phone a moment later."""
+
+        base_url = normalize_text(self.config.public_base_url).rstrip("/")
+        if not base_url.startswith("https://"):
+            return ""
+        cache_key = (user_id, day.isoformat(), title)
+        cached = self._day_pictures.get(cache_key)
+        if cached:
+            return cached
+        try:
+            note = normalize_text(status.get("occasion")) if status else ""
+            if status and not note:
+                note = normalize_text(status.get("note"))[:60]
+            names = list(owner_names)
+            summary = build_day_summary(
+                day=WeekDayPlan(day=day, plans=plans, note=note), members=members, owner_names=names, title=title,
+            )
+            png, _pdf = render_week_image(summary, members=members, owner_names=names)
+            code = self.database.save_household_week_image(user_id=user_id, week_start=day.isoformat(), image=png)
+            url = f"{base_url}{WEEK_IMAGE_PATH_PREFIX}{code}.png"
+            # One family's pictures of one poll; the next poll draws afresh.
+            self._day_pictures = {key: value for key, value in self._day_pictures.items() if key[0] == user_id}
+            self._day_pictures[cache_key] = url
+            return url
+        except Exception as exc:  # noqa: BLE001 - the words go without the picture
+            print(f"[family-week] day picture failed user={user_id} day={day.isoformat()} error={exc!r}", flush=True)
+            return ""
+
+    @staticmethod
+    def _morning_instruction(
+        *, lines: list[str], reader: str = "", inside_work: bool = False, today: date | None = None,
+        today_calendar: dict[str, Any] | None = None, with_picture: bool = False,
+    ) -> str:
+        """What the morning message is asked to be. With the day's picture
+        attached it is a line or two under it - what still has nobody, and
+        nothing the picture already shows; without one it is the day as
+        bullets. reader names a parent on their own phone."""
+
+        who = f"{reader}" if reader else "the person"
+        opening = (
+            f"It is the morning, and this message is for {reader}, a parent in this family writing from "
+            "their own phone. " if reader else "It is the morning. "
+        )
+        language = "in the language the family writes to you in" if reader else "in the language they write to you in"
+        you = f"'you' is {reader}; a name is somebody else. " if reader else "'you' is the person. "
+        work = (
+            "Where a drive of theirs is marked as falling inside their own work hours and not settled yet, "
+            + ("say so in a few words and " if with_picture else "say so in that bullet in a few words and, at the end, ")
+            + "ask in one line who could take it or whether it is fine as it is. "
+        ) if inside_work else ""
+        calendar = (
+            "CALENDAR is what the school calendar says about today: mention it in a few words only where it "
+            "bears on what is listed, such as an earlier finish. "
+        ) if today_calendar else ""
+        facts = "The facts are exact; add none, and use no tool.\nTODAY:\n" + "\n".join(lines) + (
+            f"\nCALENDAR: {describe_day(today, today_calendar)}" if today_calendar and today else ""
+        )
+        if with_picture:
+            return (
+                opening
+                + "Today is attached as a picture: the day as a column, each plan a block at its time in its "
+                "person's colour, who takes and who collects on each. Write "
+                + ("them" if reader else "the person")
+                + f" one or two short sentences, {language}, saying here is today at a glance. Where nobody is "
+                "down for a drop-off or pickup yet, say which - a few words each, from the facts - and ask who "
+                "takes it; otherwise say the day is covered. " + work + calendar + you
+                + "Do not list the day: the picture does. " + facts
+            )
+        return (
+            opening
+            + ("Write them" if reader else "Write the person")
+            + f" one short WhatsApp message with what today holds for their family, {language}: one bullet "
+            "per thing, each a few words - its time, who it is for, where, who takes and who collects - and "
+            "where nobody is down for a drop-off or pickup yet, say so in that bullet. Say each fact once: no "
+            "opening line, no sign-off, and no closing line that repeats what the bullets already say. "
+            + you + work + calendar + facts
+        )
 
     def _week_ahead_due(self, local_now: datetime) -> bool:
         """Saturday from half past eight for two hours, on the family's own
@@ -1286,18 +1376,14 @@ class FamilyWeekNudger:
             suffix = f":{member['id']}"
             if "morning" in wants and todays and in_morning and claim(f"morning:{today.isoformat()}{suffix}"):
                 lines = [describe_activity_line(activity, owner_names, members, viewer_names=names) for activity in todays]
+                image_url = self._draw_day(
+                    user_id=user_id, day=today, plans=todays, status=None, members=members, owner_names=owner_names,
+                    title="today",
+                )
                 self._queue(
                     user_id=user_id, now=reference, timezone_name=timezone_name, recipient_wa_id=wa_id,
-                    title="Today in your family's week", kind=TEMPLATE_KIND_MORNING_DIGEST,
-                    instruction=(
-                        f"It is the morning, and this message is for {first}, a parent in this family writing from "
-                        "their own phone. Write them one short WhatsApp message with what today holds for their "
-                        "family, in the language the family writes to you in: one bullet per thing, each a few "
-                        "words - its time, who it is for, where, who takes and who collects - and where nobody is "
-                        "down for a drop-off or pickup yet, say so in that bullet. Say each fact once: no opening "
-                        f"line, no sign-off, and no closing line that repeats the bullets. 'you' is {first}; a name "
-                        "is somebody else. The facts are exact; add none, and use no tool.\nTODAY:\n" + "\n".join(lines)
-                    ),
+                    title="Today in your family's week", kind=TEMPLATE_KIND_MORNING_DIGEST, image_url=image_url,
+                    instruction=self._morning_instruction(lines=lines, reader=first, with_picture=bool(image_url)),
                     fallback="Today:\n" + "\n".join(f"• {line}" for line in lines),
                 )
                 counts["morning"] += 1
@@ -1308,12 +1394,17 @@ class FamilyWeekNudger:
                 )
                 gaps = gap_lines(tomorrow_on, members, owner_names)
                 if gaps and claim(f"evening:{tomorrow.isoformat()}{suffix}"):
+                    image_url = self._draw_day(
+                        user_id=user_id, day=tomorrow, plans=tomorrow_on, status=None, members=members,
+                        owner_names=owner_names, title="tomorrow",
+                    )
                     self._queue(
                         user_id=user_id, now=reference, timezone_name=timezone_name, recipient_wa_id=wa_id,
-                        title="Tomorrow still needs someone", kind=TEMPLATE_KIND_EVENING_GLANCE,
+                        title="Tomorrow still needs someone", kind=TEMPLATE_KIND_EVENING_GLANCE, image_url=image_url,
                         instruction=(
                             f"It is the evening, and this message is for {first}, a parent in this family writing from "
-                            "their own phone. In one or two short sentences, in the language the family writes to you "
+                            "their own phone. " + (PICTURE_OF_TOMORROW if image_url else "")
+                            + "In one or two short sentences, in the language the family writes to you "
                             "in, tell them what tomorrow still has nobody down for. This is a question, not a report: "
                             "end by asking them to decide now who does each drop-off or pickup still open - them, "
                             f"the other parent, or somebody else - and leave it easy to answer with a name. 'you' is "

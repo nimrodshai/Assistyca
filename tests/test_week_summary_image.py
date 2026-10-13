@@ -7,6 +7,7 @@ from datetime import date
 from datetime import timedelta
 
 from packages.infrastructure.week_summary_image import WeekDayPlan
+from packages.infrastructure.week_summary_image import build_day_summary
 from packages.infrastructure.week_summary_image import build_week_summary
 from packages.infrastructure.week_summary_image import detect_language
 from packages.infrastructure.week_summary_image import next_week_start
@@ -91,6 +92,23 @@ class WeekSummaryDrawingTests(unittest.TestCase):
         self.assertLessEqual(width, 3200)
         self.assertLess(height, width, "a landscape page, a column per day")
         self.assertLess(len(png), 2_000_000)
+
+    def test_one_day_is_a_narrower_page_with_one_wide_column(self) -> None:
+        [day] = week({0: [plan("School", ["Lahav"], "08:00", "12:45", "me", ""), plan("Gan", ["Laor"], "08:00", "16:15", "me", "Stav")]})[:1]
+        summary = build_day_summary(day=day, members=MEMBERS, owner_names=OWNER, title="today")
+        self.assertEqual(summary.title, "Today")
+        self.assertEqual(len(summary.days), 1)
+        self.assertEqual(summary.open_legs, 1)
+        png = pdf_to_png(render_week_pdf(summary, members=MEMBERS, owner_names=OWNER))
+        width = int.from_bytes(png[16:20], "big")
+        height = int.from_bytes(png[20:24], "big")
+        self.assertEqual(width, 1280)
+        self.assertGreater(height, width, "one day stands tall on a phone")
+        hebrew = build_day_summary(
+            day=day, members=[{"name": "סתיו", "role": "partner"}, {"name": "להב", "role": "child"}],
+            owner_names=["נמרוד"], title="tomorrow", language="he",
+        )
+        self.assertEqual(hebrew.title, "מחר")
 
     def test_hebrew_draws_without_error(self) -> None:
         members = [{"name": "סתיו", "role": "partner"}, {"name": "להב", "role": "child"}]

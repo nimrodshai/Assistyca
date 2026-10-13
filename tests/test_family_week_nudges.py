@@ -598,6 +598,53 @@ class WeekAheadTests(unittest.TestCase):
 
         return at(day, hour - 3, minute)
 
+    def test_the_morning_and_the_evening_before_go_out_as_pictures_of_the_day(self) -> None:
+        self.assertEqual(self.nudger.run_pending(now=self.israel(SUNDAY, 7, 5))["morning"], 1)
+        [morning] = [a for a in self.database.list_scheduled_actions_for_user(self.user_id, limit=50)
+                     if (a.get("payload") or {}).get("title") == "Today in your family's week"]
+        payload = morning["payload"]
+        self.assertRegex(payload["imageUrl"], r"^https://assistyca\.example/week/image/[a-z0-9]{20}\.png$")
+        self.assertEqual(payload["templateKind"], "morning_digest")
+        self.assertIn("Today is attached as a picture", payload["instruction"])
+        self.assertIn("Do not list the day: the picture does", payload["instruction"])
+        self.assertNotIn("one bullet per thing", payload["instruction"])
+        self.assertIn("08:00-12:45 School (Lahav), takes: you, nobody collects them yet", payload["instruction"])
+        self.assertTrue(payload["fallbackText"].startswith("Today:\n• "))
+        code = payload["imageUrl"].rsplit("/", 1)[-1].removesuffix(".png")
+        picture = self.database.get_household_week_image(code) or {}
+        self.assertTrue(picture.get("image", b"").startswith(b"\x89PNG"))
+        self.assertEqual(picture.get("weekStart"), SUNDAY.date().isoformat())
+
+        saturday = SUNDAY.replace(day=19)
+        self.assertEqual(self.nudger.run_pending(now=self.israel(saturday, 20, 5))["evening"], 1)
+        [evening] = [a for a in self.database.list_scheduled_actions_for_user(self.user_id, limit=50)
+                     if (a.get("payload") or {}).get("title") == "Tomorrow still needs someone"]
+        payload = evening["payload"]
+        self.assertRegex(payload["imageUrl"], r"^https://assistyca\.example/week/image/[a-z0-9]{20}\.png$")
+        self.assertEqual(payload["templateKind"], "evening_glance")
+        self.assertIn("Tomorrow is attached as a picture", payload["instruction"])
+        self.assertIn("what tomorrow still has nobody down for", payload["instruction"])
+
+    def test_a_parent_on_their_own_phone_gets_the_same_picture_as_the_account_holder(self) -> None:
+        self.database.create_household_invite(
+            user_id=self.user_id, member_id=int(self.stav["id"]), code="STV111",
+            expires_at=datetime.now(UTC) + timedelta(days=14),
+        )
+        self.assertTrue(self.database.claim_household_invite(code="STV111", wa_id="972500000002")["ok"])
+        self.assertEqual(self.nudger.run_pending(now=self.israel(SUNDAY, 7, 5))["morning"], 2)
+        mornings = [a for a in self.database.list_scheduled_actions_for_user(self.user_id, limit=50)
+                    if (a.get("payload") or {}).get("title") == "Today in your family's week"]
+        self.assertEqual(len({a["payload"]["imageUrl"] for a in mornings}), 1, "drawn once, sent to both")
+        self.assertEqual(sorted((a["payload"].get("recipientWaId") or "owner") for a in mornings), ["972500000002", "owner"])
+
+    def test_a_day_that_cannot_be_drawn_still_goes_out_in_words(self) -> None:
+        with mock.patch("packages.infrastructure.family_week_nudges.render_week_image", side_effect=RuntimeError("no fonts")):
+            self.assertEqual(self.nudger.run_pending(now=self.israel(SUNDAY, 7, 5))["morning"], 1)
+        [morning] = [a for a in self.database.list_scheduled_actions_for_user(self.user_id, limit=50)
+                     if (a.get("payload") or {}).get("title") == "Today in your family's week"]
+        self.assertNotIn("imageUrl", morning["payload"])
+        self.assertIn("one bullet per thing", morning["payload"]["instruction"])
+
     def test_the_picture_goes_out_on_saturday_evening_once(self) -> None:
         saturday = SUNDAY.replace(day=19)
         self.assertEqual(self.nudger.run_pending(now=self.israel(saturday, 20, 15))["weekAhead"], 0, "not before half past")
