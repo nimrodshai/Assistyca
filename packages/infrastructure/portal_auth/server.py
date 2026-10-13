@@ -326,6 +326,7 @@ from packages.infrastructure.whatsapp_agent_chat import SIGNUP_WELCOME_TEXT
 from packages.infrastructure.whatsapp_agent_chat import build_whatsapp_signup_link
 from packages.infrastructure.whatsapp_agent_chat import build_connect_links_line
 from packages.infrastructure.whatsapp_agent_chat import CALENDAR_PICK_PREFIX
+from packages.infrastructure.remind_again import REMIND_AGAIN_PREFIX
 from packages.infrastructure.whatsapp_agent_chat import SIGNUP_ESCALATION_WINDOW_SECONDS
 from packages.infrastructure.whatsapp_agent_chat import build_calendar_choice_interactive
 from packages.infrastructure.whatsapp_agent_chat import build_calendar_choice_text
@@ -15871,8 +15872,9 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
 
         interactive_reply = event.get("interactive_reply")
         if isinstance(interactive_reply, dict) and normalize_text(interactive_reply.get("id")):
-            # A tap on the agent's own calendar picker belongs to the agent.
-            return not normalize_text(interactive_reply.get("id")).startswith(CALENDAR_PICK_PREFIX)
+            # A tap on the agent's own calendar picker, or on the button
+            # under a ride word, belongs to the agent.
+            return not normalize_text(interactive_reply.get("id")).startswith((CALENDAR_PICK_PREFIX, REMIND_AGAIN_PREFIX))
 
         if service.resolve_reengagement_report_request(event) is not None:
             return True

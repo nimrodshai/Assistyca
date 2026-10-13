@@ -31,6 +31,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from packages.infrastructure.account_types import account_feature_allowed
 from packages.infrastructure.message_language import remember_message_language
+from packages.infrastructure.message_language import resolve_message_language
 from packages.infrastructure.notification_delivery import DEFAULT_WHATSAPP_API_VERSION
 from packages.infrastructure.notification_delivery import flatten_template_parameter
 from packages.infrastructure.notification_delivery import normalize_email
@@ -57,6 +58,8 @@ from packages.infrastructure.agent_turns import TURN_STARTING_PATHS
 from packages.infrastructure.recovery_reply import build_situation
 from packages.infrastructure.recovery_reply import computed_recovery_sentence
 from packages.infrastructure.recovery_reply import make_option
+from packages.infrastructure.remind_again import parse_remind_again_id
+from packages.infrastructure.remind_again import schedule_second_word
 from packages.infrastructure.voice_notes import VoiceNoteError
 from packages.infrastructure.voice_notes import normalize_voice_note_mime_type
 from packages.infrastructure.voice_notes import transcribe_voice_note
@@ -2002,6 +2005,37 @@ class WhatsAppAgentChat:
         )
         self._send_calendar_picker(calendars, selected=ticked, question=normalize_text(question))
 
+    def _remind_again(self, interactive_id: str) -> dict[str, Any]:
+        """Answer the tap under a ride word: the word five minutes before is
+        queued from the reminder that carried the button, once, and the tap
+        is acknowledged with the time it will come. A drive whose time has
+        passed, or a button no reminder of theirs sent, is said so."""
+
+        result = schedule_second_word(self.database, user_id=self.user_id, interactive_id=interactive_id)
+        outcome = normalize_text(result.get("outcome"))
+        language = resolve_message_language(self.database, user_id=self.user_id)
+        when = result.get("runAt")
+        clock = when.strftime("%H:%M") if isinstance(when, datetime) else ""
+        if outcome == "scheduled":
+            reply = f"סגור, אזכיר שוב ב-{clock}." if language == "he" else f"Got it - I'll say so again at {clock}."
+        elif outcome == "already":
+            reply = f"כבר מסודר, אזכיר ב-{clock}." if language == "he" else f"Already set - I'll say so at {clock}."
+        elif outcome == "past":
+            reply = self._recover(
+                build_situation("nothing_found", what_happened="That drive's time has already come, so there is nothing left to remind you of."),
+                [],
+            )
+        else:
+            reply = self._recover(
+                build_situation(
+                    "internal",
+                    what_happened="I couldn't tell which reminder that button belonged to.",
+                    options=[make_option("say", say="tell me the drive and when, and I'll remind you")],
+                ),
+                [],
+            )
+        return self._reply_and_log(reply, outcome=f"remind_again_{outcome or 'unknown'}")
+
     def _answer_calendar_choice(self, pending: dict[str, Any], *, text: str, interactive_id: str) -> dict[str, Any]:
         calendars = [entry for entry in (pending.get("calendars") or []) if isinstance(entry, dict)]
         selected = [cid for cid in (pending.get("selected") or []) if cid]
@@ -2968,6 +3002,12 @@ class WhatsAppAgentChat:
                 remember_message_language(self.database, user_id=self.user_id, text=text)
             except Exception as exc:  # noqa: BLE001
                 print(f"WhatsApp message language for user {self.user_id} could not be kept: {exc}", flush=True)
+
+        # A tap on the button under a ride word - one more word five minutes
+        # before - is settled by code, like a tap on the calendar picker: the
+        # reminder that sent it says what and when.
+        if parse_remind_again_id(interactive_id):
+            return self._remind_again(interactive_id)
 
         # A question the conversation is waiting on - which calendars to read -
         # is answered before anything else, by a tap or by words, and then the
