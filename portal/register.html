@@ -6,11 +6,10 @@
     <title>Let's get you started | Assistyca</title>
     <meta
       name="description"
-      content="An assistant for your business or your family. A few questions, and your assistant will text you on WhatsApp."
+      content="A WhatsApp assistant for your family. A few questions, and your assistant will text you on WhatsApp."
     />
     <meta name="robots" content="noindex" />
     <link rel="canonical" href="https://assistyca.com/register" />
-    <script src="/portal/register-address.js"></script>
     <link rel="preload" as="font" type="font/woff2" href="/assets/manrope-regular.woff2" crossorigin />
     <link rel="preload" as="font" type="font/woff2" href="/assets/manrope-semibold.woff2" crossorigin />
     <style>
@@ -224,29 +223,6 @@
         transition: none;
       }
 
-      /* When the landing page already asked who this is for, the question is
-         not part of this page at all - no card, no dash for it, and no Back
-         on the name, which would promise a step behind it. A family's page
-         has no "what do you do" either. The name is in
-         place from the first paint, before the script arrives. */
-      html[data-kind-known] .step[data-step="kind"],
-      html[data-kind-known] .progress li[data-dot="kind"],
-      html[data-kind-known="family"] .step[data-step="business"],
-      html[data-kind-known="family"] .progress li[data-dot="business"],
-      html[data-kind-known] .step[data-step="name"] [data-back] {
-        display: none;
-      }
-
-      html[data-kind-known] .flow:not([data-ready]) .step[data-step="name"] {
-        opacity: 1;
-        visibility: visible;
-        transform: translateX(0);
-      }
-
-      html[data-kind-known] .flow:not([data-ready]) .progress li[data-dot="name"] {
-        background: var(--accent);
-      }
-
       .step[data-state="past"] {
         transform: translateX(-115%);
       }
@@ -303,106 +279,6 @@
         max-width: 24rem;
         color: var(--muted);
         font-size: 0.92rem;
-      }
-
-      /* Who this is for is answered by picking, not by typing. Two cards,
-         each a real radio so the arrow keys and the screen reader behave; the
-         card itself is the label, so the whole thing is the target. */
-      .choices {
-        display: grid;
-        gap: 0.7rem;
-        margin: 1.3rem 0 0;
-      }
-
-      .choice {
-        position: relative;
-        display: flex;
-        align-items: flex-start;
-        gap: 0.9rem;
-        text-align: left;
-        padding: 1rem 1.1rem;
-        border: 1px solid var(--line);
-        border-radius: 1.1rem;
-        background: #fff;
-        cursor: pointer;
-        transition: border-color 140ms ease, box-shadow 140ms ease, transform 140ms ease;
-      }
-
-      .choice:hover {
-        border-color: var(--accent);
-        transform: translateY(-1px);
-      }
-
-      .choice input {
-        position: absolute;
-        opacity: 0;
-        width: 1px;
-        height: 1px;
-      }
-
-      .choice:has(input:focus-visible) {
-        border-color: var(--accent-deep);
-        box-shadow: 0 0 0 4px var(--accent-soft);
-      }
-
-      .choice:has(input:checked) {
-        border-color: var(--accent-deep);
-        box-shadow: 0 0 0 3px var(--accent-soft);
-      }
-
-      /* Nothing picked yet: the teal focus ring on the first card would read
-         as a choice already made, so while the question is unanswered both
-         cards wear the error colour instead. */
-      .field[data-invalid="true"] .choice {
-        border-color: var(--danger);
-      }
-
-      .field[data-invalid="true"] .choice:has(input:focus-visible) {
-        box-shadow: 0 0 0 4px var(--danger-soft);
-      }
-
-      .choice-art {
-        flex: 0 0 auto;
-        width: 2.6rem;
-        height: 2.6rem;
-        margin-top: 0.1rem;
-      }
-
-      .choice-art svg {
-        display: block;
-        width: 100%;
-        height: 100%;
-      }
-
-      /* The same pen as the big step icons; without it an SVG path falls back
-         to a solid black fill and the card grows a black square. */
-      .choice-art .mark {
-        fill: none;
-        stroke: var(--accent-deep);
-        stroke-width: 2.4;
-        stroke-linecap: round;
-        stroke-linejoin: round;
-      }
-
-      .choice-title {
-        display: block;
-        font-weight: 600;
-        letter-spacing: -0.01em;
-      }
-
-      .choice-line {
-        display: block;
-        margin-top: 0.15rem;
-        color: var(--muted);
-        font-size: 0.9rem;
-        line-height: 1.5;
-      }
-
-      /* A family is not asked what it does: the phone is its last question,
-         so the phone carries the button that sends. */
-      .step[data-kind="business"] .for-family,
-      .step[data-kind="family"] .for-business {
-        display: none;
       }
 
       .field {
@@ -844,68 +720,12 @@
         <form data-register-form novalidate>
           <div class="flow" data-flow>
             <ol class="progress" data-progress aria-hidden="true">
-              <li data-dot="kind" data-state="current"></li>
-              <li data-dot="name"></li>
+              <li data-dot="name" data-state="current"></li>
               <li data-dot="phone"></li>
-              <li data-dot="business"></li>
             </ol>
 
             <div class="viewport" data-viewport>
-              <section class="step" data-step="kind" data-state="current">
-                <div class="step-art" aria-hidden="true">
-                  <svg viewBox="0 0 64 64" role="img">
-                    <circle class="disc" cx="32" cy="32" r="30" />
-                    <path class="mark" d="M32 17v10" />
-                    <path class="mark" d="M32 27 20 37" />
-                    <path class="mark" d="m32 27 12 10" />
-                    <circle class="mark" cx="20" cy="42" r="5" />
-                    <circle class="mark" cx="44" cy="42" r="5" />
-                  </svg>
-                </div>
-                <p class="step-question" id="register-kind-question">Who am I helping?</p>
-                <div class="field" data-field="kind">
-                  <div class="choices" role="radiogroup" aria-labelledby="register-kind-question">
-                    <label class="choice">
-                      <input type="radio" name="kind" value="business" data-kind-choice />
-                      <span class="choice-art" aria-hidden="true">
-                        <svg viewBox="0 0 64 64" role="img">
-                          <rect class="mark" x="14" y="23" width="36" height="24" rx="4" />
-                          <path class="mark" d="M25 23v-3a4 4 0 0 1 4-4h6a4 4 0 0 1 4 4v3" />
-                          <path class="mark" d="M14.5 32.5h35" />
-                        </svg>
-                      </span>
-                      <span>
-                        <span class="choice-title">My business</span>
-                        <span class="choice-line">
-                          The inbox, the calendar, the receipts and the follow-ups you would rather not hold in
-                          your head.
-                        </span>
-                      </span>
-                    </label>
-                    <label class="choice">
-                      <input type="radio" name="kind" value="family" data-kind-choice />
-                      <span class="choice-art" aria-hidden="true">
-                        <svg viewBox="0 0 64 64" role="img">
-                          <circle class="mark" cx="22" cy="24" r="6" />
-                          <circle class="mark" cx="42" cy="24" r="6" />
-                          <path class="mark" d="M12 46a10 10 0 0 1 20 0" />
-                          <path class="mark" d="M32 46a10 10 0 0 1 20 0" />
-                        </svg>
-                      </span>
-                      <span>
-                        <span class="choice-title">My family</span>
-                        <span class="choice-line">
-                          The afternoon runs: who is driving, when to leave, and a nudge when nobody has taken
-                          the pickup - shared with the other parents.
-                        </span>
-                      </span>
-                    </label>
-                  </div>
-                  <span class="field-error" data-error-for="kind"></span>
-                </div>
-              </section>
-
-              <section class="step" data-step="name">
+              <section class="step" data-step="name" data-state="current">
                 <div class="step-art" aria-hidden="true">
                   <svg viewBox="0 0 64 64" role="img">
                     <circle class="disc" cx="32" cy="32" r="30" />
@@ -939,11 +759,10 @@
                 </div>
                 <div class="step-actions">
                   <button class="button button-primary" type="button" data-next>Continue</button>
-                  <button class="button-quiet" type="button" data-back>Back</button>
                 </div>
               </section>
 
-              <section class="step" data-step="phone" data-kind="business">
+              <section class="step" data-step="phone">
                 <div class="step-art" aria-hidden="true">
                   <svg viewBox="0 0 64 64" role="img">
                     <circle class="disc" cx="32" cy="32" r="30" />
@@ -975,34 +794,6 @@
                   </div>
                   <span class="phone-preview" data-phone-preview aria-live="polite"></span>
                   <span class="field-error" data-error-for="phone"></span>
-                </div>
-                <div class="step-actions">
-                  <button class="button button-primary for-business" type="button" data-next>Continue</button>
-                  <button class="button button-primary for-family" type="submit" data-register-submit>Register and text me</button>
-                  <button class="button-quiet" type="button" data-back>Back</button>
-                </div>
-              </section>
-
-              <section class="step" data-step="business">
-                <div class="step-art" aria-hidden="true">
-                  <svg viewBox="0 0 64 64" role="img">
-                    <circle class="disc" cx="32" cy="32" r="30" />
-                    <rect class="mark" x="16" y="23" width="32" height="20" rx="4" />
-                    <path class="mark" d="M26 23v-3a3 3 0 0 1 3-3h6a3 3 0 0 1 3 3v3" />
-                    <path class="mark" d="M16.6 31.5h30.8" />
-                  </svg>
-                </div>
-                <label class="step-question" for="register-business">And what do you do?</label>
-                <p class="step-hint">A line is enough, for example "I run a small architecture studio".</p>
-                <div class="field" data-field="business">
-                  <input
-                    id="register-business"
-                    name="business"
-                    type="text"
-                    autocomplete="organization-title"
-                    required
-                  />
-                  <span class="field-error" data-error-for="business"></span>
                 </div>
                 <div class="step-actions">
                   <button class="button button-primary" type="submit" data-register-submit>Register and text me</button>
