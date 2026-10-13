@@ -608,7 +608,7 @@ class WeekAheadTests(unittest.TestCase):
         self.assertRegex(payload["imageUrl"], r"^https://assistyca\.example/week/image/[a-z0-9]{20}\.png$")
         self.assertEqual(payload["resultUrl"], payload["imageUrl"])
         self.assertIn("Sunday 2026-09-20: 08:00–12:45 School · Lahav", payload["instruction"])
-        self.assertIn("collects: nobody yet", payload["instruction"])
+        self.assertIn("collects: nobody", payload["instruction"])
         self.assertIn("ask who takes them", payload["instruction"])
         self.assertIn("3 drop-offs or pickups still have nobody", payload["fallbackText"])
         code = payload["imageUrl"].rsplit("/", 1)[1][:-4]

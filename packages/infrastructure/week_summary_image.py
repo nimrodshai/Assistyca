@@ -1,12 +1,12 @@
 """The week ahead as one picture.
 
-On Saturday evening a family gets next week at a glance: a page with one
-row per day, Sunday to Saturday, and on each day the plans as coloured
-cards - one colour per person, with the key above the table, so a parent
-can find their child's week by colour before reading a word. Each card
-says the time, what it is, who it is for, and who takes and who collects;
-a leg nobody is down for yet says so, because that is the thing to settle
-before Sunday.
+On Saturday evening a family gets next week at a glance: a calendar page
+with a column per day, Sunday to Saturday, the hours down the side, and
+every plan a block at its time - one colour per person, with the key under
+the title, so a parent can find their child's week by colour before
+reading a word. Each block says what it is, when, who it is for, and who
+takes and who collects; a leg nobody is down for yet says so in red,
+because that is the thing to settle before Sunday.
 
 The page is drawn as a PDF with reportlab and rasterised to a PNG with
 PyMuPDF, so the same drawing could be printed one day. The labels follow
@@ -39,17 +39,26 @@ from packages.infrastructure.portal_db import normalize_text
 
 # -- the look -----------------------------------------------------------------
 
-PAGE_WIDTH = 540.0
-MARGIN = 26.0
-DAY_COLUMN = 104.0
-ROW_GAP = 6.0
-CHIP_PAD = 7.0
-CHIP_GAP = 5.0
-CHIP_RADIUS = 6.0
-CHIP_BAR = 4.0
-MIN_ROW_HEIGHT = 42.0
-# Rendered at this many device pixels per point: 540pt becomes 1080px,
-# which WhatsApp shows sharp on any phone and keeps well under its limit.
+# A landscape page the shape of a screen: a column per day, the hours down
+# the side. Rendered at two device pixels per point it is 2000 by 1200.
+PAGE_WIDTH = 1000.0
+PAGE_HEIGHT = 600.0
+MARGIN = 22.0
+TIME_GUTTER = 34.0
+TITLE_BLOCK = 44.0
+LEGEND_LINE = 18.0
+DAY_HEADER = 42.0
+UNTIMED_STRIP = 34.0
+FOOTER = 8.0
+# The hours a day shows when nothing falls outside them.
+DEFAULT_FIRST_HOUR = 7
+DEFAULT_LAST_HOUR = 19
+MIN_HOUR_HEIGHT = 30.0
+MIN_BLOCK_HEIGHT = 14.0
+BLOCK_INSET = 2.0
+BLOCK_PAD = 4.0
+# Device pixels per point: 1000pt becomes 2000px, sharp on a phone when
+# zoomed and well under WhatsApp's size limit.
 RASTER_SCALE = 2.0
 
 INK = "#1F2A37"
@@ -64,7 +73,8 @@ NOTE = "#9A6700"
 # the partner, then the children as the family listed them. Calm and
 # distinct from one another on a phone screen in daylight.
 PALETTE = ("#2A9D8F", "#E76F51", "#5A67D8", "#D69E2E", "#D53F8C", "#38A169", "#3182CE", "#805AD5", "#DD6B20", "#319795")
-TINT_MIX = 0.86  # how far each colour is pulled towards white for a card's fill
+TINT_MIX = 0.86  # how far each colour is pulled towards white for a block's fill
+BAND_TINT = 0.94  # fainter still, for a grown-up's own hours behind the day
 
 FONT_DIR = Path(__file__).resolve().parents[2] / "assets"
 FONT_FILES = {
@@ -91,7 +101,7 @@ WORDS = {
         "nothing": "Nothing planned",
         "takes": "takes",
         "collects": "collects",
-        "nobody": "nobody yet",
+        "nobody": "nobody",
         "parent": "Parent",
         "off": "Day off",
     },
@@ -102,7 +112,7 @@ WORDS = {
         "nothing": "אין תוכניות",
         "takes": "מביא/ה",
         "collects": "אוסף/ת",
-        "nobody": "עדיין אין",
+        "nobody": "אין",
         "parent": "הורה",
         "off": "יום חופשי",
     },
@@ -356,15 +366,19 @@ def _tint(colour: str, mix: float = TINT_MIX) -> tuple[float, float, float]:
     return (r + (1 - r) * mix, g + (1 - g) * mix, b + (1 - b) * mix)
 
 
-def _wrap(text: str, font: str, size: float, width: float) -> list[str]:
+def _width(text: str, font: str, size: float) -> float:
     from reportlab.pdfbase import pdfmetrics
 
+    return pdfmetrics.stringWidth(_BIDI_CONTROLS_RE.sub("", text), font, size)
+
+
+def _wrap(text: str, font: str, size: float, width: float) -> list[str]:
     words = text.split(" ")
     lines: list[str] = []
     current = ""
     for word in words:
         trial = f"{current} {word}".strip()
-        if current and pdfmetrics.stringWidth(trial, font, size) > width:
+        if current and _width(trial, font, size) > width:
             lines.append(current)
             current = word
         else:
@@ -374,8 +388,33 @@ def _wrap(text: str, font: str, size: float, width: float) -> list[str]:
     return lines or [""]
 
 
+def _clip(text: str, font: str, size: float, width: float) -> str:
+    """The text cut to the width with an ellipsis, for a block too short to
+    wrap in."""
+
+    if _width(text, font, size) <= width:
+        return text
+    cut = text
+    while cut and _width(f"{cut}…", font, size) > width:
+        cut = cut[:-1]
+    return f"{cut.rstrip()}…" if cut else ""
+
+
+def _minutes(value: Any) -> int | None:
+    text = normalize_text(value)
+    if not text or ":" not in text:
+        return None
+    try:
+        hours, minutes = text.split(":", 1)
+        return int(hours) * 60 + int(minutes)
+    except ValueError:
+        return None
+
+
 class _Page:
-    """A canvas that knows which way the page reads."""
+    """A canvas that knows which way the page reads: x is measured from the
+    reading edge, which is the right edge on a Hebrew page, so the same
+    drawing code lays the days out from right to left there."""
 
     def __init__(self, canvas: Any, *, rtl: bool, height: float) -> None:
         self.c = canvas
@@ -383,27 +422,23 @@ class _Page:
         self.height = height
 
     def text(self, x: float, y: float, text: str, *, font: str, size: float, colour: str, align: str = "start") -> None:
-        """Draw text at x (from the reading edge) and y from the top. start
+        """Draw text at x from the reading edge and y from the top. start
         aligns to the reading edge: left for English, right for Hebrew."""
 
         self.c.setFont(font, size)
         self.c.setFillColorRGB(*_hex(colour))
         shown = _display(text)
         baseline = self.height - y
+        real_x = PAGE_WIDTH - x if self.rtl else x
         if align == "center":
-            self.c.drawCentredString(x, baseline, shown)
+            self.c.drawCentredString(real_x, baseline, shown)
         elif (align == "start") != self.rtl:
-            self.c.drawString(x, baseline, shown)
+            self.c.drawString(real_x, baseline, shown)
         else:
-            self.c.drawRightString(x, baseline, shown)
+            self.c.drawRightString(real_x, baseline, shown)
 
-    def edge(self, offset: float) -> float:
-        """An x at `offset` from the reading edge."""
-
-        return PAGE_WIDTH - offset if self.rtl else offset
-
-    def box(self, x_from_edge: float, y: float, width: float, height: float, fill: tuple[float, float, float], *, radius: float = 0.0) -> None:
-        left = PAGE_WIDTH - x_from_edge - width if self.rtl else x_from_edge
+    def box(self, x: float, y: float, width: float, height: float, fill: tuple[float, float, float], *, radius: float = 0.0) -> None:
+        left = PAGE_WIDTH - x - width if self.rtl else x
         self.c.setFillColorRGB(*fill)
         self.c.setStrokeColorRGB(*fill)
         if radius:
@@ -411,44 +446,107 @@ class _Page:
         else:
             self.c.rect(left, self.height - y - height, width, height, stroke=0, fill=1)
 
-    def rule(self, y: float, colour: str = LINE) -> None:
+    def hline(self, x: float, y: float, width: float, colour: str = LINE, *, line_width: float = 0.6) -> None:
+        left = PAGE_WIDTH - x - width if self.rtl else x
         self.c.setStrokeColorRGB(*_hex(colour))
-        self.c.setLineWidth(0.6)
-        self.c.line(MARGIN, self.height - y, PAGE_WIDTH - MARGIN, self.height - y)
+        self.c.setLineWidth(line_width)
+        self.c.line(left, self.height - y, left + width, self.height - y)
+
+    def vline(self, x: float, y: float, height: float, colour: str = LINE, *, line_width: float = 0.6) -> None:
+        real_x = PAGE_WIDTH - x if self.rtl else x
+        self.c.setStrokeColorRGB(*_hex(colour))
+        self.c.setLineWidth(line_width)
+        self.c.line(real_x, self.height - y, real_x, self.height - y - height)
 
 
-def _measure_rows(
-    summary: WeekSummary, *, members: list[dict[str, Any]], owner_names: list[str], colours: dict[str, tuple[str, str]], chip_width: float,
-) -> list[list[tuple[list[str], list[str], bool, str]]]:
-    """The cards of each day, with their lines already wrapped."""
-
-    rows = []
-    for day in summary.days:
-        cards = []
-        for plan in day.plans:
-            head, legs, is_open, colour = _plan_lines(
-                plan, members=members, owner_names=owner_names, colours=colours, language=summary.language,
-            )
-            cards.append((
-                _wrap(head, "WeekSans-Medium", 10.5, chip_width - 2 * CHIP_PAD - CHIP_BAR - 3),
-                _wrap(legs, "WeekSans", 9.2, chip_width - 2 * CHIP_PAD - CHIP_BAR - 3) if legs else [],
-                is_open,
-                colour,
-            ))
-        rows.append(cards)
-    return rows
+@dataclass
+class _Block:
+    start: int  # minutes from midnight
+    end: int
+    head: str
+    who: str
+    legs: list[str]
+    is_open: bool
+    colour: str
+    # A grown-up's own hours - work, a shift - are drawn as a faint band
+    # behind the day rather than a block beside the children's, so the
+    # column stays theirs.
+    band: bool = False
+    lane: int = 0
+    lanes: int = 1
 
 
-def _card_height(card: tuple[list[str], list[str], bool, str]) -> float:
-    head_lines, leg_lines, _open, _colour = card
-    return CHIP_PAD * 2 + 12.5 * len(head_lines) + 11.0 * len(leg_lines)
+def _lay_out_lanes(blocks: list[_Block]) -> None:
+    """Blocks that overlap in time share the column side by side: each is
+    given a lane, and every block in a run of overlaps knows how many lanes
+    the run has, so their widths add up to the column."""
+
+    blocks.sort(key=lambda block: (block.start, block.end))
+    cluster: list[_Block] = []
+    cluster_end = -1
+    lane_ends: list[int] = []
+
+    def close() -> None:
+        for block in cluster:
+            block.lanes = max(1, len(lane_ends))
+
+    for block in blocks:
+        if cluster and block.start >= cluster_end:
+            close()
+            cluster, lane_ends = [], []
+        for index, end in enumerate(lane_ends):
+            if block.start >= end:
+                block.lane = index
+                lane_ends[index] = block.end
+                break
+        else:
+            block.lane = len(lane_ends)
+            lane_ends.append(block.end)
+        cluster.append(block)
+        cluster_end = block.end if len(cluster) == 1 else max(cluster_end, block.end)
+    close()
+
+
+def _blocks_for_day(
+    day: WeekDayPlan, *, members: list[dict[str, Any]], owner_names: list[str], colours: dict[str, tuple[str, str]], language: str,
+) -> tuple[list[_Block], list[_Block]]:
+    """The day's plans as timed blocks (bands first), and the ones with no
+    time. A block's words are split into short lines - what, who, when,
+    then each leg - because a column shared by two children is narrow."""
+
+    timed: list[_Block] = []
+    untimed: list[_Block] = []
+    for plan in day.plans:
+        _head, legs, is_open, colour = _plan_lines(plan, members=members, owner_names=owner_names, colours=colours, language=language)
+        title = normalize_text(plan.get("title"))
+        who = ", ".join(
+            _person(name, colours, owner_names, language)[0] for name in (plan.get("who") or ()) if household.name_key(name)
+        )
+        leg_lines = [segment for segment in legs.split(" · ") if segment] if legs else []
+        band = household.is_grown_up_activity(plan, members, owner_names)
+        start = _minutes(plan.get("startTime"))
+        end = _minutes(plan.get("endTime"))
+        block = _Block(start=0, end=0, head=title, who=who, legs=leg_lines, is_open=is_open, colour=colour, band=band)
+        if start is None and end is None:
+            untimed.append(block)
+            continue
+        if start is None:
+            start = max(0, int(end) - 60)
+        if end is None or end <= start:
+            end = start + 60
+        block.start, block.end = start, end
+        timed.append(block)
+    _lay_out_lanes([block for block in timed if not block.band])
+    timed.sort(key=lambda block: (not block.band, block.start, block.end))
+    return timed, untimed
 
 
 def render_week_pdf(
     summary: WeekSummary, *, members: list[dict[str, Any]], owner_names: list[str],
 ) -> bytes:
-    """The page as a PDF: title and dates, the colour key, then a row per
-    day with its cards. The page is as tall as the week needs."""
+    """The week as a calendar page: a column per day, the hours down the
+    side, each plan a block at its time in its person's colour, the colour
+    key under the title. One landscape page, sized like a screen."""
 
     from reportlab.pdfgen import canvas as pdf_canvas
 
@@ -457,37 +555,28 @@ def render_week_pdf(
     rtl = summary.language == "he"
     all_plans = [plan for day in summary.days for plan in day.plans]
     colours = person_colours(members, owner_names, all_plans, language=summary.language)
-    chip_width = PAGE_WIDTH - 2 * MARGIN - DAY_COLUMN
-    rows = _measure_rows(summary, members=members, owner_names=owner_names, colours=colours, chip_width=chip_width)
+    days = [
+        _blocks_for_day(day, members=members, owner_names=owner_names, colours=colours, language=summary.language)
+        for day in summary.days
+    ]
 
-    # Legend lines: as many as the names need.
-    from reportlab.pdfbase import pdfmetrics
+    # The hours shown: the usual day, widened to whatever the week holds.
+    first_minute, last_minute = DEFAULT_FIRST_HOUR * 60, DEFAULT_LAST_HOUR * 60
+    for timed, _untimed in days:
+        for block in timed:
+            first_minute = min(first_minute, block.start)
+            last_minute = max(last_minute, block.end)
+    first_hour = first_minute // 60
+    last_hour = -(-last_minute // 60)
+    hours = max(1, last_hour - first_hour)
+    has_untimed = any(untimed for _timed, untimed in days)
+    untimed_height = UNTIMED_STRIP if has_untimed else 0.0
 
-    legend_entries = summary.legend
-    legend_rows: list[list[tuple[str, str]]] = [[]]
-    used = 0.0
-    for label, colour in legend_entries:
-        width = 10 + pdfmetrics.stringWidth(label, "WeekSans-Medium", 10) + 16
-        if legend_rows[-1] and used + width > PAGE_WIDTH - 2 * MARGIN:
-            legend_rows.append([])
-            used = 0.0
-        legend_rows[-1].append((label, colour))
-        used += width
-
-    row_heights = []
-    for day, cards in zip(summary.days, rows):
-        if cards:
-            inner = sum(_card_height(card) for card in cards) + CHIP_GAP * (len(cards) - 1)
-        else:
-            inner = 16.0
-        label_height = 30.0 + (11.0 if day.note else 0.0)
-        row_heights.append(max(MIN_ROW_HEIGHT, inner + 2 * ROW_GAP, label_height + 2 * ROW_GAP))
-
-    top = MARGIN + 30.0  # title block
-    legend_top = top + 26.0
-    legend_height = 16.0 * len(legend_rows) if legend_entries else 0.0
-    table_top = legend_top + legend_height + 14.0
-    height = table_top + sum(row_heights) + MARGIN + 14.0
+    grid_top = MARGIN + TITLE_BLOCK + (LEGEND_LINE if summary.legend else 0.0) + DAY_HEADER + untimed_height
+    hour_height = max(MIN_HOUR_HEIGHT, (PAGE_HEIGHT - grid_top - MARGIN - FOOTER) / hours)
+    height = grid_top + hour_height * hours + FOOTER + MARGIN
+    column_width = (PAGE_WIDTH - 2 * MARGIN - TIME_GUTTER) / 7
+    grid_x = MARGIN + TIME_GUTTER
 
     buffer = io.BytesIO()
     c = pdf_canvas.Canvas(buffer, pagesize=(PAGE_WIDTH, height))
@@ -495,58 +584,128 @@ def render_week_pdf(
     page = _Page(c, rtl=rtl, height=height)
     page.box(0, 0, PAGE_WIDTH, height, _hex(PAPER))
 
-    # Title and the week's dates.
+    # Title, dates, and the colour key.
     week_end = summary.week_start + timedelta(days=6)
-    page.text(page.edge(MARGIN), MARGIN + 16, words["title"], font="WeekSans-SemiBold", size=19, colour=INK)
+    page.text(MARGIN, MARGIN + 15, words["title"], font="WeekSans-SemiBold", size=17, colour=INK)
     span = f"{_format_day(summary.week_start, summary.language)} – {_format_day(week_end, summary.language)}"
-    page.text(page.edge(PAGE_WIDTH - MARGIN), MARGIN + 15, span, font="WeekSans", size=11, colour=INK_SOFT, align="end")
-
-    # The colour key.
-    y = legend_top
-    for entries in legend_rows:
+    page.text(PAGE_WIDTH - MARGIN, MARGIN + 14, span, font="WeekSans", size=10.5, colour=INK_SOFT, align="end")
+    y = MARGIN + TITLE_BLOCK
+    if summary.legend:
         x = MARGIN
-        for label, colour in entries:
-            page.box(x, y - 8, 9, 9, _hex(colour), radius=4.5)
-            page.text(page.edge(x + 14), y, label, font="WeekSans-Medium", size=10, colour=INK)
-            x += 14 + pdfmetrics.stringWidth(label, "WeekSans-Medium", 10) + 16
-        y += 16.0
+        for label, colour in summary.legend:
+            page.box(x, y - 14.5, 8, 8, _hex(colour), radius=4)
+            page.text(x + 12, y - 7, label, font="WeekSans-Medium", size=9.5, colour=INK)
+            x += 12 + _width(label, "WeekSans-Medium", 9.5) + 14
+        y += LEGEND_LINE
 
-    # The table.
-    y = table_top
-    page.rule(y - 4)
-    for index, (day, cards, row_height) in enumerate(zip(summary.days, rows, row_heights)):
-        if index % 2 == 1:
-            page.box(MARGIN, y, PAGE_WIDTH - 2 * MARGIN, row_height, _hex(ROW_ALT))
+    # Day headers.
+    header_top = y
+    for index, day in enumerate(summary.days):
+        x = grid_x + index * column_width
+        centre = x + column_width / 2
         weekday = words["weekdays"][(day.day.weekday() + 1) % 7]
-        page.text(page.edge(MARGIN + 8), y + ROW_GAP + 12, weekday, font="WeekSans-SemiBold", size=11.5, colour=INK)
-        page.text(page.edge(MARGIN + 8), y + ROW_GAP + 25, _format_day(day.day, summary.language), font="WeekSans", size=9.5, colour=INK_SOFT)
+        page.text(centre, header_top + 11, weekday, font="WeekSans-SemiBold", size=9, colour=INK, align="center")
+        page.text(centre, header_top + 25, _format_day(day.day, summary.language), font="WeekSans", size=9, colour=INK_SOFT, align="center")
         if day.note:
-            for line_index, line in enumerate(_wrap(day.note, "WeekSans", 8.2, DAY_COLUMN - 14)[:2]):
-                page.text(page.edge(MARGIN + 8), y + ROW_GAP + 37 + 10 * line_index, line, font="WeekSans", size=8.2, colour=NOTE)
-        chip_y = y + ROW_GAP
-        if not cards:
-            page.text(page.edge(MARGIN + DAY_COLUMN + CHIP_PAD), chip_y + 12, words["nothing"], font="WeekSans", size=9.5, colour=INK_SOFT)
-        for card in cards:
-            head_lines, leg_lines, is_open, colour = card
-            card_height = _card_height(card)
-            page.box(MARGIN + DAY_COLUMN, chip_y, chip_width, card_height, _tint(colour), radius=CHIP_RADIUS)
-            page.box(MARGIN + DAY_COLUMN, chip_y, CHIP_BAR, card_height, _hex(colour), radius=2.0)
-            text_x = MARGIN + DAY_COLUMN + CHIP_BAR + CHIP_PAD
-            line_y = chip_y + CHIP_PAD + 9.5
-            for line in head_lines:
-                page.text(page.edge(text_x), line_y, line, font="WeekSans-Medium", size=10.5, colour=INK)
-                line_y += 12.5
-            for line in leg_lines:
-                page.text(page.edge(text_x), line_y, line, font="WeekSans", size=9.2, colour=OPEN_LEG if is_open else INK_SOFT)
-                line_y += 11.0
-            chip_y += card_height + CHIP_GAP
-        y += row_height
-        page.rule(y)
+            note = _clip(day.note, "WeekSans", 7, column_width - 6)
+            page.text(centre, header_top + 36, note, font="WeekSans", size=7, colour=NOTE, align="center")
+    y = header_top + DAY_HEADER
 
-    page.text(page.edge(MARGIN), height - MARGIN + 2, "Assistyca", font="WeekSans-Medium", size=8.5, colour=INK_SOFT)
+    # Plans with no time, in a strip under the day's name.
+    if has_untimed:
+        for index, (_timed, untimed) in enumerate(days):
+            x = grid_x + index * column_width
+            chip_y = y + 2
+            for block in untimed[:2]:
+                page.box(x + 2, chip_y, column_width - 4, 13, _tint(block.colour), radius=3)
+                page.box(x + 2, chip_y, 2.5, 13, _hex(block.colour), radius=1)
+                label = f"{block.head} · {block.who}" if block.who else block.head
+                page.text(x + 7, chip_y + 9.5, _clip(label, "WeekSans-Medium", 7, column_width - 12), font="WeekSans-Medium", size=7, colour=INK)
+                chip_y += 15
+        y += untimed_height
+
+    # The grid.
+    grid_height = hour_height * hours
+    for index in range(7):
+        if index % 2 == 1:
+            page.box(grid_x + index * column_width, y, column_width, grid_height, _hex(ROW_ALT))
+    for hour_index in range(hours + 1):
+        line_y = y + hour_index * hour_height
+        page.hline(grid_x, line_y, column_width * 7)
+        if hour_index < hours:
+            page.text(grid_x - 5, line_y + 3.5 + (hour_height / 2 if hour_height < 18 else 9), f"{first_hour + hour_index:02d}:00",
+                      font="WeekSans", size=7.5, colour=INK_SOFT, align="end")
+    for index in range(8):
+        page.vline(grid_x + index * column_width, y, grid_height)
+
+    # The blocks.
+    band_labels: list[tuple[float, float, float, _Block, list[_Block]]] = []
+    for index, (timed, _untimed) in enumerate(days):
+        column_x = grid_x + index * column_width
+        for block in timed:
+            top = y + (block.start - first_hour * 60) / 60 * hour_height
+            bottom = y + (block.end - first_hour * 60) / 60 * hour_height
+            if block.band:
+                # The grown-up's own hours: a faint wash across the column,
+                # under everything else; its one line is drawn last, at the
+                # foot of the band, where the day is usually clear.
+                page.box(column_x + 0.5, top, column_width - 1, bottom - top, _tint(block.colour, BAND_TINT))
+                page.hline(column_x + 0.5, top, column_width - 1, block.colour, line_width=1.2)
+                page.hline(column_x + 0.5, bottom, column_width - 1, block.colour, line_width=1.2)
+                band_labels.append((column_x, top, bottom, block, [b for b in timed if not b.band]))
+                continue
+            lane_width = (column_width - 2 * BLOCK_INSET) / block.lanes
+            x = column_x + BLOCK_INSET + block.lane * lane_width
+            block_height = max(MIN_BLOCK_HEIGHT, bottom - top - 1.5)
+            width = lane_width - 1.5
+            page.box(x, top + 0.75, width, block_height, _tint(block.colour), radius=3.5)
+            page.box(x, top + 0.75, 3, block_height, _hex(block.colour), radius=1.5)
+            text_x = x + 3 + BLOCK_PAD
+            text_width = width - 3 - 2 * BLOCK_PAD
+            # What, who, when, then each leg: every line wrapped to the
+            # block's width rather than cut, and drawn while there is room.
+            lines: list[tuple[str, str, float, str]] = []
+            for line in _wrap(block.head, "WeekSans-Medium", 8, text_width)[:2]:
+                lines.append((line, "WeekSans-Medium", 8, INK))
+            if block.who:
+                for line in _wrap(block.who, "WeekSans-Medium", 7.2, text_width):
+                    lines.append((line, "WeekSans-Medium", 7.2, INK))
+            lines.append((_time_label(block), "WeekSans", 7.2, INK_SOFT))
+            for leg in block.legs:
+                open_line = block.is_open and WORDS[summary.language]["nobody"] in leg
+                for line in _wrap(leg, "WeekSans", 7.2, text_width):
+                    lines.append((line, "WeekSans", 7.2, OPEN_LEG if open_line else INK_SOFT))
+            room = block_height - 2 * BLOCK_PAD
+            first_line_y = top + 0.75 + BLOCK_PAD + 7
+            line_y = first_line_y
+            drawn = 0
+            for text, font, size, colour in lines:
+                step = size + 2.4
+                if drawn > 0 and (line_y - first_line_y) + step > room:
+                    break
+                page.text(text_x, line_y, _clip(text, font, size, text_width), font=font, size=size, colour=colour)
+                line_y += step
+                drawn += 1
+
+    for column_x, top, bottom, block, others in band_labels:
+        # The line goes at the foot of the band, or its head, whichever
+        # nothing else is drawn across; under a block it would not be read.
+        label = _clip(f"{block.head} · {block.who}  {_time_label(block)}", "WeekSans-Medium", 6.8, column_width - 6)
+        foot_clear = not any(other.start < block.end and other.end > block.end - 20 for other in others)
+        head_clear = not any(other.start < block.start + 20 and other.end > block.start for other in others)
+        if foot_clear:
+            page.text(column_x + 3, bottom - 3, label, font="WeekSans-Medium", size=6.8, colour=block.colour)
+        elif head_clear:
+            page.text(column_x + 3, top + 8.5, label, font="WeekSans-Medium", size=6.8, colour=block.colour)
+
+    page.text(PAGE_WIDTH - MARGIN, height - MARGIN + 3, "Assistyca", font="WeekSans-Medium", size=8, colour=INK_SOFT, align="end")
     c.showPage()
     c.save()
     return buffer.getvalue()
+
+
+def _time_label(block: _Block) -> str:
+    return f"{LTR_START}{block.start // 60:02d}:{block.start % 60:02d}–{block.end // 60:02d}:{block.end % 60:02d}{LTR_END}"
 
 
 def pdf_to_png(pdf_bytes: bytes, *, scale: float = RASTER_SCALE) -> bytes:

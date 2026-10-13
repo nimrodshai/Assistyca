@@ -27,8 +27,9 @@ Three moments, each once, on the person's own clock:
   child is standing at the gate;
 * a birthday a month away, with an offer of the ready-made list to get
   ready for it;
-* Saturday evening: the whole of the coming week as one picture - a row
-  per day, a colour per person - drawn by week_summary_image from the
+* Saturday evening: the whole of the coming week as one picture - a
+  calendar with a column per day, a colour per person - drawn by
+  week_summary_image from the
   same week, held up against the same exceptions and school calendar, so
   the family sees next week before it starts and what still has nobody.
   The picture is kept under an unguessable code the server serves, and
@@ -1208,7 +1209,7 @@ class FamilyWeekNudger:
         open_legs = summary.open_legs
         if image_url:
             instruction = (
-                "It is Saturday evening. The coming week is attached as a picture: one row per day, a colour per "
+                "It is Saturday evening. The coming week is attached as a picture: a calendar with a column per day, a colour per "
                 "person, who takes and who collects on every plan. Write one or two short sentences, in the "
                 "language the person writes to you in, saying here is next week at a glance. "
                 + ("Say which drop-offs or pickups still have nobody - a few words each, from the facts - and ask "

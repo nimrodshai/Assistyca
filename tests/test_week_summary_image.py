@@ -54,7 +54,7 @@ class WeekSummaryFactsTests(unittest.TestCase):
         summary = build_week_summary(week_start=SUNDAY, days=days, members=MEMBERS, owner_names=OWNER)
         self.assertEqual(summary.open_legs, 1)
         self.assertEqual(summary.language, "en")
-        self.assertIn("Sunday 2026-10-18: 08:00–12:45 School · Lahav (Shaked · takes: Nimrod · collects: nobody yet) - a leg still has nobody", summary.facts[0])
+        self.assertIn("Sunday 2026-10-18: 08:00–12:45 School · Lahav (Shaked · takes: Nimrod · collects: nobody) - a leg still has nobody", summary.facts[0])
         self.assertEqual(summary.facts[1], "Monday 2026-10-19: nothing planned")
         self.assertIn("takes: Stav · collects: Grandma", summary.facts[2])
         self.assertEqual(summary.facts[3], "Wednesday 2026-10-21: nothing planned (Sukkot)")
@@ -75,7 +75,7 @@ class WeekSummaryFactsTests(unittest.TestCase):
 
 
 class WeekSummaryDrawingTests(unittest.TestCase):
-    def test_the_page_is_drawn_and_rasterised_at_phone_width(self) -> None:
+    def test_the_page_is_drawn_and_rasterised_at_screen_width(self) -> None:
         days = week({
             0: [plan("School", ["Lahav"], "08:00", "12:45", "me", "Stav", "Shaked"), plan("Gan", ["Laor"], "08:00", "16:15", "me", "")],
             1: [plan("Ballet", ["Lahav"], "16:30", "17:30", "Stav", "Grandma Rina", "A studio with a rather long name in Ra'anana")],
@@ -87,8 +87,8 @@ class WeekSummaryDrawingTests(unittest.TestCase):
         self.assertTrue(png.startswith(b"\x89PNG"))
         width = int.from_bytes(png[16:20], "big")
         height = int.from_bytes(png[20:24], "big")
-        self.assertEqual(width, 1080)
-        self.assertGreater(height, 700, "seven rows, two of them with cards")
+        self.assertEqual(width, 2000)
+        self.assertLess(height, width, "a landscape page, a column per day")
         self.assertLess(len(png), 2_000_000)
 
     def test_hebrew_draws_without_error(self) -> None:
