@@ -60,6 +60,8 @@ BLOCK_PAD = 4.0
 # The tag a taker's or collector's name is drawn in, in their colour.
 TAG_HEIGHT = 10.0
 TAG_PAD = 3.0
+# Two tags on consecutive lines keep this much paper between them.
+TAG_GAP = 1.0
 # Device pixels per point: 1000pt becomes 2000px, sharp on a phone when
 # zoomed and well under WhatsApp's size limit.
 RASTER_SCALE = 2.0
@@ -727,7 +729,8 @@ def render_week_pdf(
                     label_width = _width(item.label, "WeekSans", 7.2)
                     tag_width = _width(item.text, "WeekSans-Medium", 6.6) + 2 * TAG_PAD
                     beside = label_width + 3 + tag_width <= text_width
-                    step = 7.2 + 2.4
+                    # A line that carries a tag is as tall as the tag and its gap.
+                    step = TAG_HEIGHT + TAG_GAP
                     needed = step if beside else 2 * step
                     if drawn > 0 and (line_y - first_line_y) + needed > room:
                         break
