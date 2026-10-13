@@ -233,7 +233,6 @@ class NudgerTests(unittest.TestCase):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.database = PortalDatabase(Path(self.temp_dir.name) / "portal.db")
         self.database.register_user("dana@example.com", display_name="Dana Levi")
-        self.database.update_user_account_type("dana@example.com", account_type="family")
         self.user_id = int((self.database.get_user("dana@example.com") or {})["id"])
         self.database.save_household_activity(
             user_id=self.user_id, title="Kindergarten", who=["Tom"], days=["sun", "mon"],
@@ -447,7 +446,7 @@ class NudgerTests(unittest.TestCase):
         self.assertEqual(titles, ["Today in your family's week"])
 
     def test_nothing_goes_when_the_family_week_is_switched_off(self) -> None:
-        self.database.set_account_type_feature(account_type="family", feature_id="family_week", allowed=False)
+        self.database.set_feature_switch(feature_id="family_week", allowed=False)
         self.nudger.run_pending(now=at(SUNDAY, 7, 5))
         self.assertEqual(self.queued(), [])
 
@@ -735,7 +734,6 @@ class DriveDuringWorkNudgeTests(unittest.TestCase):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.database = PortalDatabase(Path(self.temp_dir.name) / "portal.db")
         self.database.register_user("dana@example.com", display_name="Dana Levi")
-        self.database.update_user_account_type("dana@example.com", account_type="family")
         self.user_id = int((self.database.get_user("dana@example.com") or {})["id"])
         self.database.save_household_member(user_id=self.user_id, name="Noa", role="child")
         self.database.save_household_member(user_id=self.user_id, name="Yoav", role="partner")
@@ -820,7 +818,6 @@ class GroupNudgeTests(unittest.TestCase):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.database = PortalDatabase(Path(self.temp_dir.name) / "portal.db")
         self.database.register_user("dana@example.com", display_name="Dana Levi")
-        self.database.update_user_account_type("dana@example.com", account_type="family")
         self.user_id = int((self.database.get_user("dana@example.com") or {})["id"])
         # The account's own week, which a group nudge must never speak about.
         self.database.save_household_activity(
@@ -913,7 +910,6 @@ class HolidayNudgeTests(unittest.TestCase):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.database = PortalDatabase(Path(self.temp_dir.name) / "portal.db")
         self.database.register_user("dana@example.com", display_name="Dana Levi")
-        self.database.update_user_account_type("dana@example.com", account_type="family")
         self.user_id = int((self.database.get_user("dana@example.com") or {})["id"])
         self.database.save_household_activity(
             user_id=self.user_id, title="Kindergarten", who=["Tom"], days=["sun", "mon"],
@@ -1039,7 +1035,6 @@ class OpenPickupTests(unittest.TestCase):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.database = PortalDatabase(Path(self.temp_dir.name) / "portal.db")
         self.database.register_user("dana@example.com", display_name="Dana Levi")
-        self.database.update_user_account_type("dana@example.com", account_type="family")
         self.user_id = int((self.database.get_user("dana@example.com") or {})["id"])
         for name in ("Lahav", "Laor", "Lotan"):
             self.database.save_household_member(user_id=self.user_id, name=name, role="child")

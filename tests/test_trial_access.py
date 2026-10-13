@@ -60,10 +60,10 @@ class TrialLogicTests(unittest.TestCase):
         trial = describe_trial({"trialDays": 2, "trialStartedAt": None}, now=NOW)
         self.assertTrue(trial["allowed"])
 
-    def test_the_default_length_is_two_days_and_is_configurable(self) -> None:
-        self.assertEqual(DEFAULT_TRIAL_DAYS, 2)
-        with mock.patch.dict("os.environ", {"PORTAL_DEFAULT_TRIAL_DAYS": "14"}, clear=False):
-            self.assertEqual(resolve_default_trial_days(), 14)
+    def test_the_default_length_is_two_weeks_and_is_configurable(self) -> None:
+        self.assertEqual(DEFAULT_TRIAL_DAYS, 14)
+        with mock.patch.dict("os.environ", {"PORTAL_DEFAULT_TRIAL_DAYS": "2"}, clear=False):
+            self.assertEqual(resolve_default_trial_days(), 2)
         with mock.patch.dict("os.environ", {"PORTAL_DEFAULT_TRIAL_DAYS": "nonsense"}, clear=False):
             self.assertEqual(resolve_default_trial_days(), DEFAULT_TRIAL_DAYS)
 

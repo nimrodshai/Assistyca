@@ -156,7 +156,7 @@ class ButtonOnTheSendTests(unittest.TestCase):
         )
 
     def _run(self):
-        with mock.patch("packages.tools.whatsapp_reply_approval.server.send_whatsapp_message", return_value="wamid.1") as send:
+        with mock.patch("packages.infrastructure.whatsapp_messaging.send_whatsapp_message", return_value="wamid.1") as send:
             self._scheduler().run_pending(now=datetime.now(UTC))
         return send
 
@@ -206,7 +206,7 @@ class ButtonOnTheSendTests(unittest.TestCase):
                 raise RuntimeError("(#132001) Template name does not exist in the translation")
             return "wamid.2"
 
-        with mock.patch("packages.tools.whatsapp_reply_approval.server.send_whatsapp_message", side_effect=refuse_the_new_one) as send:
+        with mock.patch("packages.infrastructure.whatsapp_messaging.send_whatsapp_message", side_effect=refuse_the_new_one) as send:
             self._scheduler().run_pending(now=datetime.now(UTC))
         self.assertEqual(send.call_count, 2)
         template = send.call_args.kwargs["template"]

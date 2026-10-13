@@ -1,9 +1,9 @@
-"""The opening of the conversation, which is not the same for both kinds of account.
+"""The opening of the conversation.
 
-A business is steered towards connecting its mail and its calendar. A family
-is asked who is at home and what their week looks like, and only once that is
-in is connecting offered. Either way a "not now" is remembered, so nobody is
-asked the same thing the next morning.
+A family is asked who is at home and what their week looks like, and only
+once that is in is connecting offered. A "not now" is remembered, so nobody
+is asked the same thing the next morning. Someone who texted the number out
+of the blue is introduced to the assistant first.
 """
 
 from __future__ import annotations
@@ -32,7 +32,7 @@ class GettingToKnowVoiceTests(unittest.TestCase):
         # Every answer is saved the moment it lands, but the person is not
         # told so: "I've got Ella, Tom and Rina in the family now" is a
         # system notice, not something one person says to another.
-        rules = chat_flow.chat_flow_rules({"accountType": "family", "goal": "family", "status": "in_progress"})
+        rules = chat_flow.chat_flow_rules({"goal": "family", "status": "in_progress"})
         self.assertIn("Keep the saving to yourself", rules)
         self.assertIn("a word of acknowledgement if any, then the next question", rules)
         self.assertIn("The week is shown back once, when it is done", rules)
@@ -45,29 +45,19 @@ class WhichOpeningTests(unittest.TestCase):
         kwargs.setdefault("today", TODAY)
         return chat_flow.describe_chat_flow(**kwargs)
 
-    def test_a_business_opens_on_getting_connected(self) -> None:
-        flow = self.flow(account_type="business")
-        self.assertEqual((flow["goal"], flow["notConnected"]), ("connect", ["mailbox", "calendar"]))
-        self.assertTrue(flow["askNow"])
-
-    def test_a_business_is_asked_only_for_what_is_missing_and_then_left_alone(self) -> None:
-        self.assertEqual(self.flow(account_type="business", connected=["mailbox"])["notConnected"], ["calendar"])
-        done = self.flow(account_type="business", connected=["mailbox", "calendar"])
-        self.assertEqual(done, {"accountType": "business", "goal": "done"})
-
     def test_a_family_is_got_to_know_before_anything_is_offered(self) -> None:
         # Nothing connected, but connecting is not what a family needs first.
-        flow = self.flow(account_type="family")
+        flow = self.flow()
         self.assertEqual((flow["goal"], flow["status"]), ("family", "not_started"))
         self.assertNotIn("notConnected", flow)
-        started = self.flow(account_type="family", profile={"gettingToKnow": "in_progress"})
+        self.assertNotIn("accountType", flow)
+        started = self.flow(profile={"gettingToKnow": "in_progress"})
         self.assertEqual(started["goal"], "family")
 
     def test_what_the_week_still_lacks_travels_with_the_opening(self) -> None:
         # Code works out what is missing, so the asking ends when the week is
         # ready rather than when the conversation runs out of steam.
         flow = self.flow(
-            account_type="family",
             profile={"gettingToKnow": "in_progress"},
             household_block={
                 "members": [{"name": "Lotan", "role": "child"}],
@@ -82,7 +72,6 @@ class WhichOpeningTests(unittest.TestCase):
 
     def test_a_week_with_everybody_placed_and_every_pickup_taken_is_ready(self) -> None:
         flow = self.flow(
-            account_type="family",
             profile={"gettingToKnow": "in_progress"},
             household_block={
                 "members": [{"name": "Lotan", "role": "child"}],
@@ -101,7 +90,7 @@ class WhichOpeningTests(unittest.TestCase):
         from packages.infrastructure import household
 
         block = household.describe_household(
-            profile={"accountKind": "family", "gettingToKnow": "in_progress"},
+            profile={"gettingToKnow": "in_progress"},
             members=[{"name": "Lahav", "role": "child"}],
             activities=[{
                 "id": 1, "title": "School", "who": ["Lahav"], "days": ["sun"],
@@ -109,11 +98,7 @@ class WhichOpeningTests(unittest.TestCase):
             }],
             today=date(2026, 9, 24),
         )
-        flow = self.flow(
-            account_type="family",
-            profile={"gettingToKnow": "in_progress"},
-            household_block=block,
-        )
+        flow = self.flow(profile={"gettingToKnow": "in_progress"}, household_block=block)
         self.assertEqual(flow["goal"], "family")
         self.assertTrue(flow["weekReady"], "the two never disagree about whether the week can be run")
         self.assertEqual(
@@ -126,7 +111,6 @@ class WhichOpeningTests(unittest.TestCase):
         # Their "that's everything" stands: the goal moves on. What nobody is
         # down for still travels, so it can be raised on the day it matters.
         flow = self.flow(
-            account_type="family",
             profile={"gettingToKnow": "done"},
             household_block={"members": [{"name": "Lotan", "role": "child"}], "week": []},
         )
@@ -134,55 +118,67 @@ class WhichOpeningTests(unittest.TestCase):
         self.assertEqual(flow["weekGaps"], [{"missing": "week", "who": "Lotan"}])
 
     def test_a_family_whose_week_is_in_is_then_offered_the_calendar_and_the_mail(self) -> None:
-        flow = self.flow(account_type="family", profile={"gettingToKnow": "done"})
-        self.assertEqual((flow["accountType"], flow["goal"]), ("family", "connect"))
+        flow = self.flow(profile={"gettingToKnow": "done"})
+        self.assertEqual(flow["goal"], "connect")
         self.assertEqual(flow["notConnected"], ["mailbox", "calendar"])
+        self.assertEqual(self.flow(profile={"gettingToKnow": "done"}, connected=["mailbox"])["notConnected"], ["calendar"])
+        done = self.flow(profile={"gettingToKnow": "done"}, connected=["mailbox", "calendar"])
+        self.assertEqual(done, {"goal": "done", "weekReady": True})
 
     def test_a_family_the_house_switched_the_week_off_for_opens_on_connecting(self) -> None:
-        flow = self.flow(account_type="family", family_flow_allowed=False)
+        flow = self.flow(family_flow_allowed=False)
         self.assertEqual(flow["goal"], "connect")
+        self.assertEqual(self.flow(family_flow_allowed=False, connected=["mailbox", "calendar"]), {"goal": "done"})
 
-    def test_not_now_is_kept_until_the_day_it_named(self) -> None:
-        holding = self.flow(account_type="business", profile={"connectOffer": "postponed", "connectAskAgainOn": "2026-09-20"})
+    def test_not_now_about_connecting_is_kept_until_the_day_it_named(self) -> None:
+        holding = self.flow(profile={"gettingToKnow": "done", "connectOffer": "postponed", "connectAskAgainOn": "2026-09-20"})
         self.assertEqual((holding["status"], holding["askNow"]), ("postponed", False))
-        due = self.flow(account_type="business", profile={"connectOffer": "postponed", "connectAskAgainOn": TODAY})
+        due = self.flow(profile={"gettingToKnow": "done", "connectOffer": "postponed", "connectAskAgainOn": TODAY})
         self.assertTrue(due["askNow"])
-        settled = self.flow(account_type="business", profile={"connectOffer": "done"})
+        settled = self.flow(profile={"gettingToKnow": "done", "connectOffer": "done"})
         self.assertEqual(settled["goal"], "done")
 
     def test_a_family_putting_it_off_is_not_pushed_on_to_connecting(self) -> None:
         # Postponed is not done: the opening is still getting to know them,
         # it is only on hold.
-        flow = self.flow(account_type="family", profile={"gettingToKnow": "postponed", "askAgainOn": "2026-09-30"})
+        flow = self.flow(profile={"gettingToKnow": "postponed", "askAgainOn": "2026-09-30"})
         self.assertEqual((flow["goal"], flow["askNow"]), ("family", False))
 
-    def test_an_account_registered_before_the_page_asked_is_a_business(self) -> None:
-        self.assertEqual(self.flow(account_type="")["accountType"], "business")
+    def test_a_stranger_is_introduced_first_whatever_the_opening(self) -> None:
+        # Nothing was ever said to someone who simply texted the number, so
+        # the first turn carries the introduction - and nobody else's does.
+        self.assertTrue(self.flow(first_contact=True)["introduce"])
+        self.assertTrue(self.flow(first_contact=True, profile={"gettingToKnow": "done"})["introduce"])
+        self.assertTrue(self.flow(first_contact=True, family_flow_allowed=False, connected=["mailbox", "calendar"])["introduce"])
+        self.assertNotIn("introduce", self.flow())
 
 
 class RulesTests(unittest.TestCase):
-    def test_a_family_is_never_spoken_to_as_a_business(self) -> None:
-        rules = chat_flow.chat_flow_rules({"accountType": "family", "goal": "done"})
-        self.assertIn("registered as a family", rules)
-        self.assertEqual(chat_flow.chat_flow_rules({"accountType": "business", "goal": "done"}), "")
+    def test_every_account_is_spoken_to_as_a_family(self) -> None:
+        rules = chat_flow.chat_flow_rules({"goal": "done"})
+        self.assertIn("their household and their week", rules)
+        self.assertNotIn("business", rules.lower())
 
     def test_each_opening_carries_its_own_rules(self) -> None:
-        business = chat_flow.chat_flow_rules({"accountType": "business", "goal": "connect"})
-        self.assertIn("behind their mail and their calendar", business)
-        self.assertIn("set_connect_offer", business)
-        self.assertNotIn("registered as a family", business)
-
-        getting_to_know = chat_flow.chat_flow_rules({"accountType": "family", "goal": "family"})
+        getting_to_know = chat_flow.chat_flow_rules({"goal": "family"})
         self.assertIn("one question in a message", getting_to_know)
         self.assertIn("set_getting_to_know", getting_to_know)
         self.assertNotIn("set_connect_offer", getting_to_know)
 
-        then_connecting = chat_flow.chat_flow_rules({"accountType": "family", "goal": "connect"})
-        self.assertIn("registered as a family", then_connecting)
+        then_connecting = chat_flow.chat_flow_rules({"goal": "connect"})
+        self.assertIn("their household and their week", then_connecting)
         self.assertIn("Their family and their week are in", then_connecting)
+        self.assertIn("set_connect_offer", then_connecting)
+
+    def test_the_introduction_comes_first_and_only_when_asked_for(self) -> None:
+        introduced = chat_flow.chat_flow_rules({"goal": "family", "introduce": True})
+        self.assertIn("texted the Assistyca number without registering", introduced)
+        self.assertIn("never ask for an email", introduced)
+        self.assertLess(introduced.index("texted the Assistyca number"), introduced.index("Getting to know this family"))
+        self.assertNotIn("texted the Assistyca number", chat_flow.chat_flow_rules({"goal": "family"}))
 
     def test_getting_to_know_a_family_is_about_the_week_and_never_about_an_email(self) -> None:
-        rules = chat_flow.chat_flow_rules({"accountType": "family", "goal": "family"})
+        rules = chat_flow.chat_flow_rules({"goal": "family"})
         self.assertIn("who takes them and who collects them", rules)
         self.assertIn("weekGaps", rules)
         self.assertIn("you never ask for either while you are learning it", rules)
@@ -198,7 +194,7 @@ class RulesTests(unittest.TestCase):
         # collecting. They are asked once, may say no, and are offered their
         # Google Calendar as the other way to answer - the one connection
         # raised while the family is still being got to know.
-        rules = chat_flow.chat_flow_rules({"accountType": "family", "goal": "family"})
+        rules = chat_flow.chat_flow_rules({"goal": "family"})
         self.assertIn("'own_week' means the children are in", rules)
         self.assertIn("whether they want to put their own week in too", rules)
         self.assertIn("when they cannot be the one collecting", rules)
@@ -211,16 +207,16 @@ class RulesTests(unittest.TestCase):
 
         # And for good: a grown-up's hours are read as when they cannot do
         # a pickup, never as something to collect them from.
-        for_good = chat_flow.chat_flow_rules({"accountType": "family", "goal": "done"})
+        for_good = chat_flow.chat_flow_rules({"goal": "done"})
         self.assertIn("marked grownUp is a grown-up's own week", for_good)
         self.assertIn("that grown-up cannot be the one", for_good)
 
         # A calendar connected for their own week is not offered again.
-        then_connecting = chat_flow.chat_flow_rules({"accountType": "family", "goal": "connect"})
+        then_connecting = chat_flow.chat_flow_rules({"goal": "connect"})
         self.assertIn("A calendar they connected while you were getting to know them", then_connecting)
 
     def test_a_family_is_never_told_it_must_connect_anything(self) -> None:
-        rules = chat_flow.chat_flow_rules({"accountType": "family", "goal": "connect"})
+        rules = chat_flow.chat_flow_rules({"goal": "connect"})
         self.assertIn("nothing about it waits on anything being connected", rules)
         self.assertIn("Never say, or imply, that you cannot help them until they connect something", rules)
 
@@ -244,7 +240,7 @@ class TurnTests(unittest.TestCase):
         self.temp_dir.cleanup()
 
     def test_the_opening_travels_in_the_context_with_its_rules(self) -> None:
-        flow = chat_flow.describe_chat_flow(account_type="family", profile=None, connected=[], today=TODAY)
+        flow = chat_flow.describe_chat_flow(profile=None, connected=[], today=TODAY)
         text = build_loop_context_text(
             user_message="hi", conversation=[], timezone_name="Asia/Jerusalem", today=TODAY,
             tool_context={}, facts=[], channel="whatsapp", chat_flow=flow,
@@ -254,7 +250,7 @@ class TurnTests(unittest.TestCase):
         self.assertIn("one question in a message", text)
 
     def test_an_ended_trial_is_not_asked_to_connect_anything(self) -> None:
-        flow = chat_flow.describe_chat_flow(account_type="business", profile=None, connected=[], today=TODAY)
+        flow = chat_flow.describe_chat_flow(profile={"gettingToKnow": "done"}, connected=[], today=TODAY)
         text = build_loop_context_text(
             user_message="hi", conversation=[], timezone_name="Asia/Jerusalem", today=TODAY,
             tool_context={}, facts=[], channel="whatsapp", chat_flow=flow, trial_ended=True,
@@ -267,16 +263,14 @@ class TurnTests(unittest.TestCase):
         held = TOOLS_BY_NAME["set_connect_offer"].run(self.context, {"status": "postponed", "ask_again_in_days": None})
         self.assertRegex(held["askAgainOn"], r"^\d{4}-\d{2}-\d{2}$")
 
+        TOOLS_BY_NAME["set_getting_to_know"].run(self.context, {"status": "done"})
         profile = self.database.get_household_profile(user_id=self.user_id) or {}
-        flow = chat_flow.describe_chat_flow(
-            account_type="business", profile=profile, connected=[], today=date.today().isoformat(),
-        )
+        flow = chat_flow.describe_chat_flow(profile=profile, connected=[], today=date.today().isoformat())
+        self.assertEqual(flow["goal"], "connect")
         self.assertFalse(flow["askNow"], "a not now said today is not asked again today")
 
         # Getting to know the family and the offer to connect are two
         # separate answers: one does not overwrite the other.
-        TOOLS_BY_NAME["set_getting_to_know"].run(self.context, {"status": "done"})
-        profile = self.database.get_household_profile(user_id=self.user_id) or {}
         self.assertEqual((profile["gettingToKnow"], profile["connectOffer"]), ("done", "postponed"))
 
     def test_a_bad_status_is_refused(self) -> None:

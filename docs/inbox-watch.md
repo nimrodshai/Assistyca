@@ -1,8 +1,8 @@
 # Inbox watch
 
-Telling the person about mail that cannot wait: an interview slot to
-confirm, a meeting moved to this afternoon, a reply someone needs by
-Friday.
+Telling the person about mail that cannot wait: a school form to sign
+by tomorrow, an appointment moved to this afternoon, a reply someone needs
+by Friday.
 
 ## How it runs
 

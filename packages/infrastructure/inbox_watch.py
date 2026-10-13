@@ -119,7 +119,7 @@ def build_read_prompt(candidates: list[dict[str, str]], *, now_local: str, owner
         "right now; this_week when within the next seven days; later when further out; none when "
         "nothing about it is timed.\n"
         "what is one short line, written for the owner, saying what is being asked: \"Confirm the "
-        "interview slot on Thursday at 14:00\", \"Dana is waiting for your quote\". who is the person "
+        "interview slot on Thursday at 14:00\", \"The school is waiting for the signed form\". who is the person "
         "or organisation asking, as the message names them.\n"
         "confidence is high when the message settles it and low when you would want the owner to read "
         "it themselves rather than take your word.\n"

@@ -1,10 +1,9 @@
-"""Who an account is for, and which features that kind of account may use.
+"""Which features the assistant may use, for every account at once.
 
-An account is for a business or for a family: the choice made on the
-registration page. The house can switch a feature off for one of the two, and
-from then on the assistant does not use it for those accounts and the
-background jobs behind it (inbox watch, mailbox findings) leave them alone.
-What an account already holds - saved receipts, lists, tasks already
+Every account is a family's, so there is one set of switches. The house can
+switch a feature off, and from then on the assistant does not use it and the
+background jobs behind it (inbox watch, mailbox findings) leave everyone
+alone. What an account already holds - saved receipts, lists, tasks already
 scheduled - stays where it is.
 
 Everything is allowed until someone switches it off. A row is written only
@@ -20,20 +19,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any
-
-
-ACCOUNT_TYPES: tuple[dict[str, str], ...] = (
-    {"value": "business", "label": "Business", "description": "Registered to help run a business."},
-    {"value": "family", "label": "Family", "description": "Registered to help run a family's week."},
-)
-ACCOUNT_TYPE_VALUES = tuple(entry["value"] for entry in ACCOUNT_TYPES)
-DEFAULT_ACCOUNT_TYPE = "business"
-
-
-def normalize_account_type(value: Any) -> str:
-    """Rows written before the page asked carry no type, and read as a business."""
-
-    return "family" if str(value or "").strip().lower() == "family" else DEFAULT_ACCOUNT_TYPE
 
 
 @dataclass(frozen=True)
@@ -122,7 +107,7 @@ ACCOUNT_FEATURES: tuple[AccountFeature, ...] = (
     AccountFeature(
         "inbox_watch",
         "Inbox watch",
-        "Watching new mail and alerting on WhatsApp about interviews, meetings and replies due, and following an email conversation until it is answered.",
+        "Watching new mail and alerting on WhatsApp about school dates, appointments and replies due, and following an email conversation until it is answered.",
     ),
     AccountFeature(
         "voice_notes",
@@ -149,43 +134,40 @@ ALWAYS_ON_ABILITIES: tuple[dict[str, str], ...] = (
 )
 
 
-def feature_allowed(permissions: dict[str, dict[str, bool]] | None, account_type: Any, feature_id: str) -> bool:
-    """permissions is {account_type: {feature_id: allowed}}; anything missing is allowed."""
+def feature_allowed(switches: dict[str, bool] | None, feature_id: str) -> bool:
+    """switches is {feature_id: allowed}; anything missing is allowed."""
 
-    by_type = (permissions or {}).get(normalize_account_type(account_type)) or {}
-    return bool(by_type.get(feature_id, True))
+    return bool((switches or {}).get(feature_id, True))
 
 
-def blocked_tools(permissions: dict[str, dict[str, bool]] | None, account_type: Any) -> dict[str, str]:
-    """{tool name: feature label} for every tool switched off for this kind of account."""
+def blocked_tools(switches: dict[str, bool] | None) -> dict[str, str]:
+    """{tool name: feature label} for every tool that is switched off."""
 
     blocked: dict[str, str] = {}
     for feature in ACCOUNT_FEATURES:
-        if not feature_allowed(permissions, account_type, feature.feature_id):
+        if not feature_allowed(switches, feature.feature_id):
             for tool in feature.tools:
                 blocked[tool] = feature.label
     return blocked
 
 
-def account_feature_allowed(database: Any, *, user_id: int = 0, email: str = "", feature_id: str) -> bool:
-    """For a caller holding only the store and the account. A store that cannot
-    answer (an older one, a test double) leaves the feature on: a missing
-    switch never takes something away."""
+def account_feature_allowed(database: Any, *, feature_id: str) -> bool:
+    """For a caller holding only the store. A store that cannot answer (an
+    older one, a test double) leaves the feature on: a missing switch never
+    takes something away."""
 
     try:
-        account_type = database.get_account_type(user_id=user_id, email=email)
-        permissions = database.get_account_type_permissions()
+        switches = database.get_feature_switches()
     except Exception:  # noqa: BLE001 - a store that cannot answer leaves the feature on
         return True
-    return feature_allowed(permissions, account_type, feature_id)
+    return feature_allowed(switches, feature_id)
 
 
-def describe_account_types(
-    permissions: dict[str, dict[str, bool]] | None,
-    counts: dict[str, int] | None = None,
+def describe_features(
+    switches: dict[str, bool] | None,
     available_tools: set[str] | frozenset[str] | None = None,
 ) -> dict[str, Any]:
-    """The admin page's grid. A feature whose tools this build does not have
+    """The admin page's list. A feature whose tools this build does not have
     yet is left out, so a switch never appears for something that is not there."""
 
     features = [
@@ -194,19 +176,12 @@ def describe_account_types(
     ]
 
     return {
-        "accountTypes": [
-            {**entry, "accountCount": int((counts or {}).get(entry["value"], 0))}
-            for entry in ACCOUNT_TYPES
-        ],
         "features": [
             {
                 "featureId": feature.feature_id,
                 "label": feature.label,
                 "description": feature.description,
-                "allowed": {
-                    account_type: feature_allowed(permissions, account_type, feature.feature_id)
-                    for account_type in ACCOUNT_TYPE_VALUES
-                },
+                "allowed": feature_allowed(switches, feature.feature_id),
             }
             for feature in features
         ],
@@ -217,13 +192,9 @@ def describe_account_types(
 __all__ = [
     "ACCOUNT_FEATURES",
     "ACCOUNT_FEATURES_BY_ID",
-    "ACCOUNT_TYPES",
-    "ACCOUNT_TYPE_VALUES",
     "ALWAYS_ON_ABILITIES",
-    "DEFAULT_ACCOUNT_TYPE",
     "account_feature_allowed",
     "blocked_tools",
-    "describe_account_types",
+    "describe_features",
     "feature_allowed",
-    "normalize_account_type",
 ]

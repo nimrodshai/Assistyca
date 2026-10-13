@@ -337,28 +337,6 @@ class PlatformConnectionTests(unittest.TestCase):
             server.server_close()
             thread.join(timeout=5)
 
-    def test_whatsapp_connection_delete_removes_saved_credentials(self) -> None:
-        self.server.database.save_whatsapp_connection(
-            "owner@example.com",
-            business_account_id="waba-123",
-            phone_number_id="phone-456",
-            access_token="whatsapp-secret-that-stays-server-side",
-            owner_wa_id="15551234567",
-            connection_status="connected",
-        )
-        request = urllib_request.Request(
-            f"{self.base_url}/api/whatsapp/connection",
-            headers={"Cookie": self._cookie()},
-            method="DELETE",
-        )
-        with urllib_request.urlopen(request) as response:
-            payload = json.loads(response.read().decode("utf-8"))
-
-        self.assertTrue(payload["ok"])
-        self.assertIn("disconnected", payload["message"].lower())
-        self.assertNotIn("whatsapp-secret-that-stays-server-side", json.dumps(payload))
-        self.assertIsNone(self.server.database.get_whatsapp_connection("owner@example.com"))
-
     def test_platform_connection_write_fails_closed_without_encryption_key(self) -> None:
         request = urllib_request.Request(
             f"{self.base_url}/api/platform-connections",

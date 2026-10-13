@@ -107,7 +107,7 @@ class AgentPublicRecordsTests(unittest.TestCase):
         self.assertIn("never guess them", AGENT_LOOP_INSTRUCTIONS)
 
     def test_property_records_switch_off_on_their_own(self) -> None:
-        blocked = blocked_tools({"family": {"public_records": False}}, "family")
+        blocked = blocked_tools({"public_records": False})
 
         self.assertIn("look_up_property", blocked)
         self.assertNotIn("search_web", blocked)

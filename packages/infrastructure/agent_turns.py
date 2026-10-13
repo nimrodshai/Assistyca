@@ -695,7 +695,7 @@ def format_sample_report(report: dict[str, Any]) -> tuple[str, str]:
     if sampled == 0:
         return (
             "Weekly turn sample: no turns to read",
-            f"No customer turns were recorded in the last {report.get('days', DEFAULT_SAMPLE_DAYS)} days, so there was nothing to score.",
+            f"No turns were recorded in the last {report.get('days', DEFAULT_SAMPLE_DAYS)} days, so there was nothing to score.",
         )
     passed = int(report.get("passed") or 0)
     unscored = int(report.get("unscored") or 0)

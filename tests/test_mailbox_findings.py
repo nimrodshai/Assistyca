@@ -1,11 +1,10 @@
 """Mailbox findings: the reading and the deriving, with no network.
 
 What these prove: a reply from the model is read into facts and put back on
-the right messages; an invoice the person sent with no payment after it is
-found and one with a payment is not; a bill and a renewal coming up are
-found in their windows; a recurring charge that went up is found with its
-old and new price; and the instruction and fallback the person gets carry
-the figures as written.
+the right messages; a bill and a renewal coming up are found in their
+windows; a recurring charge that went up is found with its old and new
+price; and the instruction and fallback the person gets carry the figures
+as written.
 """
 
 from __future__ import annotations
@@ -46,7 +45,7 @@ class ReadingTests(unittest.TestCase):
     def test_a_fenced_reply_is_read_and_unknown_refs_and_kinds_are_dropped(self) -> None:
         candidates = [{"ref": "1"}, {"ref": "2"}]
         reply = "```json\n" + json.dumps({"facts": [
-            {"ref": "1", "kind": "invoice_sent", "counterparty": "Acme Ltd", "amount": "1,200.00", "currency": "ils", "documentDate": "2026-07-01", "reference": "INV-17"},
+            {"ref": "1", "kind": "bill", "counterparty": "Acme Ltd", "amount": "1,200.00", "currency": "ils", "documentDate": "2026-07-01", "reference": "INV-17"},
             {"ref": "2", "kind": "advert"},
             {"ref": "9", "kind": "charge", "amount": 5},
         ]}) + "\n```"
@@ -59,7 +58,7 @@ class ReadingTests(unittest.TestCase):
 
     def test_extract_puts_facts_on_the_right_messages_and_never_hands_over_ids(self) -> None:
         items = [
-            {"id": "gm-1", "from": "Green Invoice <no-reply@greeninvoice.co.il>", "subject": "Invoice 17 to Acme", "date": "Wed, 1 Jul 2026 10:00:00 +0300", "bodyText": "Invoice 17 for 1,200 ILS"},
+            {"id": "gm-1", "from": "Acme Ltd <billing@acme.co.il>", "subject": "Invoice 17 - please pay by 15 July", "date": "Wed, 1 Jul 2026 10:00:00 +0300", "bodyText": "Invoice 17 for 1,200 ILS"},
             {"id": "gm-2", "from": "Netflix", "subject": "Your receipt", "date": "Sat, 1 Aug 2026 10:00:00 +0300", "bodyText": "We charged 49.90 ILS for your monthly plan"},
         ]
         prompts: list[str] = []
@@ -67,7 +66,7 @@ class ReadingTests(unittest.TestCase):
         def ask(prompt: str) -> str:
             prompts.append(prompt)
             return json.dumps({"facts": [
-                {"ref": "1", "kind": "invoice_sent", "counterparty": "Acme", "amount": 1200, "currency": "ILS", "reference": "17"},
+                {"ref": "1", "kind": "bill", "counterparty": "Acme", "amount": 1200, "currency": "ILS", "reference": "17", "dueOn": "2026-07-15"},
                 {"ref": "2", "kind": "charge", "counterparty": "Netflix", "amount": 49.9, "currency": "ILS", "recurring": True},
             ]})
 
@@ -75,7 +74,7 @@ class ReadingTests(unittest.TestCase):
         self.assertEqual(len(prompts), 1)
         self.assertNotIn("gm-1", prompts[0])
         self.assertIn('"owner":["owner"]', prompts[0])
-        self.assertEqual(read[0][mf.FACTS_KEY]["kind"], "invoice_sent")
+        self.assertEqual(read[0][mf.FACTS_KEY]["kind"], "bill")
         self.assertTrue(read[1][mf.FACTS_KEY]["recurring"])
         entry = mf.fact_entry(read[0])
         self.assertEqual(entry["messageDate"], "2026-07-01")
@@ -99,55 +98,6 @@ class ReadingTests(unittest.TestCase):
         self.assertEqual(query.newer_than_days, 365)
         self.assertIn("invoice", query.terms)
         self.assertIn("חשבונית", query.terms)
-
-
-class UnpaidInvoiceTests(unittest.TestCase):
-    def test_an_invoice_with_no_payment_after_a_month_is_found(self) -> None:
-        facts = [_fact("invoice_sent", counterparty="Acme Ltd", amount=1200, currency="ILS", documentDate="2026-07-20", messageDate="2026-07-20", reference="INV-17")]
-        findings = mf.derive_findings(facts, today=TODAY)
-        self.assertEqual(len(findings), 1)
-        finding = findings[0]
-        self.assertEqual(finding["detector"], "unpaid_invoice")
-        self.assertEqual(finding["ageDays"], 50)
-        self.assertEqual(finding["amount"], 1200)
-        self.assertEqual(finding["key"], "unpaid_invoice:owner@example.com:m-invoice_sent-2026-07-20-Acme Ltd")
-        self.assertIn("1,200 ILS", mf.describe_finding(finding))
-        self.assertIn("no payment", mf.describe_finding(finding))
-
-    def test_a_payment_from_the_same_customer_settles_it(self) -> None:
-        facts = [
-            _fact("invoice_sent", counterparty="Acme Ltd", amount=1200, currency="ILS", documentDate="2026-07-20", messageDate="2026-07-20"),
-            _fact("payment_received", counterparty="ACME", amount=1200, currency="ILS", messageDate="2026-08-02"),
-        ]
-        self.assertEqual(mf.derive_findings(facts, today=TODAY), [])
-
-    def test_a_payment_by_reference_settles_it_whoever_paid(self) -> None:
-        facts = [
-            _fact("invoice_sent", counterparty="Acme Ltd", amount=1200, currency="ILS", documentDate="2026-07-20", messageDate="2026-07-20", reference="INV-17"),
-            _fact("payment_received", counterparty="Paybox", amount=1200, currency="ILS", messageDate="2026-08-02", reference="inv-17"),
-        ]
-        self.assertEqual(mf.derive_findings(facts, today=TODAY), [])
-
-    def test_a_payment_before_the_invoice_does_not_count(self) -> None:
-        facts = [
-            _fact("payment_received", counterparty="Acme", amount=1200, currency="ILS", messageDate="2026-05-02"),
-            _fact("invoice_sent", counterparty="Acme Ltd", amount=1200, currency="ILS", documentDate="2026-07-20", messageDate="2026-07-20"),
-        ]
-        self.assertEqual(len(mf.derive_findings(facts, today=TODAY)), 1)
-
-    def test_a_fresh_invoice_and_an_ancient_one_are_left_alone(self) -> None:
-        facts = [
-            _fact("invoice_sent", counterparty="Acme", amount=100, currency="ILS", documentDate="2026-09-01", messageDate="2026-09-01"),
-            _fact("invoice_sent", counterparty="Beta", amount=100, currency="ILS", documentDate="2025-06-01", messageDate="2025-06-01"),
-        ]
-        self.assertEqual(mf.derive_findings(facts, today=TODAY), [])
-
-    def test_two_copies_of_one_invoice_are_one_finding(self) -> None:
-        facts = [
-            _fact("invoice_sent", messageId="a", counterparty="Acme", amount=500, currency="ILS", documentDate="2026-07-01", messageDate="2026-07-01", reference="42"),
-            _fact("invoice_sent", messageId="b", counterparty="Acme Ltd", amount=500, currency="ILS", documentDate="2026-07-01", messageDate="2026-07-01", reference="42"),
-        ]
-        self.assertEqual(len(mf.derive_findings(facts, today=TODAY)), 1)
 
 
 class BillAndRenewalTests(unittest.TestCase):
@@ -230,21 +180,23 @@ class PriceRiseTests(unittest.TestCase):
 class TellingTests(unittest.TestCase):
     def setUp(self) -> None:
         self.facts = [
-            _fact("invoice_sent", counterparty="Acme Ltd", amount=1200, currency="ILS", documentDate="2026-07-20", messageDate="2026-07-20", reference="INV-17"),
+            _fact("bill", counterparty="Acme Ltd", amount=1200, currency="ILS", messageDate="2026-09-01", dueOn="2026-09-15", reference="INV-17"),
             _fact("renewal", counterparty="Harel Insurance", amount=3650, currency="ILS", messageDate="2026-09-05", dueOn="2026-09-25"),
         ] + [
             _fact("charge", messageId=f"c{index}", counterparty="Netflix", amount=amount, currency="ILS", recurring=True, messageDate=f"2026-0{index + 4}-01")
             for index, amount in enumerate([49.9, 49.9, 49.9, 59.9])
         ]
 
-    def test_the_unpaid_invoice_outranks_the_rest(self) -> None:
+    def test_findings_come_back_best_first(self) -> None:
         findings = mf.derive_findings(self.facts, today=TODAY)
-        self.assertEqual([finding["detector"] for finding in findings], ["unpaid_invoice", "renewal", "price_rise"])
+        self.assertEqual({finding["detector"] for finding in findings}, {"bill_due", "renewal", "price_rise"})
+        self.assertEqual([finding["score"] for finding in findings], sorted((finding["score"] for finding in findings), reverse=True))
+        self.assertEqual(findings[0]["detector"], "bill_due", "a bill due next week comes before a renewal in a fortnight")
 
     def test_the_instruction_carries_the_figures_and_the_count_of_the_rest(self) -> None:
         findings = mf.derive_findings(self.facts, today=TODAY)
         text = mf.build_findings_instruction(findings[:1], kind="first", more_count=2)
-        self.assertIn("1. Invoice INV-17 for 1,200 ILS to Acme Ltd", text)
+        self.assertIn("1. Bill from Acme Ltd for 1,200 ILS, due in 7 days (2026-09-15)", text)
         self.assertIn("There are 2 more", text)
         self.assertIn("do not use any tool", text)
         self.assertIn("Open with what you found, never with the reading", text)
@@ -265,7 +217,7 @@ class TellingTests(unittest.TestCase):
         # through, only what came back from it.
         self.assertTrue(text.startswith("One thing in your mail worth knowing:"))
         self.assertNotIn("looked through", text)
-        self.assertIn("• Invoice INV-17 for 1,200 ILS to Acme Ltd", text)
+        self.assertIn("• Bill from Acme Ltd for 1,200 ILS, due in 7 days (2026-09-15)", text)
         self.assertIn("2 more", text)
 
     def test_a_quiet_mailbox_is_told_as_reassurance_not_as_a_report(self) -> None:

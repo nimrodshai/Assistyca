@@ -240,13 +240,6 @@ class PortalSecurityTests(unittest.TestCase):
         self.assertEqual(status, 413)
         self.assertEqual(json.loads(body)["error"], "payload_too_large")
 
-    def test_a_history_import_may_carry_far_more(self) -> None:
-        cookie = self._cookie()
-
-        status, _ = self._post_large("/api/whatsapp/history/import", self._oversized_json(2 * 1024 * 1024), {"Cookie": cookie})
-
-        self.assertNotEqual(status, 413)
-
     def test_a_public_request_stops_far_sooner(self) -> None:
         status, _ = self._post_large("/api/contact", self._oversized_json(300 * 1024), {})
 

@@ -862,7 +862,7 @@ class FamilyWeekNudger:
         if not whatsapp_groups_enabled():
             return {"ok": True, **counts}
         for user_id, group_id in self.database.list_household_nudge_groups():
-            if not account_feature_allowed(self.database, user_id=user_id, feature_id="family_week"):
+            if not account_feature_allowed(self.database, feature_id="family_week"):
                 continue
             counts["groups"] += 1
             timezone_name = self._timezone_for_user(user_id)
@@ -944,7 +944,7 @@ class FamilyWeekNudger:
         reference = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
         counts = {"accounts": 0, "morning": 0, "evening": 0, "rides": 0, "birthdays": 0, "askedAgain": 0, "weekAhead": 0}
         for user_id in self.database.list_household_nudge_accounts():
-            if not account_feature_allowed(self.database, user_id=user_id, feature_id="family_week"):
+            if not account_feature_allowed(self.database, feature_id="family_week"):
                 continue
             counts["accounts"] += 1
             timezone_name = self._timezone_for_user(user_id)
@@ -1145,8 +1145,7 @@ class FamilyWeekNudger:
             profile = self.database.get_household_profile(user_id=user_id) or {}
             ask_on = normalize_text(profile.get("askAgainOn"))
             if (
-                profile.get("accountKind") == "family"
-                and profile.get("gettingToKnow") == "postponed"
+                profile.get("gettingToKnow") == "postponed"
                 and ask_on
                 and ask_on <= today.isoformat()
                 and 10 <= local_now.hour < 19

@@ -30,7 +30,6 @@ from packages.infrastructure.reply_judge import JUDGE_INSTRUCTIONS
 from packages.infrastructure.reply_judge import RUBRIC
 from packages.infrastructure.reply_judge import low_points
 from packages.infrastructure.whatsapp_agent_chat import RESUME_ASK_INSTRUCTIONS
-from packages.infrastructure.whatsapp_agent_chat import SIGNUP_CONCIERGE_INSTRUCTIONS
 
 
 class AssistantVoiceTests(unittest.TestCase):
@@ -40,7 +39,6 @@ class AssistantVoiceTests(unittest.TestCase):
             ("turn flow", AGENT_TURN_INSTRUCTIONS),
             ("answer composer", ANSWER_COMPOSER_INSTRUCTIONS),
             ("recovery reply", RECOVERY_INSTRUCTIONS),
-            ("signup concierge", SIGNUP_CONCIERGE_INSTRUCTIONS),
             ("resume ask", RESUME_ASK_INSTRUCTIONS),
         ):
             with self.subTest(prompt=name):

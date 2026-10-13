@@ -122,7 +122,7 @@ def inbound_text_payload(
 
 class WhatsAppAgentHelperTests(unittest.TestCase):
     def test_an_inbound_photo_carries_the_id_it_can_be_fetched_by(self) -> None:
-        from packages.tools.whatsapp_reply_approval.server import extract_inbound_events
+        from packages.infrastructure.whatsapp_messaging import extract_inbound_events
 
         events = extract_inbound_events(inbound_image_payload("", media_id="media-9"))
         self.assertEqual(len(events), 1)
@@ -137,7 +137,7 @@ class WhatsAppAgentHelperTests(unittest.TestCase):
         self.assertEqual(extract_inbound_events(inbound_text_payload("hi"))[0]["media"], {})
 
     def test_an_inbound_voice_note_carries_the_id_it_can_be_fetched_by(self) -> None:
-        from packages.tools.whatsapp_reply_approval.server import extract_inbound_events
+        from packages.infrastructure.whatsapp_messaging import extract_inbound_events
 
         events = extract_inbound_events(inbound_audio_payload(media_id="media-voice-9"))
         self.assertEqual(len(events), 1)
@@ -475,32 +475,6 @@ class WhatsAppAgentChatApiTests(unittest.TestCase):
         self.assertEqual(actions[0]["payload"]["messageText"], "Reminder: stand up and stretch.")
         self.assertEqual(actions[0]["payload"]["source"], "whatsapp_agent")
 
-    def test_a_bare_send_with_a_pending_approval_stays_with_the_approval_flow(self) -> None:
-        with mock.patch(
-            "packages.infrastructure.whatsapp_portal_service.send_whatsapp_message",
-            return_value="wamid.owner-notice",
-        ):
-            self._post_webhook(
-                inbound_text_payload(
-                    "Do you have any openings tomorrow?",
-                    sender="972500000001",
-                    phone_number_id=CLIENT_PHONE_NUMBER_ID,
-                    message_id="wamid.customer-1",
-                )
-            )
-
-            with mock.patch(
-                "packages.infrastructure.portal_auth.server.call_openai_response",
-            ) as model:
-                response = self._post_webhook(
-                    inbound_text_payload("Send", message_id="wamid.agent-msg-5")
-                )
-
-        model.assert_not_called()
-        actions = [entry.get("action") for entry in response.get("results", [])]
-        self.assertNotIn("agent_chat_reply", actions)
-        self.assertIn("send_suggested", actions)
-
     def test_an_operator_number_is_answered_without_any_saved_connection(self) -> None:
         # The account whose number *is* the Assistyca number has no client
         # WhatsApp connection to be recognised by, which is the whole reason
@@ -817,35 +791,6 @@ class WhatsAppAgentChatApiTests(unittest.TestCase):
         self.assertEqual(entry["operatorNumbersConfigured"], 0)
         self.assertEqual(entry["operatorNumbers"], [])
 
-    def test_an_operator_number_does_not_hijack_a_clients_customer_traffic(self) -> None:
-        # The operator mapping only applies to the Assistyca number. A customer
-        # writing to a client's own number is still customer traffic.
-        with (
-            mock.patch.dict(
-                "os.environ",
-                {"ASSISTYCA_WHATSAPP_OWNER_NUMBERS": f"{OWNER_WA_ID}:owner@example.com"},
-                clear=False,
-            ),
-            mock.patch(
-                "packages.infrastructure.whatsapp_portal_service.send_whatsapp_message",
-                return_value="wamid.owner-notice",
-            ),
-            mock.patch(
-                "packages.infrastructure.portal_auth.server.call_openai_response",
-            ) as model,
-        ):
-            response = self._post_webhook(
-                inbound_text_payload(
-                    "do you have openings tomorrow?",
-                    sender="972500000002",
-                    phone_number_id=CLIENT_PHONE_NUMBER_ID,
-                    message_id="wamid.customer-2",
-                )
-            )
-
-        model.assert_not_called()
-        self.assertEqual(response["results"][0]["type"], "customer")
-
     def test_an_expired_trial_is_told_so_over_whatsapp(self) -> None:
         # Cost control has to reach the channel people actually use, and the
         # person reading it is a client whose trial ran out, not an error.
@@ -873,27 +818,6 @@ class WhatsAppAgentChatApiTests(unittest.TestCase):
         )
         self.assertIn("trial has ended", reply["reply_text"])
         self.sent.assert_called_once()
-
-    def test_disabling_the_flow_keeps_the_old_help_behaviour(self) -> None:
-        with (
-            mock.patch.dict("os.environ", {"WHATSAPP_AGENT_CHAT_ENABLED": "0"}, clear=False),
-            mock.patch(
-                "packages.infrastructure.portal_auth.server.call_openai_response",
-            ) as model,
-            mock.patch(
-                "packages.infrastructure.whatsapp_portal_service.send_whatsapp_message",
-                return_value="wamid.help",
-            ),
-        ):
-            response = self._post_webhook(
-                inbound_text_payload("What can you do?", message_id="wamid.agent-msg-6")
-            )
-
-        model.assert_not_called()
-        actions = [entry.get("action") for entry in response.get("results", [])]
-        self.assertIn("help", actions)
-        self.assertNotIn("agent_chat_reply", actions)
-
 
 class LinkButtonTests(unittest.TestCase):
     def test_known_links_are_lifted_and_the_text_tidied(self) -> None:
@@ -1297,16 +1221,6 @@ class WhatsAppLoopTests(_WhatsAppApiCase):
         # The recovery composer may run; the turn itself never does.
         self.assertFalse(any(call.kwargs.get("tool_name") == "portal_agent_loop" for call in model.call_args_list))
         self.assertEqual(self.database.list_recent_whatsapp_agent_messages(user_id=int(self.user["id"])), [])
-
-    def test_a_customer_photo_is_not_a_conversation_with_the_agent(self) -> None:
-        with (
-            mock.patch("packages.infrastructure.whatsapp_agent_chat.download_whatsapp_media") as download,
-            mock.patch("packages.infrastructure.portal_auth.server.call_openai_response", return_value=SimpleNamespace(output_text="ok")),
-        ):
-            response = self._post_webhook(inbound_image_payload("", sender="15559990000", media_id="media-4", message_id="wamid.photo-4"))
-
-        self.assertFalse(any(entry.get("action") == "agent_chat_reply" for entry in response["results"]))
-        download.assert_not_called()
 
     def test_a_lookup_without_its_source_gets_the_link_not_a_failed_run(self) -> None:
         link = "https://accounts.google.com/o/oauth2/v2/auth?client_id=x&state=y"

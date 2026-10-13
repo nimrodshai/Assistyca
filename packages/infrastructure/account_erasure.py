@@ -21,8 +21,6 @@ from typing import Any
 from typing import Callable
 
 from packages.infrastructure.portal_db import normalize_email
-from packages.infrastructure.whatsapp_portal_service import delete_portal_whatsapp_store_for_connection
-from packages.infrastructure.whatsapp_portal_service import portal_whatsapp_store_path_for_connection
 
 
 RevokeGrant = Callable[[dict[str, str]], "tuple[bool, str]"]
@@ -48,8 +46,6 @@ def erase_account(
     root: Path,
     receipt_output_root: Path | None = None,
     receipt_owner_key: str = "",
-    whatsapp_store_cache: dict[str, Any] | None = None,
-    whatsapp_store_lock: Any | None = None,
     revoke_grant: RevokeGrant | None = None,
     db_path: Path | None = None,
 ) -> AccountErasure:
@@ -85,28 +81,6 @@ def erase_account(
                 result.revoked_grants += 1
             if warning:
                 result.revocation_warnings.append(warning)
-
-    whatsapp_connection = database.get_whatsapp_connection(normalized_email) or {
-        "userId": user_id,
-        "email": normalized_email,
-    }
-    # The helper drops the cached store whether or not a file is there, so it
-    # runs either way; only a file that existed counts as something removed.
-    store_path = portal_whatsapp_store_path_for_connection(root, whatsapp_connection, db_path=db_path)
-    store_existed = store_path.exists()
-    try:
-        removed_store = delete_portal_whatsapp_store_for_connection(
-            root=root,
-            connection=whatsapp_connection,
-            store_cache=whatsapp_store_cache,
-            store_lock=whatsapp_store_lock,
-            db_path=db_path,
-        )
-    except OSError:
-        result.failed_paths.append(store_path)
-    else:
-        if store_existed:
-            result.removed_paths.append(Path(removed_store))
 
     owner_root = _receipt_owner_root(receipt_output_root, receipt_owner_key)
     if owner_root is not None and owner_root.is_dir():

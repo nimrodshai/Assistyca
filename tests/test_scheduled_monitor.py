@@ -852,7 +852,9 @@ class ScheduledMonitorTests(unittest.TestCase):
             )
         )
 
-        scheduler = ScheduledMonitorScheduler(self.database)
+        # The scheduler is off unless configured on; this test is about what an
+        # enabled scheduler does with a manual-only monitor.
+        scheduler = ScheduledMonitorScheduler(self.database, config=ScheduledMonitorConfig())
         with mock.patch("packages.tools.scheduled_monitor.monitor.call_openai_response") as mock_openai_response:
             summary = scheduler.run_pending(now=datetime(2026, 7, 10, 12, 0, tzinfo=timezone.utc))
 

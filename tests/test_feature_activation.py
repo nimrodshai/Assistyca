@@ -11,9 +11,15 @@ from packages.infrastructure.feature_activation import FeatureActivationService
 from packages.infrastructure.portal_db import PortalDatabase
 
 
-DEFAULT_FEATURE_ID = "whatsapp-business-reply-suggestion-assistant"
-FOLLOW_UP_FEATURE_ID = "whatsapp-business-follow-up-outreach-writer"
 MONITOR_FEATURE_ID = "scheduled-web-monitor-notifier"
+
+# The monitor's setup check wants an OpenAI key and a mail sender in the
+# environment; tests that need the monitor "ready" run inside this patch.
+MONITOR_BACKEND_ENV = {
+    "PORTAL_SMTP_HOST": "smtp.example.com",
+    "PORTAL_SMTP_FROM_EMAIL": "alerts@example.com",
+    "OPENAI_API_KEY": "test-key",
+}
 
 
 class FakeLemonSqueezyClient:
@@ -42,26 +48,44 @@ class FeatureActivationTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.temp_dir.cleanup()
 
-    def _connect_whatsapp(self) -> None:
-        self.database.save_whatsapp_connection(
-            "owner@example.com",
-            business_account_id="12345",
-            phone_number_id="12345",
-            access_token="test-token",
-            owner_wa_id="15551234567",
-            connection_status="connected",
-        )
+    @staticmethod
+    def _monitor_env():
+        return mock.patch.dict(os.environ, MONITOR_BACKEND_ENV, clear=False)
+
+    def _save_monitor_config(self, service: FeatureActivationService) -> dict:
+        """Save the smallest monitor config that counts as setup complete."""
+        with self._monitor_env():
+            result = service.save_feature_config(
+                "owner@example.com",
+                feature_id=MONITOR_FEATURE_ID,
+                settings={
+                    "watchItems": ["Legal conferences", "Holiday reminders"],
+                    "intervalDays": 3,
+                    "deliveryChannel": "email",
+                },
+            )
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["setupStatus"]["ready"])
+        return result
+
+    def _activate_monitor(self, service: FeatureActivationService) -> dict:
+        with self._monitor_env():
+            return service.activate_feature(
+                "owner@example.com",
+                feature_id=MONITOR_FEATURE_ID,
+                feature_name="Scheduled Web Monitor",
+                channel="Alerts",
+                public_base_url="https://portal.example.com",
+            )
 
     def test_default_feature_catalog_is_seeded_for_every_client(self) -> None:
         features = self.database.list_available_features("owner@example.com")
 
         feature_ids = [feature["featureId"] for feature in features]
 
-        self.assertEqual(feature_ids, [DEFAULT_FEATURE_ID, FOLLOW_UP_FEATURE_ID, MONITOR_FEATURE_ID])
+        self.assertEqual(feature_ids, [MONITOR_FEATURE_ID])
         self.assertTrue(all(feature["billingRequired"] for feature in features))
-        self.assertTrue(features[0]["requirements"]["requiresWhatsAppConnection"])
-        self.assertTrue(features[1]["requirements"]["requiresWhatsAppConnection"])
-        self.assertTrue(features[2]["requirements"]["requiresScheduledMonitorConfig"])
+        self.assertTrue(features[0]["requirements"]["requiresScheduledMonitorConfig"])
 
     def test_list_feature_states_returns_backend_feature_catalog(self) -> None:
         service = FeatureActivationService(self.database, config=FeatureActivationConfig())
@@ -70,11 +94,9 @@ class FeatureActivationTests(unittest.TestCase):
 
         features_by_id = {feature["featureId"]: feature for feature in result["features"]}
 
-        self.assertEqual(set(features_by_id), {DEFAULT_FEATURE_ID, FOLLOW_UP_FEATURE_ID, MONITOR_FEATURE_ID})
-        self.assertEqual(features_by_id[DEFAULT_FEATURE_ID]["name"], "WhatsApp Reply Assistant")
-        self.assertEqual(features_by_id[FOLLOW_UP_FEATURE_ID]["name"], "WhatsApp Re-engagement Assistant")
+        self.assertEqual(set(features_by_id), {MONITOR_FEATURE_ID})
         self.assertEqual(features_by_id[MONITOR_FEATURE_ID]["name"], "Scheduled Web Monitor")
-        self.assertTrue(features_by_id[FOLLOW_UP_FEATURE_ID]["billing"]["required"])
+        self.assertTrue(features_by_id[MONITOR_FEATURE_ID]["billing"]["required"])
 
     def test_bootstrap_paid_emails_mark_billing_features_entitled(self) -> None:
         paid_database = PortalDatabase(
@@ -86,8 +108,6 @@ class FeatureActivationTests(unittest.TestCase):
         result = service.list_feature_states("owner@example.com")
 
         features_by_id = {feature["featureId"]: feature for feature in result["features"]}
-        self.assertTrue(features_by_id[DEFAULT_FEATURE_ID]["paymentStatus"]["isEntitled"])
-        self.assertTrue(features_by_id[FOLLOW_UP_FEATURE_ID]["paymentStatus"]["isEntitled"])
         self.assertTrue(features_by_id[MONITOR_FEATURE_ID]["paymentStatus"]["isEntitled"])
 
         billing_customer = paid_database.get_billing_customer("owner@example.com")
@@ -98,15 +118,7 @@ class FeatureActivationTests(unittest.TestCase):
     def test_save_monitor_feature_config_persists_settings_and_marks_setup_ready(self) -> None:
         service = FeatureActivationService(self.database, config=FeatureActivationConfig())
 
-        with mock.patch.dict(
-            os.environ,
-            {
-                "PORTAL_SMTP_HOST": "smtp.example.com",
-                "PORTAL_SMTP_FROM_EMAIL": "alerts@example.com",
-                "OPENAI_API_KEY": "test-key",
-            },
-            clear=False,
-        ):
+        with self._monitor_env():
             result = service.save_feature_config(
                 "owner@example.com",
                 feature_id=MONITOR_FEATURE_ID,
@@ -190,15 +202,7 @@ class FeatureActivationTests(unittest.TestCase):
             activated_at="2026-08-23T09:25:00+00:00",
         )
 
-        with mock.patch.dict(
-            os.environ,
-            {
-                "PORTAL_SMTP_HOST": "smtp.example.com",
-                "PORTAL_SMTP_FROM_EMAIL": "alerts@example.com",
-                "OPENAI_API_KEY": "test-key",
-            },
-            clear=False,
-        ):
+        with self._monitor_env():
             result = service.list_feature_states("owner@example.com")
 
         monitor = {
@@ -212,12 +216,12 @@ class FeatureActivationTests(unittest.TestCase):
         self.assertEqual(monitor["nextRunAt"], "")
         self.assertEqual(monitor["setupStatus"]["nextRunAt"], "")
 
-    def test_save_non_monitor_feature_config_persists_selected_model(self) -> None:
+    def test_save_feature_config_persists_selected_model_on_its_own(self) -> None:
         service = FeatureActivationService(self.database, config=FeatureActivationConfig())
 
         result = service.save_feature_config(
             "owner@example.com",
-            feature_id=FOLLOW_UP_FEATURE_ID,
+            feature_id=MONITOR_FEATURE_ID,
             settings={
                 "model": "gpt-5.4-nano",
             },
@@ -226,7 +230,7 @@ class FeatureActivationTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(result["feature"]["settings"]["model"], "gpt-5.4-nano")
 
-        assignment = self.database.get_feature_assignment("owner@example.com", FOLLOW_UP_FEATURE_ID)
+        assignment = self.database.get_feature_assignment("owner@example.com", MONITOR_FEATURE_ID)
         self.assertEqual(assignment["metadata"]["settings"]["model"], "gpt-5.4-nano")
 
     def test_save_monitor_feature_config_requires_openai_backend(self) -> None:
@@ -276,61 +280,16 @@ class FeatureActivationTests(unittest.TestCase):
 
         self.assertFalse(first_result["ok"])
         self.assertEqual(first_result["error"], "setup_required")
+        self.assertFalse(first_result["feature"]["isActive"])
 
-        with mock.patch.dict(
-            os.environ,
-            {
-                "PORTAL_SMTP_HOST": "smtp.example.com",
-                "PORTAL_SMTP_FROM_EMAIL": "alerts@example.com",
-                "OPENAI_API_KEY": "test-key",
-            },
-            clear=False,
-        ):
-            service.save_feature_config(
-                "owner@example.com",
-                feature_id=MONITOR_FEATURE_ID,
-                settings={
-                    "watchItems": [
-                        "Legal conferences",
-                        "Holiday reminders",
-                    ],
-                    "intervalDays": 3,
-                    "deliveryChannel": "email",
-                },
-            )
-            second_result = service.activate_feature(
-                "owner@example.com",
-                feature_id=MONITOR_FEATURE_ID,
-                feature_name="Scheduled Web Monitor",
-                channel="Alerts",
-                public_base_url="https://portal.example.com",
-            )
+        self._save_monitor_config(service)
+        second_result = self._activate_monitor(service)
 
         self.assertFalse(second_result["ok"])
         self.assertEqual(second_result["error"], "payment_required")
         self.assertTrue(second_result["setupStatus"]["ready"])
 
-    def test_activation_requires_setup_for_whatsapp_features(self) -> None:
-        service = FeatureActivationService(
-            self.database,
-            config=FeatureActivationConfig(checkout_variant_id="123"),
-            lemon_squeezy_client=FakeLemonSqueezyClient(checkout_url="https://checkout.example"),
-        )
-
-        result = service.activate_feature(
-            "owner@example.com",
-            feature_id=DEFAULT_FEATURE_ID,
-            feature_name="WhatsApp Reply Assistant",
-            channel="WhatsApp",
-            public_base_url="https://portal.example.com",
-        )
-
-        self.assertFalse(result["ok"])
-        self.assertEqual(result["error"], "setup_required")
-        self.assertFalse(result["feature"]["isActive"])
-
     def test_activation_requires_payment_and_creates_checkout(self) -> None:
-        self._connect_whatsapp()
         client = FakeLemonSqueezyClient(checkout_url="https://checkout.example.com/start")
         service = FeatureActivationService(
             self.database,
@@ -340,14 +299,9 @@ class FeatureActivationTests(unittest.TestCase):
             ),
             lemon_squeezy_client=client,
         )
+        self._save_monitor_config(service)
 
-        result = service.activate_feature(
-            "owner@example.com",
-            feature_id=DEFAULT_FEATURE_ID,
-            feature_name="WhatsApp Reply Assistant",
-            channel="WhatsApp",
-            public_base_url="https://portal.example.com",
-        )
+        result = self._activate_monitor(service)
 
         self.assertFalse(result["ok"])
         self.assertEqual(result["error"], "payment_required")
@@ -355,10 +309,9 @@ class FeatureActivationTests(unittest.TestCase):
         self.assertEqual(client.checkout_calls[0]["variant_id"], "variant_1")
 
     def test_activation_reuses_existing_checkout_for_unpaid_customer(self) -> None:
-        self._connect_whatsapp()
         self.database.save_feature_entitlement(
             "owner@example.com",
-            feature_id=DEFAULT_FEATURE_ID,
+            feature_id=MONITOR_FEATURE_ID,
             provider="lemon_squeezy",
             variant_id="variant_1",
             checkout_url="https://checkout.example.com/existing",
@@ -372,14 +325,9 @@ class FeatureActivationTests(unittest.TestCase):
             ),
             lemon_squeezy_client=client,
         )
+        self._save_monitor_config(service)
 
-        result = service.activate_feature(
-            "owner@example.com",
-            feature_id=DEFAULT_FEATURE_ID,
-            feature_name="WhatsApp Reply Assistant",
-            channel="WhatsApp",
-            public_base_url="https://portal.example.com",
-        )
+        result = self._activate_monitor(service)
 
         self.assertFalse(result["ok"])
         self.assertEqual(result["error"], "payment_required")
@@ -387,7 +335,6 @@ class FeatureActivationTests(unittest.TestCase):
         self.assertEqual(client.checkout_calls, [])
 
     def test_activation_succeeds_for_paying_customer(self) -> None:
-        self._connect_whatsapp()
         client = FakeLemonSqueezyClient(
             subscriptions=[
                 {
@@ -410,14 +357,9 @@ class FeatureActivationTests(unittest.TestCase):
             ),
             lemon_squeezy_client=client,
         )
+        self._save_monitor_config(service)
 
-        result = service.activate_feature(
-            "owner@example.com",
-            feature_id=DEFAULT_FEATURE_ID,
-            feature_name="WhatsApp Reply Assistant",
-            channel="WhatsApp",
-            public_base_url="https://portal.example.com",
-        )
+        result = self._activate_monitor(service)
 
         self.assertTrue(result["ok"])
         self.assertTrue(result["feature"]["isActive"])
@@ -448,20 +390,20 @@ class FeatureActivationTests(unittest.TestCase):
 
     def test_activation_uses_explicit_feature_requirements_not_id_heuristics(self) -> None:
         self.database.upsert_feature(
-            "whatsapp-in-name-but-web",
+            "monitor-in-name-but-web",
             feature_name="Web Intake Tool",
-            description="A web-only tool that should not require WhatsApp setup.",
+            description="A web-only tool that should not require monitor setup.",
             channel="Web",
             mode="Default",
             billing_required=False,
             is_active=True,
-            requirements={"requiresWhatsAppConnection": False},
+            requirements={"requiresScheduledMonitorConfig": False},
         )
         service = FeatureActivationService(self.database, config=FeatureActivationConfig())
 
         result = service.activate_feature(
             "owner@example.com",
-            feature_id="whatsapp-in-name-but-web",
+            feature_id="monitor-in-name-but-web",
             feature_name="Web Intake Tool",
             channel="Web",
         )
@@ -471,17 +413,17 @@ class FeatureActivationTests(unittest.TestCase):
         self.assertFalse(result["feature"]["setupStatus"]["required"])
 
     def test_entitlement_is_feature_specific(self) -> None:
-        self._connect_whatsapp()
+        # A second paid tool on another variant: paying for the monitor must
+        # not count as paying for this one.
         self.database.upsert_feature(
-            "premium-whatsapp-tool",
-            feature_name="Premium WhatsApp Tool",
-            channel="WhatsApp",
+            "premium-web-tool",
+            feature_name="Premium Web Tool",
+            channel="Web",
             mode="Human-reviewed",
             billing_required=True,
             billing_provider="lemon_squeezy",
             billing_variant_id="variant_2",
             is_active=True,
-            requirements={"requiresWhatsAppConnection": True},
         )
         client = FakeLemonSqueezyClient(
             subscriptions=[
@@ -508,9 +450,9 @@ class FeatureActivationTests(unittest.TestCase):
 
         result = service.activate_feature(
             "owner@example.com",
-            feature_id="premium-whatsapp-tool",
-            feature_name="Premium WhatsApp Tool",
-            channel="WhatsApp",
+            feature_id="premium-web-tool",
+            feature_name="Premium Web Tool",
+            channel="Web",
             public_base_url="https://portal.example.com",
         )
 
@@ -522,7 +464,7 @@ class FeatureActivationTests(unittest.TestCase):
     def test_list_feature_states_refreshes_payment_after_checkout_return(self) -> None:
         self.database.save_feature_entitlement(
             "owner@example.com",
-            feature_id=DEFAULT_FEATURE_ID,
+            feature_id=MONITOR_FEATURE_ID,
             provider="lemon_squeezy",
             variant_id="variant_1",
             checkout_url="https://checkout.example.com/start",
@@ -553,52 +495,28 @@ class FeatureActivationTests(unittest.TestCase):
         result = service.list_feature_states("owner@example.com")
 
         features_by_id = {feature["featureId"]: feature for feature in result["features"]}
-        self.assertTrue(features_by_id[DEFAULT_FEATURE_ID]["paymentStatus"]["isEntitled"])
+        self.assertTrue(features_by_id[MONITOR_FEATURE_ID]["paymentStatus"]["isEntitled"])
         self.assertEqual(client.list_calls[0]["user_email"], "owner@example.com")
-
-    def test_second_whatsapp_feature_reuses_existing_whatsapp_connection(self) -> None:
-        self._connect_whatsapp()
-        client = FakeLemonSqueezyClient(checkout_url="https://checkout.example.com/start")
-        service = FeatureActivationService(
-            self.database,
-            config=FeatureActivationConfig(
-                checkout_store_id="store_1",
-                checkout_variant_id="variant_1",
-            ),
-            lemon_squeezy_client=client,
-        )
-
-        result = service.activate_feature(
-            "owner@example.com",
-            feature_id=FOLLOW_UP_FEATURE_ID,
-            feature_name="WhatsApp Re-engagement Assistant",
-            channel="WhatsApp",
-            public_base_url="https://portal.example.com",
-        )
-
-        self.assertFalse(result["ok"])
-        self.assertEqual(result["error"], "payment_required")
-        self.assertTrue(result["setupStatus"]["ready"])
 
     def test_deactivation_is_recorded(self) -> None:
         self.database.set_feature_activation(
             "owner@example.com",
-            feature_id=DEFAULT_FEATURE_ID,
-            feature_name="WhatsApp Reply Assistant",
+            feature_id=MONITOR_FEATURE_ID,
+            feature_name="Scheduled Web Monitor",
             is_active=True,
         )
         service = FeatureActivationService(self.database, config=FeatureActivationConfig())
 
         result = service.deactivate_feature(
             "owner@example.com",
-            feature_id=DEFAULT_FEATURE_ID,
-            feature_name="WhatsApp Reply Assistant",
-            channel="WhatsApp",
+            feature_id=MONITOR_FEATURE_ID,
+            feature_name="Scheduled Web Monitor",
+            channel="Alerts",
         )
 
         self.assertTrue(result["ok"])
         self.assertFalse(result["feature"]["isActive"])
-        events = self.database.list_feature_activation_events("owner@example.com", DEFAULT_FEATURE_ID)
+        events = self.database.list_feature_activation_events("owner@example.com", MONITOR_FEATURE_ID)
         self.assertEqual(events[0]["outcome"], "deactivated")
 
 

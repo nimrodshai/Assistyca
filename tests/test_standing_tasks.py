@@ -474,7 +474,6 @@ class StandingTaskApiTests(unittest.TestCase):
         run sees the day, decides there is nothing to tell, and stays quiet."""
 
         user_id = int(self.user["id"])
-        self.database.update_user_account_type("owner@example.com", account_type="family")
         today = datetime.now(ZONE).date()
         self.database.save_household_activity(
             user_id=user_id, title="gan", who=["Laor"], days=[household.weekday_code(today)],

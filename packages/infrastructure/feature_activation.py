@@ -17,15 +17,9 @@ from packages.tools.scheduled_monitor.monitor import build_monitor_setup_status
 from packages.tools.scheduled_monitor.monitor import normalize_monitor_settings
 from packages.tools.scheduled_monitor.monitor import resolve_next_monitor_slot
 from packages.infrastructure.portal_db import PortalDatabase
-from packages.infrastructure.whatsapp_reengagement import REENGAGEMENT_FEATURE_ID
-from packages.infrastructure.whatsapp_reengagement import normalize_reengagement_settings
-from packages.infrastructure.whatsapp_reengagement import resolve_next_reengagement_slot
-from packages.infrastructure.whatsapp_reengagement import resolve_timezone
-from packages.infrastructure.whatsapp_tool_delivery import normalize_whatsapp_tool_delivery_settings
 
 
 ACTIVE_SUBSCRIPTION_STATUSES = frozenset({"active", "on_trial"})
-WHATSAPP_REPLY_ASSISTANT_FEATURE_ID = "whatsapp-business-reply-suggestion-assistant"
 DEFAULT_PRODUCT_NAME = "Assistyca"
 DEFAULT_PAYMENT_STATUS_CACHE_TTL_SECONDS = 120
 
@@ -228,26 +222,13 @@ class FeatureActivationService:
         )
         if normalized_feature_id == MONITOR_FEATURE_ID:
             settings_payload = normalize_monitor_settings(settings_payload)
-        elif normalized_feature_id == REENGAGEMENT_FEATURE_ID:
-            settings_payload = normalize_reengagement_settings(settings_payload)
-        elif normalized_feature_id == WHATSAPP_REPLY_ASSISTANT_FEATURE_ID:
-            had_delivery_setting = any(
-                key in settings_payload
-                for key in ("deliveryChannels", "delivery_channels", "deliveryChannel", "delivery_channel")
-            )
-            settings_payload = {
-                **settings_payload,
-                **normalize_whatsapp_tool_delivery_settings(settings_payload),
-            }
-            if not had_delivery_setting:
-                settings_payload["deliveryChannels"] = ["portal"]
 
         metadata_payload = {
             **existing_metadata,
             "prompt": prompt_payload,
             "settings": settings_payload,
         }
-        if normalized_feature_id in {"scheduled-web-monitor-notifier", REENGAGEMENT_FEATURE_ID}:
+        if normalized_feature_id == MONITOR_FEATURE_ID:
             metadata_payload["settingsSavedAt"] = now_iso()
 
         self.database.save_feature_assignment_metadata(
@@ -484,19 +465,6 @@ class FeatureActivationService:
         resolved_settings = dict(saved_settings) if isinstance(saved_settings, dict) else {}
         if feature_id == MONITOR_FEATURE_ID:
             resolved_settings = normalize_monitor_settings(resolved_settings)
-        elif feature_id == REENGAGEMENT_FEATURE_ID:
-            resolved_settings = normalize_reengagement_settings(resolved_settings)
-        elif feature_id == WHATSAPP_REPLY_ASSISTANT_FEATURE_ID:
-            had_delivery_setting = any(
-                key in resolved_settings
-                for key in ("deliveryChannels", "delivery_channels", "deliveryChannel", "delivery_channel")
-            )
-            resolved_settings = {
-                **resolved_settings,
-                **normalize_whatsapp_tool_delivery_settings(resolved_settings),
-            }
-            if not had_delivery_setting:
-                resolved_settings["deliveryChannels"] = ["portal"]
         resolved_setup_status = setup_status or self._resolve_setup_status(email, feature=feature)
         resolved_payment_status = payment_status or self._resolve_payment_status(
             email,
@@ -519,28 +487,6 @@ class FeatureActivationService:
                 activated_at=normalize_text(activation.get("activatedAt")),
                 settings_saved_at=settings_saved_at,
                 last_scheduled_for=normalize_text(last_run.get("scheduledFor")) if last_run else "",
-            )
-            schedule_state = {
-                "settingsSavedAt": settings_saved_at,
-                "lastRunAt": normalize_text(last_run.get("scheduledFor")) if last_run else "",
-                "lastRunStatus": normalize_text(last_run.get("status")) if last_run else "",
-                "nextRunAt": next_run.isoformat() if is_active and next_run else "",
-            }
-            resolved_setup_status = {
-                **resolved_setup_status,
-                **schedule_state,
-            }
-        elif feature_id == REENGAGEMENT_FEATURE_ID:
-            settings_saved_at = normalize_text(assignment_metadata.get("settingsSavedAt"))
-            last_run = self.database.get_latest_whatsapp_reengagement_run(
-                user_id=int(assignment.get("userId") or activation.get("userId") or 0),
-                feature_id=feature_id,
-            )
-            tz = resolve_timezone(normalize_text(resolved_settings.get("scheduleTimezone")))
-            next_run = resolve_next_reengagement_slot(
-                now=datetime.now(timezone.utc),
-                settings=resolved_settings,
-                tz=tz,
             )
             schedule_state = {
                 "settingsSavedAt": settings_saved_at,

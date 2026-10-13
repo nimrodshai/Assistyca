@@ -1,12 +1,11 @@
 """What the mailbox says the person should know, before they think to ask.
 
-A connected mailbox holds a year of invoices, receipts, bills and renewal
-notices, and read together they say things no single message does: an
-invoice the person sent that no payment ever followed, a bill whose due
+A connected mailbox holds a year of receipts, bills and renewal notices,
+and read together they say things no single message does: a bill whose due
 date is next week, an insurance policy renewing at a higher price, a
-subscription that quietly got dearer. Nobody asks "which of my invoices
-went unpaid?" of an assistant they connected an hour ago; the assistant
-has to look and say.
+subscription that quietly got dearer. Nobody asks "which of my
+subscriptions got dearer?" of an assistant they connected an hour ago; the
+assistant has to look and say.
 
 This module is that looking, in two halves that never touch the network:
 
@@ -20,9 +19,9 @@ This module is that looking, in two halves that never touch the network:
   and mailbox ids never reach the model.
 
 * Deriving. The facts of a year are then crossed in code, which is where
-  the arithmetic and the dates live: an invoice is unpaid when no payment
-  from that customer follows it; a charge rose when the latest is above
-  what the earlier ones settled on. Each finding carries its figures and
+  the arithmetic and the dates live: a bill is due when its date is near; a
+  charge rose when the latest is above what the earlier ones settled on.
+  Each finding carries its figures and
   a stable key, so the same finding found twice is told once.
 
 What the person reads is written by the model from these figures, over
@@ -49,7 +48,7 @@ from packages.infrastructure.mail_search import MailQuery
 
 # -- reading ------------------------------------------------------------------
 
-FACT_KINDS = ("invoice_sent", "payment_received", "bill", "charge", "renewal", "none")
+FACT_KINDS = ("bill", "charge", "renewal", "none")
 
 FACTS_BATCH_SIZE = 15
 FACTS_MAX_PARALLEL = 4
@@ -104,9 +103,9 @@ FINDINGS_SEARCH_TERMS = (
 )
 
 FINDINGS_INSTRUCTIONS = (
-    "You are reading the owner's mailbox on their behalf, one message at a time, and writing down "
-    "what each message is in money terms: an invoice they sent, a payment they received, a bill they "
-    "owe, a charge they paid, or something that renews or expires on a date. "
+    "You are reading the person's mailbox on their behalf, one message at a time, and writing down "
+    "what each message is in money terms: a bill they owe, a charge they paid, or something that "
+    "renews or expires on a date. "
     "You judge only what the message itself says, you never guess at what a sender usually sends, "
     "and you return JSON and nothing else."
 )
@@ -153,12 +152,6 @@ def build_facts_prompt(candidates: list[dict[str, str]], *, owner_addresses: Ite
         "For each message in CONTEXT.messages, say what it is in money terms for the owner of the "
         "mailbox. CONTEXT.owner lists the owner's own addresses, so mail from one of them was sent by "
         "the owner. Pick exactly one kind:\n"
-        "invoice_sent: the owner, or invoicing software sending on the owner's behalf, sent a customer "
-        "an invoice asking to be paid. The counterparty is the customer. A copy the invoicing service "
-        "sends the owner of an invoice it issued for them is still invoice_sent.\n"
-        "payment_received: money came in to the owner - a customer paid, a payment service or bank says "
-        "the owner received a transfer, an invoice the owner issued is marked paid. The counterparty is "
-        "who paid.\n"
         "bill: someone is asking the owner for money that has not been taken yet - an invoice to pay, a "
         "bill with a due date, a payment request. dueOn is the due date when it is stated.\n"
         "charge: money already left the owner's account - a receipt, a card or bank charge, a "
@@ -170,10 +163,11 @@ def build_facts_prompt(candidates: list[dict[str, str]], *, owner_addresses: Ite
         "subscription about to renew. dueOn is that date. amount is the price it renews at, when the "
         "message states one. A renewal that has already been billed is a charge, not a renewal.\n"
         "none: everything else - advertising, offers, shipping and delivery updates, newsletters, "
-        "account and security notices, refunds, failed or cancelled payments, appointment reminders.\n"
-        "counterparty is the other party in the owner's terms: the customer, the vendor, the insurer, "
-        "the service. Where a payment service passed money on, name the merchant or the customer "
-        "inside the message rather than the service. Keep it short and as the message writes it.\n"
+        "account and security notices, refunds, failed or cancelled payments, appointment reminders, "
+        "money that came in to the owner, and invoices the owner sent to somebody else.\n"
+        "counterparty is the other party in the owner's terms: the vendor, the insurer, the school, the "
+        "club, the service. Where a payment service passed money on, name the merchant inside the "
+        "message rather than the service. Keep it short and as the message writes it.\n"
         "amount is the number and currency is its three-letter code (ILS for shekels, USD, EUR, GBP). "
         "Leave both null when the message names no amount, and never total several amounts.\n"
         "documentDate is the date the invoice, bill or charge is dated, as YYYY-MM-DD, when the message "
@@ -354,13 +348,8 @@ class FindingsLedger:
 
 # -- deriving -----------------------------------------------------------------
 
-DETECTORS = ("unpaid_invoice", "bill_due", "renewal", "price_rise")
+DETECTORS = ("bill_due", "renewal", "price_rise")
 
-# An invoice the person sent counts as unpaid once this many days have gone
-# by with no payment from that customer, and stops being worth raising after
-# a year: by then it is history, not a chase.
-UNPAID_AFTER_DAYS = 30
-UNPAID_MAX_AGE_DAYS = 365
 # A bill is worth raising from this long before it is due to this long
 # after; an older overdue bill was either paid another way or given up on.
 BILL_LOOKAHEAD_DAYS = 30
@@ -388,7 +377,7 @@ _PARTY_NOISE = {
 
 def normalize_party(value: Any) -> str:
     """A counterparty as a key: lower case, letters and digits, without the
-    legal suffixes, so "Acme Ltd." and "ACME" are one customer."""
+    legal suffixes, so "Acme Ltd." and "ACME" are one vendor."""
 
     text = re.sub(r"<[^>]*>", " ", _flatten(value).lower()).strip()
     if re.fullmatch(r"[^\s@]+@[^\s@]+", text):
@@ -447,64 +436,6 @@ def _read_entries(facts: Iterable[Any]) -> list[dict[str, Any]]:
         entry["partyKey"] = normalize_party(raw.get("counterparty"))
         entries.append(entry)
     return entries
-
-
-def find_unpaid_invoices(entries: list[dict[str, Any]], *, today: date) -> list[dict[str, Any]]:
-    invoices = [entry for entry in entries if entry.get("kind") == "invoice_sent"]
-    payments = [entry for entry in entries if entry.get("kind") == "payment_received"]
-    findings: list[dict[str, Any]] = []
-    seen: set[tuple[str, str]] = set()
-    for invoice in sorted(invoices, key=lambda entry: _fact_day(entry) or today):
-        issued = _fact_day(invoice)
-        if issued is None:
-            continue
-        age = (today - issued).days
-        if age < UNPAID_AFTER_DAYS or age > UNPAID_MAX_AGE_DAYS:
-            continue
-        amount = invoice.get("amount")
-        reference = _flatten(invoice.get("reference"))
-        if amount is None and not reference:
-            continue
-        # The same invoice reaches the mailbox twice - the service's copy and
-        # the one the customer was sent - and is one invoice.
-        identity = (invoice["partyKey"], reference or f"{amount:.2f}")
-        if identity in seen:
-            continue
-        seen.add(identity)
-        paid = False
-        for payment in payments:
-            paid_on = _fact_day(payment)
-            if paid_on is not None and paid_on < issued - timedelta(days=3):
-                continue
-            payment_reference = _flatten(payment.get("reference"))
-            if reference and payment_reference and reference.lower() == payment_reference.lower():
-                paid = True
-                break
-            same_party = _same_party(invoice["partyKey"], payment["partyKey"])
-            if same_party and (_amounts_match(amount, payment.get("amount")) or payment.get("amount") is None):
-                paid = True
-                break
-            if not invoice["partyKey"] and _amounts_match(amount, payment.get("amount")):
-                paid = True
-                break
-        if paid:
-            continue
-        party = _flatten(invoice.get("counterparty")) or "a customer"
-        findings.append({
-            "key": f"unpaid_invoice:{invoice.get('mailbox')}:{invoice.get('messageId')}",
-            "detector": "unpaid_invoice",
-            "title": f"Invoice{' ' + reference if reference else ''} to {party}: no payment found after {age} days",
-            "counterparty": party,
-            "amount": amount,
-            "currency": _flatten(invoice.get("currency")),
-            "date": issued.isoformat(),
-            "dueOn": _flatten(invoice.get("dueOn")),
-            "reference": reference,
-            "ageDays": age,
-            "sources": [_source(invoice)],
-            "score": round(90 + min(age, 180) / 180 * 5 + _amount_weight(amount), 2),
-        })
-    return findings
 
 
 def find_bills_due(entries: list[dict[str, Any]], *, today: date) -> list[dict[str, Any]]:
@@ -672,7 +603,6 @@ def derive_findings(facts: Iterable[Any], *, today: date | None = None) -> list[
     reference = today or date.today()
     entries = _read_entries(facts)
     findings = [
-        *find_unpaid_invoices(entries, today=reference),
         *find_bills_due(entries, today=reference),
         *find_renewals(entries, today=reference),
         *find_price_rises(entries, today=reference),
@@ -721,8 +651,8 @@ MAX_FINDINGS_PER_MESSAGE = 6
 FINDINGS_TITLE = "What I found in your mail"
 NOTHING_FOUND_TEXT = (
     "Nothing in your mail needs your attention right now. "
-    "I'll keep an eye out for invoices you sent that go unpaid, bills and renewals coming due, and "
-    "subscriptions that get dearer, and I'll write when I see one."
+    "I'll keep an eye out for bills and renewals coming due and subscriptions that get dearer, and I'll "
+    "write when I see one."
 )
 
 
@@ -735,13 +665,6 @@ def describe_finding(finding: dict[str, Any]) -> str:
     amount = _read_amount(finding.get("amount"))
     currency = _flatten(finding.get("currency"))
     money = _money(amount, currency) if amount is not None else ""
-    if detector == "unpaid_invoice":
-        reference = _flatten(finding.get("reference"))
-        age = int(finding.get("ageDays") or 0)
-        return (
-            f"Invoice{' ' + reference if reference else ''}{' for ' + money if money else ''} to {party}, "
-            f"sent on {_flatten(finding.get('date'))} ({age} days ago): no payment from them shows in the mailbox since."
-        )
     if detector == "bill_due":
         days_until = int(finding.get("daysUntil") or 0)
         when = (
@@ -804,8 +727,8 @@ def build_findings_instruction(
         "went through is ours to know and nothing to them, so no \"I've looked through the last year of "
         "your mail\" line before the finding. The findings below are exact: keep every amount, date and name as written and "
         "add none of your own. Each says what the mailbox shows and what it does not, so say it that way, "
-        "plainly and without alarm: an invoice with no payment in the mailbox may well have been paid "
-        "another way, so it is \"I couldn't find a payment for it\", never \"it is unpaid\". For each, add "
+        "plainly and without alarm: a bill the mailbox shows as due may well have been paid another way, so "
+        "it is \"I couldn't see a payment for it\", never \"it is unpaid\". For each, add "
         "the one obvious next step in a few words, such as chasing it, checking it, or deciding before it "
         "renews. Do not ask questions, do not offer to set anything up, and do not use any tool: everything "
         "you need is here.\n"
@@ -838,8 +761,8 @@ def build_findings_fallback_text(findings: list[dict[str, Any]], *, kind: str, m
 def build_nothing_found_instruction() -> str:
     return (
         "The person connected their mailbox a few minutes ago and you have just looked through the last "
-        "twelve months of it, unasked, for invoices they sent that went unpaid, bills and renewals coming "
-        "due, and subscriptions that got dearer. You found nothing that needs their attention. Tell them so "
+        "twelve months of it, unasked, for bills and renewals coming due and subscriptions that got dearer. "
+        "You found nothing that needs their attention. Tell them so "
         "in one or two sentences, in the language they write to you in, and say in a few words what you "
         "will keep watching for. What they hear is that nothing needs them, not how much of their mail you "
         "read: no \"I've looked through the last year of your mail\" opener. Do not ask questions, do not offer to set anything up, and do not use any tool."
@@ -966,7 +889,6 @@ __all__ = [
     "find_bills_due",
     "find_price_rises",
     "find_renewals",
-    "find_unpaid_invoices",
     "has_fact",
     "message_day",
     "normalize_fact",

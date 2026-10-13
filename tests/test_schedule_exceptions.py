@@ -235,7 +235,6 @@ class NudgesTests(unittest.TestCase):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.database = PortalDatabase(Path(self.temp_dir.name) / "portal.db")
         self.database.register_user("dana@example.com", display_name="Dana Levi")
-        self.database.update_user_account_type("dana@example.com", account_type="family")
         self.user_id = int((self.database.get_user("dana@example.com") or {})["id"])
         self.gan = self.database.save_household_activity(
             user_id=self.user_id, title="Kindergarten", who=["Tom"], days=["sun"],

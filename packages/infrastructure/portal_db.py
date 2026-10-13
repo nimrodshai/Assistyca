@@ -19,8 +19,6 @@ from typing import Any
 from typing import Iterable
 
 from packages.infrastructure.account_types import ACCOUNT_FEATURES_BY_ID
-from packages.infrastructure.account_types import ACCOUNT_TYPE_VALUES
-from packages.infrastructure.account_types import normalize_account_type
 from packages.infrastructure.agent_approvals import AGENT_APPROVAL_TTL_SECONDS
 from packages.infrastructure.agent_approvals import APPROVAL_ARMED
 from packages.infrastructure.agent_approvals import APPROVAL_ASKED
@@ -474,8 +472,6 @@ HOUSEHOLD_TABLES_SQL = """
 -- the person says so or the account is deleted.
 CREATE TABLE IF NOT EXISTS household_profiles (
     user_id INTEGER PRIMARY KEY,
-    -- No longer read: the account's kind is users.account_type.
-    account_kind TEXT NOT NULL DEFAULT 'business',
     getting_to_know TEXT NOT NULL DEFAULT 'not_started',
     ask_again_on TEXT NOT NULL DEFAULT '',
     -- Where the offer to connect the mail and the calendar stands. Every
@@ -744,17 +740,12 @@ USER_OWNED_TABLES = (
     "platform_connections",
     "feature_assignments",
     "billing_customers",
-    "whatsapp_reengagement_notifications",
-    "whatsapp_reengagement_runs",
     "whatsapp_agent_messages",
     "whatsapp_agent_state",
     "whatsapp_agent_thread_state",
     "household_invites",
     "whatsapp_claim_codes",
     "user_whatsapp_numbers",
-    "whatsapp_conversation_messages",
-    "whatsapp_conversations",
-    "whatsapp_approval_index",
     "whatsapp_connections",
     "usage_events",
     "user_billing",
@@ -814,9 +805,6 @@ CREATE TABLE IF NOT EXISTS users (
     is_active INTEGER NOT NULL DEFAULT 1,
     is_admin INTEGER NOT NULL DEFAULT 0,
     client_type TEXT NOT NULL DEFAULT '',
-    -- Business or family: who the account was opened for. Empty reads as a
-    -- business, which is what every account opened before families carries.
-    account_type TEXT NOT NULL DEFAULT '',
     last_login_at TEXT,
     last_otp_requested_at TEXT,
     last_otp_verified_at TEXT,
@@ -919,79 +907,6 @@ CREATE TABLE IF NOT EXISTS whatsapp_connections (
     last_tested_at TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
-    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
-);
-
-CREATE TABLE IF NOT EXISTS whatsapp_approval_index (
-    approval_id TEXT PRIMARY KEY,
-    user_id INTEGER NOT NULL,
-    phone_number_id TEXT NOT NULL DEFAULT '',
-    created_at TEXT NOT NULL,
-    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
-);
-
-CREATE TABLE IF NOT EXISTS whatsapp_conversations (
-    user_id INTEGER NOT NULL,
-    conversation_id TEXT NOT NULL,
-    sender_name TEXT NOT NULL DEFAULT '',
-    sender_wa_id TEXT NOT NULL DEFAULT '',
-    last_message_text TEXT NOT NULL DEFAULT '',
-    last_message_id TEXT NOT NULL DEFAULT '',
-    last_message_direction TEXT NOT NULL DEFAULT '',
-    last_message_at TEXT,
-    last_inbound_at TEXT,
-    last_outbound_at TEXT,
-    last_reengagement_notified_at TEXT,
-    last_reengagement_notified_for_message_at TEXT,
-    metadata_json TEXT NOT NULL DEFAULT '{}',
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL,
-    PRIMARY KEY(user_id, conversation_id),
-    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
-);
-
-CREATE TABLE IF NOT EXISTS whatsapp_conversation_messages (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id INTEGER NOT NULL,
-    conversation_id TEXT NOT NULL,
-    message_id TEXT NOT NULL DEFAULT '',
-    direction TEXT NOT NULL DEFAULT 'inbound',
-    message_type TEXT NOT NULL DEFAULT 'text',
-    text TEXT NOT NULL DEFAULT '',
-    message_at TEXT NOT NULL,
-    metadata_json TEXT NOT NULL DEFAULT '{}',
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL,
-    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
-);
-
-CREATE TABLE IF NOT EXISTS whatsapp_reengagement_runs (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id INTEGER NOT NULL,
-    feature_id TEXT NOT NULL DEFAULT '',
-    scheduled_for TEXT NOT NULL,
-    conversations_checked INTEGER NOT NULL DEFAULT 0,
-    notifications_sent INTEGER NOT NULL DEFAULT 0,
-    status TEXT NOT NULL DEFAULT 'completed',
-    metadata_json TEXT NOT NULL DEFAULT '{}',
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL,
-    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
-);
-
-CREATE TABLE IF NOT EXISTS whatsapp_reengagement_notifications (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id INTEGER NOT NULL,
-    conversation_id TEXT NOT NULL,
-    feature_id TEXT NOT NULL DEFAULT '',
-    scheduled_for TEXT NOT NULL,
-    last_message_at TEXT NOT NULL,
-    owner_message_id TEXT NOT NULL DEFAULT '',
-    draft_text TEXT NOT NULL DEFAULT '',
-    source TEXT NOT NULL DEFAULT '',
-    model_name TEXT NOT NULL DEFAULT '',
-    metadata_json TEXT NOT NULL DEFAULT '{}',
-    created_at TEXT NOT NULL,
     FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
@@ -1322,15 +1237,13 @@ CREATE TABLE IF NOT EXISTS receipt_duplicate_decisions (
     FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
--- A feature switched on or off for one kind of account. Only switches that
--- were moved have a row: a feature with none is on.
-CREATE TABLE IF NOT EXISTS account_type_features (
-    account_type TEXT NOT NULL,
-    feature_id TEXT NOT NULL,
+-- A feature switched on or off for every account. Only switches that were
+-- moved have a row: a feature with none is on.
+CREATE TABLE IF NOT EXISTS feature_switches (
+    feature_id TEXT PRIMARY KEY,
     allowed INTEGER NOT NULL DEFAULT 1,
     updated_by TEXT NOT NULL DEFAULT '',
-    updated_at TEXT NOT NULL,
-    PRIMARY KEY(account_type, feature_id)
+    updated_at TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS account_facts (
@@ -1382,21 +1295,6 @@ ON whatsapp_connections(owner_wa_id)
 WHERE owner_wa_id <> '';
 CREATE INDEX IF NOT EXISTS idx_platform_connections_user_status
 ON platform_connections(user_id, connection_status, updated_at DESC);
-CREATE INDEX IF NOT EXISTS idx_whatsapp_approval_index_user_id
-ON whatsapp_approval_index(user_id, created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_whatsapp_conversations_user_updated
-ON whatsapp_conversations(user_id, updated_at DESC);
-CREATE INDEX IF NOT EXISTS idx_whatsapp_conversations_user_last_message
-ON whatsapp_conversations(user_id, last_message_at ASC);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_whatsapp_conversation_messages_user_message
-ON whatsapp_conversation_messages(user_id, message_id)
-WHERE message_id <> '';
-CREATE INDEX IF NOT EXISTS idx_whatsapp_conversation_messages_thread
-ON whatsapp_conversation_messages(user_id, conversation_id, message_at ASC, id ASC);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_whatsapp_reengagement_runs_user_schedule
-ON whatsapp_reengagement_runs(user_id, feature_id, scheduled_for);
-CREATE INDEX IF NOT EXISTS idx_whatsapp_reengagement_notifications_user_thread
-ON whatsapp_reengagement_notifications(user_id, conversation_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_whatsapp_agent_messages_user
 ON whatsapp_agent_messages(user_id, id DESC);
 CREATE INDEX IF NOT EXISTS idx_whatsapp_signups_started
@@ -1749,6 +1647,8 @@ class PortalDatabase:
                 self._migrate_usage_events_table(conn)
                 self._migrate_whatsapp_connections_table(conn)
                 self._migrate_platform_connections_table(conn)
+                self._drop_retired_business_tables(conn)
+                self._migrate_feature_switches(conn)
                 self._migrate_feature_tables(conn)
                 self._ensure_usage_events_tool_indexes(conn)
                 self._ensure_contact_opportunities_indexes(conn)
@@ -1943,9 +1843,6 @@ class PortalDatabase:
             conn.execute("ALTER TABLE users ADD COLUMN is_admin INTEGER NOT NULL DEFAULT 0")
         if "client_type" not in columns:
             conn.execute("ALTER TABLE users ADD COLUMN client_type TEXT NOT NULL DEFAULT ''")
-        if "account_type" not in columns:
-            conn.execute("ALTER TABLE users ADD COLUMN account_type TEXT NOT NULL DEFAULT ''")
-            self._backfill_account_types(conn)
         if "profile_json" not in columns:
             conn.execute("ALTER TABLE users ADD COLUMN profile_json TEXT NOT NULL DEFAULT '{}'")
         if "trial_days" not in columns:
@@ -1956,19 +1853,26 @@ class PortalDatabase:
             conn.execute("ALTER TABLE users ADD COLUMN sessions_valid_after REAL NOT NULL DEFAULT 0")
 
     @staticmethod
-    def _backfill_account_types(conn: sqlite3.Connection) -> None:
-        """Accounts opened from the web page before the type was kept on the
-        account: the signup that opened them still says who it was for."""
+    def _migrate_feature_switches(conn: sqlite3.Connection) -> None:
+        """The switches used to be kept per kind of account. Only families are
+        left (2026-10-13), so the family column becomes the one set of
+        switches and the old table goes."""
 
-        signup_columns = {str(row["name"]) for row in conn.execute("PRAGMA table_info(whatsapp_signups)").fetchall()}
-        if not {"user_id", "registration_json"} <= signup_columns:
+        tables = {str(row["name"]) for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()}
+        if "account_type_features" not in tables:
             return
-        rows = conn.execute(
-            "SELECT user_id, registration_json FROM whatsapp_signups WHERE user_id IS NOT NULL"
-        ).fetchall()
-        for row in rows:
-            if _load_json_dict(row["registration_json"]).get("kind") == "family":
-                conn.execute("UPDATE users SET account_type = 'family' WHERE id = ?", (int(row["user_id"]),))
+        for row in conn.execute(
+            "SELECT feature_id, allowed, updated_by, updated_at FROM account_type_features WHERE account_type = 'family'"
+        ).fetchall():
+            conn.execute(
+                """
+                INSERT INTO feature_switches (feature_id, allowed, updated_by, updated_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(feature_id) DO NOTHING
+                """,
+                (str(row["feature_id"]), int(row["allowed"] or 0), str(row["updated_by"] or ""), str(row["updated_at"] or now_iso())),
+            )
+        conn.execute("DROP TABLE account_type_features")
 
     def _migrate_whatsapp_signups_table(self, conn: sqlite3.Connection) -> None:
         columns = {
@@ -2034,6 +1938,25 @@ class PortalDatabase:
         }
         if "tool_id" not in columns:
             conn.execute("ALTER TABLE usage_events ADD COLUMN tool_id TEXT NOT NULL DEFAULT ''")
+
+    @staticmethod
+    def _drop_retired_business_tables(conn: sqlite3.Connection) -> None:
+        """The reply-approval and re-engagement products are gone (2026-10-13).
+
+        Their tables held a client's customer conversations, the approvals the
+        owner was asked for, and the weekly follow-up runs. Nothing reads them
+        any more, and a database that still carries them from before is
+        tidied here rather than left with rows nobody can see.
+        """
+
+        for table in (
+            "whatsapp_approval_index",
+            "whatsapp_conversation_messages",
+            "whatsapp_conversations",
+            "whatsapp_reengagement_notifications",
+            "whatsapp_reengagement_runs",
+        ):
+            conn.execute(f"DROP TABLE IF EXISTS {table}")
 
     def _migrate_whatsapp_connections_table(self, conn: sqlite3.Connection) -> None:
         columns = {
@@ -2570,7 +2493,6 @@ class PortalDatabase:
                 u.is_active,
                 u.is_admin,
                 u.client_type,
-                u.account_type,
                 u.last_login_at,
                 u.last_otp_requested_at,
                 u.last_otp_verified_at,
@@ -2617,7 +2539,6 @@ class PortalDatabase:
                 "isActive": bool(payload.get("is_active")),
                 "isAdmin": bool(payload.get("is_admin")),
                 "clientType": normalize_client_type(payload.get("client_type")),
-                "accountType": normalize_account_type(payload.get("account_type")),
                 "registeredAt": payload.get("registered_at"),
                 "lastLoginAt": payload.get("last_login_at"),
                 "lastOtpRequestedAt": payload.get("last_otp_requested_at"),
@@ -2646,7 +2567,6 @@ class PortalDatabase:
             "is_active",
             "is_admin",
             "client_type",
-            "account_type",
             "registered_at",
             "last_login_at",
             "last_otp_requested_at",
@@ -2844,98 +2764,6 @@ class PortalDatabase:
             "connectedAt": normalize_text(payload.get("connected_at")),
             "updatedAt": normalize_text(payload.get("updated_at")),
             "hasCredential": True,
-        }
-
-    def _load_whatsapp_conversation_row(
-        self,
-        conn: sqlite3.Connection,
-        *,
-        user_id: int,
-        conversation_id: str,
-    ) -> dict[str, Any] | None:
-        normalized_conversation_id = normalize_text(conversation_id)
-        if user_id <= 0 or not normalized_conversation_id:
-            return None
-
-        row = conn.execute(
-            """
-            SELECT *
-            FROM whatsapp_conversations
-            WHERE user_id = ? AND conversation_id = ?
-            LIMIT 1
-            """,
-            (int(user_id), normalized_conversation_id),
-        ).fetchone()
-        if row is None:
-            return None
-
-        payload = _row_to_dict(row) or {}
-        metadata_payload = _load_json_dict(payload.get("metadata_json"))
-        message_count_row = conn.execute(
-            """
-            SELECT COUNT(*) AS message_count
-            FROM whatsapp_conversation_messages
-            WHERE user_id = ? AND conversation_id = ?
-            """,
-            (int(user_id), normalized_conversation_id),
-        ).fetchone()
-        return {
-            "userId": int(payload.get("user_id") or 0),
-            "conversationId": normalize_text(payload.get("conversation_id")),
-            "senderName": normalize_text(payload.get("sender_name")),
-            "senderWaId": normalize_text(payload.get("sender_wa_id")),
-            "lastMessageText": normalize_text(payload.get("last_message_text")),
-            "lastMessageId": normalize_text(payload.get("last_message_id")),
-            "lastMessageDirection": normalize_text(payload.get("last_message_direction")),
-            "lastMessageAt": payload.get("last_message_at"),
-            "lastInboundAt": payload.get("last_inbound_at"),
-            "lastOutboundAt": payload.get("last_outbound_at"),
-            "lastReengagementNotifiedAt": payload.get("last_reengagement_notified_at"),
-            "lastReengagementNotifiedForMessageAt": payload.get("last_reengagement_notified_for_message_at"),
-            "messageCount": int(message_count_row["message_count"] or 0) if message_count_row is not None else 0,
-            "metadata": metadata_payload if isinstance(metadata_payload, dict) else {},
-            "createdAt": payload.get("created_at"),
-            "updatedAt": payload.get("updated_at"),
-        }
-
-    def _load_whatsapp_reengagement_run_row(
-        self,
-        conn: sqlite3.Connection,
-        *,
-        user_id: int,
-        feature_id: str,
-        scheduled_for: str,
-    ) -> dict[str, Any] | None:
-        normalized_feature_id = normalize_text(feature_id)
-        normalized_scheduled_for = normalize_text(scheduled_for)
-        if user_id <= 0 or not normalized_feature_id or not normalized_scheduled_for:
-            return None
-
-        row = conn.execute(
-            """
-            SELECT *
-            FROM whatsapp_reengagement_runs
-            WHERE user_id = ? AND feature_id = ? AND scheduled_for = ?
-            LIMIT 1
-            """,
-            (int(user_id), normalized_feature_id, normalized_scheduled_for),
-        ).fetchone()
-        if row is None:
-            return None
-
-        payload = _row_to_dict(row) or {}
-        metadata_payload = _load_json_dict(payload.get("metadata_json"))
-        return {
-            "id": int(payload.get("id") or 0),
-            "userId": int(payload.get("user_id") or 0),
-            "featureId": normalize_text(payload.get("feature_id")),
-            "scheduledFor": payload.get("scheduled_for"),
-            "conversationsChecked": int(payload.get("conversations_checked") or 0),
-            "notificationsSent": int(payload.get("notifications_sent") or 0),
-            "status": normalize_text(payload.get("status")),
-            "metadata": metadata_payload if isinstance(metadata_payload, dict) else {},
-            "createdAt": payload.get("created_at"),
-            "updatedAt": payload.get("updated_at"),
         }
 
     def _load_scheduled_action_row(self, row: sqlite3.Row | None) -> dict[str, Any] | None:
@@ -3462,7 +3290,6 @@ class PortalDatabase:
                 u.is_active,
                 u.is_admin,
                 u.client_type,
-                u.account_type,
                 u.last_login_at,
                 u.last_otp_requested_at,
                 u.last_otp_verified_at,
@@ -3515,7 +3342,6 @@ class PortalDatabase:
                     "isActive": bool(payload.get("is_active")),
                     "isAdmin": bool(payload.get("is_admin")),
                     "clientType": normalize_client_type(payload.get("client_type")),
-                    "accountType": normalize_account_type(payload.get("account_type")),
                     "registeredAt": payload.get("registered_at"),
                     "lastLoginAt": payload.get("last_login_at"),
                     "lastOtpRequestedAt": payload.get("last_otp_requested_at"),
@@ -3546,7 +3372,6 @@ class PortalDatabase:
                 "is_active",
                 "is_admin",
                 "client_type",
-                "account_type",
                 "registered_at",
                 "last_login_at",
                 "last_otp_requested_at",
@@ -3799,73 +3624,30 @@ class PortalDatabase:
             )
             return self._load_user_row(conn, normalized_email) or {}
 
-    def update_user_account_type(self, email: str, *, account_type: str) -> dict[str, Any]:
-        normalized_email = normalize_email(email)
-        raw = normalize_text(account_type).lower()
-        if not normalized_email:
-            raise ValueError("Email is required.")
-        if raw not in ACCOUNT_TYPE_VALUES:
-            raise ValueError("Account type must be business or family.")
+    def get_feature_switches(self) -> dict[str, bool]:
+        """{feature_id: allowed} for the switches that were moved."""
 
         with self._connection() as conn:
-            user = self._load_user_row(conn, normalized_email)
-            if user is None:
-                raise KeyError(f"Unknown user: {normalized_email}")
-            conn.execute(
-                "UPDATE users SET account_type = ?, updated_at = ? WHERE id = ?",
-                (raw, now_iso(), int(user.get("id") or 0)),
-            )
-            return self._load_user_row(conn, normalized_email) or {}
+            rows = conn.execute("SELECT feature_id, allowed FROM feature_switches").fetchall()
+        return {normalize_text(row["feature_id"]): bool(row["allowed"]) for row in rows}
 
-    def get_account_type(self, *, user_id: int = 0, email: str = "") -> str:
-        with self._connection() as conn:
-            if int(user_id or 0) > 0:
-                row = conn.execute("SELECT account_type FROM users WHERE id = ?", (int(user_id),)).fetchone()
-            else:
-                row = conn.execute(
-                    "SELECT account_type FROM users WHERE email = ?", (normalize_email(email),)
-                ).fetchone()
-        return normalize_account_type(row["account_type"] if row is not None else "")
-
-    def count_accounts_by_type(self) -> dict[str, int]:
-        counts = {value: 0 for value in ACCOUNT_TYPE_VALUES}
-        with self._connection() as conn:
-            for row in conn.execute("SELECT account_type, COUNT(*) AS n FROM users GROUP BY account_type").fetchall():
-                counts[normalize_account_type(row["account_type"])] += int(row["n"] or 0)
-        return counts
-
-    def get_account_type_permissions(self) -> dict[str, dict[str, bool]]:
-        """{account_type: {feature_id: allowed}} for the switches that were moved."""
-
-        permissions: dict[str, dict[str, bool]] = {value: {} for value in ACCOUNT_TYPE_VALUES}
-        with self._connection() as conn:
-            rows = conn.execute("SELECT account_type, feature_id, allowed FROM account_type_features").fetchall()
-        for row in rows:
-            account_type = normalize_text(row["account_type"])
-            if account_type in permissions:
-                permissions[account_type][normalize_text(row["feature_id"])] = bool(row["allowed"])
-        return permissions
-
-    def set_account_type_feature(self, *, account_type: str, feature_id: str, allowed: bool, updated_by: str = "") -> dict[str, dict[str, bool]]:
-        normalized_type = normalize_text(account_type).lower()
+    def set_feature_switch(self, *, feature_id: str, allowed: bool, updated_by: str = "") -> dict[str, bool]:
         normalized_feature = normalize_text(feature_id)
-        if normalized_type not in ACCOUNT_TYPE_VALUES:
-            raise ValueError("Account type must be business or family.")
         if normalized_feature not in ACCOUNT_FEATURES_BY_ID:
             raise ValueError(f"Unknown feature: {normalized_feature}")
         with self._connection() as conn:
             conn.execute(
                 """
-                INSERT INTO account_type_features (account_type, feature_id, allowed, updated_by, updated_at)
-                VALUES (?, ?, ?, ?, ?)
-                ON CONFLICT(account_type, feature_id) DO UPDATE SET
+                INSERT INTO feature_switches (feature_id, allowed, updated_by, updated_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(feature_id) DO UPDATE SET
                     allowed = excluded.allowed,
                     updated_by = excluded.updated_by,
                     updated_at = excluded.updated_at
                 """,
-                (normalized_type, normalized_feature, 1 if allowed else 0, normalize_email(updated_by), now_iso()),
+                (normalized_feature, 1 if allowed else 0, normalize_email(updated_by), now_iso()),
             )
-        return self.get_account_type_permissions()
+        return self.get_feature_switches()
 
     def delete_user(self, email: str) -> dict[str, Any]:
         normalized_email = normalize_email(email)
@@ -4943,773 +4725,6 @@ class PortalDatabase:
             )
             return self._load_user_row(conn, normalized_email) or {}
 
-    def save_whatsapp_message(
-        self,
-        *,
-        conversation_id: str,
-        direction: str,
-        text: str,
-        email: str | None = None,
-        user_id: int | None = None,
-        sender_name: str = "",
-        sender_wa_id: str = "",
-        message_id: str = "",
-        message_type: str = "text",
-        message_at: str | datetime | None = None,
-        metadata: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        normalized_conversation_id = normalize_text(conversation_id)
-        normalized_direction = normalize_text(direction).lower() or "inbound"
-        normalized_text_value = normalize_text(text)
-        normalized_message_id = normalize_text(message_id)
-        normalized_message_type = normalize_text(message_type) or "text"
-        normalized_sender_name = normalize_text(sender_name)
-        normalized_sender_wa_id = normalize_text(sender_wa_id)
-        if not normalized_conversation_id:
-            raise ValueError("Conversation id is required.")
-        if normalized_direction not in {"inbound", "outbound"}:
-            raise ValueError("Direction must be inbound or outbound.")
-        if not normalized_text_value:
-            raise ValueError("Message text is required.")
-
-        message_moment = parse_datetime(message_at) if message_at is not None else datetime.now(timezone.utc)
-        message_at_value = message_moment.astimezone(timezone.utc).isoformat()
-        metadata_payload = metadata if isinstance(metadata, dict) else {}
-        metadata_json = json.dumps(metadata_payload, ensure_ascii=True, sort_keys=True)
-        now = now_iso()
-
-        with self._connection() as conn:
-            resolved_user_id = int(user_id or 0)
-            if resolved_user_id <= 0:
-                normalized_email = normalize_email(email)
-                if not normalized_email:
-                    raise ValueError("Email or user id is required.")
-                resolved_user_id = self._resolve_active_user_id(conn, normalized_email)
-
-            if normalized_message_id:
-                existing_message = conn.execute(
-                    """
-                    SELECT id
-                    FROM whatsapp_conversation_messages
-                    WHERE user_id = ? AND message_id = ?
-                    LIMIT 1
-                    """,
-                    (resolved_user_id, normalized_message_id),
-                ).fetchone()
-                if existing_message is not None:
-                    conversation = self._load_whatsapp_conversation_row(
-                        conn,
-                        user_id=resolved_user_id,
-                        conversation_id=normalized_conversation_id,
-                    )
-                    return {
-                        "userId": resolved_user_id,
-                        "conversationId": normalized_conversation_id,
-                        "messageId": normalized_message_id,
-                        "direction": normalized_direction,
-                        "messageType": normalized_message_type,
-                        "text": normalized_text_value,
-                        "messageAt": message_at_value,
-                        "metadata": dict(metadata_payload),
-                        "conversation": conversation or {},
-                        "isDuplicate": True,
-                    }
-
-            existing_conversation = self._load_whatsapp_conversation_row(
-                conn,
-                user_id=resolved_user_id,
-                conversation_id=normalized_conversation_id,
-            ) or {}
-            conversation_metadata = (
-                existing_conversation.get("metadata")
-                if isinstance(existing_conversation.get("metadata"), dict)
-                else {}
-            )
-            merged_conversation_metadata = {
-                **conversation_metadata,
-                **metadata_payload,
-            }
-
-            last_message_at = normalize_text(existing_conversation.get("lastMessageAt"))
-            last_inbound_at = normalize_text(existing_conversation.get("lastInboundAt"))
-            last_outbound_at = normalize_text(existing_conversation.get("lastOutboundAt"))
-
-            resolved_sender_name = normalized_sender_name or normalize_text(existing_conversation.get("senderName"))
-            resolved_sender_wa_id = normalized_sender_wa_id or normalize_text(existing_conversation.get("senderWaId"))
-            created_at = existing_conversation.get("createdAt") or now
-
-            updated_values = {
-                "sender_name": resolved_sender_name,
-                "sender_wa_id": resolved_sender_wa_id,
-                "last_message_text": normalize_text(existing_conversation.get("lastMessageText")),
-                "last_message_id": normalize_text(existing_conversation.get("lastMessageId")),
-                "last_message_direction": normalize_text(existing_conversation.get("lastMessageDirection")),
-                "last_message_at": existing_conversation.get("lastMessageAt"),
-                "last_inbound_at": existing_conversation.get("lastInboundAt"),
-                "last_outbound_at": existing_conversation.get("lastOutboundAt"),
-            }
-
-            if not last_message_at or message_at_value >= last_message_at:
-                updated_values["last_message_text"] = normalized_text_value
-                updated_values["last_message_id"] = normalized_message_id
-                updated_values["last_message_direction"] = normalized_direction
-                updated_values["last_message_at"] = message_at_value
-
-            if normalized_direction == "inbound" and (not last_inbound_at or message_at_value >= last_inbound_at):
-                updated_values["last_inbound_at"] = message_at_value
-            if normalized_direction == "outbound" and (not last_outbound_at or message_at_value >= last_outbound_at):
-                updated_values["last_outbound_at"] = message_at_value
-
-            conn.execute(
-                """
-                INSERT INTO whatsapp_conversations (
-                    user_id,
-                    conversation_id,
-                    sender_name,
-                    sender_wa_id,
-                    last_message_text,
-                    last_message_id,
-                    last_message_direction,
-                    last_message_at,
-                    last_inbound_at,
-                    last_outbound_at,
-                    metadata_json,
-                    created_at,
-                    updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(user_id, conversation_id) DO UPDATE SET
-                    sender_name = excluded.sender_name,
-                    sender_wa_id = excluded.sender_wa_id,
-                    last_message_text = excluded.last_message_text,
-                    last_message_id = excluded.last_message_id,
-                    last_message_direction = excluded.last_message_direction,
-                    last_message_at = excluded.last_message_at,
-                    last_inbound_at = excluded.last_inbound_at,
-                    last_outbound_at = excluded.last_outbound_at,
-                    metadata_json = excluded.metadata_json,
-                    updated_at = excluded.updated_at
-                """,
-                (
-                    resolved_user_id,
-                    normalized_conversation_id,
-                    updated_values["sender_name"],
-                    updated_values["sender_wa_id"],
-                    updated_values["last_message_text"],
-                    updated_values["last_message_id"],
-                    updated_values["last_message_direction"],
-                    updated_values["last_message_at"],
-                    updated_values["last_inbound_at"],
-                    updated_values["last_outbound_at"],
-                    json.dumps(merged_conversation_metadata, ensure_ascii=True, sort_keys=True),
-                    created_at,
-                    now,
-                ),
-            )
-            conn.execute(
-                """
-                INSERT INTO whatsapp_conversation_messages (
-                    user_id,
-                    conversation_id,
-                    message_id,
-                    direction,
-                    message_type,
-                    text,
-                    message_at,
-                    metadata_json,
-                    created_at,
-                    updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    resolved_user_id,
-                    normalized_conversation_id,
-                    normalized_message_id,
-                    normalized_direction,
-                    normalized_message_type,
-                    normalized_text_value,
-                    message_at_value,
-                    metadata_json,
-                    now,
-                    now,
-                ),
-            )
-
-            conversation = self._load_whatsapp_conversation_row(
-                conn,
-                user_id=resolved_user_id,
-                conversation_id=normalized_conversation_id,
-            ) or {}
-            return {
-                "userId": resolved_user_id,
-                "conversationId": normalized_conversation_id,
-                "messageId": normalized_message_id,
-                "direction": normalized_direction,
-                "messageType": normalized_message_type,
-                "text": normalized_text_value,
-                "messageAt": message_at_value,
-                "metadata": dict(metadata_payload),
-                "conversation": conversation,
-                "isDuplicate": False,
-            }
-
-    def save_whatsapp_messages_batch(
-        self,
-        *,
-        messages: Iterable[dict[str, Any]],
-        email: str | None = None,
-        user_id: int | None = None,
-    ) -> dict[str, Any]:
-        normalized_messages: list[dict[str, Any]] = []
-        now = now_iso()
-
-        for source in messages:
-            if not isinstance(source, dict):
-                continue
-
-            conversation_id = normalize_text(source.get("conversationId") or source.get("conversation_id"))
-            direction = normalize_text(source.get("direction")).lower() or "inbound"
-            text = normalize_text(source.get("text"))
-            message_id = normalize_text(source.get("messageId") or source.get("message_id"))
-            message_type = normalize_text(source.get("messageType") or source.get("message_type")) or "text"
-            sender_name = normalize_text(source.get("senderName") or source.get("sender_name"))
-            sender_wa_id = normalize_text(source.get("senderWaId") or source.get("sender_wa_id"))
-            message_at = source.get("messageAt") or source.get("message_at")
-            metadata_payload = source.get("metadata") if isinstance(source.get("metadata"), dict) else {}
-
-            if not conversation_id:
-                raise ValueError("Conversation id is required.")
-            if direction not in {"inbound", "outbound"}:
-                raise ValueError("Direction must be inbound or outbound.")
-            if not text:
-                raise ValueError("Message text is required.")
-
-            message_moment = parse_datetime(message_at) if message_at is not None else datetime.now(timezone.utc)
-            normalized_messages.append(
-                {
-                    "conversation_id": conversation_id,
-                    "direction": direction,
-                    "text": text,
-                    "message_id": message_id,
-                    "message_type": message_type,
-                    "sender_name": sender_name,
-                    "sender_wa_id": sender_wa_id,
-                    "message_at": message_moment.astimezone(timezone.utc).isoformat(),
-                    "metadata": dict(metadata_payload),
-                    "metadata_json": json.dumps(metadata_payload, ensure_ascii=True, sort_keys=True),
-                }
-            )
-
-        if not normalized_messages:
-            return {
-                "messagesSaved": 0,
-                "duplicates": 0,
-                "conversations": [],
-            }
-
-        with self._connection() as conn:
-            resolved_user_id = int(user_id or 0)
-            if resolved_user_id <= 0:
-                normalized_email = normalize_email(email)
-                if not normalized_email:
-                    raise ValueError("Email or user id is required.")
-                resolved_user_id = self._resolve_active_user_id(conn, normalized_email)
-
-            messages_saved = 0
-            duplicates = 0
-            conversation_payloads: dict[str, dict[str, Any]] = {}
-
-            for message in normalized_messages:
-                conversation_id = message["conversation_id"]
-                payload = conversation_payloads.setdefault(
-                    conversation_id,
-                    {
-                        "sender_name": "",
-                        "sender_wa_id": "",
-                        "metadata": {},
-                    },
-                )
-                if message["sender_name"]:
-                    payload["sender_name"] = message["sender_name"]
-                if message["sender_wa_id"]:
-                    payload["sender_wa_id"] = message["sender_wa_id"]
-                payload["metadata"] = {
-                    **payload["metadata"],
-                    **message["metadata"],
-                }
-
-                existing_message = None
-                if message["message_id"]:
-                    existing_message = conn.execute(
-                        """
-                        SELECT id, conversation_id
-                        FROM whatsapp_conversation_messages
-                        WHERE user_id = ? AND message_id = ?
-                        LIMIT 1
-                        """,
-                        (resolved_user_id, message["message_id"]),
-                    ).fetchone()
-
-                if existing_message is not None:
-                    duplicates += 1
-                    existing_conversation_id = normalize_text(existing_message["conversation_id"])
-                    if existing_conversation_id and existing_conversation_id != conversation_id:
-                        conversation_payloads.setdefault(
-                            existing_conversation_id,
-                            {
-                                "sender_name": "",
-                                "sender_wa_id": "",
-                                "metadata": {},
-                            },
-                        )
-                    conn.execute(
-                        """
-                        UPDATE whatsapp_conversation_messages
-                        SET conversation_id = ?,
-                            direction = ?,
-                            message_type = ?,
-                            text = ?,
-                            message_at = ?,
-                            metadata_json = ?,
-                            updated_at = ?
-                        WHERE id = ?
-                        """,
-                        (
-                            conversation_id,
-                            message["direction"],
-                            message["message_type"],
-                            message["text"],
-                            message["message_at"],
-                            message["metadata_json"],
-                            now,
-                            int(existing_message["id"]),
-                        ),
-                    )
-                    continue
-
-                conn.execute(
-                    """
-                    INSERT INTO whatsapp_conversation_messages (
-                        user_id,
-                        conversation_id,
-                        message_id,
-                        direction,
-                        message_type,
-                        text,
-                        message_at,
-                        metadata_json,
-                        created_at,
-                        updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        resolved_user_id,
-                        conversation_id,
-                        message["message_id"],
-                        message["direction"],
-                        message["message_type"],
-                        message["text"],
-                        message["message_at"],
-                        message["metadata_json"],
-                        now,
-                        now,
-                    ),
-                )
-                messages_saved += 1
-
-            conversations: list[dict[str, Any]] = []
-            for conversation_id, payload in conversation_payloads.items():
-                existing_conversation = self._load_whatsapp_conversation_row(
-                    conn,
-                    user_id=resolved_user_id,
-                    conversation_id=conversation_id,
-                ) or {}
-                last_message = conn.execute(
-                    """
-                    SELECT message_id, direction, text, message_at
-                    FROM whatsapp_conversation_messages
-                    WHERE user_id = ? AND conversation_id = ?
-                    ORDER BY message_at DESC, id DESC
-                    LIMIT 1
-                    """,
-                    (resolved_user_id, conversation_id),
-                ).fetchone()
-                if last_message is None:
-                    conn.execute(
-                        """
-                        DELETE FROM whatsapp_conversations
-                        WHERE user_id = ? AND conversation_id = ?
-                        """,
-                        (resolved_user_id, conversation_id),
-                    )
-                    continue
-
-                last_inbound = conn.execute(
-                    """
-                    SELECT MAX(message_at) AS message_at
-                    FROM whatsapp_conversation_messages
-                    WHERE user_id = ? AND conversation_id = ? AND direction = 'inbound'
-                    """,
-                    (resolved_user_id, conversation_id),
-                ).fetchone()
-                last_outbound = conn.execute(
-                    """
-                    SELECT MAX(message_at) AS message_at
-                    FROM whatsapp_conversation_messages
-                    WHERE user_id = ? AND conversation_id = ? AND direction = 'outbound'
-                    """,
-                    (resolved_user_id, conversation_id),
-                ).fetchone()
-
-                existing_metadata = (
-                    existing_conversation.get("metadata")
-                    if isinstance(existing_conversation.get("metadata"), dict)
-                    else {}
-                )
-                merged_metadata = {
-                    **existing_metadata,
-                    **payload["metadata"],
-                }
-                sender_name = normalize_text(payload.get("sender_name")) or normalize_text(existing_conversation.get("senderName"))
-                sender_wa_id = normalize_text(payload.get("sender_wa_id")) or normalize_text(existing_conversation.get("senderWaId"))
-                created_at = existing_conversation.get("createdAt") or now
-
-                conn.execute(
-                    """
-                    INSERT INTO whatsapp_conversations (
-                        user_id,
-                        conversation_id,
-                        sender_name,
-                        sender_wa_id,
-                        last_message_text,
-                        last_message_id,
-                        last_message_direction,
-                        last_message_at,
-                        last_inbound_at,
-                        last_outbound_at,
-                        metadata_json,
-                        created_at,
-                        updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(user_id, conversation_id) DO UPDATE SET
-                        sender_name = excluded.sender_name,
-                        sender_wa_id = excluded.sender_wa_id,
-                        last_message_text = excluded.last_message_text,
-                        last_message_id = excluded.last_message_id,
-                        last_message_direction = excluded.last_message_direction,
-                        last_message_at = excluded.last_message_at,
-                        last_inbound_at = excluded.last_inbound_at,
-                        last_outbound_at = excluded.last_outbound_at,
-                        metadata_json = excluded.metadata_json,
-                        updated_at = excluded.updated_at
-                    """,
-                    (
-                        resolved_user_id,
-                        conversation_id,
-                        sender_name,
-                        sender_wa_id,
-                        normalize_text(last_message["text"]),
-                        normalize_text(last_message["message_id"]),
-                        normalize_text(last_message["direction"]),
-                        last_message["message_at"],
-                        last_inbound["message_at"] if last_inbound is not None else None,
-                        last_outbound["message_at"] if last_outbound is not None else None,
-                        json.dumps(merged_metadata, ensure_ascii=True, sort_keys=True),
-                        created_at,
-                        now,
-                    ),
-                )
-                conversation = self._load_whatsapp_conversation_row(
-                    conn,
-                    user_id=resolved_user_id,
-                    conversation_id=conversation_id,
-                )
-                if conversation is not None:
-                    conversations.append(conversation)
-
-            return {
-                "messagesSaved": messages_saved,
-                "duplicates": duplicates,
-                "conversations": conversations,
-            }
-
-    def delete_whatsapp_manual_import_messages(
-        self,
-        conversation_id: str,
-        *,
-        email: str | None = None,
-        user_id: int | None = None,
-        import_file_name: str = "",
-    ) -> dict[str, Any]:
-        normalized_conversation_id = normalize_text(conversation_id)
-        if not normalized_conversation_id:
-            raise ValueError("Conversation id is required.")
-        normalized_import_file_name = normalize_text(import_file_name)
-
-        with self._connection() as conn:
-            resolved_user_id = int(user_id or 0)
-            if resolved_user_id <= 0:
-                normalized_email = normalize_email(email)
-                if not normalized_email:
-                    raise ValueError("Email or user id is required.")
-                resolved_user_id = self._resolve_active_user_id(conn, normalized_email)
-
-            rows = conn.execute(
-                """
-                SELECT id, metadata_json
-                FROM whatsapp_conversation_messages
-                WHERE user_id = ? AND conversation_id = ?
-                """,
-                (resolved_user_id, normalized_conversation_id),
-            ).fetchall()
-            manual_message_ids: list[int] = []
-            for row in rows:
-                metadata = _load_json_dict(row["metadata_json"])
-                if metadata.get("source") != "manual_import":
-                    continue
-                if (
-                    normalized_import_file_name
-                    and normalize_text(metadata.get("importFileName")) != normalized_import_file_name
-                ):
-                    continue
-                manual_message_ids.append(int(row["id"]))
-
-            if manual_message_ids:
-                conn.executemany(
-                    """
-                    DELETE FROM whatsapp_conversation_messages
-                    WHERE user_id = ? AND id = ?
-                    """,
-                    [(resolved_user_id, message_id) for message_id in manual_message_ids],
-                )
-                conn.execute(
-                    """
-                    DELETE FROM whatsapp_reengagement_notifications
-                    WHERE user_id = ? AND conversation_id = ?
-                    """,
-                    (resolved_user_id, normalized_conversation_id),
-                )
-
-                remaining = conn.execute(
-                    """
-                    SELECT COUNT(*) AS message_count
-                    FROM whatsapp_conversation_messages
-                    WHERE user_id = ? AND conversation_id = ?
-                    """,
-                    (resolved_user_id, normalized_conversation_id),
-                ).fetchone()
-                if remaining is None or int(remaining["message_count"] or 0) <= 0:
-                    conn.execute(
-                        """
-                        DELETE FROM whatsapp_conversations
-                        WHERE user_id = ? AND conversation_id = ?
-                        """,
-                        (resolved_user_id, normalized_conversation_id),
-                    )
-
-            return {
-                "conversationId": normalized_conversation_id,
-                "messagesDeleted": len(manual_message_ids),
-            }
-
-    def delete_whatsapp_conversation(
-        self,
-        conversation_id: str,
-        *,
-        email: str | None = None,
-        user_id: int | None = None,
-    ) -> dict[str, Any]:
-        normalized_conversation_id = normalize_text(conversation_id)
-        if not normalized_conversation_id:
-            raise ValueError("Conversation id is required.")
-
-        with self._connection() as conn:
-            resolved_user_id = int(user_id or 0)
-            if resolved_user_id <= 0:
-                normalized_email = normalize_email(email)
-                if not normalized_email:
-                    raise ValueError("Email or user id is required.")
-                resolved_user_id = self._resolve_active_user_id(conn, normalized_email)
-
-            conversation = self._load_whatsapp_conversation_row(
-                conn,
-                user_id=resolved_user_id,
-                conversation_id=normalized_conversation_id,
-            )
-            if conversation is None:
-                raise KeyError(f"Unknown WhatsApp conversation: {normalized_conversation_id}")
-
-            message_count_row = conn.execute(
-                """
-                SELECT COUNT(*) AS message_count
-                FROM whatsapp_conversation_messages
-                WHERE user_id = ? AND conversation_id = ?
-                """,
-                (resolved_user_id, normalized_conversation_id),
-            ).fetchone()
-            notification_count_row = conn.execute(
-                """
-                SELECT COUNT(*) AS notification_count
-                FROM whatsapp_reengagement_notifications
-                WHERE user_id = ? AND conversation_id = ?
-                """,
-                (resolved_user_id, normalized_conversation_id),
-            ).fetchone()
-
-            conn.execute(
-                """
-                DELETE FROM whatsapp_conversation_messages
-                WHERE user_id = ? AND conversation_id = ?
-                """,
-                (resolved_user_id, normalized_conversation_id),
-            )
-            conn.execute(
-                """
-                DELETE FROM whatsapp_reengagement_notifications
-                WHERE user_id = ? AND conversation_id = ?
-                """,
-                (resolved_user_id, normalized_conversation_id),
-            )
-            conn.execute(
-                """
-                DELETE FROM whatsapp_conversations
-                WHERE user_id = ? AND conversation_id = ?
-                """,
-                (resolved_user_id, normalized_conversation_id),
-            )
-
-            return {
-                **conversation,
-                "messagesDeleted": int(message_count_row["message_count"] or 0) if message_count_row else 0,
-                "notificationsDeleted": (
-                    int(notification_count_row["notification_count"] or 0)
-                    if notification_count_row
-                    else 0
-                ),
-            }
-
-    def get_whatsapp_conversation(
-        self,
-        conversation_id: str,
-        *,
-        email: str | None = None,
-        user_id: int | None = None,
-    ) -> dict[str, Any] | None:
-        normalized_conversation_id = normalize_text(conversation_id)
-        if not normalized_conversation_id:
-            return None
-
-        with self._connection() as conn:
-            resolved_user_id = int(user_id or 0)
-            if resolved_user_id <= 0:
-                normalized_email = normalize_email(email)
-                if not normalized_email:
-                    return None
-                resolved_user_id = self._resolve_active_user_id(conn, normalized_email)
-            return self._load_whatsapp_conversation_row(
-                conn,
-                user_id=resolved_user_id,
-                conversation_id=normalized_conversation_id,
-            )
-
-    def list_whatsapp_conversations(
-        self,
-        *,
-        email: str | None = None,
-        user_id: int | None = None,
-    ) -> list[dict[str, Any]]:
-        with self._connection() as conn:
-            resolved_user_id = int(user_id or 0)
-            if resolved_user_id <= 0:
-                normalized_email = normalize_email(email)
-                if not normalized_email:
-                    return []
-                resolved_user_id = self._resolve_active_user_id(conn, normalized_email)
-
-            rows = conn.execute(
-                """
-                SELECT conversation_id
-                FROM whatsapp_conversations
-                WHERE user_id = ?
-                ORDER BY updated_at DESC, conversation_id ASC
-                """,
-                (resolved_user_id,),
-            ).fetchall()
-
-            conversations: list[dict[str, Any]] = []
-            for row in rows:
-                record = self._load_whatsapp_conversation_row(
-                    conn,
-                    user_id=resolved_user_id,
-                    conversation_id=row["conversation_id"],
-                )
-                if record is not None:
-                    conversations.append(record)
-            return conversations
-
-    def list_whatsapp_conversation_messages(
-        self,
-        conversation_id: str,
-        *,
-        email: str | None = None,
-        user_id: int | None = None,
-        limit: int | None = None,
-    ) -> list[dict[str, Any]]:
-        normalized_conversation_id = normalize_text(conversation_id)
-        if not normalized_conversation_id:
-            return []
-
-        with self._connection() as conn:
-            resolved_user_id = int(user_id or 0)
-            if resolved_user_id <= 0:
-                normalized_email = normalize_email(email)
-                if not normalized_email:
-                    return []
-                resolved_user_id = self._resolve_active_user_id(conn, normalized_email)
-
-            params: list[Any] = [resolved_user_id, normalized_conversation_id]
-            limit_clause = ""
-            if limit is not None and int(limit) > 0:
-                limit_clause = " LIMIT ?"
-                params.append(int(limit))
-
-            rows = conn.execute(
-                f"""
-                SELECT
-                    message_id,
-                    direction,
-                    message_type,
-                    text,
-                    message_at,
-                    metadata_json,
-                    created_at,
-                    updated_at
-                FROM whatsapp_conversation_messages
-                WHERE user_id = ?
-                  AND conversation_id = ?
-                ORDER BY message_at DESC, id DESC
-                {limit_clause}
-                """,
-                tuple(params),
-            ).fetchall()
-
-            messages: list[dict[str, Any]] = []
-            for row in reversed(rows):
-                payload = _row_to_dict(row) or {}
-                metadata_payload = _load_json_dict(payload.get("metadata_json"))
-                messages.append(
-                    {
-                        "messageId": normalize_text(payload.get("message_id")),
-                        "direction": normalize_text(payload.get("direction")),
-                        "messageType": normalize_text(payload.get("message_type")),
-                        "text": normalize_text(payload.get("text")),
-                        "messageAt": payload.get("message_at"),
-                        "metadata": metadata_payload if isinstance(metadata_payload, dict) else {},
-                        "createdAt": payload.get("created_at"),
-                        "updatedAt": payload.get("updated_at"),
-                    }
-                )
-            return messages
-
     def upsert_feature(
         self,
         feature_id: str,
@@ -6125,18 +5140,13 @@ class PortalDatabase:
             conn.commit()
         return self.get_whatsapp_signup(number) or {}
 
-    def start_web_registration(
-        self, *, wa_id: str, name: str, business: str, kind: str = "business",
-    ) -> dict[str, Any]:
+    def start_web_registration(self, *, wa_id: str, name: str) -> dict[str, Any]:
         """Open the signup for a phone typed into the registration page.
 
-        There is no account yet: accounts are keyed on an email and the page
-        asks only for a phone, so the row is an ordinary `awaiting_email`
-        signup that already knows who this is for, the name and the line they
-        wrote. When the phone replies, the conversation asks for the email as
-        it would for any stranger, and what was typed here is saved on the
-        account it opens. Reopening a signup (`start_whatsapp_signup`) leaves
-        this in place.
+        There is no account yet: the page asks only for a name and a phone,
+        so the row is a signup that already knows the name. When the phone
+        replies, the account opens on that reply and the name is saved on it.
+        Reopening a signup (`start_whatsapp_signup`) leaves this in place.
         """
 
         number = normalize_whatsapp_lookup_id(wa_id)
@@ -6144,10 +5154,6 @@ class PortalDatabase:
             raise ValueError("A registration needs a phone number.")
         registration = {
             "name": normalize_text(name)[:120],
-            "business": normalize_text(business)[:400],
-            # A business or a family. Rows written before the page asked carry
-            # no kind at all, and every reader treats that as a business.
-            "kind": "family" if normalize_text(kind).lower() == "family" else "business",
             "source": "web",
         }
         stamp = now_iso()
@@ -6173,10 +5179,10 @@ class PortalDatabase:
         return self.get_whatsapp_signup(number) or {}
 
     def set_whatsapp_signup_status(self, *, wa_id: str, status: str) -> None:
-        """Move an open signup between asking for an email and confirming an erasure."""
+        """Mark where an open signup stands: waiting for the first reply, or told once that the old account is gone."""
 
         number = normalize_whatsapp_lookup_id(wa_id)
-        if not number or status not in {"awaiting_email", "confirming_erasure"}:
+        if not number or status not in {"awaiting_email", "erased_notice_sent"}:
             return
         with self._connection() as conn:
             conn.execute(
@@ -7069,582 +6075,6 @@ class PortalDatabase:
                     }
                 )
             return targets
-
-    def list_active_whatsapp_reengagement_targets(self, feature_id: str) -> list[dict[str, Any]]:
-        normalized_feature_id = normalize_text(feature_id)
-        if not normalized_feature_id:
-            return []
-
-        with self._connection() as conn:
-            rows = conn.execute(
-                """
-                SELECT
-                    u.id AS user_id,
-                    u.email,
-                    u.display_name,
-                    u.profile_json,
-                    w.business_account_id,
-                    w.phone_number_id,
-                    w.access_token,
-                    w.owner_wa_id,
-                    w.display_phone_number,
-                    w.verified_name,
-                    w.connection_status,
-                    w.metadata_json,
-                    w.connected_at,
-                    w.last_tested_at,
-                    act.activated_at,
-                    act.updated_at AS activation_updated_at,
-                    act.metadata_json AS activation_metadata_json,
-                    assign.metadata_json AS assignment_metadata_json
-                FROM feature_activations AS act
-                INNER JOIN users AS u
-                    ON u.id = act.user_id
-                INNER JOIN whatsapp_connections AS w
-                    ON w.user_id = u.id
-                LEFT JOIN feature_assignments AS assign
-                    ON assign.user_id = u.id AND assign.feature_id = act.feature_id
-                WHERE u.is_active = 1
-                  AND act.feature_id = ?
-                  AND act.is_active = 1
-                  AND w.connection_status = 'connected'
-                  AND w.phone_number_id <> ''
-                  AND w.owner_wa_id <> ''
-                ORDER BY u.id ASC
-                """,
-                (normalized_feature_id,),
-            ).fetchall()
-
-            targets: list[dict[str, Any]] = []
-            for row in rows:
-                payload = _row_to_dict(row) or {}
-                connection_metadata = _load_json_dict(payload.get("metadata_json"))
-                activation_metadata = _load_json_dict(payload.get("activation_metadata_json"))
-                assignment_metadata = _load_json_dict(payload.get("assignment_metadata_json"))
-                settings_payload = assignment_metadata.get("settings") if isinstance(assignment_metadata.get("settings"), dict) else {}
-                targets.append(
-                    {
-                        "userId": int(payload.get("user_id") or 0),
-                        "email": normalize_email(payload.get("email")),
-                        "displayName": normalize_text(payload.get("display_name")),
-                        "profile": normalize_user_profile(_load_json_dict(payload.get("profile_json"))),
-                        "businessAccountId": normalize_text(payload.get("business_account_id")),
-                        "phoneNumberId": normalize_text(payload.get("phone_number_id")),
-                        "accessToken": normalize_text(payload.get("access_token")),
-                        "accessTokenConfigured": bool(normalize_text(payload.get("access_token"))),
-                        "ownerWaId": normalize_text(payload.get("owner_wa_id")),
-                        "displayPhoneNumber": normalize_text(payload.get("display_phone_number")),
-                        "verifiedName": normalize_text(payload.get("verified_name")),
-                        "connectionStatus": normalize_text(payload.get("connection_status")),
-                        "metadata": connection_metadata if isinstance(connection_metadata, dict) else {},
-                        "settings": settings_payload if isinstance(settings_payload, dict) else {},
-                        "connectedAt": payload.get("connected_at"),
-                        "lastTestedAt": payload.get("last_tested_at"),
-                        "featureId": normalized_feature_id,
-                        "activatedAt": payload.get("activated_at"),
-                        "activationUpdatedAt": payload.get("activation_updated_at"),
-                        "activationMetadata": activation_metadata if isinstance(activation_metadata, dict) else {},
-                    }
-                )
-            return targets
-
-    def get_whatsapp_reengagement_target(
-        self,
-        email: str,
-        feature_id: str,
-        *,
-        require_active: bool = True,
-    ) -> dict[str, Any] | None:
-        normalized_email = normalize_email(email)
-        normalized_feature_id = normalize_text(feature_id)
-        if not normalized_email or not normalized_feature_id:
-            return None
-
-        active_clause = ""
-        if require_active:
-            active_clause = """
-                  AND act.is_active = 1
-                  AND w.connection_status = 'connected'
-                  AND w.phone_number_id <> ''
-                  AND w.owner_wa_id <> ''
-            """
-
-        with self._connection() as conn:
-            row = conn.execute(
-                f"""
-                SELECT
-                    u.id AS user_id,
-                    u.email,
-                    u.display_name,
-                    u.profile_json,
-                    w.business_account_id,
-                    w.phone_number_id,
-                    w.access_token,
-                    w.owner_wa_id,
-                    w.display_phone_number,
-                    w.verified_name,
-                    w.connection_status,
-                    w.metadata_json,
-                    w.connected_at,
-                    w.last_tested_at,
-                    act.activated_at,
-                    act.updated_at AS activation_updated_at,
-                    act.metadata_json AS activation_metadata_json,
-                    assign.metadata_json AS assignment_metadata_json
-                FROM users AS u
-                INNER JOIN features AS f
-                    ON f.feature_id = ?
-                LEFT JOIN feature_assignments AS assign
-                    ON assign.user_id = u.id AND assign.feature_id = f.feature_id
-                LEFT JOIN feature_activations AS act
-                    ON act.user_id = u.id AND act.feature_id = f.feature_id
-                LEFT JOIN whatsapp_connections AS w
-                    ON w.user_id = u.id
-                WHERE u.is_active = 1
-                  AND u.email = ?
-                  AND f.is_active = 1
-                  {active_clause}
-                LIMIT 1
-                """,
-                (normalized_feature_id, normalized_email),
-            ).fetchone()
-
-        if row is None:
-            return None
-
-        payload = _row_to_dict(row) or {}
-        connection_metadata = _load_json_dict(payload.get("metadata_json"))
-        activation_metadata = _load_json_dict(payload.get("activation_metadata_json"))
-        assignment_metadata = _load_json_dict(payload.get("assignment_metadata_json"))
-        settings_payload = assignment_metadata.get("settings") if isinstance(assignment_metadata.get("settings"), dict) else {}
-        return {
-            "userId": int(payload.get("user_id") or 0),
-            "email": normalize_email(payload.get("email")),
-            "displayName": normalize_text(payload.get("display_name")),
-            "profile": normalize_user_profile(_load_json_dict(payload.get("profile_json"))),
-            "businessAccountId": normalize_text(payload.get("business_account_id")),
-            "phoneNumberId": normalize_text(payload.get("phone_number_id")),
-            "accessToken": normalize_text(payload.get("access_token")),
-            "accessTokenConfigured": bool(normalize_text(payload.get("access_token"))),
-            "ownerWaId": normalize_text(payload.get("owner_wa_id")),
-            "displayPhoneNumber": normalize_text(payload.get("display_phone_number")),
-            "verifiedName": normalize_text(payload.get("verified_name")),
-            "connectionStatus": normalize_text(payload.get("connection_status")) or "not_connected",
-            "metadata": connection_metadata if isinstance(connection_metadata, dict) else {},
-            "settings": settings_payload if isinstance(settings_payload, dict) else {},
-            "settingsSavedAt": normalize_text(assignment_metadata.get("settingsSavedAt")),
-            "connectedAt": payload.get("connected_at"),
-            "lastTestedAt": payload.get("last_tested_at"),
-            "featureId": normalized_feature_id,
-            "activatedAt": payload.get("activated_at"),
-            "activationUpdatedAt": payload.get("activation_updated_at"),
-            "activationMetadata": activation_metadata if isinstance(activation_metadata, dict) else {},
-        }
-
-    def scan_whatsapp_reengagement_conversations(
-        self,
-        *,
-        user_id: int,
-        cutoff_at: str | datetime,
-        include_already_notified: bool = False,
-    ) -> dict[str, Any]:
-        if user_id <= 0:
-            return {
-                "conversations": [],
-                "savedConversationsCount": 0,
-                "skippedCounts": {
-                    "missingTimestamp": 0,
-                    "recentActivity": 0,
-                    "alreadyNotified": 0,
-                },
-            }
-
-        cutoff_moment = parse_datetime(cutoff_at).astimezone(timezone.utc)
-        saved_conversations = self.list_whatsapp_conversations(user_id=user_id)
-        due_conversations: list[dict[str, Any]] = []
-        skipped_counts = {
-            "missingTimestamp": 0,
-            "recentActivity": 0,
-            "alreadyNotified": 0,
-        }
-
-        for conversation in saved_conversations:
-            activity_at = normalize_text(conversation.get("lastInboundAt")) or normalize_text(conversation.get("lastMessageAt"))
-            if not activity_at:
-                skipped_counts["missingTimestamp"] += 1
-                continue
-
-            activity_moment = parse_datetime(activity_at).astimezone(timezone.utc)
-            if activity_moment > cutoff_moment:
-                skipped_counts["recentActivity"] += 1
-                continue
-
-            notified_for = normalize_text(conversation.get("lastReengagementNotifiedForMessageAt"))
-            if (
-                not include_already_notified
-                and notified_for
-                and parse_datetime(notified_for).astimezone(timezone.utc) >= activity_moment
-            ):
-                skipped_counts["alreadyNotified"] += 1
-                continue
-
-            due_conversations.append(conversation)
-
-        due_conversations.sort(
-            key=lambda conversation: (
-                parse_datetime(
-                    normalize_text(conversation.get("lastInboundAt")) or normalize_text(conversation.get("lastMessageAt"))
-                ).astimezone(timezone.utc),
-                normalize_text(conversation.get("conversationId")),
-            )
-        )
-        return {
-            "conversations": due_conversations,
-            "savedConversationsCount": len(saved_conversations),
-            "skippedCounts": skipped_counts,
-        }
-
-    def list_due_whatsapp_reengagement_conversations(
-        self,
-        *,
-        user_id: int,
-        cutoff_at: str | datetime,
-    ) -> list[dict[str, Any]]:
-        scan = self.scan_whatsapp_reengagement_conversations(
-            user_id=user_id,
-            cutoff_at=cutoff_at,
-        )
-        return list(scan.get("conversations") or [])
-
-    def get_whatsapp_reengagement_run(
-        self,
-        *,
-        user_id: int,
-        feature_id: str,
-        scheduled_for: str | datetime,
-    ) -> dict[str, Any] | None:
-        if user_id <= 0:
-            return None
-
-        scheduled_for_value = parse_datetime(scheduled_for).astimezone(timezone.utc).isoformat()
-        with self._connection() as conn:
-            return self._load_whatsapp_reengagement_run_row(
-                conn,
-                user_id=int(user_id),
-                feature_id=feature_id,
-                scheduled_for=scheduled_for_value,
-            )
-
-    def get_latest_whatsapp_reengagement_run(
-        self,
-        *,
-        user_id: int,
-        feature_id: str,
-        before_scheduled_for: str | datetime | None = None,
-    ) -> dict[str, Any] | None:
-        normalized_feature_id = normalize_text(feature_id)
-        if user_id <= 0 or not normalized_feature_id:
-            return None
-
-        query = """
-                SELECT scheduled_for
-                FROM whatsapp_reengagement_runs
-                WHERE user_id = ? AND feature_id = ?
-                """
-        params: list[Any] = [int(user_id), normalized_feature_id]
-        if before_scheduled_for is not None:
-            query += " AND scheduled_for < ?"
-            params.append(parse_datetime(before_scheduled_for).astimezone(timezone.utc).isoformat())
-        query += """
-                ORDER BY scheduled_for DESC
-                LIMIT 1
-                """
-        with self._connection() as conn:
-            row = conn.execute(query, tuple(params)).fetchone()
-        if row is None:
-            return None
-        return self.get_whatsapp_reengagement_run(
-            user_id=int(user_id),
-            feature_id=normalized_feature_id,
-            scheduled_for=row["scheduled_for"],
-        )
-
-    def claim_whatsapp_reengagement_run(
-        self,
-        *,
-        user_id: int,
-        feature_id: str,
-        scheduled_for: str | datetime,
-        metadata: dict[str, Any] | None = None,
-    ) -> dict[str, Any] | None:
-        """Atomically reserve a re-engagement slot, or return None if already taken.
-
-        Mirrors claim_feature_monitor_run. The previous flow read the run row, did
-        minutes of OpenAI drafting, sent the owner report, and only then wrote the
-        marker -- so a restart or a concurrent trigger in that gap produced a
-        duplicate owner report and duplicate OpenAI spend.
-        """
-
-        normalized_feature_id = normalize_text(feature_id)
-        if user_id <= 0:
-            raise ValueError("User id is required.")
-        if not normalized_feature_id:
-            raise ValueError("Feature id is required.")
-
-        scheduled_for_value = parse_datetime(scheduled_for).astimezone(timezone.utc).isoformat()
-        metadata_json = json.dumps(metadata or {}, ensure_ascii=True, sort_keys=True)
-        now = now_iso()
-
-        with self._connection() as conn:
-            cursor = conn.execute(
-                """
-                INSERT INTO whatsapp_reengagement_runs (
-                    user_id,
-                    feature_id,
-                    scheduled_for,
-                    conversations_checked,
-                    notifications_sent,
-                    status,
-                    metadata_json,
-                    created_at,
-                    updated_at
-                ) VALUES (?, ?, ?, 0, 0, 'running', ?, ?, ?)
-                ON CONFLICT(user_id, feature_id, scheduled_for) DO NOTHING
-                """,
-                (
-                    int(user_id),
-                    normalized_feature_id,
-                    scheduled_for_value,
-                    metadata_json,
-                    now,
-                    now,
-                ),
-            )
-            if cursor.rowcount <= 0:
-                return None
-            return self._load_whatsapp_reengagement_run_row(
-                conn,
-                user_id=int(user_id),
-                feature_id=normalized_feature_id,
-                scheduled_for=scheduled_for_value,
-            )
-
-    def release_stale_whatsapp_reengagement_runs(
-        self,
-        *,
-        older_than_seconds: int = STALE_CLAIM_SECONDS,
-        now: str | datetime | None = None,
-    ) -> int:
-        """Drop abandoned 'running' re-engagement claims so the slot can retry."""
-
-        reference = parse_datetime(now or now_iso()).astimezone(timezone.utc)
-        cutoff = (reference - timedelta(seconds=max(1, int(older_than_seconds)))).isoformat()
-
-        with self._connection() as conn:
-            cursor = conn.execute(
-                """
-                DELETE FROM whatsapp_reengagement_runs
-                WHERE status = 'running'
-                  AND updated_at <= ?
-                """,
-                (cutoff,),
-            )
-            return int(cursor.rowcount or 0)
-
-    def save_whatsapp_reengagement_run(
-        self,
-        *,
-        user_id: int,
-        feature_id: str,
-        scheduled_for: str | datetime,
-        conversations_checked: int = 0,
-        notifications_sent: int = 0,
-        status: str = "completed",
-        metadata: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        normalized_feature_id = normalize_text(feature_id)
-        if user_id <= 0:
-            raise ValueError("User id is required.")
-        if not normalized_feature_id:
-            raise ValueError("Feature id is required.")
-
-        scheduled_for_value = parse_datetime(scheduled_for).astimezone(timezone.utc).isoformat()
-        metadata_json = json.dumps(metadata or {}, ensure_ascii=True, sort_keys=True)
-        now = now_iso()
-
-        with self._connection() as conn:
-            existing = conn.execute(
-                """
-                SELECT id, created_at
-                FROM whatsapp_reengagement_runs
-                WHERE user_id = ? AND feature_id = ? AND scheduled_for = ?
-                LIMIT 1
-                """,
-                (int(user_id), normalized_feature_id, scheduled_for_value),
-            ).fetchone()
-            created_at = existing["created_at"] if existing and existing["created_at"] else now
-
-            conn.execute(
-                """
-                INSERT INTO whatsapp_reengagement_runs (
-                    user_id,
-                    feature_id,
-                    scheduled_for,
-                    conversations_checked,
-                    notifications_sent,
-                    status,
-                    metadata_json,
-                    created_at,
-                    updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(user_id, feature_id, scheduled_for) DO UPDATE SET
-                    conversations_checked = excluded.conversations_checked,
-                    notifications_sent = excluded.notifications_sent,
-                    status = excluded.status,
-                    metadata_json = excluded.metadata_json,
-                    updated_at = excluded.updated_at
-                """,
-                (
-                    int(user_id),
-                    normalized_feature_id,
-                    scheduled_for_value,
-                    max(0, int(conversations_checked)),
-                    max(0, int(notifications_sent)),
-                    normalize_text(status) or "completed",
-                    metadata_json,
-                    created_at,
-                    now,
-                ),
-            )
-            return self._load_whatsapp_reengagement_run_row(
-                conn,
-                user_id=int(user_id),
-                feature_id=normalized_feature_id,
-                scheduled_for=scheduled_for_value,
-            ) or {}
-
-    def save_whatsapp_reengagement_notification(
-        self,
-        *,
-        user_id: int,
-        conversation_id: str,
-        feature_id: str,
-        scheduled_for: str | datetime,
-        owner_message_id: str = "",
-        draft_text: str = "",
-        source: str = "",
-        model_name: str = "",
-        metadata: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        normalized_conversation_id = normalize_text(conversation_id)
-        normalized_feature_id = normalize_text(feature_id)
-        if user_id <= 0:
-            raise ValueError("User id is required.")
-        if not normalized_conversation_id:
-            raise ValueError("Conversation id is required.")
-        if not normalized_feature_id:
-            raise ValueError("Feature id is required.")
-
-        scheduled_for_value = parse_datetime(scheduled_for).astimezone(timezone.utc).isoformat()
-        metadata_json = json.dumps(metadata or {}, ensure_ascii=True, sort_keys=True)
-        now = now_iso()
-
-        with self._connection() as conn:
-            conversation = self._load_whatsapp_conversation_row(
-                conn,
-                user_id=int(user_id),
-                conversation_id=normalized_conversation_id,
-            )
-            if conversation is None:
-                raise KeyError(f"Unknown conversation: {normalized_conversation_id}")
-
-            last_message_at = normalize_text(conversation.get("lastInboundAt")) or normalize_text(conversation.get("lastMessageAt"))
-            if not last_message_at:
-                raise ValueError("Conversation has no last message timestamp.")
-
-            conn.execute(
-                """
-                INSERT INTO whatsapp_reengagement_notifications (
-                    user_id,
-                    conversation_id,
-                    feature_id,
-                    scheduled_for,
-                    last_message_at,
-                    owner_message_id,
-                    draft_text,
-                    source,
-                    model_name,
-                    metadata_json,
-                    created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    int(user_id),
-                    normalized_conversation_id,
-                    normalized_feature_id,
-                    scheduled_for_value,
-                    last_message_at,
-                    normalize_text(owner_message_id),
-                    normalize_text(draft_text),
-                    normalize_text(source),
-                    normalize_text(model_name),
-                    metadata_json,
-                    now,
-                ),
-            )
-            conn.execute(
-                """
-                UPDATE whatsapp_conversations
-                SET last_reengagement_notified_at = ?,
-                    last_reengagement_notified_for_message_at = ?,
-                    updated_at = ?
-                WHERE user_id = ? AND conversation_id = ?
-                """,
-                (
-                    now,
-                    last_message_at,
-                    now,
-                    int(user_id),
-                    normalized_conversation_id,
-                ),
-            )
-
-            row = conn.execute(
-                """
-                SELECT
-                    id,
-                    user_id,
-                    conversation_id,
-                    feature_id,
-                    scheduled_for,
-                    last_message_at,
-                    owner_message_id,
-                    draft_text,
-                    source,
-                    model_name,
-                    metadata_json,
-                    created_at
-                FROM whatsapp_reengagement_notifications
-                WHERE id = last_insert_rowid()
-                """,
-            ).fetchone()
-
-        payload = _row_to_dict(row) or {}
-        metadata_payload = _load_json_dict(payload.get("metadata_json"))
-        return {
-            "id": int(payload.get("id") or 0),
-            "userId": int(payload.get("user_id") or 0),
-            "conversationId": normalize_text(payload.get("conversation_id")),
-            "featureId": normalize_text(payload.get("feature_id")),
-            "scheduledFor": payload.get("scheduled_for"),
-            "lastMessageAt": payload.get("last_message_at"),
-            "ownerMessageId": normalize_text(payload.get("owner_message_id")),
-            "draftText": normalize_text(payload.get("draft_text")),
-            "source": normalize_text(payload.get("source")),
-            "modelName": normalize_text(payload.get("model_name")),
-            "metadata": metadata_payload if isinstance(metadata_payload, dict) else {},
-            "createdAt": payload.get("created_at"),
-        }
 
     def create_scheduled_action(
         self,
@@ -9872,11 +8302,8 @@ class PortalDatabase:
 
     # -- household ---------------------------------------------------------
 
-    # Whether the account is a business or a family lives on the account
-    # itself (users.account_type), where signup and the admin set it. The
-    # profile's own account_kind column predates that and is no longer read.
     _HOUSEHOLD_PROFILE_SELECT = """
-        SELECT u.id AS user_id, u.account_type, p.getting_to_know, p.ask_again_on,
+        SELECT u.id AS user_id, p.getting_to_know, p.ask_again_on,
                p.connect_offer, p.connect_ask_again_on, p.own_week_asked_on, p.language, p.share_token,
                p.created_at, p.updated_at
         FROM users u LEFT JOIN household_profiles p ON p.user_id = u.id
@@ -9887,7 +8314,6 @@ class PortalDatabase:
             return None
         return {
             "userId": int(row["user_id"]),
-            "accountKind": normalize_account_type(row["account_type"]),
             "gettingToKnow": str(row["getting_to_know"] or "not_started"),
             "askAgainOn": str(row["ask_again_on"] or ""),
             "connectOffer": str(row["connect_offer"] or "not_started"),
@@ -9934,8 +8360,8 @@ class PortalDatabase:
         with self._connection() as conn:
             conn.execute(
                 """
-                INSERT OR IGNORE INTO household_profiles (user_id, account_kind, getting_to_know, created_at, updated_at)
-                VALUES (?, 'business', 'not_started', ?, ?)
+                INSERT OR IGNORE INTO household_profiles (user_id, getting_to_know, created_at, updated_at)
+                VALUES (?, 'not_started', ?, ?)
                 """,
                 (int(user_id), now, now),
             )
@@ -12920,114 +11346,6 @@ class PortalDatabase:
             )
 
         return events
-
-    def map_whatsapp_approval(
-        self,
-        approval_id: str,
-        *,
-        email: str | None = None,
-        user_id: int | None = None,
-        phone_number_id: str = "",
-    ) -> dict[str, Any]:
-        normalized_approval_id = normalize_text(approval_id)
-        if not normalized_approval_id:
-            raise ValueError("Approval id is required.")
-
-        resolved_user_id = int(user_id or 0)
-        now = now_iso()
-
-        with self._connection() as conn:
-            if resolved_user_id <= 0:
-                normalized_email = normalize_email(email)
-                if not normalized_email:
-                    raise ValueError("Email or user id is required.")
-                user_row = conn.execute(
-                    "SELECT id FROM users WHERE email = ? AND is_active = 1",
-                    (normalized_email,),
-                ).fetchone()
-                if user_row is None:
-                    raise KeyError(f"Unknown user: {normalized_email}")
-                resolved_user_id = int(user_row["id"])
-
-            conn.execute(
-                """
-                INSERT INTO whatsapp_approval_index (
-                    approval_id,
-                    user_id,
-                    phone_number_id,
-                    created_at
-                ) VALUES (?, ?, ?, ?)
-                ON CONFLICT(approval_id) DO UPDATE SET
-                    user_id = excluded.user_id,
-                    phone_number_id = excluded.phone_number_id
-                """,
-                (
-                    normalized_approval_id,
-                    resolved_user_id,
-                    normalize_text(phone_number_id),
-                    now,
-                ),
-            )
-
-            row = conn.execute(
-                """
-                SELECT
-                    i.approval_id,
-                    i.user_id,
-                    i.phone_number_id,
-                    i.created_at,
-                    u.email
-                FROM whatsapp_approval_index AS i
-                INNER JOIN users AS u
-                    ON u.id = i.user_id
-                WHERE i.approval_id = ?
-                """,
-                (normalized_approval_id,),
-            ).fetchone()
-
-        payload = _row_to_dict(row) or {}
-        return {
-            "approvalId": normalize_text(payload.get("approval_id")),
-            "userId": int(payload.get("user_id") or 0),
-            "phoneNumberId": normalize_text(payload.get("phone_number_id")),
-            "createdAt": payload.get("created_at"),
-            "email": normalize_email(payload.get("email")),
-        }
-
-    def get_whatsapp_approval_owner(self, approval_id: str) -> dict[str, Any] | None:
-        normalized_approval_id = normalize_text(approval_id)
-        if not normalized_approval_id:
-            return None
-
-        with self._connection() as conn:
-            row = conn.execute(
-                """
-                SELECT
-                    i.approval_id,
-                    i.user_id,
-                    i.phone_number_id,
-                    i.created_at,
-                    u.email
-                FROM whatsapp_approval_index AS i
-                INNER JOIN users AS u
-                    ON u.id = i.user_id
-                WHERE i.approval_id = ?
-                LIMIT 1
-                """,
-                (normalized_approval_id,),
-            ).fetchone()
-
-        if row is None:
-            return None
-
-        payload = _row_to_dict(row) or {}
-        return {
-            "approvalId": normalize_text(payload.get("approval_id")),
-            "userId": int(payload.get("user_id") or 0),
-            "phoneNumberId": normalize_text(payload.get("phone_number_id")),
-            "createdAt": payload.get("created_at"),
-            "email": normalize_email(payload.get("email")),
-        }
 
     def record_usage(
         self,

@@ -120,7 +120,7 @@ REPLY_SCHEMA: dict[str, Any] = {
                 },
                 {"type": "null"},
             ],
-            "description": "A durable fact about the business the person just told you, or null.",
+            "description": "A durable fact about the family the person just told you, or null.",
         },
         "forgetFact": {
             "type": ["string", "null"],
@@ -331,7 +331,7 @@ class LoopContext:
     # to the person's accounts sends it with the request, and the runner at
     # the other end refuses the request without it.
     approval_token: str = ""
-    # Tools switched off for this kind of account (business or family), by
+    # Tools the house switched off for every account, by
     # name, with the feature they belong to. The model sees them marked
     # unavailable, and a call to one is refused.
     blocked_tools: dict[str, str] = field(default_factory=dict)
@@ -618,7 +618,7 @@ def _tool_open_receipts(context: LoopContext, args: dict[str, Any]) -> dict[str,
         "note": (
             "These are the receipts and invoices already kept on the receipts page: every one a mailbox "
             "search was asked for, with the vendor's file, plus any added by hand. The page is where the person "
-            "sees them, answers the yes/no questions, corrects amounts and exports for an accountant. To "
+            "sees them, answers the yes/no questions, corrects amounts and exports a summary. To "
             "pull new receipts from the mailbox, use search_receipts."
         ),
     }
@@ -2541,8 +2541,8 @@ def _tool_show_findings(context: LoopContext, args: dict[str, Any]) -> dict[str,
         return _error("internal", "Could not read what the mailbox scans found just now.", can_retry=True)
     last = scans[0] if scans else {}
     note = (
-        "These come from reading the mailbox itself: invoices the person sent with no payment found after them, "
-        "bills and renewals coming due, and recurring charges that went up. 'told' means the person was already "
+        "These come from reading the mailbox itself: bills and renewals coming due, and recurring charges that "
+        "went up. 'told' means the person was already "
         "messaged about it. If the person says one is settled or not a thing, call dismiss_finding with its id."
     )
     if not findings:
@@ -3345,7 +3345,7 @@ TOOLS: list[ToolSpec] = [
         description=(
             "The receipts page: every receipt and invoice Assistyca has pulled from the mailbox for this "
             "account, kept with the vendor's file, with yes/no questions for the unsure ones, corrections by "
-            "hand and exports for an accountant. Returns how many are there, the totals per currency, by "
+            "hand and an export of the lot. Returns how many are there, the totals per currency, by "
             "month and by vendor, and the link that opens the page. Call it when the person asks to see, "
             "open, check or go over their receipts or invoices, asks where they are kept, or asks what "
             "you have on file - then reply with a line on what is there and the link. Not for pulling new "
@@ -3516,7 +3516,7 @@ TOOLS: list[ToolSpec] = [
             "thread, and to and subject may then be empty and null. mailbox is the Gmail address to send "
             "from when they have more than one, else null. follow_reply true follows the conversation and "
             "reports the answer when it comes: set it when the email asks something or starts a matter an "
-            "answer is expected for - a request to an office or authority, a question to a supplier, a "
+            "answer is expected for - a request to an office or authority, a question to the school or a club, a "
             "booking - and false for a thank-you or a plain note. waiting_for is what they are waiting for in "
             "a few words, else null; expect_answer_by is YYYY-MM-DD when a day for the answer is known, else null."
         ),
@@ -3782,8 +3782,8 @@ TOOLS: list[ToolSpec] = [
     ToolSpec(
         name="remember_fact",
         description=(
-            "Keep something durable the person told you about how their business works: how a vendor bills, "
-            "what a name is short for, when their year starts. key is a few lowercase words naming what it is "
+            "Keep something durable the person told you about how their household runs: which school it is, "
+            "what a name is short for, how a club bills. key is a few lowercase words naming what it is "
             "about; the same key corrects an earlier fact. Not one-off instructions, not figures a lookup can "
             "read, nothing personal they did not offer as a working fact. Family members and their week go "
             "in save_family_member and save_week_activity, never here."
@@ -4038,10 +4038,9 @@ TOOLS: list[ToolSpec] = [
     ToolSpec(
         name="show_findings",
         description=(
-            "What Assistyca noticed on its own while reading the person's mailbox: invoices they sent with no "
-            "payment found after them, bills and renewals coming due, and recurring charges that went up. "
-            "For 'what did you find in my mail', 'anything I should know', 'which invoices are unpaid', 'what's "
-            "renewing', 'did my subscriptions go up'."
+            "What Assistyca noticed on its own while reading the person's mailbox: bills and renewals coming "
+            "due, and recurring charges that went up. For 'what did you find in my mail', 'anything I should "
+            "know', 'what's renewing', 'did my subscriptions go up'."
         ),
         parameters=_params({}),
         requires=LOOKUP_SOURCE_REQUIREMENTS["custom"],
@@ -4224,23 +4223,24 @@ GROUP_TOOL_WORDS = (
 #     paragraph that happens to need it.
 
 _ROLE = (
-    "You are Assistyca, the assistant for the signed-in account. You help the owner run their business and make "
-    "practical day-to-day plans: the sources they connected, the public web, the actions they set up, and the work "
-    "that comes out of them. Finding things on the web - hotels, concerts, events, restaurants, activities, "
-    "venues, availability, prices, tickets, competitors - and relevant news are part of your job. Anything else is "
-    "outside your job: recipes, general knowledge, homework, code, medical or legal advice, chit-chat on "
-    "another subject. Say in one warm line that it is not something you help with and name something you can "
-    "do for their business instead. The one exception is a message suggesting the person may be in danger or "
-    "in serious distress: answer that with care and point them to emergency help."
+    "You are Assistyca, the assistant for the signed-in account: a family's. You help them run their household "
+    "and their week and make practical day-to-day plans: the people at home and where each of them is each day, "
+    "the sources they connected, the public web, the actions they set up, and what comes out of them. Finding "
+    "things on the web - hotels, concerts, events, restaurants, activities for the children, venues, "
+    "availability, prices, tickets - and relevant news are part of your job. Anything else is outside your "
+    "job: recipes, general knowledge, homework, code, medical or legal advice, chit-chat on another subject. "
+    "Say in one warm line that it is not something you help with and name something you can do for their "
+    "week instead. The one exception is a message suggesting the person may be in danger or in serious "
+    "distress: answer that with care and point them to emergency help."
 )
 
 _WHAT_YOU_CAN_DO = (
-    f"What Assistyca is, in the owner's terms: {ASSISTANT_CAPABILITIES_PITCH}\n"
+    f"What Assistyca is, in the person's terms: {ASSISTANT_CAPABILITIES_PITCH}\n"
     "When the person asks what you can do, what actions there are, or how this works, answer from that, "
-    "shaped by what is connected and by what knownFacts says they do - every example you offer is one "
-    "someone in their line of work would actually send - and cover every kind of thing they have: the diary, "
-    "the mail, the receipts and what they add up to, insurance policies and potential claims, reminders, "
-    "standing actions that run on a schedule, and their lists."
+    "shaped by what is connected and by what household and knownFacts say about their family - every example "
+    "you offer is one a parent in their week would actually send - and cover every kind of thing they have: "
+    "the week and its pickups, the diary, the mail, the receipts and what they add up to, insurance policies "
+    "and potential claims, reminders, standing actions that run on a schedule, and their lists."
 )
 
 _TOOLS = (
@@ -4260,7 +4260,7 @@ _TOOLS = (
 )
 
 _READING_RESULTS = (
-    "Answering from what a tool read: answer the question that was asked, in plain business language. "
+    "Answering from what a tool read: answer the question that was asked, in plain everyday language. "
     "summary, figures and groupedFigures are computed by the application and correct: repeat their figures, "
     "never recalculate them, never contradict them. groupedFigures holds totals per vendor and per month, the "
     "largest charges, what repeats and what is new; take rankings and totals from there. freeByDay is when the "
@@ -4400,7 +4400,7 @@ _LISTS = (
 _RECEIPTS = (
     "Receipts: the receipts a search_receipts call was about are also kept on the receipts page (the result's "
     "receiptsPageNote says how many): amounts, dates, the vendor's own PDF, and a yes/no question for "
-    "anything the reading was not sure about, with exports for an accountant. Mention it in one short "
+    "anything the reading was not sure about, and an export of the lot. Mention it in one short "
     "sentence after a receipt answer. There are no folders: the receipts page is the one place receipts are "
     "kept, so never speak of a receipts folder or of saving receipts to a folder. When the person asks to "
     "see, open or go over their receipts, or where they are, call open_receipts and answer with what is there "
@@ -4425,12 +4425,12 @@ _LINKS = (
 )
 
 _FACTS = (
-    "knownFacts is what the account already told you about how their business works; read it before asking "
-    "anything, and use it to resolve what a message leaves out. The fact keyed 'what they do' is what they "
-    "wrote when they registered: it is what their business is, and every example or suggestion you offer "
-    "fits it. When the owner states something about their business that will still be true next month, call "
-    "remember_fact; when they say something is no longer true, call forget_fact. Keep only what is durable "
-    "and about the business; the family is kept elsewhere."
+    "knownFacts is what the account already told you about how their household runs; read it before asking "
+    "anything, and use it to resolve what a message leaves out: which school, what a name is short for, how a "
+    "club bills, the shorthand they use. When the person states something about their family life that will "
+    "still be true next month, call remember_fact; when they say something is no longer true, call "
+    "forget_fact. Keep only what is durable. The people themselves and their week are not facts: they go in "
+    "save_family_member and save_week_activity, and are read back from household."
 )
 
 _FAMILY = (
@@ -4469,8 +4469,8 @@ _FAMILY = (
     "the corner or leave early that day. When they say it is fine, call accept_drive_during_work and never "
     "mention it again; when they name somebody else, save_week_activity with that name. Never decide for "
     "them, and never keep asking.\n"
-    "Getting to know a family, and connecting a business to its mail and calendar, are each an opening "
-    "the conversation works through in its own way: CONTEXT.chatFlow says which one this account is on "
+    "Getting to know the family, and then the offer to connect a mailbox and a calendar, are the two "
+    "openings the conversation works through in turn: CONTEXT.chatFlow says which one this account is on "
     "and the rules above it say how to carry it.\n"
     "Birthdays: household.members carries each birthday and nextBirthday. When a birthday is about a month "
     "away and the person wants to get ready, call start_birthday_list with the steps worded in their language "
@@ -4548,7 +4548,7 @@ _CHANNEL_RULES = {
         "a row, and never 'Sure, <name>' or 'Done, <name>'. Ask for a go-ahead simply, as in 'Want me to go "
         "ahead?', not 'Please reply yes if you want me to'. When someone asks what you can do, do not list "
         "features: describe their week getting easier, then offer three or four concrete things they could say "
-        "right now, in their own voice, fitted to their line of work from knownFacts and to what is connected, "
+        "right now, in their own voice, fitted to their family from household and knownFacts and to what is connected, "
         "and invent fresh ones each time; spread "
         "them across the diary, the mail, receipts, reminders and lists rather than drawing all four from the "
         "mailbox. Never "
@@ -4572,7 +4572,7 @@ _PHOTO_RULES = (
     "calendar, or an inbox, a note, a product, a flyer, a form. Read text in it (amounts, dates, names) as "
     "if the person had typed it, and quote what matters. Describe the photo only as far as the request "
     "needs. It is off topic only when the photo and the words together are not about running this "
-    "business. Never say you cannot see or open images. If the part that matters is too blurry or dark to "
+    "household. Never say you cannot see or open images. If the part that matters is too blurry or dark to "
     "read, say which part, so a better one can be sent.\n"
 )
 
