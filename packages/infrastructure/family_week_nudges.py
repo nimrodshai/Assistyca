@@ -1295,7 +1295,9 @@ class FamilyWeekNudger:
                 + "Today is attached as a picture: the day as a column, each plan a block at its time in its "
                 "person's colour, who takes and who collects on each. Write "
                 + ("them" if reader else "the person")
-                + f" one or two short sentences, {language}, saying here is today at a glance. Where nobody is "
+                + f" one or two short sentences, {language}, handing them the picture of the day. Say it the way "
+                "a parent would text it in that language, in its own everyday words; do not carry an English "
+                "turn of phrase such as 'at a glance' over word for word. Where nobody is "
                 "down for a drop-off or pickup yet, say which - a few words each, from the facts - and ask who "
                 "takes it; otherwise say the day is covered. " + work + calendar + you
                 + "Do not list the day: the picture does. " + facts
@@ -1378,7 +1380,9 @@ class FamilyWeekNudger:
             instruction = (
                 "It is Saturday evening. The coming week is attached as a picture: a calendar with a column per day, a colour per "
                 "person, who takes and who collects on every plan. Write one or two short sentences, in the "
-                "language the person writes to you in, saying here is next week at a glance. "
+                "language the person writes to you in, handing them the picture of the coming week. Say it the way "
+                "a parent would text it in that language, in its own everyday words; do not carry an English turn "
+                "of phrase such as 'at a glance' over word for word. "
                 + ("Say which drop-offs or pickups still have nobody - a few words each, from the facts - and ask "
                    "who takes them. " if open_legs else "Say the week is covered. ")
                 + "Do not list the week: the picture does. Use no tool.\n"
