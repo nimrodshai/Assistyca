@@ -996,6 +996,7 @@ def summarize_admin_spend_totals(users: list[dict[str, Any]]) -> dict[str, Any]:
 MINIMUM_SESSION_SECRET_LENGTH = 32
 STATIC_PAGE_ALIASES: dict[str, Path] = {
     "/about": Path("about/index.html"),
+    "/admin": Path("portal/admin.html"),
     "/register": Path("portal/register.html"),
     # The address the landing page linked to while it still asked who the
     # assistant was for. Kept so older links keep working.
@@ -1011,6 +1012,11 @@ STATIC_PAGE_ALIASES: dict[str, Path] = {
 # differs between staging and production - so it links here and the server
 # sends them on.
 WHATSAPP_CHAT_PATH = "/whatsapp"
+# The chat page that used to live here is gone: families talk to Assistyca on
+# WhatsApp, and the house's own tabs moved to /admin. Old bookmarks, and
+# Render's health check while its dashboard still names this path, follow.
+RETIRED_PORTAL_PATHS = frozenset({"/portal", "/portal/index.html"})
+ADMIN_PAGE_PATH = "/admin"
 # Where a WhatsApp sign-in lands once it has finished. Only shows the outcome,
 # so a refresh or a back-button visit repeats nothing.
 WHATSAPP_OAUTH_DONE_PATH = "/signed-in"
@@ -4054,6 +4060,9 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         if path == WHATSAPP_CHAT_PATH:
             self._handle_whatsapp_chat_redirect()
             return
+        if path in RETIRED_PORTAL_PATHS:
+            self._redirect(ADMIN_PAGE_PATH)
+            return
         if path == WHATSAPP_OAUTH_DONE_PATH:
             self._handle_whatsapp_oauth_done(parsed)
             return
@@ -4197,6 +4206,10 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 "displayName": normalize_text(user.get("displayName")),
                 "profile": normalize_user_profile(user.get("profile")),
                 "isAdmin": bool(user.get("isAdmin")),
+                # What /admin may show: the same two checks the admin API makes.
+                "canManageClients": bool(user.get("isAdmin"))
+                or normalize_email(session.email) == self._contact_opportunities_owner_email(),
+                "canReviewOpportunities": normalize_email(session.email) == self._contact_opportunities_owner_email(),
                 "issuedAt": to_millis(session.issued_at),
                 "expiresAt": to_millis(session.expires_at),
                 "requestCountry": self._request_country(),
@@ -5891,11 +5904,9 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         return payload, ""
 
     def _microsoft_oauth_return_url(self, status: str, message: str) -> str:
-        query = urllib_parse.urlencode({
-            "email_oauth": normalize_text(status) or "error",
-            "email_oauth_message": normalize_text(message)[:220],
-        })
-        return f"/portal/?{query}"
+        # Only a sign-in that started in WhatsApp can still reach here (the web
+        # chat that started the others is gone), and its answer is in the chat.
+        return WHATSAPP_CHAT_PATH
 
     def _post_microsoft_oauth_token_request(self, payload: dict[str, str]) -> dict[str, Any]:
         request = urllib_request.Request(
@@ -13558,11 +13569,9 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         return payload, ""
 
     def _google_calendar_oauth_return_url(self, status: str, message: str) -> str:
-        query = urllib_parse.urlencode({
-            "calendar_oauth": normalize_text(status) or "error",
-            "calendar_oauth_message": normalize_text(message)[:220],
-        })
-        return f"/portal/?{query}"
+        # Only a sign-in that started in WhatsApp can still reach here (the web
+        # chat that started the others is gone), and its answer is in the chat.
+        return WHATSAPP_CHAT_PATH
 
     def _post_google_oauth_token_request(self, payload: dict[str, str]) -> dict[str, Any]:
         request = urllib_request.Request(
@@ -14569,9 +14578,9 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             json_response(self, HTTPStatus.CONFLICT, {
                 "ok": False,
                 "error": "phone_taken",
-                "message": "That WhatsApp number is already connected to an Assistyca account. Sign in to use it.",
+                "message": "That WhatsApp number is already connected to an Assistyca account. Open WhatsApp to use it.",
                 "fieldErrors": {"phone": "This number is already connected to an account."},
-                "signInUrl": "/portal/",
+                "signInUrl": WHATSAPP_CHAT_PATH,
             })
             return
 
@@ -14670,11 +14679,11 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
 
         No token and nothing personal: this is the same public door the signup
         link opens, so it is safe to hand to anyone. If no number is configured
-        the portal sign-in still answers, because a link that goes nowhere is
+        the home page still answers, because a link that goes nowhere is
         worse than a link that goes somewhere else.
         """
 
-        self._redirect(build_whatsapp_signup_link() or "/portal/")
+        self._redirect(build_whatsapp_signup_link() or "/")
 
     def _handle_admin_whatsapp_signup_get(self) -> None:
         """Where the public door stands: the link, the switch, and today's count."""
@@ -16688,7 +16697,7 @@ def main() -> int:
     server = create_server(args.host, args.port, repo_root, config)
     provider = normalize_mail_provider(config.mail_provider)
 
-    print(f"Portal server listening on http://{args.host}:{args.port}/portal/", flush=True)
+    print(f"Portal server listening on http://{args.host}:{args.port}/admin", flush=True)
     print(f"Portal database: {config.db_path}", flush=True)
     registered_count = server.database.count_registered_users()
     if registered_count:

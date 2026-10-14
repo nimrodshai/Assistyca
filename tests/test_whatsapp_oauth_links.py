@@ -314,7 +314,7 @@ class WhatsAppOAuthLinkTests(unittest.TestCase):
                                               "email": "dana@gmail.com", "waId": PHONE, "issuedAt": int(time.time())})
             status, location, _ = self._callback("google", forged)
             self.assertIn(status, {302, 303}, "a bad signature falls through to the browser path, which bounces it")
-            self.assertIn("/portal/", location)
+            self.assertEqual(location, "/whatsapp")
 
             status, _, body = self._callback("google", self._state(issuedAt=int(time.time()) - 3 * 3600))
             self.assertEqual(status, 200)

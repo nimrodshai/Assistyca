@@ -15,7 +15,7 @@ services:
     branch: staging
     buildCommand: python3 -m pip install -r requirements.txt
     startCommand: python3 -u scripts/run_portal_server.py --host 0.0.0.0 --port $PORT
-    healthCheckPath: /portal/
+    healthCheckPath: /admin
     disk:
       name: portal-data
       mountPath: /var/data

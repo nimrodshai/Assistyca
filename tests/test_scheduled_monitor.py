@@ -1034,11 +1034,8 @@ class ScheduledMonitorTests(unittest.TestCase):
         self.assertIn("Always keep in mind: Prioritize paper deadlines, CFPs, and travel planning dates.", prompt)
         self.assertIn('"matched_watch_item": "the exact saved watch-list entry this result best matches"', prompt)
         self.assertEqual(delivered_messages[0]["to"], "owner@example.com")
-        # The editor link now rides on the notification as its result URL.
-        self.assertEqual(
-            delivered_messages[0]["resultUrl"],
-            "https://portal.example.com/portal/#features/scheduled-web-monitor-notifier/editor",
-        )
+        # The editor lived in the web chat, which is gone: no link to a missing page.
+        self.assertEqual(delivered_messages[0].get("resultUrl") or "", "")
         self.assertIn("Why this matters for your business", delivered_messages[0]["text"])
 
     def test_results_notification_sorts_items_and_humanizes_dates(self) -> None:

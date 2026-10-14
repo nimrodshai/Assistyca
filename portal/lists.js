@@ -572,7 +572,7 @@
 
   const params = new URLSearchParams(window.location.search);
   if (params.get("expired") === "1") {
-    elements.signedOutText.textContent = "That link has expired or was already used. Sign in to see your lists, or ask Assistyca for a fresh link.";
+    elements.signedOutText.textContent = "That link has expired or was already used. Ask Assistyca on WhatsApp for a fresh one.";
   }
   showView("loading");
   void route();

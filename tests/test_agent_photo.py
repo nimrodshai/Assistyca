@@ -217,40 +217,5 @@ class PhotoTurnApiTests(unittest.TestCase):
         self.assertIn('"attachedPhoto":null', kwargs["prompt"])
 
 
-class PhotoComposerMarkupTests(unittest.TestCase):
-    def setUp(self) -> None:
-        root = Path(__file__).resolve().parents[1]
-        self.html = (root / "portal" / "index.html").read_text(encoding="utf-8")
-        self.script = (root / "portal" / "app.js").read_text(encoding="utf-8")
-        self.styles = (root / "portal" / "styles.css").read_text(encoding="utf-8")
-
-    def test_the_composer_offers_a_photo_and_previews_it(self) -> None:
-        composer = self.html[
-            self.html.index('<form id="agentComposerForm"'):
-            self.html.index('<button id="agentComposerButton"')
-        ]
-        self.assertIn('id="agentPhotoFileInput"', composer)
-        self.assertIn('accept="image/*"', composer)
-        self.assertIn('id="agentAttachSourcePhotoOption"', composer)
-        self.assertIn("Attach photo", composer)
-        self.assertIn('id="agentPhotoAttachment"', composer)
-        self.assertIn('id="agentPhotoAttachmentRemove"', composer)
-        self.assertIn(".agent-photo-attachment {", self.styles)
-        self.assertIn(".agent-message-photo {", self.styles)
-
-    def test_the_photo_goes_with_the_message_and_stays_in_the_bubble(self) -> None:
-        self.assertIn("async function attachAgentPhoto", self.script)
-        self.assertIn("function drawAgentPhoto", self.script)
-        self.assertIn("photoContext,", self.script)
-        self.assertIn("thumbnailUrl: photo.thumbnailUrl", self.script)
-        self.assertIn('image.className = "agent-message-photo"', self.script)
-        self.assertIn("function normalizeAgentMessagePhoto", self.script)
-        self.assertIn("void attachAgentPhoto(pastedPhoto)", self.script)
-        self.assertIn('addEventListener("drop", handleAgentComposerDrop)', self.script)
-        # The full-size image is sent, never stored: only the thumbnail lives
-        # in the transcript.
-        self.assertNotIn("dataUrl: photo.dataUrl, thumbnailUrl", self.script)
-
-
 if __name__ == "__main__":
     unittest.main()

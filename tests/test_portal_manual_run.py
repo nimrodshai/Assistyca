@@ -340,7 +340,7 @@ class StaticFileExposureTests(unittest.TestCase):
                 self.assertEqual(self._status(path), 404)
 
     def test_public_assets_are_still_served(self) -> None:
-        for path in ("/", "/portal/", "/portal/app.js", "/portal/styles.css", "/privacy.html"):
+        for path in ("/", "/admin", "/portal/admin.js", "/portal/admin.css", "/privacy.html"):
             with self.subTest(path=path):
                 self.assertEqual(self._status(path), 200)
 

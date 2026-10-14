@@ -341,7 +341,7 @@ class WebRegistrationTests(unittest.TestCase):
         status, payload = self.register(registration())
         self.assertEqual(status, 409)
         self.assertEqual(payload["error"], "phone_taken")
-        self.assertEqual(payload["signInUrl"], "/portal/")
+        self.assertEqual(payload["signInUrl"], "/whatsapp")
         self.assertFalse(self.template_sent.called)
 
     def test_a_picture_meta_cannot_fetch_does_not_cost_them_the_welcome(self) -> None:
@@ -442,7 +442,7 @@ class WebRegistrationTests(unittest.TestCase):
         # A link that goes nowhere is worse than one that goes somewhere else.
         with mock.patch.dict("os.environ", {"ASSISTYCA_WHATSAPP_DISPLAY_NUMBER": ""}, clear=False):
             status, location = self.follow_nothing("/whatsapp")
-        self.assertEqual((status, location), (303, "/portal/"))
+        self.assertEqual((status, location), (303, "/"))
 
 
 class TemplateParameterTests(unittest.TestCase):
