@@ -407,6 +407,16 @@ def _width(text: str, font: str, size: float) -> float:
     return pdfmetrics.stringWidth(_BIDI_CONTROLS_RE.sub("", text), font, size)
 
 
+def _cap_height(font: str) -> float:
+    """The height of a capital (and a digit) as a share of the font size."""
+
+    from reportlab.pdfbase import pdfmetrics
+
+    _ensure_fonts()
+    cap_height = getattr(pdfmetrics.getFont(font).face, "capHeight", 0) or 700
+    return cap_height / 1000
+
+
 def _wrap(text: str, font: str, size: float, width: float) -> list[str]:
     words = text.split(" ")
     lines: list[str] = []
@@ -718,12 +728,16 @@ def render_week_pdf(
     for index in range(columns):
         if index % 2 == 1:
             page.box(grid_x + index * column_width, y, column_width, grid_height, _hex(ROW_ALT))
+    # Each hour is written on its line, the digits centred on it, so the
+    # line a block ends on reads as the hour it ends at; the bottom line
+    # gets its hour too, since the label names the line, not the band.
+    hour_label_size = 7.5
+    hour_label_lift = hour_label_size * _cap_height("WeekSans") / 2
     for hour_index in range(hours + 1):
         line_y = y + hour_index * hour_height
         page.hline(grid_x, line_y, column_width * columns)
-        if hour_index < hours:
-            page.text(grid_x - 5, line_y + 3.5 + (hour_height / 2 if hour_height < 18 else 9), f"{first_hour + hour_index:02d}:00",
-                      font="WeekSans", size=7.5, colour=INK_SOFT, align="end")
+        page.text(grid_x - 5, line_y + hour_label_lift, f"{first_hour + hour_index:02d}:00",
+                  font="WeekSans", size=hour_label_size, colour=INK_SOFT, align="end")
     for index in range(columns + 1):
         page.vline(grid_x + index * column_width, y, grid_height)
 

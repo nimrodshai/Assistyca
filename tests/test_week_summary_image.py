@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import unittest
 from datetime import date
 from datetime import timedelta
@@ -76,6 +77,34 @@ class WeekSummaryFactsTests(unittest.TestCase):
 
 
 class WeekSummaryDrawingTests(unittest.TestCase):
+    def test_each_hour_is_written_centred_on_its_own_line_including_the_last(self) -> None:
+        from unittest import mock
+
+        from packages.infrastructure import week_summary_image
+
+        lines: list[float] = []
+        labels: dict[str, float] = {}
+        real_hline, real_text = week_summary_image._Page.hline, week_summary_image._Page.text
+
+        def hline(page, x, y, width, *args, **kwargs):
+            lines.append(y)
+            real_hline(page, x, y, width, *args, **kwargs)
+
+        def text(page, x, y, value, **kwargs):
+            if re.fullmatch(r"\d\d:00", value):
+                labels[value] = y
+            real_text(page, x, y, value, **kwargs)
+
+        days = week({1: [plan("Capoeira", ["Lahav"], "17:15", "18:15", "me", "Stav")]})
+        summary = build_week_summary(week_start=SUNDAY, days=days, members=MEMBERS, owner_names=OWNER)
+        with mock.patch.object(week_summary_image._Page, "hline", hline), mock.patch.object(week_summary_image._Page, "text", text):
+            render_week_pdf(summary, members=MEMBERS, owner_names=OWNER)
+        self.assertIn("18:00", labels)
+        self.assertIn("19:00", labels)  # the bottom line is named too
+        half_a_digit = 7.5 * 0.7 / 2
+        for label, baseline in labels.items():
+            self.assertTrue(any(abs(baseline - (line + half_a_digit)) < 0.01 for line in lines), f"{label} is not centred on a line")
+
     def test_the_page_is_drawn_and_rasterised_at_screen_width(self) -> None:
         days = week({
             0: [plan("School", ["Lahav"], "08:00", "12:45", "me", "Stav", "Shaked"), plan("Gan", ["Laor"], "08:00", "16:15", "me", "")],

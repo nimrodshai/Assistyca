@@ -24,6 +24,7 @@ from packages.infrastructure.agent_loop import _LISTS
 from packages.infrastructure.agent_loop import _NEWS
 from packages.infrastructure.agent_loop import _RECEIPTS
 from packages.infrastructure.agent_loop import _ROLE
+from packages.infrastructure.agent_loop import _SCHEDULING
 from packages.infrastructure.agent_loop import _TOOLS
 from packages.infrastructure.agent_loop import _WEB
 from packages.infrastructure.agent_loop import TOOLS
@@ -361,6 +362,24 @@ class LoopMechanicsTests(unittest.TestCase):
 
         self.assertEqual(api.calls[0][1], "/api/scheduled-actions")
         self.assertEqual(api.calls[0][2]["payload"]["recipientWaId"], "972501234567")
+
+    def test_a_clock_time_already_behind_us_today_is_refused_not_sent_now(self) -> None:
+        # "Remind me at 16:00" asked at 16:56: queued for today it would go
+        # out the moment the scheduler looked. Midnight today is always
+        # behind the clock, whenever this test runs.
+        api = FakeApi({"/api/scheduled-actions": ({"ok": True, "action": {"id": 1}}, 200)})
+        model = ScriptedModel([
+            _model_round(_call("schedule_message", "c1", time_local="00:00", date_policy="today", message_text="Collect Lahav")),
+            _model_round(reply=_reply("That time has passed - when today?")),
+        ])
+        result = run_agent_loop(context=_context(api), call_model=model, user_message="remind me at 00:00", conversation=[], today="2026-10-13")
+        self.assertEqual(api.calls, [])
+        self.assertEqual(result.completed, [])
+        told = json.loads(model.inputs[1][-1]["output"])
+        self.assertFalse(told["ok"])
+        self.assertEqual(told["error"]["code"], "time_passed")
+        self.assertIn("Do not offer to remind them now", told["error"]["whatHappened"])
+        self.assertIn("Never offer to remind them now", _SCHEDULING)
 
     def test_a_delay_in_minutes_is_scheduled_by_code_and_the_clock_is_in_context(self) -> None:
         api = FakeApi({"/api/scheduled-actions": ({"ok": True, "action": {"id": 1}}, 200)})
