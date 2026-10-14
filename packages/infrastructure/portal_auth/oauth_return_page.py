@@ -78,7 +78,7 @@ def render_oauth_return_page(*, ok: bool, provider_label: str, message: str, wha
         '<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">'
         '<meta name="theme-color" content="#f6f1e8">'
         f"<title>{title} - Assistyca</title>"
-        '<link rel="icon" type="image/png" href="/assets/Robot-200.png">'
+        '<link rel="icon" type="image/png" href="/assets/robot-leaf-192.png">'
         '<link rel="preload" as="font" type="font/woff2" href="/assets/manrope-medium.woff2" crossorigin>'
         '<style>@font-face{font-family:"Manrope";src:url("/assets/manrope-medium.woff2") format("woff2");'
         f"font-weight:500;font-display:swap}}{_STYLE}</style></head><body>"
