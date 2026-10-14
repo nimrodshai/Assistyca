@@ -3,12 +3,12 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-    <title>Assistyca | Your family, organized. Right inside WhatsApp.</title>
+    <title>Assistyca | Your week, running itself.</title>
     <meta
       name="description"
       content="From school pickups to shopping lists, Assistyca keeps your family's plans and everyday tasks in one simple WhatsApp chat. No new app. Free to start."
     />
-    <meta property="og:title" content="Assistyca | Your family, organized. Right inside WhatsApp." />
+    <meta property="og:title" content="Assistyca | Your week, running itself." />
     <meta
       property="og:description"
       content="From school pickups to shopping lists, Assistyca keeps your family's plans and everyday tasks in one simple WhatsApp chat. No new app. Free to start."
@@ -323,12 +323,16 @@
       }
 
       .hero .copy {
-        padding: 28px var(--gutter) 0;
+        padding: 8px var(--gutter) 0;
       }
 
       .hero h1 {
-        font-size: clamp(2.375rem, 1.3rem + 4.4vw, 3.875rem);
-        line-height: 1.1;
+        font-size: clamp(1.8125rem, 0.4rem + 5.8vw, 3.875rem);
+        line-height: 1.15;
+      }
+
+      .hero h1 span {
+        white-space: nowrap;
       }
 
       .hero-row {
@@ -351,8 +355,9 @@
         z-index: 1;
         flex: 1;
         min-width: 0;
-        margin: 0 0 40px;
-        font-size: 16px;
+        margin: 0;
+        font-size: 15px;
+        line-height: 1.5;
         text-align: left;
       }
 
@@ -865,6 +870,7 @@
         }
 
         .hero h1 {
+          font-size: 3.875rem;
           line-height: 1.08;
         }
 
@@ -879,6 +885,7 @@
         .hero-row .lede {
           margin: 0;
           font-size: 21px;
+          line-height: 1.55;
           text-align: center;
         }
 
@@ -1168,11 +1175,11 @@
       </header>
 
       <div class="copy">
-        <p class="eyebrow">Less to juggle. More family life.</p>
-        <h1>Your family, organized.<br /><span>Right inside WhatsApp.</span></h1>
+        <p class="eyebrow">Family planning, simplified</p>
+        <h1>Your week,<br /><span>Running itself.</span></h1>
         <div class="hero-row">
           <div class="spacer" aria-hidden="true"></div>
-          <p class="lede">From school pickups to shopping lists, Assistyca keeps your family's plans and everyday tasks in one simple chat.</p>
+          <p class="lede">From school pickups<br class="mobile" /> to shopping lists,<br class="mobile" /> Assistyca keeps your family's plans and everyday tasks in one simple WhatsApp chat.</p>
         </div>
         <a class="cta hero-cta" href="/register">Get started for free</a>
       </div>
@@ -1221,7 +1228,7 @@
         <div class="col">
           <div class="copy">
             <p class="eyebrow">Keep everyone in sync</p>
-            <h2 id="sync-title">Less coordinating.<br /><span>More being together.</span></h2>
+            <h2 id="sync-title">Less <span>coordinating.</span></h2>
             <p class="lede">Activities, rides and last-minute changes — Assistyca helps everyone know the plan.</p>
             <div class="rows">
               <div class="row">
