@@ -3,650 +3,1130 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-    <title>Assistyca | Your life, organized. Inside WhatsApp.</title>
+    <title>Assistyca | Your family, organized. Right inside WhatsApp.</title>
     <meta
       name="description"
-      content="Assistyca is an AI assistant for families that lives in WhatsApp. It keeps track of the kids' activities, rides and changing plans, so you can focus on what matters."
+      content="From school pickups to shopping lists, Assistyca keeps your family's plans and everyday tasks in one simple WhatsApp chat. No new app. Free to start."
     />
-    <meta property="og:title" content="Assistyca | Your life, organized. Inside WhatsApp." />
+    <meta property="og:title" content="Assistyca | Your family, organized. Right inside WhatsApp." />
     <meta
       property="og:description"
-      content="An AI assistant for families that keeps track of the kids' activities, rides and changing plans, so you can focus on what matters. Free to start."
+      content="From school pickups to shopping lists, Assistyca keeps your family's plans and everyday tasks in one simple WhatsApp chat. No new app. Free to start."
     />
     <meta property="og:type" content="website" />
     <meta property="og:url" content="https://assistyca.com/" />
     <meta property="og:image" content="https://assistyca.com/assets/Robot-200.png" />
     <meta name="twitter:card" content="summary" />
-    <meta name="theme-color" content="#fbf8f1" />
+    <meta name="theme-color" content="#faf7ed" />
     <link rel="canonical" href="https://assistyca.com/" />
     <link rel="icon" type="image/png" href="/assets/Robot-200.png" />
     <link rel="apple-touch-icon" href="/assets/Robot-200.png" />
-    <link rel="preload" as="image" href="/assets/landing-robot-bg.webp" />
-    <link rel="preload" as="font" type="font/woff2" href="/assets/manrope-regular.woff2" crossorigin />
-    <link rel="preload" as="font" type="font/woff2" href="/assets/manrope-medium.woff2" crossorigin />
-    <link rel="preload" as="font" type="font/woff2" href="/assets/manrope-semibold.woff2" crossorigin />
+    <link rel="preload" as="font" type="font/woff2" href="/assets/figtree-latin.woff2" crossorigin />
+    <link rel="preload" as="image" href="/assets/landing-hero-robot-plant-mobile.webp" media="(max-width: 899px)" />
+    <link rel="preload" as="image" href="/assets/landing-hero-robot-plant-left.webp" media="(min-width: 900px)" />
     <style>
       @font-face {
-        font-family: "Manrope";
-        src: url("/assets/manrope-regular.woff2") format("woff2");
-        font-weight: 400;
+        font-family: "Figtree";
         font-style: normal;
+        font-weight: 400 700;
         font-display: swap;
+        src: url("/assets/figtree-latin.woff2") format("woff2");
       }
 
-      @font-face {
-        font-family: "Manrope";
-        src: url("/assets/manrope-medium.woff2") format("woff2");
-        font-weight: 500;
-        font-style: normal;
-        font-display: swap;
-      }
-
-      @font-face {
-        font-family: "Manrope";
-        src: url("/assets/manrope-semibold.woff2") format("woff2");
-        font-weight: 600 700;
-        font-style: normal;
-        font-display: swap;
-      }
-
-      /* Warm paper, one muted teal, hairlines instead of borders and shadows
-         you have to look for. Nothing here should raise its voice. */
       :root {
-        color-scheme: light;
-        --bg: #fbf8f1;
-        --surface: #ffffff;
-        --ink: #132038;
-        --ink-soft: #2c3a52;
-        --muted: #667185;
-        --hairline: rgba(19, 32, 56, 0.08);
-        --accent: #62a39b;
-        --accent-deep: #4f9290;
-        --accent-soft: rgba(106, 167, 163, 0.16);
-        --me: #e3f5e6;
-        --tick: #53bdeb;
-        --band: #edf1ec;
-        --shadow: 0 26px 70px rgba(19, 32, 56, 0.08);
-        --shadow-soft: 0 14px 40px rgba(19, 32, 56, 0.06);
+        --ink: #183049;
+        --body: #2e4458;
+        --muted: #4a5a66;
+        --eyebrow: #4e5f5a;
+        --accent: #3f7d6b;
+        --accent-soft: #5b9682;
+        --paper: #faf7ed;
+        --ico-bg: #e9f0ea;
+        --ico: #4f8f7b;
+        --gutter: 24px;
+        --measure: 1200px;
       }
 
       * {
         box-sizing: border-box;
       }
 
-      html,
+      html {
+        scroll-behavior: smooth;
+      }
+
       body {
         margin: 0;
-        min-height: 100%;
-      }
-
-      /* iOS Safari ignores overflow-x on body alone; clip at the root so the
-         background can never widen the page */
-      html,
-      body {
-        overflow-x: hidden;
-        overflow-x: clip;
-      }
-
-      body {
-        font-family: "Manrope", "Segoe UI", system-ui, -apple-system, sans-serif;
+        font-family: "Figtree", system-ui, -apple-system, "Segoe UI", sans-serif;
         color: var(--ink);
-        background: var(--bg);
-        line-height: 1.55;
+        background: var(--paper);
+        background-image: linear-gradient(180deg, #faf7ed 0%, #fdf9f2 22%, #faf3ea 42%, #fdf9f2 62%, #faf4ec 82%, #fcf6ed 100%);
         -webkit-font-smoothing: antialiased;
-      }
-
-      img,
-      svg {
-        display: block;
+        overflow-x: hidden;
       }
 
       a {
-        color: inherit;
+        color: var(--ink);
+      }
+
+      a:hover {
+        color: var(--accent);
+      }
+
+      h1,
+      h2,
+      h3,
+      p {
+        margin: 0;
+      }
+
+      h1,
+      h2 {
+        font-weight: 500;
+        letter-spacing: -0.025em;
+        text-wrap: balance;
+      }
+
+      h1 span,
+      h2 span {
+        color: var(--accent-soft);
+      }
+
+      h3 {
+        font-size: 17px;
+        font-weight: 600;
+      }
+
+      section {
+        position: relative;
+        overflow: hidden;
       }
 
       .col {
-        width: min(100% - 2.5rem, 42rem);
+        position: relative;
+        max-width: var(--measure);
         margin: 0 auto;
       }
 
+      .art {
+        position: absolute;
+        pointer-events: none;
+        user-select: none;
+      }
+
+      .eyebrow {
+        font-size: 11px;
+        font-weight: 500;
+        letter-spacing: 0.3em;
+        text-transform: uppercase;
+        color: var(--eyebrow);
+      }
+
+      .lede {
+        font-size: 17px;
+        line-height: 1.55;
+        color: var(--body);
+      }
+
       .ico {
+        width: 56px;
+        height: 56px;
+        border-radius: 50%;
+        background: var(--ico-bg);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        color: var(--ico);
+        flex: none;
+      }
+
+      .ico svg {
+        width: 46%;
+        height: 46%;
         fill: none;
         stroke: currentColor;
-        stroke-width: 1.7;
+        stroke-width: 1.6;
         stroke-linecap: round;
         stroke-linejoin: round;
       }
 
-      /* ---------- Hero: the same for everyone ---------- */
-
-      .hero {
-        position: relative;
-        text-align: center;
-        background: url("/assets/landing-robot-bg.webp") center 70% / cover no-repeat;
-      }
-
-      /* The photograph dissolves into the paper, so the phone sits on the
-         page rather than on a picture */
-      .hero::after {
-        content: "";
-        position: absolute;
-        inset: auto 0 0;
-        height: 9rem;
-        background: linear-gradient(180deg, rgba(251, 248, 241, 0), var(--bg));
-        pointer-events: none;
-      }
-
-      .kicker {
-        margin: 0 0 1rem;
-        padding-top: 3.79rem;
-        font-size: 0.74rem;
-        font-weight: 500;
-        letter-spacing: 0.3em;
-        text-transform: uppercase;
-        color: var(--ink-soft);
-      }
-
-      h1 {
-        margin: 0 0 1rem;
-        font-size: clamp(2.2rem, 9.4vw, 3.5rem);
+      .cta {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 54px;
+        padding: 0 28px;
+        border-radius: 999px;
+        background: var(--accent);
+        color: #fff;
+        font-size: 17px;
         font-weight: 600;
-        line-height: 1.08;
-        letter-spacing: -0.035em;
+        text-decoration: none;
+        box-shadow: 0 10px 22px -10px rgba(63, 125, 107, 0.7);
+        transition: background 0.2s ease, transform 0.2s ease;
       }
 
-      h1 span {
+      .cta:hover {
+        color: #fff;
+        background: #356b5b;
+        transform: translateY(-1px);
+      }
+
+      .copy {
+        position: relative;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        text-align: center;
+        gap: 14px;
+      }
+
+      .desktop {
+        display: none;
+      }
+
+      /* Header */
+      .top {
+        position: relative;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 14px 20px;
+      }
+
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        text-decoration: none;
+        color: var(--ink);
+        font-size: 22px;
+        font-weight: 600;
+        letter-spacing: -0.01em;
+      }
+
+      .brand img {
+        width: 36px;
+        height: 36px;
+        border-radius: 50%;
+        object-fit: cover;
+      }
+
+      .nav {
+        display: none;
+        align-items: center;
+        gap: 36px;
+        font-size: 15px;
+      }
+
+      .nav a {
+        text-decoration: none;
+      }
+
+      .nav .cta {
+        min-height: 48px;
+        padding: 0 34px;
+        font-size: 15px;
+        box-shadow: 0 6px 16px -6px rgba(63, 125, 107, 0.6);
+      }
+
+      .menu {
+        position: relative;
+      }
+
+      .menu summary {
+        list-style: none;
+        width: 44px;
+        height: 44px;
+        border-radius: 50%;
+        background: rgba(255, 255, 255, 0.7);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        color: var(--ink);
+        cursor: pointer;
+      }
+
+      .menu summary::-webkit-details-marker {
+        display: none;
+      }
+
+      .menu summary svg {
+        width: 22px;
+        height: 22px;
+        fill: none;
+        stroke: currentColor;
+        stroke-width: 2;
+        stroke-linecap: round;
+      }
+
+      .menu .open {
         display: block;
-        color: var(--accent);
       }
 
-      /* The titles sit halfway between the top of the page and the handset;
-         the space above the kicker and under this line add up to what the
-         old wordmark and the longer line took, so the phone stays put */
-      .lede {
-        margin: 0 auto;
-        padding-bottom: 2.23rem;
-        text-wrap: balance;
-        max-width: 22rem;
-        font-size: clamp(1rem, 3.9vw, 1.12rem);
-        color: var(--ink-soft);
+      .menu .close {
+        display: none;
       }
 
-      /* ---------- The phone ---------- */
+      .menu[open] .open {
+        display: none;
+      }
 
-      .stage {
+      .menu[open] .close {
+        display: block;
+      }
+
+      .menu-panel {
+        position: absolute;
+        right: 0;
+        top: calc(100% + 10px);
+        z-index: 5;
+        min-width: 220px;
+        padding: 10px;
+        border-radius: 20px;
+        background: #fff;
+        box-shadow: 0 18px 40px -16px rgba(24, 48, 73, 0.35);
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+      }
+
+      .menu-panel a {
+        display: flex;
+        align-items: center;
+        min-height: 44px;
+        padding: 0 16px;
+        border-radius: 12px;
+        text-decoration: none;
+        font-size: 16px;
+      }
+
+      .menu-panel a:hover {
+        background: var(--ico-bg);
+      }
+
+      .menu-panel .cta {
+        margin-top: 6px;
+        min-height: 48px;
+        font-size: 16px;
+      }
+
+      /* Hero */
+      .hero-art-m {
+        left: 0;
+        bottom: 70px;
+        width: 100%;
+        max-width: 480px;
+        height: auto;
+        aspect-ratio: 3 / 4;
+      }
+
+      .hero .copy {
+        padding: 28px var(--gutter) 0;
+      }
+
+      .hero h1 {
+        font-size: clamp(2.375rem, 1.3rem + 4.4vw, 3.875rem);
+        line-height: 1.1;
+      }
+
+      .hero-row {
+        align-self: stretch;
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        margin-top: 4px;
+      }
+
+      .hero-row .spacer {
+        flex: none;
+        width: 200px;
+        height: 240px;
+        margin-left: -24px;
+      }
+
+      .hero-row .lede {
         position: relative;
         z-index: 1;
-        width: min(100%, 21rem);
-        margin: 2rem auto 0;
+        flex: 1;
+        min-width: 0;
+        margin: 0 0 40px;
+        font-size: 16px;
+        text-align: left;
       }
 
-      /* The bottom of the handset fades out, the way the mockup crops it */
+      .hero-cta {
+        margin-top: 6px;
+        align-self: stretch;
+      }
+
+      .hero-foot {
+        height: 44px;
+      }
+
+      /* Phone mockups (desktop only) */
+      .stage {
+        display: none;
+      }
+
       .phone {
-        position: relative;
-        padding: 0.6rem 0.6rem 0;
-        border-radius: 3rem 3rem 0 0;
-        background: linear-gradient(180deg, #2b2d31, #121315);
-        box-shadow: 0 30px 60px rgba(19, 32, 56, 0.18);
-        -webkit-mask-image: linear-gradient(180deg, #000 80%, transparent);
-        mask-image: linear-gradient(180deg, #000 80%, transparent);
-        animation: settle-in 1000ms cubic-bezier(0.22, 1, 0.36, 1) both;
+        width: 300px;
+        height: 620px;
+        flex: none;
+        border-radius: 48px;
+        background: #1a1d21;
+        padding: 9px;
+        box-shadow: 0 40px 70px -24px rgba(24, 48, 73, 0.38), 0 10px 22px rgba(24, 48, 73, 0.12);
       }
 
       .screen {
-        position: relative;
+        height: 100%;
+        border-radius: 40px;
         overflow: hidden;
-        text-align: left;
-        border-radius: 2.45rem 2.45rem 0 0;
-        background: #f2efe8;
+        background: #eeebe3;
+        display: flex;
+        flex-direction: column;
       }
 
       .status {
         display: flex;
         align-items: center;
         justify-content: space-between;
-        padding: 0.85rem 1.2rem 0.2rem 1.7rem;
-        font-size: 0.86rem;
+        padding: 12px 24px 6px;
+        font-size: 12px;
         font-weight: 600;
-        background: #fff;
+        color: #111;
       }
 
-      .status svg {
-        height: 0.62rem;
-        width: auto;
-        fill: var(--ink);
+      .status .end {
+        display: flex;
+        gap: 4px;
+        align-items: center;
+        min-width: 38px;
+        justify-content: flex-end;
       }
 
-      .island {
-        position: absolute;
-        top: 0.6rem;
-        left: 50%;
-        width: 5.8rem;
-        height: 1.65rem;
-        border-radius: 999px;
-        background: #0b0b0c;
-        transform: translateX(-50%);
+      .notch {
+        width: 88px;
+        height: 25px;
+        border-radius: 14px;
+        background: #111;
       }
 
-      .wa-head {
+      .chathead {
         display: flex;
         align-items: center;
-        gap: 0.55rem;
-        padding: 0.55rem 0.9rem 0.6rem 0.6rem;
-        background: #fff;
-        border-bottom: 1px solid var(--hairline);
+        gap: 8px;
+        padding: 8px 12px 10px;
+        background: #fbfaf7;
+        border-bottom: 1px solid #e6e2d8;
       }
 
-      .wa-head .ico {
-        width: 1.25rem;
-        height: 1.25rem;
+      .chathead img {
+        width: 30px;
+        height: 30px;
+        border-radius: 50%;
+        object-fit: cover;
+      }
+
+      .chathead .who {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+      }
+
+      .chathead strong {
+        font-size: 13px;
+        color: #1c2a33;
+      }
+
+      .chathead small {
+        font-size: 11px;
+        color: #5f6b64;
+      }
+
+      .chathead svg {
+        width: 18px;
+        height: 18px;
+        fill: none;
+        stroke: #1c2a33;
         stroke-width: 2;
+        stroke-linecap: round;
+        stroke-linejoin: round;
       }
 
-      .wa-head .who {
+      .chathead svg.dots {
+        fill: #1c2a33;
+        stroke: none;
+      }
+
+      .chats {
         flex: 1;
-        line-height: 1.2;
-      }
-
-      .wa-head strong {
-        display: block;
-        font-size: 0.95rem;
-        font-weight: 600;
-      }
-
-      .wa-head small {
-        font-size: 0.72rem;
-        color: var(--muted);
-      }
-
-      .avatar {
-        flex: none;
-        width: 2.2rem;
-        height: 2.2rem;
-        padding: 0.18rem;
-        border-radius: 50%;
-        background: #e3ece9;
-      }
-
-      .avatar img {
-        width: 100%;
-        height: 100%;
-      }
-
-      .wa-head .end {
         display: flex;
-        gap: 0.9rem;
-      }
-
-      /* One bubble style for the phone and the scenario cards below it */
-      .chat {
-        list-style: none;
+        flex-direction: column;
+        gap: 12px;
         margin: 0;
-        padding: 0;
-        display: grid;
-        gap: 0.65rem;
-      }
-
-      .chat li {
-        position: relative;
-        max-width: 82%;
-        padding: 0.55rem 0.8rem 1.15rem;
-        border-radius: 1rem;
-        font-size: 0.86rem;
-        line-height: 1.45;
-        color: var(--ink);
-        box-shadow: 0 1px 2px rgba(19, 32, 56, 0.06);
-        opacity: 0;
-        animation: bubble-in 600ms ease forwards;
-      }
-
-      .chat li:nth-child(1) { animation-delay: 300ms; }
-      .chat li:nth-child(2) { animation-delay: 750ms; }
-      .chat li:nth-child(3) { animation-delay: 1200ms; }
-      .chat li:nth-child(4) { animation-delay: 1650ms; }
-
-      .chat .me {
-        justify-self: end;
-        background: var(--me);
-        border-top-right-radius: 0.3rem;
-      }
-
-      .chat .them {
-        justify-self: start;
-        background: #fff;
-        border-top-left-radius: 0.3rem;
-      }
-
-      .chat time {
-        position: absolute;
-        right: 0.65rem;
-        bottom: 0.3rem;
-        font-size: 0.62rem;
-        color: rgba(19, 32, 56, 0.4);
-      }
-
-      .chat .me time::after {
-        content: " ✓✓";
-        color: var(--tick);
-        letter-spacing: -0.14em;
-      }
-
-      .phone .chat {
-        padding: 1rem 0.7rem 1.1rem;
-      }
-
-      .wa-input {
-        display: flex;
-        align-items: center;
-        gap: 0.5rem;
-        padding: 0.5rem 0.6rem 2.6rem;
-      }
-
-      .wa-input .field {
-        flex: 1;
-        display: flex;
-        align-items: center;
-        gap: 0.55rem;
-        padding: 0.55rem 0.75rem;
-        border-radius: 999px;
-        background: #fff;
-        color: var(--muted);
-        font-size: 0.82rem;
-      }
-
-      .wa-input .field span {
-        flex: 1;
-      }
-
-      .wa-input .ico {
-        width: 1.1rem;
-        height: 1.1rem;
-      }
-
-      .wa-input .mic {
-        display: grid;
-        place-items: center;
-        width: 2.45rem;
-        height: 2.45rem;
-        border-radius: 50%;
-        color: #fff;
-        background: var(--accent);
-      }
-
-      /* ---------- What it does for a family ---------- */
-
-      .family-section {
-        text-align: center;
-        padding-top: 2.5rem;
-      }
-
-      .panel {
-        animation: panel-in 500ms ease both;
-      }
-
-      .eyebrow {
-        margin: 2.6rem 0 0.7rem;
-        font-size: 0.74rem;
-        font-weight: 500;
-        letter-spacing: 0.3em;
-        text-transform: uppercase;
-        color: var(--accent-deep);
-      }
-
-      h2 {
-        margin: 0 auto 0.9rem;
-        max-width: 21ch;
-        font-size: clamp(1.6rem, 6.9vw, 2.35rem);
-        font-weight: 600;
-        line-height: 1.15;
-        letter-spacing: -0.03em;
-      }
-
-      .panel > p.intro {
-        margin: 0 auto;
-        max-width: 27rem;
-        color: var(--muted);
-        font-size: 1rem;
-      }
-
-      .scene {
-        margin: 1.9rem auto 0;
-        max-width: 26rem;
-        padding: 1.3rem 1.1rem;
-        border-radius: 1.6rem;
-        background: rgba(255, 255, 255, 0.55);
-        box-shadow: var(--shadow-soft);
-        text-align: left;
-      }
-
-      .scene .chat li {
-        font-size: 0.9rem;
-      }
-
-      .scene .chat .me {
-        max-width: 75%;
-      }
-
-      .features {
+        padding: 22px 12px 18px;
         list-style: none;
-        display: grid;
-        grid-template-columns: repeat(3, 1fr);
-        margin: 2rem auto 0;
-        padding: 0;
-        max-width: 30rem;
       }
 
-      .features li {
-        padding: 0 0.4rem;
-        font-size: 0.9rem;
-        line-height: 1.35;
-        color: var(--ink-soft);
+      .chats li {
+        font-size: 13px;
+        line-height: 1.4;
+        color: #1c2a33;
+        padding: 8px 10px 6px;
       }
 
-      .features li + li {
-        border-left: 1px solid var(--hairline);
+      .chats .out {
+        align-self: flex-end;
+        max-width: 72%;
+        background: #ddf0d8;
+        border-radius: 12px 12px 4px 12px;
       }
 
-      .features .ico {
-        width: 1.9rem;
-        height: 1.9rem;
-        margin: 0 auto 0.6rem;
-        color: var(--accent-deep);
-        stroke-width: 1.5;
+      .chats .in {
+        align-self: flex-start;
+        max-width: 78%;
+        background: #fff;
+        border-radius: 12px 12px 12px 4px;
+        box-shadow: 0 1px 1px rgba(0, 0, 0, 0.05);
       }
 
-      .go {
-        margin: 2.6rem 0 0;
+      .chats time {
+        display: block;
+        text-align: right;
+        font-size: 10px;
+        color: #6f7a73;
+        margin-top: 2px;
       }
 
-      .cta {
-        display: inline-flex;
+      .inputbar {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 8px 10px 18px;
+      }
+
+      .field {
+        flex: 1;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        background: #fff;
+        border-radius: 20px;
+        padding: 9px 12px;
+        font-size: 12px;
+        color: #6f7a73;
+      }
+
+      .field span {
+        flex: 1;
+      }
+
+      .field svg {
+        width: 16px;
+        height: 16px;
+        fill: none;
+        stroke: #6f7a73;
+        stroke-width: 2;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+      }
+
+      .mic {
+        width: 36px;
+        height: 36px;
+        border-radius: 50%;
+        background: var(--accent);
+        display: flex;
         align-items: center;
         justify-content: center;
-        gap: 0.6rem;
-        width: min(100%, 18.5rem);
-        min-height: 3.2rem;
-        padding: 0.8rem 1.6rem;
-        border-radius: 999px;
-        text-decoration: none;
-        font-weight: 500;
-        font-size: 1.02rem;
-        color: #fff;
-        background: var(--accent);
-        box-shadow: 0 16px 34px rgba(98, 163, 155, 0.26);
-        transition: transform 220ms ease, box-shadow 220ms ease, background 220ms ease;
+        flex: none;
       }
 
-      .cta .ico {
-        width: 1.05rem;
-        height: 1.05rem;
+      .mic svg {
+        width: 16px;
+        height: 16px;
+        fill: none;
+        stroke: #fff;
         stroke-width: 2;
+        stroke-linecap: round;
       }
 
-      .cta:hover,
-      .cta:focus-visible {
-        background: var(--accent-deep);
-        transform: translateY(-1px);
+      /* Keep everyone in sync */
+      .sync {
+        padding: 56px var(--gutter);
       }
 
-      .go small {
-        display: block;
-        margin-top: 0.7rem;
-        font-size: 0.78rem;
+      .sync h2,
+      .simple h2 {
+        font-size: clamp(2rem, 1.1rem + 3.8vw, 3.375rem);
+        line-height: 1.12;
+      }
+
+      .rows {
+        margin-top: 36px;
+        display: flex;
+        flex-direction: column;
+        gap: 24px;
+      }
+
+      .row {
+        display: flex;
+        gap: 18px;
+        align-items: center;
+      }
+
+      .row div {
+        display: flex;
+        flex-direction: column;
+        gap: 3px;
+      }
+
+      .row p {
+        font-size: 15px;
+        line-height: 1.45;
         color: var(--muted);
       }
 
-      /* A soft wave to close on, with one line that answers why */
-      .closing {
-        position: relative;
-        margin: 3.5rem calc(50% - 50vw) 0;
-        padding: 1.4rem 1.25rem 0.5rem;
-        background: var(--band);
+      /* To-do list */
+      .todo {
+        padding: 56px var(--gutter) 52px;
       }
 
-      .closing .wave {
-        position: absolute;
+      .todo h2 {
+        font-size: clamp(1.875rem, 1rem + 3.7vw, 3.375rem);
+        line-height: 1.12;
+      }
+
+      .todo-art-m {
         left: 0;
-        bottom: 100%;
+        bottom: 0;
         width: 100%;
-        height: 2.5rem;
-        fill: var(--band);
+        max-width: 480px;
+        height: auto;
+        aspect-ratio: 3 / 4;
       }
 
-      .closing .heart {
-        width: 1.35rem;
-        height: 1.35rem;
-        margin: 0 auto 0.7rem;
-        color: var(--accent-deep);
+      .todo-row {
+        position: relative;
+        margin-top: 24px;
+        display: flex;
+        align-items: flex-end;
+        gap: 10px;
       }
 
-      .closing p {
-        margin: 0;
-        font-size: 1.1rem;
-        font-weight: 500;
-        color: var(--ink);
+      .todo-row .spacer {
+        flex: none;
+        width: 140px;
+        height: 250px;
+        margin-left: -24px;
       }
 
+      .todo-list {
+        position: relative;
+        z-index: 1;
+        flex: 1;
+        min-width: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 20px;
+        padding-bottom: 12px;
+      }
+
+      .todo-list .row {
+        gap: 12px;
+        align-items: flex-start;
+      }
+
+      .todo-list .ico {
+        width: 44px;
+        height: 44px;
+      }
+
+      .todo-list h3 {
+        font-size: 16px;
+      }
+
+      .todo-list p {
+        font-size: 14px;
+        line-height: 1.4;
+      }
+
+      /* Simple as a message */
+      .simple {
+        padding: 64px var(--gutter);
+      }
+
+      .leaves-left,
+      .leaves-right {
+        top: 0;
+        height: 360px;
+        width: auto;
+        opacity: 0.8;
+      }
+
+      .leaves-left {
+        left: -60px;
+      }
+
+      .leaves-right {
+        right: -60px;
+        top: auto;
+        bottom: 0;
+      }
+
+      .steps {
+        margin-top: 28px;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 30px;
+      }
+
+      .step {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 10px;
+      }
+
+      .step .ico {
+        width: 64px;
+        height: 64px;
+      }
+
+      .step h3 {
+        font-size: 18px;
+      }
+
+      .step p {
+        font-size: 15px;
+        line-height: 1.45;
+        color: var(--muted);
+      }
+
+      /* Closing */
+      .closing {
+        height: 400px;
+      }
+
+      .closing-art-m {
+        left: 0;
+        top: 0;
+        width: 100%;
+        max-width: 480px;
+        height: auto;
+        aspect-ratio: 1 / 1;
+      }
+
+      .closing .copy {
+        padding: 70px var(--gutter) 0;
+        gap: 12px;
+      }
+
+      .closing h2 {
+        font-size: clamp(1.75rem, 1rem + 3.4vw, 3.375rem);
+        line-height: 1.15;
+      }
+
+      .closing-go {
+        position: relative;
+        z-index: 1;
+        align-self: flex-start;
+        width: 160px;
+        margin: 44px 0 0 16px;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 10px;
+      }
+
+      .closing-go .cta {
+        align-self: stretch;
+        min-height: 48px;
+        padding: 0 14px;
+        font-size: 16px;
+      }
+
+      .closing-go small {
+        font-size: 13px;
+        color: var(--muted);
+      }
+
+      /* Footer */
       .site-footer {
+        background: #fcf6ed;
+      }
+
+      .site-footer .col {
+        padding: 22px 20px;
         display: flex;
         flex-wrap: wrap;
-        justify-content: center;
-        gap: 0.5rem 1.4rem;
-        padding: 2.5rem 1.25rem 2.25rem;
-        background: var(--band);
-        font-size: 0.85rem;
-        color: var(--muted);
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
       }
 
-      .powered {
-        flex-basis: 100%;
-        text-align: center;
+      .site-footer .brand {
+        font-size: 20px;
       }
 
-      .site-footer .powered a {
-        margin-left: 0.3rem;
-        font-size: 1.05rem;
-        font-weight: 600;
-        letter-spacing: -0.02em;
-        color: var(--ink);
+      .site-footer .brand img {
+        width: 34px;
+        height: 34px;
       }
 
-      .site-footer a {
-        color: var(--muted);
+      .site-footer nav {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        font-size: 14px;
+      }
+
+      .site-footer nav a {
         text-decoration: none;
       }
 
-      .site-footer a:hover {
-        color: var(--ink);
-      }
-
-      @keyframes settle-in {
-        from { opacity: 0; transform: translateY(1.5rem); }
-        to { opacity: 1; transform: none; }
-      }
-
-      @keyframes bubble-in {
-        from { opacity: 0; transform: translateY(0.4rem); }
-        to { opacity: 1; transform: none; }
-      }
-
-      @keyframes panel-in {
-        from { opacity: 0; transform: translateY(0.5rem); }
-        to { opacity: 1; transform: none; }
-      }
-
-      /* ---------- Narrow phones ---------- */
-
-      /* A tall photograph puts the robot on the left of a smaller phone. */
-      @media (max-width: 34rem) {
-        .hero {
-          background-image: url("/assets/landing-bg-mobile.webp");
-          /* Lowered and nudged left so the robot sits beside the handset,
-             not behind it; the stones may crop at the edge */
-          background-size: 110% auto;
-          background-position: -10vw calc(100% + 9rem);
+      @media (min-width: 900px) {
+        :root {
+          --gutter: 32px;
         }
 
-        /* The same handset shrunk as a whole, so nothing inside it reflows,
-           tilted a little and set against the right edge so the robot
-           stays in view */
-        .stage {
-          width: 20rem;
-          zoom: 0.62;
-          margin-right: -1.3rem;
-          margin-left: auto;
-          transform: rotate(6deg);
-          transform-origin: 50% 0;
+        .desktop {
+          display: block;
         }
 
-        .island {
-          width: 5rem;
-          height: 1.5rem;
-        }
-
-        .scene {
-          padding: 1.1rem 0.8rem;
-        }
-      }
-
-      /* ---------- Wider screens ---------- */
-
-      @media (min-width: 48rem) {
-        .kicker {
-          padding-top: 5.78rem;
-        }
-
-        .lede {
-          padding-bottom: 1.64rem;
-        }
-
-        .stage {
-          margin-top: 2.6rem;
-        }
-
-        .chat li {
-          font-size: 0.9rem;
+        .mobile {
+          display: none;
         }
 
         .eyebrow {
-          margin-top: 3.4rem;
+          font-size: 12px;
+          letter-spacing: 0.34em;
         }
 
-        .panel > p.intro {
-          font-size: 1.05rem;
+        .lede {
+          font-size: 20px;
+          max-width: 600px;
         }
 
-        .features li {
-          font-size: 0.95rem;
+        /* Header */
+        .top {
+          max-width: var(--measure);
+          margin: 0 auto;
+          padding: 22px var(--gutter);
+        }
+
+        .brand {
+          font-size: 27px;
+          gap: 10px;
+        }
+
+        .brand img {
+          width: 42px;
+          height: 42px;
+        }
+
+        .nav {
+          display: flex;
+        }
+
+        .menu {
+          display: none;
+        }
+
+        /* Hero */
+        .hero {
+          padding-bottom: 72px;
+        }
+
+        .hero-art-l,
+        .hero-art-r {
+          top: 0;
+          height: 980px;
+          width: auto;
+        }
+
+        .hero-art-l {
+          left: 0;
+        }
+
+        .hero-art-r {
+          right: 0;
+        }
+
+        .hero .copy {
+          max-width: 760px;
+          margin: 0 auto;
+          padding: 24px var(--gutter) 0;
+          gap: 18px;
+        }
+
+        .hero h1 {
+          line-height: 1.08;
+        }
+
+        .hero-row {
+          display: contents;
+        }
+
+        .hero-row .spacer {
+          display: none;
+        }
+
+        .hero-row .lede {
+          margin: 0;
+          font-size: 21px;
+          text-align: center;
+        }
+
+        .hero-cta {
+          display: none;
+        }
+
+        .hero-foot {
+          display: none;
+        }
+
+        .stage {
+          position: relative;
+          margin-top: 44px;
+          display: flex;
+          justify-content: center;
+          padding: 0 var(--gutter);
+        }
+
+        /* Keep everyone in sync */
+        .sync {
+          padding: 96px var(--gutter);
+        }
+
+        .sync .col {
+          display: flex;
+          flex-wrap: wrap;
+          align-items: center;
+          justify-content: center;
+          gap: 64px;
+        }
+
+        .sync .copy {
+          flex: 999 1 560px;
+          min-width: 0;
+          gap: 18px;
+        }
+
+        .sync .lede {
+          max-width: 520px;
+        }
+
+        .sync .rows {
+          display: grid;
+          grid-template-columns: repeat(3, minmax(0, 1fr));
+          gap: 28px;
+          width: 100%;
+          max-width: 660px;
+        }
+
+        .sync .row {
+          flex-direction: column;
+          align-items: center;
+          text-align: center;
+          gap: 12px;
+        }
+
+        .sync .row .ico {
+          width: 76px;
+          height: 76px;
+        }
+
+        .sync .row div {
+          align-items: center;
+          gap: 8px;
+        }
+
+        .sync h3 {
+          font-size: 18px;
+        }
+
+        /* To-do list */
+        .todo {
+          padding: 96px var(--gutter);
+        }
+
+        .todo-art-l {
+          left: 0;
+          bottom: 0;
+          height: 780px;
+          width: auto;
+        }
+
+        .todo .copy {
+          max-width: 760px;
+          margin: 0 auto;
+          gap: 18px;
+        }
+
+        .todo .lede {
+          max-width: 520px;
+        }
+
+        .todo-row {
+          max-width: var(--measure);
+          margin: 56px auto 0;
+          flex-wrap: wrap;
+          align-items: center;
+          justify-content: center;
+          gap: 56px;
+        }
+
+        .todo-row .spacer {
+          flex: 0 1 380px;
+          height: 0;
+          margin: 0;
+        }
+
+        .todo-list {
+          flex: 0 1 340px;
+          gap: 40px;
+          padding: 0;
+        }
+
+        .todo-list .row {
+          gap: 22px;
+        }
+
+        .todo-list .ico {
+          width: 68px;
+          height: 68px;
+        }
+
+        .todo-list .row div {
+          gap: 6px;
+          padding-top: 6px;
+        }
+
+        .todo-list h3 {
+          font-size: 19px;
+        }
+
+        .todo-list p {
+          font-size: 15px;
+          line-height: 1.5;
+        }
+
+        /* Simple as a message */
+        .simple {
+          padding: 104px var(--gutter);
+        }
+
+        .leaves-left,
+        .leaves-right {
+          top: 0;
+          bottom: auto;
+          height: 100%;
+          opacity: 1;
+        }
+
+        .leaves-left {
+          left: 0;
+        }
+
+        .leaves-right {
+          right: 0;
+        }
+
+        .simple .copy {
+          max-width: 900px;
+          margin: 0 auto;
+          gap: 18px;
+        }
+
+        .simple .lede {
+          max-width: 660px;
+        }
+
+        .steps {
+          margin-top: 40px;
+          display: grid;
+          grid-template-columns: repeat(3, minmax(0, 1fr));
+          gap: 32px;
+          width: 100%;
+          max-width: 780px;
+        }
+
+        .step {
+          gap: 12px;
+        }
+
+        .step .ico {
+          width: 76px;
+          height: 76px;
+        }
+
+        .step h3 {
+          font-size: 19px;
+          margin-top: 4px;
+        }
+
+        /* Closing */
+        .closing {
+          height: auto;
+          padding: 100px var(--gutter) 110px;
+        }
+
+        .closing-art-l,
+        .closing-art-r {
+          bottom: 0;
+          height: 380px;
+          width: auto;
+        }
+
+        .closing-art-l {
+          left: 0;
+        }
+
+        .closing-art-r {
+          right: 0;
+        }
+
+        .closing .copy {
+          max-width: 700px;
+          margin: 0 auto;
+          padding: 0;
+          gap: 18px;
+        }
+
+        .closing-go {
+          align-self: center;
+          width: auto;
+          margin: 18px auto 0;
+        }
+
+        .closing-go .cta {
+          min-height: 60px;
+          padding: 0 56px;
+          font-size: 20px;
+        }
+
+        .closing-go small {
+          font-size: 14px;
+        }
+
+        /* Footer */
+        .site-footer .col {
+          padding: 22px var(--gutter);
+        }
+
+        .site-footer .brand {
+          font-size: 22px;
         }
       }
 
       @media (prefers-reduced-motion: reduce) {
-        .phone,
-        .panel,
-        .chat li {
-          animation: none;
-          opacity: 1;
+        html {
+          scroll-behavior: auto;
         }
 
         .cta {
@@ -656,111 +1136,241 @@
     </style>
   </head>
   <body>
-    <header class="hero">
-      <div class="col">
-        <p class="kicker">Less to juggle. More life.</p>
-        <h1>Your life, organized. <span>Inside WhatsApp.</span></h1>
-        <p class="lede">An AI assistant that helps you focus on what matters.</p>
+    <section class="hero" id="top">
+      <img class="art hero-art-m mobile" src="/assets/landing-hero-robot-plant-mobile.webp" width="780" height="1040" alt="Assistyca's robot holding a small plant beside a stack of stones" />
+      <img class="art hero-art-l desktop" src="/assets/landing-hero-robot-plant-left.webp" width="668" height="1120" alt="Assistyca's robot holding a small plant beside a stack of stones" />
+      <img class="art hero-art-r desktop" src="/assets/landing-hero-leaves-right.webp" width="548" height="1120" alt="" aria-hidden="true" />
 
-        <div class="stage" aria-label="An example conversation with Assistyca">
-          <div class="phone">
-            <div class="screen">
-              <div class="island"></div>
-              <div class="status" aria-hidden="true">
-                <span>9:41</span>
-                <svg viewBox="0 0 64 12">
-                  <rect x="0" y="8" width="3" height="4" rx="1" />
-                  <rect x="5" y="5.5" width="3" height="6.5" rx="1" />
-                  <rect x="10" y="3" width="3" height="9" rx="1" />
-                  <rect x="15" y="0.5" width="3" height="11.5" rx="1" />
-                  <path d="M31 11.6 28.6 9.2a3.4 3.4 0 0 1 4.8 0zM25.9 6.5l1.4 1.4a5.3 5.3 0 0 1 7.4 0l1.4-1.4a7.3 7.3 0 0 0-10.2 0zM23.2 3.8l1.4 1.4a9.1 9.1 0 0 1 12.8 0l1.4-1.4a11.1 11.1 0 0 0-15.6 0z" />
-                  <rect x="44.5" y="1" width="16" height="10" rx="2.6" fill="none" stroke="#132038" stroke-opacity="0.45" />
-                  <rect x="46.2" y="2.7" width="12.6" height="6.6" rx="1.4" />
-                  <rect x="61.4" y="4.2" width="1.6" height="3.6" rx="0.8" fill-opacity="0.45" />
-                </svg>
-              </div>
-              <div class="wa-head" aria-hidden="true">
-                <svg class="ico" viewBox="0 0 24 24"><path d="m15 5-7 7 7 7" /></svg>
-                <span class="avatar"><img src="/assets/robot-leaf-96.webp" width="96" height="96" alt="" /></span>
-                <span class="who"><strong>Assistyca</strong><small>online</small></span>
-                <span class="end">
-                  <svg class="ico" viewBox="0 0 24 24"><rect x="2.5" y="6" width="13" height="12" rx="2.5" /><path d="m15.5 10.5 6-3.5v10l-6-3.5" /></svg>
-                  <svg class="ico" viewBox="0 0 24 24"><circle cx="12" cy="5" r="0.9" /><circle cx="12" cy="12" r="0.9" /><circle cx="12" cy="19" r="0.9" /></svg>
-                </span>
-              </div>
-              <ol class="chat">
-                <li class="me">Can you add this to my calendar?<time>9:17</time></li>
-                <li class="them">Done — I added it for Thursday at 4:00 PM.<time>9:17</time></li>
-                <li class="me">Great.<time>9:18</time></li>
-              </ol>
-              <div class="wa-input" aria-hidden="true">
-                <span class="field">
-                  <svg class="ico" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" /><path d="M8.5 14.5a4.5 4.5 0 0 0 7 0M9 9.5h.01M15 9.5h.01" /></svg>
-                  <span>Message…</span>
-                  <svg class="ico" viewBox="0 0 24 24"><path d="m20 11.5-7.8 7.8a5 5 0 0 1-7.1-7.1l7.9-7.9a3.3 3.3 0 0 1 4.7 4.7l-7.9 7.9a1.7 1.7 0 0 1-2.4-2.4l7.2-7.2" /></svg>
-                  <svg class="ico" viewBox="0 0 24 24"><path d="M3.5 8.5A2 2 0 0 1 5.5 6.5h2l1.5-2h6l1.5 2h2a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z" /><circle cx="12" cy="12.5" r="3.5" /></svg>
-                </span>
-                <span class="mic">
-                  <svg class="ico" viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3" /><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21" /></svg>
-                </span>
-              </div>
+      <header class="top">
+        <a class="brand" href="/">
+          <img src="/assets/robot-leaf-96.webp" width="96" height="96" alt="" />
+          Assistyca
+        </a>
+        <nav class="nav" aria-label="Main">
+          <a href="#how">How it works</a>
+          <a href="#features">Features</a>
+          <a href="#families">For families</a>
+          <a class="cta" href="/register">Get started</a>
+        </nav>
+        <details class="menu">
+          <summary aria-label="Menu">
+            <svg class="open" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16" /></svg>
+            <svg class="close" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" /></svg>
+          </summary>
+          <nav class="menu-panel" aria-label="Main">
+            <a href="#how">How it works</a>
+            <a href="#features">Features</a>
+            <a href="#families">For families</a>
+            <a href="/portal/">Sign in</a>
+            <a class="cta" href="/register">Get started</a>
+          </nav>
+        </details>
+      </header>
+
+      <div class="copy">
+        <p class="eyebrow">Less to juggle. More family life.</p>
+        <h1>Your family, organized.<br /><span>Right inside WhatsApp.</span></h1>
+        <div class="hero-row">
+          <div class="spacer" aria-hidden="true"></div>
+          <p class="lede">From school pickups to shopping lists, Assistyca keeps your family's plans and everyday tasks in one simple chat.</p>
+        </div>
+        <a class="cta hero-cta" href="/register">Get started for free</a>
+      </div>
+      <div class="hero-foot" aria-hidden="true"></div>
+
+      <div class="stage" aria-label="An example conversation with Assistyca">
+        <div class="phone">
+          <div class="screen">
+            <div class="status" aria-hidden="true">
+              <span>9:41</span>
+              <span class="notch"></span>
+              <span class="end">
+                <svg width="16" height="10" viewBox="0 0 16 10"><rect x="0" y="6" width="3" height="4" rx="1" fill="#111" /><rect x="4.5" y="4" width="3" height="6" rx="1" fill="#111" /><rect x="9" y="2" width="3" height="8" rx="1" fill="#111" /><rect x="13" y="0" width="3" height="10" rx="1" fill="#111" /></svg>
+                <svg width="22" height="11" viewBox="0 0 22 11"><rect x=".5" y=".5" width="19" height="10" rx="3" fill="none" stroke="#111" /><rect x="2" y="2" width="15" height="7" rx="2" fill="#111" /></svg>
+              </span>
+            </div>
+            <div class="chathead" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><path d="M15 18l-6-6 6-6" /></svg>
+              <img src="/assets/robot-leaf-96.webp" width="96" height="96" alt="" />
+              <span class="who"><strong>Assistyca</strong><small>online</small></span>
+              <svg viewBox="0 0 24 24"><rect x="2" y="6" width="14" height="12" rx="2" /><path d="M16 10l6-3v10l-6-3" /></svg>
+              <svg class="dots" viewBox="0 0 24 24"><circle cx="12" cy="5" r="1.8" /><circle cx="12" cy="12" r="1.8" /><circle cx="12" cy="19" r="1.8" /></svg>
+            </div>
+            <ol class="chats">
+              <li class="out">Who's picking up Maya from dance today?<time>9:14 ✓✓</time></li>
+              <li class="in">Stav is picking her up at 5:30. Want me to remind her?<time>9:14</time></li>
+              <li class="out">Yes! And add milk to our shopping list.<time>9:14 ✓✓</time></li>
+              <li class="in">Done! Both are taken care of. ✓<time>9:16</time></li>
+            </ol>
+            <div class="inputbar" aria-hidden="true">
+              <span class="field">
+                <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" /><path d="M8 14s1.5 2 4 2 4-2 4-2" /><path d="M9 9h.01M15 9h.01" /></svg>
+                <span>Message…</span>
+                <svg viewBox="0 0 24 24"><path d="M21 11l-9 9a5 5 0 01-7-7l9-9a3.5 3.5 0 015 5l-9 9a2 2 0 01-3-3l8-8" /></svg>
+                <svg viewBox="0 0 24 24"><path d="M3 8h4l2-3h6l2 3h4v12H3z" /><circle cx="12" cy="13" r="3.5" /></svg>
+              </span>
+              <span class="mic"><svg viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3" /><path d="M5 11a7 7 0 0014 0M12 18v3" /></svg></span>
             </div>
           </div>
         </div>
       </div>
-    </header>
+    </section>
 
-    <main class="col">
-      <section class="family-section" aria-labelledby="family-title">
-        <div class="panel family">
-          <p class="eyebrow">For families</p>
-          <h2 id="family-title">Everyone where <br />they need to be.</h2>
-          <p class="intro">Assistyca helps you manage the kids' activities, rides and changing plans — and keeps everyone in the loop.</p>
-
-          <div class="scene">
-            <ol class="chat">
-              <li class="me">Maya is sick today, she won't make it to gymnastics.<time>9:12</time></li>
-              <li class="them">Got it. Maya was scheduled to drive back with Ella's dad. I'll update the group. You're also on the driver list for today — should I ask if someone can take your turn?<time>9:12</time></li>
-              <li class="me">Yes please.<time>9:13</time></li>
-              <li class="them">Done! I'll let you know when someone takes it.<time>9:13</time></li>
-            </ol>
+    <main>
+      <section class="sync" id="how" aria-labelledby="sync-title">
+        <div class="col">
+          <div class="copy">
+            <p class="eyebrow">Keep everyone in sync</p>
+            <h2 id="sync-title">Less coordinating.<br /><span>More being together.</span></h2>
+            <p class="lede">Activities, rides and last-minute changes — Assistyca helps everyone know the plan.</p>
+            <div class="rows">
+              <div class="row">
+                <span class="ico"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="16" rx="2" /><path d="M3 10h18M8 3v4M16 3v4M7 14h2M11 14h2M15 14h2M7 17h2M11 17h2" /></svg></span>
+                <div><h3>Activities &amp; schedules</h3><p>Keep track of everyone's plans in one place</p></div>
+              </div>
+              <div class="row">
+                <span class="ico"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 17h14v-5l-2-5H7l-2 5z" /><path d="M5 12h14" /><circle cx="8" cy="15" r=".6" /><circle cx="16" cy="15" r=".6" /><path d="M6 17v2M18 17v2" /></svg></span>
+                <div><h3>Rides &amp; carpools</h3><p>Know who's going where and when</p></div>
+              </div>
+              <div class="row">
+                <span class="ico"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="3" /><circle cx="5" cy="10" r="2.2" /><circle cx="19" cy="10" r="2.2" /><path d="M7 19a5 5 0 0110 0M1.5 18a3.5 3.5 0 015-3M22.5 18a3.5 3.5 0 00-5-3" /></svg></span>
+                <div><h3>Family updates</h3><p>Easily share changes with the right people</p></div>
+              </div>
+            </div>
           </div>
 
-          <ul class="features">
-            <li>
-              <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="5" width="17" height="15.5" rx="2.5" /><path d="M3.5 10h17M8 3v4M16 3v4" /></svg>
-              Activities and schedules
-            </li>
-            <li>
-              <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 16.5V11l2-5.2A1.5 1.5 0 0 1 8.4 5h7.2a1.5 1.5 0 0 1 1.4.8L19 11v5.5" /><rect x="3.5" y="11" width="17" height="6" rx="1.8" /><path d="M6 17v2M18 17v2M7.5 14h.01M16.5 14h.01" /></svg>
-              Rides and carpools
-            </li>
-            <li>
-              <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="7.5" r="2.6" /><circle cx="5" cy="9.5" r="2" /><circle cx="19" cy="9.5" r="2" /><path d="M7.5 18.5a4.5 4.5 0 0 1 9 0M1.5 17.5a3.5 3.5 0 0 1 5-3.1M22.5 17.5a3.5 3.5 0 0 0-5-3.1" /></svg>
-              Parent updates
-            </li>
-          </ul>
+          <div class="phone desktop" aria-label="An example conversation about a changed plan">
+            <div class="screen">
+              <div class="status" aria-hidden="true"><span>9:41</span><span class="notch"></span><span class="end"></span></div>
+              <div class="chathead" aria-hidden="true">
+                <svg viewBox="0 0 24 24"><path d="M15 18l-6-6 6-6" /></svg>
+                <img src="/assets/robot-leaf-96.webp" width="96" height="96" alt="" />
+                <span class="who"><strong>Assistyca</strong><small>online</small></span>
+                <svg viewBox="0 0 24 24"><rect x="2" y="6" width="14" height="12" rx="2" /><path d="M16 10l6-3v10l-6-3" /></svg>
+                <svg class="dots" viewBox="0 0 24 24"><circle cx="12" cy="5" r="1.8" /><circle cx="12" cy="12" r="1.8" /><circle cx="12" cy="19" r="1.8" /></svg>
+              </div>
+              <ol class="chats">
+                <li class="out">Maya can't make it to gymnastics today.<time>9:20 ✓✓</time></li>
+                <li class="in">Got it. Shall I update the carpool group and find a replacement driver?<time>9:20</time></li>
+                <li class="out">Yes please.<time>9:21 ✓✓</time></li>
+                <li class="in">Done. Noa's dad will drive this week, and the group has been updated.<time>9:23</time></li>
+              </ol>
+              <div class="inputbar" aria-hidden="true">
+                <span class="field"><span>Message…</span></span>
+                <span class="mic"><svg viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3" /><path d="M5 11a7 7 0 0014 0M12 18v3" /></svg></span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
 
+      <section class="todo" id="features" aria-labelledby="todo-title">
+        <img class="art todo-art-m mobile" src="/assets/landing-groceries-mobile.webp" width="780" height="1040" alt="Assistyca's robot carrying a paper bag of groceries" />
+        <img class="art todo-art-l desktop" src="/assets/landing-groceries-desktop.webp" width="536" height="840" alt="Assistyca's robot carrying a paper bag of groceries" />
+        <div class="copy">
+          <p class="eyebrow">The little things, handled</p>
+          <h2 id="todo-title">Your family's to-do list,<br /><span>without the mental load.</span></h2>
+          <p class="lede">Add groceries, share tasks and set reminders as easily as sending a message.</p>
+        </div>
+        <div class="todo-row">
+          <div class="spacer" aria-hidden="true"></div>
 
-          <div class="go">
-            <a class="cta" href="/register">Get started for free <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12h16m-6-6 6 6-6 6" /></svg></a>
+          <div class="phone desktop" aria-label="An example conversation about a shopping list and a reminder">
+            <div class="screen">
+              <div class="status" aria-hidden="true"><span>9:41</span><span class="notch"></span><span class="end"></span></div>
+              <div class="chathead" aria-hidden="true">
+                <svg viewBox="0 0 24 24"><path d="M15 18l-6-6 6-6" /></svg>
+                <img src="/assets/robot-leaf-96.webp" width="96" height="96" alt="" />
+                <span class="who"><strong>Assistyca</strong><small>online</small></span>
+                <svg viewBox="0 0 24 24"><rect x="2" y="6" width="14" height="12" rx="2" /><path d="M16 10l6-3v10l-6-3" /></svg>
+                <svg class="dots" viewBox="0 0 24 24"><circle cx="12" cy="5" r="1.8" /><circle cx="12" cy="12" r="1.8" /><circle cx="12" cy="19" r="1.8" /></svg>
+              </div>
+              <ol class="chats">
+                <li class="out">Add eggs and bananas to the list.<time>9:32 ✓✓</time></li>
+                <li class="in">Added to your family shopping list.<time>9:32</time></li>
+                <li class="out">Remind me to call the dentist tomorrow at 10.<time>9:34 ✓✓</time></li>
+                <li class="in">Got it. I'll remind you tomorrow at 10:00.<time>9:34</time></li>
+              </ol>
+              <div class="inputbar" aria-hidden="true">
+                <span class="field"><span>Message…</span></span>
+                <span class="mic"><svg viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3" /><path d="M5 11a7 7 0 0014 0M12 18v3" /></svg></span>
+              </div>
+            </div>
+          </div>
+
+          <div class="todo-list">
+            <div class="row">
+              <span class="ico"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 4h2l2.5 11h11L21 8H6.5" /><circle cx="9" cy="19" r="1.5" /><circle cx="17" cy="19" r="1.5" /></svg></span>
+              <div><h3>Shared shopping lists</h3><p>Add, update and check items together</p></div>
+            </div>
+            <div class="row">
+              <span class="ico"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="3" /><path d="M8 12l3 3 5-6" /></svg></span>
+              <div><h3>Tasks &amp; errands</h3><p>Keep track of what needs to be done</p></div>
+            </div>
+            <div class="row">
+              <span class="ico"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 16V11a6 6 0 0112 0v5l2 2H4z" /><path d="M10 21h4" /></svg></span>
+              <div><h3>Helpful reminders</h3><p>Reminders at the right time, so nothing slips</p></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="simple" id="families" aria-labelledby="simple-title">
+        <img class="art leaves-left" src="/assets/landing-leaves-left.webp" width="376" height="536" alt="" aria-hidden="true" />
+        <img class="art leaves-right" src="/assets/landing-leaves-right.webp" width="328" height="536" alt="" aria-hidden="true" />
+        <div class="copy">
+          <p class="eyebrow">Simple as a message</p>
+          <h2 id="simple-title">No new app.<br class="mobile" /> No extra juggling.</h2>
+          <p class="lede">Just message Assistyca in WhatsApp. Ask, update, and get things done — all in the chat you already use.</p>
+          <div class="steps">
+            <div class="step">
+              <span class="ico"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12a8.5 8.5 0 01-12.5 7.5L3 21l1.5-5.5A8.5 8.5 0 1121 12z" /></svg></span>
+              <h3>Send a message</h3>
+              <p>Ask, add or update in seconds</p>
+            </div>
+            <div class="step">
+              <span class="ico"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="3" /><circle cx="5" cy="10" r="2.2" /><circle cx="19" cy="10" r="2.2" /><path d="M7 19a5 5 0 0110 0M1.5 18a3.5 3.5 0 015-3M22.5 18a3.5 3.5 0 00-5-3" /></svg></span>
+              <h3>Stay in sync</h3>
+              <p>Everyone knows the plan</p>
+            </div>
+            <div class="step">
+              <span class="ico"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20s-7.5-4.5-7.5-10A4.5 4.5 0 0112 7a4.5 4.5 0 017.5 3c0 5.5-7.5 10-7.5 10z" /></svg></span>
+              <h3>Enjoy the breathing room</h3>
+              <p>Less to remember. More time for what matters.</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="closing" id="start" aria-labelledby="closing-title">
+        <img class="art closing-art-m mobile" src="/assets/landing-sleeping-robot-mobile.webp" width="780" height="780" alt="Assistyca's robot resting against a smooth stone" />
+        <img class="art closing-art-l desktop" src="/assets/landing-stones-left.webp" width="588" height="416" alt="" aria-hidden="true" />
+        <img class="art closing-art-r desktop" src="/assets/landing-sleeping-robot-right.webp" width="584" height="416" alt="Assistyca's robot resting against a smooth stone" />
+        <div class="copy">
+          <p class="eyebrow">A happier, calmer family life.</p>
+          <h2 id="closing-title">A little less to manage.<br /><span>A lot more life to enjoy.</span></h2>
+          <div class="closing-go">
+            <a class="cta" href="/register">Get started free</a>
             <small>No credit card needed.</small>
-          </div>
-
-          <div class="closing">
-            <svg class="wave" viewBox="0 0 1440 40" preserveAspectRatio="none" aria-hidden="true"><path d="M0 40V22C240 2 480 0 720 12s480 26 720 6v22z" /></svg>
-            <svg class="ico heart" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20s-7.5-4.6-7.5-10.2A4.3 4.3 0 0 1 12 7.3a4.3 4.3 0 0 1 7.5 2.5C19.5 15.4 12 20 12 20z" /></svg>
-            <p>More time for what matters.</p>
           </div>
         </div>
       </section>
     </main>
 
     <footer class="site-footer">
-      <span class="powered">Powered by<a href="/" aria-label="Assistyca home">Assistyca</a></span>
-      <a href="/portal/">Sign in</a>
-      <a href="/about">About Nimrod</a>
-      <a href="/privacy.html">Privacy</a>
+      <div class="col">
+        <a class="brand" href="/" aria-label="Assistyca home">
+          <img src="/assets/robot-leaf-96.webp" width="96" height="96" alt="" />
+          Assistyca
+        </a>
+        <nav aria-label="Footer">
+          <a href="/portal/">Sign in</a>
+          <span aria-hidden="true">·</span>
+          <a href="/about">About Nimrod</a>
+          <span aria-hidden="true">·</span>
+          <a href="/privacy.html">Privacy</a>
+        </nav>
+      </div>
     </footer>
   </body>
 </html>

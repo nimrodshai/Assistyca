@@ -13,6 +13,5 @@ scripts/run_portal_server.local.sh
 scripts/*.local.py
 portal/*.db.backup-*
 
-# Claude desktop app worktrees and locks
-.claude/worktrees/
-.claude/scheduled_tasks.lock
+# Claude desktop app state: worktrees, preview launch files, locks
+.claude/
