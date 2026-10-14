@@ -141,7 +141,9 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertIn('href="/register"', markup)
         self.assertIn('href="/portal/"', markup)
         self.assertIn('href="/privacy.html"', markup)
-        self.assertIn('href="/about"', markup)
+        # The footer carries only Privacy: no sign-in, no agency page.
+        self.assertNotIn('href="/about"', markup)
+        self.assertNotIn("About Nimrod", markup)
         self.assertIn('<link rel="canonical" href="https://assistyca.com/" />', markup)
         self.assertNotIn("noindex", markup)
 
