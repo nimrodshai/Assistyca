@@ -23,6 +23,8 @@ from datetime import timedelta
 from typing import Any
 from typing import Iterable
 
+from packages.infrastructure.person_address import address_word
+
 MEMBER_ROLES = ("partner", "child", "other")
 # Who may change the week: the two parents, which is the account holder and
 # the partner. A grandparent who joined gets the pickups that are theirs and
@@ -180,6 +182,10 @@ def describe_speaker(member: dict[str, Any] | None, *, owner_name: str = "") -> 
     }
     if clean(owner_name):
         speaker["accountHolder"] = clean(owner_name, MAX_NAME_LENGTH)
+    # How they are spoken to in a language that marks it, once they have
+    # said it themselves (person_address); absent until then.
+    if address_word(member.get("addressForm")):
+        speaker["addressAs"] = address_word(member.get("addressForm"))
     return speaker
 
 
@@ -840,6 +846,11 @@ def describe_household(
             "askAgainOn": clean(profile.get("askAgainOn")) or None,
         },
     }
+    # How the account holder is spoken to in a language that marks it, once
+    # they have said it themselves (person_address); absent until then. A
+    # group is a room, not a person.
+    if not group_name and address_word(profile.get("addressForm")):
+        described["addressAs"] = address_word(profile.get("addressForm"))
     if group_name:
         described["forGroup"] = clean(group_name, MAX_NAME_LENGTH)
     described.update({
