@@ -15,7 +15,6 @@ from hashlib import sha256
 from html import escape
 from typing import Any
 from typing import Callable
-from urllib.parse import quote
 from zoneinfo import ZoneInfo
 from zoneinfo import ZoneInfoNotFoundError
 
@@ -865,13 +864,9 @@ def resolve_matched_watch_item(item: dict[str, Any], watch_items: list[str] | No
 
 
 def build_tool_editor_url(target: dict[str, Any]) -> str:
-    base_url = normalize_text(os.getenv("PUBLIC_BASE_URL")).rstrip("/")
-    feature_id = normalize_text(target.get("featureId")) or MONITOR_FEATURE_ID
-    if not base_url or not feature_id:
-        return ""
-
-    portal_base = base_url if base_url.endswith("/portal") else f"{base_url}/portal"
-    return f"{portal_base}/#features/{quote(feature_id)}/editor"
+    # The monitor's editor lived in the web chat, which is gone; with no page
+    # to open, the alert carries no button rather than one that goes nowhere.
+    return ""
 
 
 def escape_html_text(value: Any) -> str:

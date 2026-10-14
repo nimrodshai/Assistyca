@@ -401,57 +401,6 @@ class AnswerComposeEndpointTests(unittest.TestCase):
         self.assertEqual(raised.exception.code, 401)
 
 
-class AnswerComposeChatTests(unittest.TestCase):
-    """The chat side: the reply is written before it is shown."""
-
-    def setUp(self) -> None:
-        self.script = (Path(__file__).resolve().parents[1] / "portal" / "app.js").read_text(encoding="utf-8")
-
-    def test_the_finished_lookups_are_read_before_the_answer_is_shown(self) -> None:
-        runner = self.script[
-            self.script.index("async function runAgentAnswerNow"):
-            self.script.index("async function applyAgentTurnResponse")
-        ]
-
-        self.assertIn("await composeAgentAnswer(userText, found, runResults)", runner)
-        self.assertIn('agentTurnProgressText = "Working out the answer"', runner)
-
-    def test_a_failed_lookup_is_never_dressed_up_as_an_answer(self) -> None:
-        runner = self.script[
-            self.script.index("async function runAgentAnswerNow"):
-            self.script.index("async function applyAgentTurnResponse")
-        ]
-
-        self.assertIn("const answer = everyTaskFailed\n      ? found", runner)
-
-    def test_the_records_every_month_read_go_with_the_question(self) -> None:
-        composer = self.script[
-            self.script.index("function collectAgentAnswerRecords"):
-            self.script.index("function getAgentAnswerResultFolder")
-        ]
-
-        self.assertIn("response?.answerRecords", composer)
-        self.assertIn("records,", composer)
-        self.assertIn("conversation: buildAgentAnswerConversation()", composer)
-
-    def test_a_composer_that_fails_leaves_the_run_answer_standing(self) -> None:
-        composer = self.script[
-            self.script.index("async function composeAgentAnswer"):
-            self.script.index("function getAgentAnswerResultFolder")
-        ]
-
-        self.assertIn("catch (error) {\n    return cleanAnswer;\n  }", composer)
-
-    def test_a_lookup_that_found_nothing_is_still_answered_in_words(self) -> None:
-        composer = self.script[
-            self.script.index("async function composeAgentAnswer"):
-            self.script.index("function getAgentAnswerResultFolder")
-        ]
-
-        self.assertIn("if (!cleanQuestion || !cleanAnswer) {", composer)
-        self.assertNotIn("!records.length", composer)
-
-
 class GroupedFigureTests(unittest.TestCase):
     """The arithmetic arrives settled, rather than being done while writing."""
 

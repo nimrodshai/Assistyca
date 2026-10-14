@@ -1,6 +1,7 @@
 User-agent: *
 Allow: /
 Disallow: /portal/
+Disallow: /admin
 Disallow: /api/
 Disallow: /lists
 Disallow: /l/

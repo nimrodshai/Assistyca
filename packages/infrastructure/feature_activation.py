@@ -820,7 +820,7 @@ class FeatureActivationService:
 
         redirect_url = normalize_text(self.config.checkout_redirect_url)
         if not redirect_url and normalize_text(public_base_url):
-            redirect_url = f"{normalize_text(public_base_url).rstrip('/')}/portal/#features"
+            redirect_url = f"{normalize_text(public_base_url).rstrip('/')}/whatsapp"
 
         try:
             checkout = self.lemon_squeezy_client.create_checkout(

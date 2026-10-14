@@ -1,39 +1,21 @@
 # Assistyca Portal
 
-This folder holds the portal a family signs in to: the assistant chat, the features an account can use, and billing.
+This folder holds the web pages around the WhatsApp assistant. Families talk to Assistyca on WhatsApp; there is no web chat. What is here:
 
-It is intentionally separate from the reusable spec and per-client config layers under `clients/`.
+- `admin.html`, `admin.js`, `admin.css` at `/admin`: the house's own page. It signs in by email and a one-time code and shows four tabs: Clients (who has an account, their trial, their spend), Features (one switch per feature, for every account), Turns (how the assistant's turns are holding up) and Opportunities (website leads, for the owner only). The server decides which tabs a session gets (`canManageClients`, `canReviewOpportunities` on `/api/auth/session`); anyone else who signs in is told the page is not for them. The old `/portal/` address redirects here.
+- `register.html` at `/register`: the public registration page. A name and a structured WhatsApp number, and the agent texts the person first. See `docs/whatsapp-agent-chat.md`, "Registering on the web".
+- `week.html`, `lists.html`, `receipts.html` and their share pages: opened from links the assistant sends in WhatsApp. A link carries a one-time sign-in, so a family never types an email.
 
-## What lives here
+The WhatsApp webhook lives in the same backend at `/webhooks/whatsapp`.
 
-- `index.html` for the tabbed app shell
-- `styles.css` for the interface
-- `app.js` for the OTP sign-in flow, tab state, account menu, and the tool editor
-- The backend owns the feature catalog, activation state, and billing entitlements. Every account can use every feature that is switched on (Admin > Features turns one off for everyone at once), so there is nothing to assign per account. The browser keeps only local editor and draft setup state.
+## Sign-in flow (admin page)
 
-## Portal layout
-
-- `Agent` for the account and the tools it can use. Click one to open the tool overview or editor.
-- `About your family` in the account menu for the household context that should follow the person across tools: who is at home, which school, anything the assistant should know.
-- The Tool page has an overview and an editor inside the portal itself
-- The Scheduled Web Monitor runs in the backend on a recurring day interval, uses the shared OpenAI gateway plus the web search tool, and sends alerts by email, Telegram, or WhatsApp
-- The WhatsApp webhook lives inside the portal backend at `/webhooks/whatsapp`
-- `Settings` opens as a modal overlay for account details and portal preferences
-- `/register` is the public registration page: a name and a structured WhatsApp number, and the agent texts the person first; the account opens in the chat. See `docs/whatsapp-agent-chat.md`, "Registering on the web".
-- `Billing` is available from the account menu and shows the current month, per-tool usage, per-model usage, and historical monthly charges
-- The top-right menu opens the family details, billing, settings, and log out actions
-
-## Sign-in flow
-
-- People sign in with email and a one-time code.
-- The code is now issued by `scripts/run_portal_server.py` and verified by the server instead of being mocked in the browser.
+- Admins sign in with email and a one-time code, issued and verified by `scripts/run_portal_server.py`.
 - Set either the SMTP variables or the Resend variables so the server can actually email the code.
-- The same mail configuration is also used when a Scheduled Web Monitor alert is configured for email delivery.
-- Registered emails now live in the backend SQLite database at `portal/portal.db` by default.
+- Registered emails live in the backend SQLite database at `portal/portal.db` by default.
 - Set `PORTAL_DB_SEED_REGISTERED_EMAILS` to bootstrap the database the first time it starts. `PORTAL_REGISTERED_EMAILS` is still accepted as a legacy bootstrap alias.
 - Set `PORTAL_DB_SEED_ADMIN_EMAILS` to promote bootstrap users to admin on startup. `PORTAL_ADMIN_EMAILS` is still accepted as a legacy alias.
-- Set `PORTAL_DB_SEED_PAID_EMAILS` to mark specific portal users as entitled for all billing-required tools on startup. `PORTAL_PAID_EMAILS` is still accepted as a legacy alias.
-- Set `PORTAL_SUPPORT_PHONE` to the phone number shown to anyone who is not registered.
+- Set `PORTAL_DB_SEED_PAID_EMAILS` to mark specific users as entitled for all billing-required tools on startup. `PORTAL_PAID_EMAILS` is still accepted as a legacy alias.
 
 ## Recommended test hosting
 
@@ -106,7 +88,7 @@ Required environment variables on Render:
 - `LEMON_SQUEEZY_SCHEDULED_MONITOR_VARIANT_ID` optional per-feature override for the Scheduled Web Monitor plan or variant ID
 - `LEMON_SQUEEZY_SCHEDULED_MONITOR_PRODUCT_ID` optional per-feature product matcher when you want entitlement checks to follow a specific Lemon Squeezy product
 - `LEMON_SQUEEZY_SIGNING_SECRET` optional now, but needed once you accept Lemon Squeezy webhooks
-- `LEMON_SQUEEZY_ACTIVATION_REDIRECT_URL` optional override for where checkout should return after payment. If unset, the portal uses `PUBLIC_BASE_URL/portal/#features`
+- `LEMON_SQUEEZY_ACTIVATION_REDIRECT_URL` optional override for where checkout should return after payment. If unset, checkout returns to `PUBLIC_BASE_URL/whatsapp`, the conversation
 - `FEATURE_ACTIVATION_PAYMENT_STATUS_CACHE_TTL_SECONDS` optional cache TTL for backend payment-status refreshes. The default is `120`.
 
 The `PORTAL_RESEND_API_KEY` and `PORTAL_RESEND_FROM_EMAIL` values should be added as secrets in the Render dashboard.
@@ -125,23 +107,10 @@ PORTAL_SMTP_FROM_EMAIL=sign-in@example.com \
 python3 scripts/run_portal_server.py --port 8000
 ```
 
-Then visit `http://localhost:8000/portal/`.
-
-People link their own phone to the account from Settings: the portal hands out a claim code, they send it to the Assistyca WhatsApp number, and that phone is theirs (`/api/whatsapp/my-numbers`). The account never connects a WhatsApp Business Account of its own; Assistyca's number is the only sender.
-
-For Scheduled Web Monitor delivery:
-
-- People add a simple watch list in the tool editor, one item per line, then choose how many days should pass between checks.
-- Findings land in the owner's in-app notification feed. Email, Telegram and WhatsApp owner alerting were removed in favour of that single durable surface, so no delivery credentials are needed.
+Then visit `http://localhost:8000/admin`.
 
 To inspect the registered users table from the terminal, run `python3 scripts/portal_db.py list-users`.
 
-If you open the static portal from GitHub Pages, the UI falls back to `http://127.0.0.1:8000`
-unless you provide a different API base with `window.PORTAL_API_BASE`, the
-`portal-api-base` meta tag, or `?apiBase=...` in the URL.
-
 Signed-in requests authenticate with the `assistyca_portal_session` httpOnly cookie,
-which the browser only attaches to same-origin requests. A cross-origin API base can
-therefore serve the signed-out pages but cannot carry a session: to work against a
-local backend, open the portal from that backend directly (`http://127.0.0.1:8000/portal/`)
-rather than pointing a GitHub Pages copy at it.
+which the browser only attaches to same-origin requests, so open the admin page from
+the backend that serves it (`http://127.0.0.1:8000/admin`).

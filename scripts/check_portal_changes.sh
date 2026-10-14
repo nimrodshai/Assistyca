@@ -4,7 +4,7 @@ set -euo pipefail
 export PYTHONPYCACHEPREFIX="${PYTHONPYCACHEPREFIX:-/tmp/assistyca-python-cache}"
 
 python3 scripts/check_package_layout.py
-node --check portal/app.js
+node --check portal/admin.js
 node --check portal/receipts.js
 node --check portal/week-common.js
 node --check portal/week.js

@@ -33,7 +33,7 @@ jobs:
         run: python3 scripts/check_package_layout.py
 
       - name: Check portal script syntax
-        run: node --check portal/app.js
+        run: node --check portal/admin.js
 
       - name: Run tests
         run: |

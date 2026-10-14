@@ -7,9 +7,6 @@ and whether it calls itself an invoice or a receipt.
 
 from __future__ import annotations
 
-import json
-import subprocess
-import shutil
 import sys
 import tempfile
 import unittest
@@ -146,82 +143,6 @@ class FolderTagFileTests(unittest.TestCase):
 
         self.assertFalse(forget_file_tags(self.folder, ["gone.pdf"]))
         self.assertEqual(read_file_tags(self.folder), {"one.pdf": ["Render", "Jul"]})
-
-
-@unittest.skipUnless(shutil.which("node"), "node is needed to run the portal script")
-class FolderPanelTagTests(unittest.TestCase):
-    """The panel side: filtering by a tag, and completing one."""
-
-    def setUp(self) -> None:
-        self.script = (Path(__file__).resolve().parents[1] / "portal" / "app.js").read_text(encoding="utf-8")
-
-    def _run(self, setup: str, expression: str) -> object:
-        helpers = self.script[
-            self.script.index("function getAgentFolderSearchText"):
-            self.script.index("function getFilteredAgentFolders")
-        ]
-        completed = subprocess.run(
-            ["node", "-e", f"{setup}\n{helpers}\nconsole.log(JSON.stringify({expression}));"],
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-        return json.loads(completed.stdout)
-
-    # The helpers reach for the workspace and the loaded-folder cache, so the
-    # test stands both up rather than reaching into the browser.
-    SETUP = """
-const folders = [{ name: "Render", type: "receipts", itemCount: 2, tags: ["Render", "Aug", "2026", "Receipt"] }];
-const agentFolderContents = new Map([["Render", { status: "ready", items: [
-  { name: "Render - receipt.pdf", tags: ["Render", "Aug", "2026", "Receipt"] },
-  { name: "Render - invoice.pdf", tags: ["Render", "Aug", "2026", "Invoice"] },
-] }]]);
-function getAgentWorkspace() { return { folders }; }
-function normalizeAgentTextItem(value, fallback = "") { return String(value ?? "").trim() || fallback; }
-function getAgentFolderTypeOption() { return { value: "receipts", label: "Receipts" }; }
-function formatAgentFolderItemCount(count) { return `${count} items`; }
-const AGENT_MAX_FOLDER_TAGS = 40;
-function mergeAgentFolderTags(...lists) {
-  const tags = [];
-  const seen = new Set();
-  lists.forEach((list) => {
-    (Array.isArray(list) ? list : []).forEach((value) => {
-      const tag = String(value || "").trim().slice(0, 40);
-      if (!tag || seen.has(tag.toLowerCase())) { return; }
-      seen.add(tag.toLowerCase());
-      tags.push(tag);
-    });
-  });
-  return tags.slice(0, AGENT_MAX_FOLDER_TAGS);
-}
-"""
-
-    def test_a_folder_is_found_by_a_tag_on_the_files_inside_it(self) -> None:
-        text = self._run(self.SETUP, "getAgentFolderSearchText(folders[0])")
-
-        self.assertIn("aug", str(text))
-        self.assertIn("invoice", str(text))
-
-    def test_the_filter_box_knows_the_tags_already_in_use(self) -> None:
-        tags = self._run(self.SETUP, "getKnownAgentFolderTags()")
-
-        self.assertEqual(tags, ["2026", "Aug", "Invoice", "Receipt", "Render"])
-
-    def test_a_file_is_matched_by_its_tag_as_well_as_its_name(self) -> None:
-        matched = self._run(
-            self.SETUP,
-            'agentFolderFileMatchesSearch({ name: "Render - invoice.pdf", tags: ["Aug"] }, "aug")',
-        )
-
-        self.assertTrue(matched)
-
-    def test_a_file_the_query_says_nothing_about_does_not_match(self) -> None:
-        matched = self._run(
-            self.SETUP,
-            'agentFolderFileMatchesSearch({ name: "Render - invoice.pdf", tags: ["Aug"] }, "jul")',
-        )
-
-        self.assertFalse(matched)
 
 
 if __name__ == "__main__":
