@@ -486,6 +486,10 @@ CREATE TABLE IF NOT EXISTS household_profiles (
     -- script of each message they send; empty until they have written.
     -- Their scheduled messages go out in it (message_language).
     language TEXT NOT NULL DEFAULT '',
+    -- How the account holder is addressed in a language that marks it
+    -- ('f' or 'm'), kept from what they write about themselves; empty
+    -- until they have said it (person_address).
+    address_form TEXT NOT NULL DEFAULT '',
     share_token TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
@@ -511,6 +515,10 @@ CREATE TABLE IF NOT EXISTS household_members (
     email TEXT NOT NULL DEFAULT '',
     phone TEXT NOT NULL DEFAULT '',
     notes TEXT NOT NULL DEFAULT '',
+    -- How this person is addressed ('f' or 'm') in a language that marks
+    -- it, kept from what they write about themselves from their own phone;
+    -- empty until they have said it (person_address).
+    address_form TEXT NOT NULL DEFAULT '',
     -- The WhatsApp number this person joined the account from, once they
     -- have: it is how a message from that phone is known to be theirs. The
     -- phone column above is what the parent typed and is never read for it.
@@ -1704,6 +1712,8 @@ class PortalDatabase:
             # joined before the column existed.
             conn.execute("ALTER TABLE household_members ADD COLUMN wa_id TEXT NOT NULL DEFAULT ''")
             conn.execute("ALTER TABLE household_members ADD COLUMN wa_linked_at TEXT NOT NULL DEFAULT ''")
+        if "address_form" not in member_columns:
+            conn.execute("ALTER TABLE household_members ADD COLUMN address_form TEXT NOT NULL DEFAULT ''")
         activity_columns = {row["name"] for row in conn.execute("PRAGMA table_info(household_activities)").fetchall()}
         if "group_id" not in activity_columns:
             conn.execute("ALTER TABLE household_activities ADD COLUMN group_id TEXT NOT NULL DEFAULT ''")
@@ -1715,6 +1725,8 @@ class PortalDatabase:
             conn.execute("ALTER TABLE household_profiles ADD COLUMN connect_ask_again_on TEXT NOT NULL DEFAULT ''")
         if "language" not in profile_columns:
             conn.execute("ALTER TABLE household_profiles ADD COLUMN language TEXT NOT NULL DEFAULT ''")
+        if "address_form" not in profile_columns:
+            conn.execute("ALTER TABLE household_profiles ADD COLUMN address_form TEXT NOT NULL DEFAULT ''")
         if "own_week_asked_on" not in profile_columns:
             conn.execute("ALTER TABLE household_profiles ADD COLUMN own_week_asked_on TEXT NOT NULL DEFAULT ''")
             # Before this column, the question was put whenever the week was
@@ -8304,7 +8316,7 @@ class PortalDatabase:
 
     _HOUSEHOLD_PROFILE_SELECT = """
         SELECT u.id AS user_id, p.getting_to_know, p.ask_again_on,
-               p.connect_offer, p.connect_ask_again_on, p.own_week_asked_on, p.language, p.share_token,
+               p.connect_offer, p.connect_ask_again_on, p.own_week_asked_on, p.language, p.address_form, p.share_token,
                p.created_at, p.updated_at
         FROM users u LEFT JOIN household_profiles p ON p.user_id = u.id
     """
@@ -8320,6 +8332,7 @@ class PortalDatabase:
             "connectAskAgainOn": str(row["connect_ask_again_on"] or ""),
             "ownWeekAskedOn": str(row["own_week_asked_on"] or ""),
             "language": str(row["language"] or ""),
+            "addressForm": str(row["address_form"] or ""),
             "shareToken": str(row["share_token"] or ""),
             "createdAt": str(row["created_at"] or ""),
             "updatedAt": str(row["updated_at"] or ""),
@@ -8345,6 +8358,7 @@ class PortalDatabase:
         connect_ask_again_on: str | None = None,
         own_week_asked_on: str | None = None,
         language: str | None = None,
+        address_form: str | None = None,
     ) -> dict[str, Any]:
         """Set what is given and keep the rest."""
 
@@ -8356,6 +8370,8 @@ class PortalDatabase:
             raise ValueError(f"connect_offer must be one of: {', '.join(household.GETTING_TO_KNOW_STATUSES)}.")
         if language is not None and normalize_text(language).lower() not in {"", "he", "en"}:
             raise ValueError("language must be 'he', 'en' or empty.")
+        if address_form is not None and normalize_text(address_form).lower() not in {"", "f", "m"}:
+            raise ValueError("address_form must be 'f', 'm' or empty.")
         now = now_iso()
         with self._connection() as conn:
             conn.execute(
@@ -8385,6 +8401,9 @@ class PortalDatabase:
             if language is not None:
                 updates.append("language = ?")
                 values.append(normalize_text(language).lower())
+            if address_form is not None:
+                updates.append("address_form = ?")
+                values.append(normalize_text(address_form).lower())
             if updates:
                 conn.execute(
                     f"UPDATE household_profiles SET {', '.join(updates)}, updated_at = ? WHERE user_id = ?",
@@ -8429,6 +8448,7 @@ class PortalDatabase:
             "email": str(row["email"] or ""),
             "phone": str(row["phone"] or ""),
             "notes": str(row["notes"] or ""),
+            "addressForm": str(row["address_form"] or "") if "address_form" in row.keys() else "",
             "waId": str(row["wa_id"] or "") if "wa_id" in row.keys() else "",
             "waLinkedAt": str(row["wa_linked_at"] or "") if "wa_linked_at" in row.keys() else "",
             "createdAt": str(row["created_at"] or ""),
@@ -8444,6 +8464,22 @@ class PortalDatabase:
                 (int(user_id), int(member_id)),
             ).fetchone()
         return self._household_member_row(row)
+
+    def save_household_member_address_form(self, *, user_id: int, member_id: int, address_form: str) -> dict[str, Any]:
+        """Keep how a family member is addressed, from what they wrote
+        about themselves on their own phone (person_address)."""
+
+        form = normalize_text(address_form).lower()
+        if form not in {"", "f", "m"}:
+            raise ValueError("address_form must be 'f', 'm' or empty.")
+        if int(user_id or 0) <= 0 or int(member_id or 0) <= 0:
+            raise ValueError("User id and member id are required.")
+        with self._connection() as conn:
+            conn.execute(
+                "UPDATE household_members SET address_form = ?, updated_at = ? WHERE user_id = ? AND id = ?",
+                (form, now_iso(), int(user_id), int(member_id)),
+            )
+        return self.get_household_member(user_id=user_id, member_id=member_id) or {}
 
     def get_household_member_by_wa_id(self, wa_id: str, *, user_id: int = 0) -> dict[str, Any] | None:
         """The family member who joined from this phone, on this account when

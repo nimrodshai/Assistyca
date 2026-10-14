@@ -32,6 +32,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from packages.infrastructure.account_types import account_feature_allowed
 from packages.infrastructure.message_language import remember_message_language
 from packages.infrastructure.message_language import resolve_message_language
+from packages.infrastructure.person_address import remember_address_form
 from packages.infrastructure.notification_delivery import DEFAULT_WHATSAPP_API_VERSION
 from packages.infrastructure.notification_delivery import flatten_template_parameter
 from packages.infrastructure.notification_delivery import normalize_email
@@ -2700,6 +2701,16 @@ class WhatsAppAgentChat:
                 remember_message_language(self.database, user_id=self.user_id, text=text)
             except Exception as exc:  # noqa: BLE001
                 print(f"WhatsApp message language for user {self.user_id} could not be kept: {exc}", flush=True)
+            # And the gender they speak of themselves in, which is how they
+            # are addressed from now on: the family member's own when this
+            # is their phone, else the account holder's.
+            try:
+                remember_address_form(
+                    self.database, user_id=self.user_id, text=text,
+                    member_id=int(self.connection.get("memberId") or 0),
+                )
+            except Exception as exc:  # noqa: BLE001
+                print(f"WhatsApp address form for user {self.user_id} could not be kept: {exc}", flush=True)
 
         # A tap on the button under a ride word - one more word five minutes
         # before - is settled by code, like a tap on the calendar picker: the

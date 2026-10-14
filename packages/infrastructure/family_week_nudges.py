@@ -78,6 +78,7 @@ from packages.infrastructure.notification_templates import normalize_template_ki
 from packages.infrastructure import household
 from packages.infrastructure.account_types import account_feature_allowed
 from packages.infrastructure.portal_db import normalize_text
+from packages.infrastructure.person_address import address_word
 from packages.infrastructure.remind_again import REMIND_AGAIN_PAYLOAD_KEY
 from packages.infrastructure.remind_again import remind_again_offer
 from packages.infrastructure.schedule_exceptions import activities_not_excepted
@@ -576,16 +577,22 @@ def ride_fact(ride: dict[str, Any], who: str) -> str:
     return f"nobody is down yet to {fact}" if ride.get("open") else fact
 
 
-def leave_words(facts: list[str], open_count: int, *, reader: str = "", again_offered: bool = False) -> dict[str, str]:
+def leave_words(
+    facts: list[str], open_count: int, *, reader: str = "", again_offered: bool = False, reader_address: str = "",
+) -> dict[str, str]:
     """The title, instruction and fallback for the word before a drive -
     or before a pickup nobody has taken, which asks instead of reminding.
     reader is a family member's first name when the message is for their
-    phone; empty for the account holder. again_offered says the message
+    phone; empty for the account holder. reader_address is how that member
+    is spoken to when it is known ("a woman", "a man"), so the word is
+    written to them and not to a crowd. again_offered says the message
     ends, under the words, with the question whether to say so again five
     minutes before and a button for it, so the words do not ask that."""
 
     language = "the language the family writes to you in" if reader else "the language they write to you in"
     them = "them"
+    if reader and reader_address:
+        reader = f"{reader} ({reader_address})"
     if open_count == len(facts):
         # Nothing here is anyone's drive yet: a question, not a reminder.
         whose = f"This message is for {reader}, a parent in this family, who is to settle it." if reader else "The person is the one to settle it."
@@ -1442,6 +1449,9 @@ class FamilyWeekNudger:
             wants = household.member_nudges(member.get("role"))
             names = [str(member.get("name") or "")]
             first = names[0].split(" ")[0] if names[0] else "the person"
+            # How they are spoken to, once they have said it from their phone:
+            # the word is written to them, in their own gender, not to a crowd.
+            addressed = f"{first} ({address_word(member.get('addressForm'))})" if address_word(member.get("addressForm")) else first
             suffix = f":{member['id']}"
             if "morning" in wants and todays and in_morning and claim(f"morning:{today.isoformat()}{suffix}"):
                 lines = [describe_activity_line(activity, owner_names, members, viewer_names=names) for activity in todays]
@@ -1452,7 +1462,7 @@ class FamilyWeekNudger:
                 self._queue(
                     user_id=user_id, now=reference, timezone_name=timezone_name, recipient_wa_id=wa_id,
                     title="Today in your family's week", kind=TEMPLATE_KIND_MORNING_DIGEST, image_url=image_url,
-                    instruction=self._morning_instruction(lines=lines, reader=first, with_picture=bool(image_url)),
+                    instruction=self._morning_instruction(lines=lines, reader=addressed, with_picture=bool(image_url)),
                     fallback="Today:\n" + "\n".join(f"• {line}" for line in lines),
                 )
                 counts["morning"] += 1
@@ -1471,7 +1481,7 @@ class FamilyWeekNudger:
                         user_id=user_id, now=reference, timezone_name=timezone_name, recipient_wa_id=wa_id,
                         title="Tomorrow still needs someone", kind=TEMPLATE_KIND_EVENING_GLANCE, image_url=image_url,
                         instruction=(
-                            f"It is the evening, and this message is for {first}, a parent in this family writing from "
+                            f"It is the evening, and this message is for {addressed}, a parent in this family writing from "
                             "their own phone. " + (PICTURE_OF_TOMORROW if image_url else "")
                             + "In one or two short sentences, in the language the family writes to you "
                             "in, tell them what tomorrow still has nobody down for. This is a question, not a report: "
@@ -1508,7 +1518,10 @@ class FamilyWeekNudger:
             if not facts:
                 continue
             again = remind_again_offer(said, local_now=local_now, facts=facts, reader=first) if not open_count else {}
-            words = leave_words(facts, open_count, reader=first, again_offered=bool(again))
+            words = leave_words(
+                facts, open_count, reader=first, again_offered=bool(again),
+                reader_address=address_word(member.get("addressForm")),
+            )
             self._queue(
                 user_id=user_id, now=reference, timezone_name=timezone_name, recipient_wa_id=wa_id,
                 title=words["title"], instruction=words["instruction"], fallback=words["fallback"],
