@@ -470,9 +470,11 @@ class AdminFreeTrialControlTests(unittest.TestCase):
 
         # Dropped here, the whole control would silently render "No limit".
         self.assertIn("trial: normalizeAdminTrial(user.trial || null),", script)
-        self.assertIn('for (const heading of ["Client", "Email", "Client type", "Free trial",', script)
+        self.assertIn('for (const heading of ["Client", "Client type", "Free trial", "Cost this month", "Avg / month",', script)
         self.assertIn("trialCell.append(createAdminTrialControl(user, {", script)
-        self.assertIn("row.append(nameCell, emailCell, clientTypeCell, trialCell, spendCell,", script)
+        self.assertIn("row.append(nameCell, clientTypeCell, trialCell, spendCell, averageCell,", script)
+        # The email waits behind the button beside the name, not in a column.
+        self.assertIn("nameWrap.append(nameButton, createAdminEmailInfo(user));", script)
 
     def test_the_control_posts_the_day_count_to_the_trial_route(self) -> None:
         script = (self.root / "portal" / "admin.js").read_text(encoding="utf-8")

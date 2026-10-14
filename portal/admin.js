@@ -480,6 +480,8 @@ function normalizeAdminSpendTotals(value) {
     tokensUsed: Number.isFinite(tokensUsed) ? Math.max(0, tokensUsed) : 0,
     clientsWithUsage: Number.isFinite(clientsWithUsage) ? Math.max(0, clientsWithUsage) : 0,
     channels: normalizeSpendChannels(payload.channels),
+    averageMonthlyCostUsd: Number(payload.averageMonthlyCostUsd ?? 0) || 0,
+    clientsTracked: Math.max(0, Number(payload.clientsTracked ?? 0) || 0),
   };
 }
 
@@ -522,6 +524,8 @@ function normalizeAdminSpend(value) {
     previousMonths: previousMonths.filter((entry) => entry.month),
     lifetimeUsageUsd: Number.isFinite(lifetimeUsageUsd) ? lifetimeUsageUsd : 0,
     lifetimeCostUsd: Number.isFinite(lifetimeCostUsd) ? lifetimeCostUsd : 0,
+    averageMonthlyCostUsd: Number(payload.averageMonthlyCostUsd ?? 0) || 0,
+    daysTracked: Math.max(0, Number(payload.daysTracked ?? 0) || 0),
   };
 }
 
@@ -974,6 +978,45 @@ function getAdminUserSpend(user) {
   return user && typeof user.spend === "object" && user.spend ? user.spend : normalizeAdminSpend(null);
 }
 
+// How many days an average rests on, so a figure from three days reads as
+// the guess it is.
+function describeDaysTracked(days) {
+  const whole = Math.max(1, Math.round(Number(days) || 0));
+  return whole === 1 ? "over 1 day" : `over ${whole} days`;
+}
+
+function createAdminAverageCost(user) {
+  const spend = getAdminUserSpend(user);
+  const wrapper = document.createElement("div");
+  wrapper.className = "admin-spend-summary";
+
+  const amount = document.createElement("strong");
+  amount.className = "admin-spend-amount";
+  const note = document.createElement("span");
+  note.className = "admin-spend-split";
+  if (spend.daysTracked > 0) {
+    amount.textContent = formatCurrency(spend.averageMonthlyCostUsd, spend.currency);
+    note.textContent = describeDaysTracked(spend.daysTracked);
+  } else {
+    amount.textContent = "—";
+    note.textContent = "No usage yet";
+  }
+  wrapper.append(amount, note);
+  return wrapper;
+}
+
+// The email is rarely what is looked for, so it waits behind a small button
+// beside the name instead of taking a column.
+function createAdminEmailInfo(user) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "admin-info-button";
+  button.textContent = "i";
+  button.dataset.tooltip = user.email;
+  button.setAttribute("aria-label", `Email: ${user.email}`);
+  return button;
+}
+
 function createAdminSpendSummary(user) {
   const spend = getAdminUserSpend(user);
   const month = spend.currentMonth;
@@ -1085,6 +1128,15 @@ function createAdminSpendPanel(user) {
 
   panel.append(stack);
 
+  const averageRow = createAdminDetailRow(
+    "Average per month",
+    spend.daysTracked > 0
+      ? `${formatCurrency(spend.averageMonthlyCostUsd, spend.currency)} ${describeDaysTracked(spend.daysTracked)}`
+      : "No usage yet",
+  );
+  averageRow.classList.add("admin-spend-total");
+  panel.append(averageRow);
+
   const costRow = createAdminDetailRow(
     "Cost to date",
     formatCurrency(spend.lifetimeCostUsd, spend.currency),
@@ -1139,6 +1191,13 @@ function createAdminUsersListView() {
   const summaryItems = [
     ["Cost this month", formatCurrency(totals.costUsd, totals.currency), describeSpendChannels(totals.channels, totals.currency) || "What the model calls cost you"],
     ["Billed this month", formatCurrency(totals.billedUsd, totals.currency), "What clients pay"],
+    [
+      "Avg client / month",
+      totals.clientsTracked ? formatCurrency(totals.averageMonthlyCostUsd, totals.currency) : "—",
+      totals.clientsTracked
+        ? `Cost at each client's pace, ${totals.clientsTracked} client${totals.clientsTracked === 1 ? "" : "s"}`
+        : "No usage yet",
+    ],
     ["Clients", stats.total, "Registered accounts"],
     ["Active", stats.active, "Can sign in"],
     ["Paying", stats.paying, "Client type"],
@@ -1217,7 +1276,7 @@ function createAdminUsersListView() {
 
   const thead = document.createElement("thead");
   const headRow = document.createElement("tr");
-  for (const heading of ["Client", "Email", "Client type", "Free trial", "Cost this month", "Active", "Last login", ""]) {
+  for (const heading of ["Client", "Client type", "Free trial", "Cost this month", "Avg / month", "Active", "Last login", ""]) {
     const cell = document.createElement("th");
     cell.textContent = heading;
     headRow.append(cell);
@@ -1234,10 +1293,10 @@ function createAdminUsersListView() {
     nameButton.className = "admin-user-link";
     nameButton.dataset.adminOpenUser = user.email;
     nameButton.textContent = user.displayName || deriveDisplayName(user.email);
-    nameCell.append(nameButton);
-
-    const emailCell = document.createElement("td");
-    emailCell.textContent = user.email;
+    const nameWrap = document.createElement("span");
+    nameWrap.className = "admin-user-name";
+    nameWrap.append(nameButton, createAdminEmailInfo(user));
+    nameCell.append(nameWrap);
 
     const clientTypeCell = document.createElement("td");
     clientTypeCell.append(createAdminClientTypeSelect(user, {
@@ -1253,6 +1312,10 @@ function createAdminUsersListView() {
     const spendCell = document.createElement("td");
     spendCell.className = "admin-spend-cell";
     spendCell.append(createAdminSpendSummary(user));
+
+    const averageCell = document.createElement("td");
+    averageCell.className = "admin-spend-cell";
+    averageCell.append(createAdminAverageCost(user));
 
     const activeCell = document.createElement("td");
     activeCell.append(createAdminActiveSwitch(user, {
@@ -1273,7 +1336,7 @@ function createAdminUsersListView() {
     actionCell.append(manageButton);
 
     row.classList.toggle("is-inactive-client", !user.isActive);
-    row.append(nameCell, emailCell, clientTypeCell, trialCell, spendCell, activeCell, lastLoginCell, actionCell);
+    row.append(nameCell, clientTypeCell, trialCell, spendCell, averageCell, activeCell, lastLoginCell, actionCell);
     tbody.append(row);
   }
 

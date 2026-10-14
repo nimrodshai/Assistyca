@@ -170,6 +170,48 @@ class PortalDatabaseModelPriceTests(unittest.TestCase):
         self.assertAlmostEqual(summary["previousMonths"][0]["usageUsd"], 0.05)
         self.assertAlmostEqual(summary["lifetimeUsageUsd"], 0.16)
 
+    def test_the_average_month_is_the_cost_to_date_at_the_clients_own_pace(self) -> None:
+        database = PortalDatabase(self.db_path, default_monthly_minimum_cents=0)
+        database.register_user("owner@example.com")
+        database.register_user("new@example.com")
+        for when in (datetime(2026, 6, 10, tzinfo=timezone.utc), datetime(2026, 7, 2, tzinfo=timezone.utc)):
+            database.record_usage(
+                "owner@example.com", "gpt-5.5", tool_id="assistant", used_at=when,
+                input_tokens=400_000, output_tokens=400_000,
+            )
+
+        summary = database.summarize_client_spend(
+            "owner@example.com",
+            reference_time=datetime(2026, 7, 20, tzinfo=timezone.utc),
+        )
+
+        # 10 June to 20 July is 40 days; the cost of those 40 days, scaled to a month.
+        self.assertEqual(summary["daysTracked"], 40.0)
+        self.assertGreater(summary["lifetimeCostUsd"], 0)
+        self.assertAlmostEqual(
+            summary["averageMonthlyCostUsd"],
+            summary["lifetimeCostUsd"] / 40 * (365.25 / 12),
+            delta=0.01,
+        )
+        self.assertTrue(summary["firstUsedAt"].startswith("2026-06-10"))
+
+        unused = database.summarize_client_spend("new@example.com")
+        self.assertEqual(unused["daysTracked"], 0)
+        self.assertEqual(unused["averageMonthlyCostUsd"], 0.0)
+
+    def test_the_average_client_month_pools_every_clients_days(self) -> None:
+        from packages.infrastructure.portal_auth.server import summarize_admin_spend_totals
+
+        totals = summarize_admin_spend_totals([
+            {"spend": {"lifetimeCostUsd": 30.0, "daysTracked": 60}},
+            # Three days in: pooled, it moves the figure a little, not a lot.
+            {"spend": {"lifetimeCostUsd": 3.0, "daysTracked": 3}},
+            {"spend": {"lifetimeCostUsd": 0.0, "daysTracked": 0}},
+        ])
+
+        self.assertEqual(totals["clientsTracked"], 2)
+        self.assertAlmostEqual(totals["averageMonthlyCostUsd"], round(33.0 / 63 * (365.25 / 12), 2))
+
     def test_client_spend_summary_splits_cost_by_where_the_work_came_from(self) -> None:
         from packages.infrastructure.agent_turns import new_turn_record
 

@@ -2055,6 +2055,62 @@ select,
   margin: 0;
 }
 
+.admin-user-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.admin-info-button {
+  position: relative;
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  width: 18px;
+  height: 18px;
+  border: 1px solid var(--line-strong);
+  border-radius: 50%;
+  background: transparent;
+  color: var(--muted);
+  font-size: 0.7rem;
+  font-style: italic;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.admin-info-button:hover,
+.admin-info-button:focus-visible {
+  color: var(--text);
+  border-color: var(--accent);
+}
+
+.admin-info-button::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  left: calc(100% + 8px);
+  top: 50%;
+  z-index: 5;
+  padding: 0.35rem 0.55rem;
+  border-radius: var(--radius-sm);
+  background: var(--surface-strong);
+  box-shadow: var(--shadow-soft);
+  color: var(--text);
+  font-size: 0.8rem;
+  font-style: normal;
+  font-weight: 500;
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-50%);
+  transition: opacity 120ms ease;
+}
+
+.admin-info-button:hover::after,
+.admin-info-button:focus-visible::after,
+.admin-info-button:focus::after {
+  opacity: 1;
+}
+
 @media (max-width: 700px) {
   .admin-bar {
     flex-direction: column;
