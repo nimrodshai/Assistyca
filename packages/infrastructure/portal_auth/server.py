@@ -148,6 +148,7 @@ from packages.infrastructure.notification_delivery import resolve_whatsapp_sende
 from packages.infrastructure.notification_delivery import deliver_portal_notification
 from packages.infrastructure.notification_delivery import resolve_notification_user_id
 from packages.infrastructure.notification_delivery import send_whatsapp_notification
+from packages.infrastructure.portal_db import DAYS_PER_MONTH
 from packages.infrastructure.portal_db import DEFAULT_CURRENCY
 from packages.infrastructure.portal_db import DEFAULT_DB_PATH
 from packages.infrastructure.portal_db import DEFAULT_INPUT_TOKEN_PRICE_MULTIPLIER
@@ -962,9 +963,21 @@ def summarize_admin_spend_totals(users: list[dict[str, Any]]) -> dict[str, Any]:
         "usageCount": 0,
         "clientsWithUsage": 0,
         "channels": {},
+        "averageMonthlyCostUsd": 0.0,
+        "clientsTracked": 0,
     }
+    # The average client's month: every client's cost to date over every
+    # client's days, pooled, so a client three days in does not swing it the
+    # way an average of their own averages would.
+    pooled_cost = 0.0
+    pooled_days = 0.0
     for user in users:
         spend = user.get("spend") if isinstance(user.get("spend"), dict) else {}
+        days = float(spend.get("daysTracked") or 0)
+        if days > 0:
+            pooled_cost += float(spend.get("lifetimeCostUsd") or 0)
+            pooled_days += days
+            totals["clientsTracked"] += 1
         month = spend.get("currentMonth") if isinstance(spend.get("currentMonth"), dict) else {}
         if not month:
             continue
@@ -987,6 +1000,8 @@ def summarize_admin_spend_totals(users: list[dict[str, Any]]) -> dict[str, Any]:
             entry["usageUsd"] += float(bucket.get("usageUsd") or 0)
             entry["tokensUsed"] += int(bucket.get("tokensUsed") or 0)
             entry["usageCount"] += int(bucket.get("usageCount") or 0)
+    if pooled_days:
+        totals["averageMonthlyCostUsd"] = round(pooled_cost / pooled_days * DAYS_PER_MONTH, 2)
     for key in ("costUsd", "usageUsd", "billedUsd"):
         totals[key] = round(totals[key], 2)
     for entry in totals["channels"].values():

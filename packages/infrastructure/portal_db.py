@@ -1491,6 +1491,10 @@ def parse_datetime(value: Any) -> datetime:
     return moment
 
 
+# An average month, for turning a cost per day into a cost per month.
+DAYS_PER_MONTH = 365.25 / 12
+
+
 def month_key_for(moment: datetime | None = None) -> str:
     reference = moment or datetime.now().astimezone()
     return reference.astimezone().strftime("%Y-%m")
@@ -11715,6 +11719,19 @@ class PortalDatabase:
             previous_months = previous_months[:history_months]
 
         known_months = [current_month, *previous_months]
+        lifetime_cost_usd = sum(float(row["costUsd"]) for row in months)
+        # A month's worth of cost at the pace the client has kept since their
+        # first call. Calendar months would read low for anyone who started
+        # mid-month, and every account is weeks old; the days it rests on go
+        # with it, because a figure from three days is a guess.
+        first_used = min((parse_datetime(row["used_at"]) for row in rows if row["used_at"]), default=None)
+        days_tracked = 0.0
+        if first_used is not None:
+            now = parse_datetime(reference_time or datetime.now(timezone.utc))
+            days_tracked = max(1.0, (now - first_used).total_seconds() / 86400)
+        average_monthly_cost_usd = (
+            round(lifetime_cost_usd / days_tracked * DAYS_PER_MONTH, 2) if days_tracked else 0.0
+        )
         return {
             "email": normalized_email,
             "currency": currency,
@@ -11723,7 +11740,10 @@ class PortalDatabase:
             "currentMonth": current_month,
             "previousMonths": previous_months,
             "lifetimeUsageUsd": round(sum(float(row["usageUsd"]) for row in months), 2),
-            "lifetimeCostUsd": round(sum(float(row["costUsd"]) for row in months), 2),
+            "lifetimeCostUsd": round(lifetime_cost_usd, 2),
+            "firstUsedAt": first_used.isoformat() if first_used is not None else "",
+            "daysTracked": round(days_tracked, 1),
+            "averageMonthlyCostUsd": average_monthly_cost_usd,
             "knownBilledUsd": round(sum(float(row["billedUsd"]) for row in known_months), 2),
             "asOf": now_iso(),
         }
