@@ -127,7 +127,8 @@ class PortalStaticPageTests(unittest.TestCase):
         """Searching for Assistyca lands on the root, so the root must explain the product.
 
         The page used to be a redirect into the portal. A person who has never heard
-        of us needs the pitch and the way in; the sign-in stays one link away.
+        of us needs the pitch and the way in. Families reach their account from
+        the WhatsApp chat, so the page carries no sign-in link.
         """
         with urllib_request.urlopen(f"{self.base_url}/") as response:
             self.assertEqual(response.status, 200)
@@ -139,8 +140,9 @@ class PortalStaticPageTests(unittest.TestCase):
         self.assertNotIn('href="/register/business"', markup)
         self.assertNotIn('class="panel business"', markup)
         self.assertIn('href="/register"', markup)
-        self.assertIn('href="/portal/"', markup)
+        self.assertNotIn('href="/portal/"', markup)
         self.assertIn('href="/privacy.html"', markup)
+        self.assertIn('src="/assets/landing-start-bar.js"', markup)
         # The footer carries only Privacy: no sign-in, no agency page.
         self.assertNotIn('href="/about"', markup)
         self.assertNotIn("About Nimrod", markup)
