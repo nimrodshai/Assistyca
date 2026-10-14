@@ -667,6 +667,42 @@ class WhatsAppStatusWebhookTests(unittest.TestCase):
         self.assertEqual(metadata["lastOwnerNotificationStatus"], "delivered")
         self.assertEqual(metadata["lastOwnerNotificationMessageId"], "wamid.sample-1")
 
+    def test_whatsapp_status_webhook_keeps_meta_failure_for_unrouted_recipient(self) -> None:
+        payload = {
+            "entry": [{"changes": [{"value": {
+                "metadata": {"phone_number_id": "99999"},
+                "statuses": [{
+                    "id": "wamid.welcome-1",
+                    "status": "failed",
+                    "recipient_id": "972500000000",
+                    "timestamp": "1720861200",
+                    "errors": [{"code": 131049, "title": "Healthy ecosystem engagement"}],
+                }],
+            }}]}]
+        }
+        request = urllib_request.Request(
+            f"{self.base_url}/webhooks/whatsapp",
+            data=json.dumps(payload).encode("utf-8"),
+            method="POST",
+            headers={"Content-Type": "application/json"},
+        )
+
+        with mock.patch("builtins.print") as printed:
+            with urllib_request.urlopen(request, timeout=5) as response:
+                body = json.loads(response.read().decode("utf-8"))
+
+        result = body["results"][0]
+        self.assertEqual(result["type"], "status_error")
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["error"], "131049 Healthy ecosystem engagement")
+        ingest_lines = [
+            json.loads(call.args[0])
+            for call in printed.call_args_list
+            if call.args and "whatsapp_webhook_ingest" in str(call.args[0])
+        ]
+        self.assertEqual(ingest_lines[0]["statusCounts"], {"failed": 1})
+        self.assertEqual(ingest_lines[0]["statusFailures"][0]["error"], "131049 Healthy ecosystem engagement")
+
     def test_whatsapp_status_webhook_records_platform_owner_alert_without_latest_id(self) -> None:
         request = urllib_request.Request(
             f"{self.base_url}/webhooks/whatsapp",

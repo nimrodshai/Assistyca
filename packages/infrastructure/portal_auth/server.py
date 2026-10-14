@@ -16207,11 +16207,17 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 owner_wa_id=normalize_text(status_event.get("recipient_wa_id")),
             )
             if not connection:
+                # Nobody is routed yet (a web registrant's welcome, say), but
+                # Meta's verdict on the message is the only trace of why it
+                # never arrived, so keep it for the ingest log.
                 results.append({
                     "type": "status_error",
                     "message_id": status_event.get("message_id", ""),
                     "phone_number_id": phone_number_id,
-                    "error": "No portal workspace is connected to this phone number ID.",
+                    "recipient_wa_id": status_event.get("recipient_wa_id", ""),
+                    "status": status_event.get("status", ""),
+                    "error": normalize_text(status_event.get("error_message"))
+                    or "No portal workspace is connected to this phone number ID.",
                 })
                 continue
 
