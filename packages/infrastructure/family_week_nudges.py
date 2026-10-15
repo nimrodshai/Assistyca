@@ -71,6 +71,7 @@ from zoneinfo import ZoneInfoNotFoundError
 
 from packages.infrastructure.notification_templates import TEMPLATE_KIND_EVENING_GLANCE
 from packages.infrastructure.notification_templates import TEMPLATE_KIND_MORNING_DIGEST
+from packages.infrastructure.notification_templates import PICKUP_SLOTS_PAYLOAD_KEY
 from packages.infrastructure.notification_templates import TEMPLATE_KIND_PAYLOAD_KEY
 from packages.infrastructure.notification_templates import TEMPLATE_KIND_REMINDER_AGAIN
 from packages.infrastructure.notification_templates import TEMPLATE_KIND_WEEK_AHEAD
@@ -577,6 +578,35 @@ def ride_fact(ride: dict[str, Any], who: str) -> str:
     return f"nobody is down yet to {fact}" if ride.get("open") else fact
 
 
+def pickup_slots(
+    rides: list[dict[str, Any]], owner_names: list[str], viewer_names: list[str] | None = None,
+) -> dict[str, Any]:
+    """The kids, where from and when, for the template made for a pickup -
+    or nothing when the trip is not all pickups of theirs with a kid to
+    name. The reader is never one of the kids: "me", the account holder's
+    own name, or a family member's own name on their phone is left out."""
+
+    if not rides or any(ride.get("leg") == "drop_off" or ride.get("open") for ride in rides):
+        return {}
+    kids: list[str] = []
+    places: list[str] = []
+    for ride in rides:
+        activity = ride["activity"]
+        for name in activity.get("who") or []:
+            text = normalize_text(name)
+            if not text or household.is_self(text, owner_names) or (viewer_names and household.is_named(text, viewer_names)):
+                continue
+            if text not in kids:
+                kids.append(text)
+        title = normalize_text(activity.get("title"))
+        if title and title not in places:
+            places.append(title)
+    times = sorted(normalize_text(ride.get("at")) for ride in rides if normalize_text(ride.get("at")))
+    if not kids or not places or not times:
+        return {}
+    return {"kids": kids, "from": places, "at": times[0]}
+
+
 def leave_words(
     facts: list[str], open_count: int, *, reader: str = "", again_offered: bool = False, reader_address: str = "",
 ) -> dict[str, str]:
@@ -776,7 +806,7 @@ class FamilyWeekNudger:
     def _queue(
         self, *, user_id: int, now: datetime, timezone_name: str, title: str, instruction: str, fallback: str,
         offer: str = "", recipient_wa_id: str = "", image_url: str = "", kind: str = "",
-        remind_again: dict[str, Any] | None = None,
+        remind_again: dict[str, Any] | None = None, pickup: dict[str, Any] | None = None,
     ) -> None:
         """Queue one message for the account holder, or - with recipient_wa_id
         - for a family member's own phone on the same account. image_url is
@@ -785,7 +815,9 @@ class FamilyWeekNudger:
         (notification_templates); unnamed, it goes as a reminder.
         remind_again is the offer of one more word five minutes before
         (remind_again_offer): the worker puts the question and its button
-        under the message, and the tap is answered from what is kept here."""
+        under the message, and the tap is answered from what is kept here.
+        pickup is the trip in the slots of the pickup template (pickup_slots),
+        kept only with the offer, since that template carries the button."""
 
         connection = self.database.get_whatsapp_connection_by_user_id(user_id) or {}
         owner_wa_id = normalize_text(connection.get("ownerWaId")) or owner_phone(self.database, user_id)
@@ -807,6 +839,8 @@ class FamilyWeekNudger:
         if remind_again:
             payload[REMIND_AGAIN_PAYLOAD_KEY] = dict(remind_again)
             payload[TEMPLATE_KIND_PAYLOAD_KEY] = normalize_template_kind(kind or TEMPLATE_KIND_REMINDER_AGAIN)
+            if pickup:
+                payload[PICKUP_SLOTS_PAYLOAD_KEY] = dict(pickup)
         self.database.create_scheduled_action(
             user_id=user_id,
             action_type=STANDING_TASK_ACTION_TYPE,
@@ -1102,7 +1136,7 @@ class FamilyWeekNudger:
                 self._queue(
                     user_id=user_id, now=reference, timezone_name=timezone_name,
                     title=words["title"], instruction=words["instruction"], fallback=words["fallback"],
-                    remind_again=again or None,
+                    remind_again=again or None, pickup=pickup_slots(said, owner_names) if again else None,
                 )
                 counts["rides"] += 1
 
@@ -1529,7 +1563,7 @@ class FamilyWeekNudger:
             self._queue(
                 user_id=user_id, now=reference, timezone_name=timezone_name, recipient_wa_id=wa_id,
                 title=words["title"], instruction=words["instruction"], fallback=words["fallback"],
-                remind_again=again or None,
+                remind_again=again or None, pickup=pickup_slots(said, owner_names, names) if again else None,
             )
             counts["rides"] += 1
 

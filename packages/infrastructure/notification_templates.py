@@ -61,6 +61,15 @@ PICTURE_TEMPLATE_NAMES = {
 # Kinds whose only template opens with a picture: sent only with one.
 IMAGE_TEMPLATE_KINDS = frozenset({TEMPLATE_KIND_WEEK_AHEAD})
 
+# The word before a pickup of their own, with its own slots - the kids, where
+# from, the time - and the remind-again button under it. Only a trip that is
+# all pickups rides it ("you're picking up Noa from ballet" cannot say a
+# drop-off); anything else, or a refusal while Meta reviews it, rides the
+# reminder_again template with the assistant's line in its one variable.
+PICKUP_REMINDER_TEMPLATE_NAME = "assistyca_pickup_reminder"
+PICKUP_SLOTS_PAYLOAD_KEY = "pickupSlots"
+LIST_JOINER = {"en": " and ", "he": " ו"}
+
 
 def normalize_template_kind(value: Any) -> str:
     text = str(value or "").strip().lower()
@@ -93,9 +102,34 @@ def image_template_for(kind: Any, language: Any) -> tuple[str, str]:
     return name, template_language(language)
 
 
+def _joined(items: list[str], language: str) -> str:
+    """Noa and Tom; Noa, Tom and Lia - or נועה ותום in Hebrew."""
+
+    if len(items) <= 1:
+        return "".join(items)
+    return ", ".join(items[:-1]) + LIST_JOINER.get(language, LIST_JOINER["en"]) + items[-1]
+
+
+def pickup_reminder_parameters(slots: Any, language: Any) -> list[str]:
+    """{{1}} the kids, {{2}} where from, {{3}} the time, or nothing when the
+    slots are not all there: a blank variable is refused whole by Meta."""
+
+    if not isinstance(slots, dict):
+        return []
+    resolved = template_language(language)
+    kids = [str(name).strip() for name in slots.get("kids") or [] if str(name).strip()]
+    places = [str(place).strip() for place in slots.get("from") or [] if str(place).strip()]
+    at = str(slots.get("at") or "").strip()
+    if not kids or not places or not at:
+        return []
+    return [_joined(kids, resolved), _joined(places, resolved), at]
+
+
 __all__ = [
     "DEFAULT_TEMPLATE_KIND",
     "IMAGE_TEMPLATE_KINDS",
+    "PICKUP_REMINDER_TEMPLATE_NAME",
+    "PICKUP_SLOTS_PAYLOAD_KEY",
     "PICTURE_TEMPLATE_NAMES",
     "TEMPLATE_KINDS",
     "TEMPLATE_KIND_EVENING_GLANCE",
@@ -107,6 +141,7 @@ __all__ = [
     "TEMPLATE_NAMES",
     "image_template_for",
     "normalize_template_kind",
+    "pickup_reminder_parameters",
     "template_for",
     "template_language",
 ]

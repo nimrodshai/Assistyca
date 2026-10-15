@@ -11,6 +11,7 @@ from packages.infrastructure.message_language import resolve_message_language
 from packages.infrastructure.notification_templates import TEMPLATE_KIND_PAYLOAD_KEY
 from packages.infrastructure.notification_templates import image_template_for
 from packages.infrastructure.notification_templates import normalize_template_kind
+from packages.infrastructure.notification_templates import pickup_reminder_parameters
 from packages.infrastructure.notification_templates import template_for
 from packages.infrastructure.portal_db import PortalDatabase
 
@@ -83,6 +84,21 @@ class NotificationTemplateTests(unittest.TestCase):
         self.assertEqual(template_for("morning_digest", "en"), ("assistyca_morning_digest", "en"))
         # A reminder with a picture rides the one template that takes any picture.
         self.assertEqual(image_template_for("reminder", "en"), ("assistyca_week_ahead", "en"))
+
+class PickupReminderParameterTests(unittest.TestCase):
+    def test_the_kids_the_places_and_the_time_fill_the_three_slots(self) -> None:
+        slots = {"kids": ["Noa"], "from": ["Ballet"], "at": "17:30"}
+        self.assertEqual(pickup_reminder_parameters(slots, "en"), ["Noa", "Ballet", "17:30"])
+        three = {"kids": ["Noa", "Tom", "Lia"], "from": ["Ballet", "Judo"], "at": "17:30"}
+        self.assertEqual(pickup_reminder_parameters(three, "en"), ["Noa, Tom and Lia", "Ballet and Judo", "17:30"])
+        hebrew = {"kids": ["נועה", "תום"], "from": ["בלט"], "at": "17:30"}
+        self.assertEqual(pickup_reminder_parameters(hebrew, "he"), ["נועה ותום", "בלט", "17:30"])
+
+    def test_a_missing_slot_means_no_pickup_template(self) -> None:
+        # Meta refuses a blank variable, so the word goes on another template.
+        self.assertEqual(pickup_reminder_parameters({"kids": [], "from": ["Ballet"], "at": "17:30"}, "en"), [])
+        self.assertEqual(pickup_reminder_parameters({"kids": ["Noa"], "from": ["Ballet"], "at": ""}, "en"), [])
+        self.assertEqual(pickup_reminder_parameters(None, "en"), [])
 
 
 if __name__ == "__main__":

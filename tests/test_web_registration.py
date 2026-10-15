@@ -16,7 +16,9 @@ from types import SimpleNamespace
 from unittest import mock
 
 from packages.infrastructure.portal_auth.server import PortalConfig, create_server
+from packages.infrastructure.registration_welcome import FAMILY_HELLO
 from packages.infrastructure.registration_welcome import FAMILY_WELCOME_BODY
+from packages.infrastructure.registration_welcome import HEBREW_FAMILY_HELLO
 from packages.infrastructure.registration_welcome import HEBREW_FAMILY_WELCOME_BODY
 from packages.infrastructure.whatsapp_agent_chat import flatten_for_template
 
@@ -156,7 +158,7 @@ class WebRegistrationTests(unittest.TestCase):
         send = self.template_sent.call_args.kwargs
         self.assertEqual(send["recipient_wa_id"], PHONE)
         self.assertIsNone(send["message_text"])
-        self.assertEqual(send["template"]["name"], "assistyca_welcome_family")
+        self.assertEqual(send["template"]["name"], "assistyca_welcome_family_hello")
         self.assertEqual(send["template"]["language"], {"code": "en"})
         components = {component["type"]: component for component in send["template"]["components"]}
         self.assertEqual([parameter["text"] for parameter in components["body"]["parameters"]], ["Dana"])
@@ -204,16 +206,34 @@ class WebRegistrationTests(unittest.TestCase):
         # thing in its conversation, so nothing it said is said again.
         transcript = self.database.list_recent_whatsapp_agent_messages(user_id=user_id)
         self.assertEqual([entry["role"] for entry in transcript], ["assistant", "user", "assistant"])
-        self.assertTrue(transcript[0]["text"].startswith("Hi Dana 👋"))
-        self.assertIn(FAMILY_WELCOME_BODY, transcript[0]["text"])
+        self.assertEqual(transcript[0]["text"], FAMILY_HELLO.format(name="Dana"))
 
-    def test_while_meta_reviews_the_new_welcome_the_earlier_one_carries_it(self) -> None:
-        # The new welcome exists in both languages under one name, but Meta
-        # refuses it while the review runs. The English one it approved
-        # earlier goes instead, in English, so the family still hears from us.
+    def test_while_meta_reviews_the_new_welcome_the_approved_one_carries_it(self) -> None:
+        # Meta refuses the new welcome while the review runs; the one it
+        # approved earlier goes in its place, in their language, and the
+        # conversation we keep has its words.
+        def not_the_new_one(**kwargs):
+            if (kwargs.get("template") or {}).get("name") == "assistyca_welcome_family_hello":
+                raise RuntimeError("(#132001) Template name does not exist in the translation")
+            return "wamid.welcome-approved"
+
+        self.template_sent.side_effect = not_the_new_one
+        status, payload = self.register(registration(name="דנה לוי"))
+
+        self.assertEqual(status, 200, payload)
+        self.assertTrue(payload["whatsappSent"])
+        sent = self.template_sent.call_args.kwargs["template"]
+        self.assertEqual((sent["name"], sent["language"]), ("assistyca_welcome_family", {"code": "he"}))
+        transcript = (self.database.get_whatsapp_signup(PHONE) or {})["transcript"]
+        self.assertTrue(transcript[0]["text"].startswith("היי דנה 👋"))
+        self.assertIn(HEBREW_FAMILY_WELCOME_BODY, transcript[0]["text"])
+
+    def test_when_neither_family_welcome_is_taken_the_earliest_one_carries_it(self) -> None:
+        # The English welcome Meta approved first stands last, in English, so
+        # the family still hears from us.
         def only_the_old_one(**kwargs):
             template = kwargs.get("template") or {}
-            if template.get("name") == "assistyca_welcome_family":
+            if template.get("name") in ("assistyca_welcome_family_hello", "assistyca_welcome_family"):
                 raise RuntimeError("(#132001) Template name does not exist in the translation")
             return "wamid.welcome-old"
 
@@ -298,13 +318,12 @@ class WebRegistrationTests(unittest.TestCase):
         self.assertEqual(status, 200, payload)
 
         sent = self.template_sent.call_args.kwargs["template"]
-        self.assertEqual(sent["name"], "assistyca_welcome_family")
+        self.assertEqual(sent["name"], "assistyca_welcome_family_hello")
         self.assertEqual(sent["language"], {"code": "he"})
         self.assertEqual([parameter["text"] for parameter in sent["components"][-1]["parameters"]], ["דנה"])
         # The conversation we keep says what their phone showed, in Hebrew.
         transcript = (self.database.get_whatsapp_signup(PHONE) or {})["transcript"]
-        self.assertTrue(transcript[0]["text"].startswith("היי דנה 👋"))
-        self.assertIn(HEBREW_FAMILY_WELCOME_BODY, transcript[0]["text"])
+        self.assertEqual(transcript[0]["text"], HEBREW_FAMILY_HELLO.format(name="דנה"))
 
     def test_whatever_else_the_page_sends_is_not_kept(self) -> None:
         # The old page asked what the business did; a stale tab may still send
@@ -349,7 +368,10 @@ class WebRegistrationTests(unittest.TestCase):
         # when it cannot. The words matter more than the picture, so the
         # second attempt goes without it.
         def refuse_the_picture(**kwargs):
-            components = (kwargs.get("template") or {}).get("components") or []
+            template = kwargs.get("template") or {}
+            if template.get("name") == "assistyca_welcome_family_hello":
+                raise RuntimeError("(#132001) Template name does not exist in the translation")
+            components = template.get("components") or []
             if any(component.get("type") == "header" for component in components):
                 raise RuntimeError("(#131053) Media upload error")
             return "wamid.welcome-no-picture"
@@ -361,7 +383,9 @@ class WebRegistrationTests(unittest.TestCase):
 
         self.assertEqual(status, 200, payload)
         self.assertTrue(payload["whatsappSent"])
-        self.assertEqual(self.template_sent.call_count, 2)
+        # The new welcome (no picture, refused), the approved one with its
+        # picture (refused), then the approved one without it.
+        self.assertEqual(self.template_sent.call_count, 3)
         sent = self.template_sent.call_args.kwargs["template"]
         self.assertEqual([component["type"] for component in sent["components"]], ["body"])
         self.assertEqual(sent["name"], "assistyca_welcome_family")

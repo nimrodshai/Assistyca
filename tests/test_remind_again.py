@@ -89,6 +89,8 @@ class RideWordOfferTests(unittest.TestCase):
         self.assertNotIn("reader", offer)
         self.assertEqual(word["payload"]["templateKind"], "reminder_again")
         self.assertIn("do not ask or offer that yourself", word["payload"]["instruction"])
+        # A drop-off is not a pickup: the pickup template cannot say it.
+        self.assertNotIn("pickupSlots", word["payload"])
 
     def test_a_partner_on_their_own_phone_gets_the_offer_too(self) -> None:
         self.assertEqual(self.nudger.run_pending(now=at(SUNDAY, 15, 35))["rides"], 1)
@@ -98,6 +100,8 @@ class RideWordOfferTests(unittest.TestCase):
         self.assertEqual(offer["dueAt"], "2026-09-20T16:00:00+00:00")
         self.assertEqual(offer["reader"], "Shirly")
         self.assertEqual(offer["facts"], ["collect Tom - Kindergarten at 16:00, Gan Rimon"])
+        # A pickup keeps the kid, where from and when for the pickup template.
+        self.assertEqual(word["payload"]["pickupSlots"], {"kids": ["Tom"], "from": ["Kindergarten"], "at": "16:00"})
 
     def test_a_word_that_asks_who_does_a_drive_carries_no_offer(self) -> None:
         # Nobody collects Noa from ballet: the owner is asked who does it.
@@ -136,7 +140,7 @@ class ButtonOnTheSendTests(unittest.TestCase):
         self.env.stop()
         self.temp_dir.cleanup()
 
-    def _ride_word(self) -> dict:
+    def _ride_word(self, **extra) -> dict:
         return self.database.create_scheduled_action(
             user_id=self.user_id, action_type="run_task", channel="whatsapp", recipient_ref="owner",
             run_at=datetime.now(UTC) - timedelta(seconds=1), timezone_name="Asia/Jerusalem",
@@ -145,6 +149,7 @@ class ButtonOnTheSendTests(unittest.TestCase):
                 "oneOff": True, "source": "family_week", "templateKind": "reminder_again",
                 "remindAgain": {"dueAt": (datetime.now(UTC) + timedelta(minutes=30)).isoformat(), "minutesBefore": 5,
                                 "facts": ["take Tom - Kindergarten at 08:00"]},
+                **extra,
             },
         )
 
@@ -214,6 +219,53 @@ class ButtonOnTheSendTests(unittest.TestCase):
         self.assertEqual([c["type"] for c in template["components"]], ["body"])
         saved = self.database.get_scheduled_action(int(action["id"])) or {}
         self.assertEqual(saved["payload"]["whatsappTemplate"], "assistyca_reminder:en")
+
+    def _pickup_word(self) -> dict:
+        return self._ride_word(pickupSlots={"kids": ["Noa", "Tom"], "from": ["Ballet", "Judo"], "at": "17:30"})
+
+    def test_outside_the_window_a_pickup_rides_its_own_template_with_the_button(self) -> None:
+        action = self._pickup_word()
+        send = self._run()
+        self.assertEqual(send.call_count, 1)
+        template = send.call_args.kwargs["template"]
+        self.assertEqual((template["name"], template["language"]), ("assistyca_pickup_reminder", {"code": "en"}))
+        body, button = template["components"]
+        self.assertEqual([parameter["text"] for parameter in body["parameters"]], ["Noa and Tom", "Ballet and Judo", "17:30"])
+        self.assertEqual(button["parameters"], [{"type": "payload", "payload": f"remindagain:{action['id']}"}])
+        saved = self.database.get_scheduled_action(int(action["id"])) or {}
+        self.assertEqual(saved["payload"]["whatsappTemplate"], "assistyca_pickup_reminder:en")
+
+    def test_a_hebrew_pickup_joins_the_names_the_hebrew_way(self) -> None:
+        self.database.save_household_profile(user_id=self.user_id, language="he")
+        self._pickup_word()
+        send = self._run()
+        template = send.call_args.kwargs["template"]
+        self.assertEqual(template["language"], {"code": "he"})
+        self.assertEqual(template["components"][0]["parameters"][0]["text"], "Noa וTom")
+
+    def test_until_meta_approves_the_pickup_template_the_word_rides_the_one_with_the_button(self) -> None:
+        action = self._pickup_word()
+
+        def refuse_the_pickup_one(**kwargs):
+            if (kwargs.get("template") or {}).get("name") == "assistyca_pickup_reminder":
+                raise RuntimeError("(#132001) Template name does not exist in the translation")
+            return "wamid.2"
+
+        with mock.patch("packages.infrastructure.whatsapp_messaging.send_whatsapp_message", side_effect=refuse_the_pickup_one) as send:
+            self._scheduler().run_pending(now=datetime.now(UTC))
+        self.assertEqual(send.call_count, 2)
+        template = send.call_args.kwargs["template"]
+        self.assertEqual(template["name"], "assistyca_reminder_again")
+        self.assertEqual(len(template["components"][0]["parameters"]), 1)
+        saved = self.database.get_scheduled_action(int(action["id"])) or {}
+        self.assertEqual(saved["payload"]["whatsappTemplate"], "assistyca_reminder_again:en")
+
+    def test_inside_the_window_a_pickup_is_still_the_assistants_own_words(self) -> None:
+        self.database.save_whatsapp_agent_message(user_id=self.user_id, role="user", text="hi")
+        self._pickup_word()
+        send = self._run()
+        self.assertIsNone(send.call_args.kwargs["template"])
+        self.assertEqual(send.call_args.kwargs["interactive"]["type"], "button")
 
     def test_a_word_without_the_offer_has_no_button(self) -> None:
         self.database.save_whatsapp_agent_message(user_id=self.user_id, role="user", text="hi")
