@@ -30,6 +30,9 @@ Three moments, each once, on the person's own clock:
   a question already, and carries no second one;
 * a birthday a month away, with an offer of the ready-made list to get
   ready for it;
+* the first one o'clock after a family with a child at school joins, in
+  Israel: whether they would like the homework checked (homework_check).
+  Plain text inside the 24-hour window, or nothing;
 * Saturday evening: the whole of the coming week as one picture - a
   calendar with a column per day, a colour per person - drawn by
   week_summary_image from the
@@ -77,7 +80,9 @@ from packages.infrastructure.notification_templates import SCHEDULE_SLOTS_PAYLOA
 from packages.infrastructure.notification_templates import TEMPLATE_KIND_PAYLOAD_KEY
 from packages.infrastructure.notification_templates import TEMPLATE_KIND_REMINDER_AGAIN
 from packages.infrastructure.notification_templates import TEMPLATE_KIND_WEEK_AHEAD
+from packages.infrastructure.notification_templates import WINDOW_ONLY_PAYLOAD_KEY
 from packages.infrastructure.notification_templates import normalize_template_kind
+from packages.infrastructure import homework_check
 from packages.infrastructure import household
 from packages.infrastructure.account_types import account_feature_allowed
 from packages.infrastructure.portal_db import normalize_text
@@ -158,6 +163,7 @@ class FamilyWeekNudgeConfig:
     # Where the picture can be fetched from by Meta: the site's public
     # address. Without one the week ahead goes out in words alone.
     public_base_url: str = ""
+    homework_offer: bool = True
 
 
 def _parse_int(value: str | None, default: int) -> int:
@@ -185,6 +191,8 @@ def load_family_week_nudge_config() -> FamilyWeekNudgeConfig:
         week_ahead_hour=min(23, max(0, _parse_int(os.getenv("PORTAL_FAMILY_WEEK_AHEAD_HOUR"), DEFAULT_WEEK_AHEAD_HOUR))),
         week_ahead_minute=min(59, max(0, _parse_int(os.getenv("PORTAL_FAMILY_WEEK_AHEAD_MINUTE"), DEFAULT_WEEK_AHEAD_MINUTE))),
         public_base_url=normalize_text(os.getenv("PUBLIC_BASE_URL")).rstrip("/"),
+        homework_offer=normalize_text(os.getenv("PORTAL_HOMEWORK_OFFER_ENABLED")).lower()
+        not in {"0", "false", "no", "off", "disabled"},
     )
 
 
@@ -837,7 +845,7 @@ class FamilyWeekNudger:
         self, *, user_id: int, now: datetime, timezone_name: str, title: str, instruction: str, fallback: str,
         offer: str = "", recipient_wa_id: str = "", image_url: str = "", kind: str = "",
         remind_again: dict[str, Any] | None = None, ride: dict[str, Any] | None = None,
-        schedule: dict[str, Any] | None = None,
+        schedule: dict[str, Any] | None = None, window_only: bool = False,
     ) -> None:
         """Queue one message for the account holder, or - with recipient_wa_id
         - for a family member's own phone on the same account. image_url is
@@ -850,7 +858,8 @@ class FamilyWeekNudger:
         ride is the trip in the slots of the pickup or drop-off template
         (ride_slots), kept only with the offer, since those templates carry
         the button. schedule is the day's figures for the Utility morning and
-        evening templates (schedule_slots)."""
+        evening templates (schedule_slots). window_only is a message that
+        goes as plain text inside the 24-hour window or not at all."""
 
         connection = self.database.get_whatsapp_connection_by_user_id(user_id) or {}
         owner_wa_id = normalize_text(connection.get("ownerWaId")) or owner_phone(self.database, user_id)
@@ -876,6 +885,8 @@ class FamilyWeekNudger:
                 payload[RIDE_SLOTS_PAYLOAD_KEY] = dict(ride)
         if schedule:
             payload[SCHEDULE_SLOTS_PAYLOAD_KEY] = dict(schedule)
+        if window_only:
+            payload[WINDOW_ONLY_PAYLOAD_KEY] = True
         self.database.create_scheduled_action(
             user_id=user_id,
             action_type=STANDING_TASK_ACTION_TYPE,
@@ -1018,7 +1029,10 @@ class FamilyWeekNudger:
 
     def run_pending(self, *, now: datetime | None = None) -> dict[str, Any]:
         reference = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
-        counts = {"accounts": 0, "morning": 0, "evening": 0, "rides": 0, "birthdays": 0, "askedAgain": 0, "weekAhead": 0}
+        counts = {
+            "accounts": 0, "morning": 0, "evening": 0, "rides": 0, "birthdays": 0, "askedAgain": 0, "weekAhead": 0,
+            "homeworkOffer": 0,
+        }
         for user_id in self.database.list_household_nudge_accounts():
             if not account_feature_allowed(self.database, feature_id="family_week"):
                 continue
@@ -1245,6 +1259,12 @@ class FamilyWeekNudger:
                 self.database.save_household_profile(user_id=user_id, ask_again_on="")
                 counts["askedAgain"] += 1
 
+            if not week_paused and self._offer_homework_check(
+                user_id=user_id, members=members, local_now=local_now, reference=reference,
+                timezone_name=timezone_name, claim=claim,
+            ):
+                counts["homeworkOffer"] += 1
+
             if activities and not week_paused and self._week_ahead_due(local_now):
                 try:
                     counts["weekAhead"] += self._send_week_ahead(
@@ -1255,6 +1275,42 @@ class FamilyWeekNudger:
                 except Exception as exc:  # noqa: BLE001 - the picture is a courtesy; the week's other nudges go on
                     print(f"[family-week] week ahead failed user={user_id} error={exc!r}", flush=True)
         return {"ok": True, **counts}
+
+    def _offer_homework_check(
+        self, *, user_id: int, members: list[dict[str, Any]], local_now: datetime, reference: datetime,
+        timezone_name: str, claim: Callable[[str], bool],
+    ) -> bool:
+        """Ask once, at the account's first 13:00, whether to check the
+        children's homework (homework_check). Only in Israel, only with a
+        child at school, only while the person is inside the 24-hour window -
+        and only once: the claim is taken whether or not it can be asked, so
+        a family whose moment passed is never asked later instead."""
+
+        from packages.infrastructure.scheduled_actions import service_window_open
+
+        if not self.config.homework_offer or not homework_check.offered_where(timezone_name):
+            return False
+        user = self.database.get_user_by_id(user_id) or {}
+        try:
+            registered_at = datetime.fromisoformat(normalize_text(user.get("registeredAt")))
+        except ValueError:
+            return False
+        if registered_at.tzinfo is None:
+            registered_at = registered_at.replace(tzinfo=timezone.utc)
+        if not homework_check.offer_due(registered_at, local_now):
+            return False
+        children = homework_check.school_children(members, local_now.date())
+        if not children or not claim(homework_check.HOMEWORK_OFFER_NUDGE_KEY):
+            return False
+        if not service_window_open(self.database, user_id, now=reference):
+            print(f"[family-week] homework offer skipped user={user_id}: outside the 24-hour window", flush=True)
+            return False
+        words = homework_check.offer_message(children)
+        self._queue(
+            user_id=user_id, now=reference, timezone_name=timezone_name, title=words["title"],
+            instruction=words["instruction"], fallback=words["fallback"], window_only=True,
+        )
+        return True
 
     def _draw_day(
         self, *, user_id: int, day: date, plans: list[dict[str, Any]], status: dict[str, Any] | None,
@@ -1623,6 +1679,7 @@ class FamilyWeekNudger:
                 summary = {**self.run_pending(), **self.run_pending_for_groups()}
                 sent = sum(int(summary.get(key) or 0) for key in (
                     "morning", "evening", "rides", "birthdays", "askedAgain", "weekAhead", "groupEvening", "groupRides",
+                    "homeworkOffer",
                 ))
                 if sent:
                     logger(f"[family-week] queued={sent} {summary}")

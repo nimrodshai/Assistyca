@@ -668,6 +668,36 @@ CREATE INDEX IF NOT EXISTS idx_schedule_exceptions_scope
 ON schedule_exceptions(user_id, group_id, ends_on);
 """
 
+# The homework check (homework_check). A link to the private page where a
+# parent types the school platform's login: one code, spent on the first
+# save or after two days. The login itself is kept as ciphertext only - the
+# username too, which is often the child's ID number - and is never read
+# back into a prompt or a page.
+HOMEWORK_TABLES_SQL = """
+CREATE TABLE IF NOT EXISTS homework_login_links (
+    code TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    used_at TEXT,
+    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS homework_logins (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    platform TEXT NOT NULL,
+    other_platform TEXT NOT NULL DEFAULT '',
+    school_code TEXT NOT NULL DEFAULT '',
+    username_ciphertext TEXT NOT NULL,
+    password_ciphertext TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_homework_logins_user ON homework_logins(user_id);
+"""
+
 
 INSURANCE_TABLES_SQL = """
 -- A policy is the stable thing the owner recognises. Its wording is never
@@ -731,6 +761,8 @@ def _erased_phone_hash(wa_id: str) -> str:
 
 
 USER_OWNED_TABLES = (
+    "homework_logins",
+    "homework_login_links",
     "followed_threads",
     "account_receipts",
     "receipt_mail_reads",
@@ -1678,6 +1710,7 @@ class PortalDatabase:
                 self._ensure_household_tables(conn)
                 conn.executescript(SCHEDULE_EXCEPTIONS_TABLE_SQL)
                 conn.executescript(SCHEDULE_EXCEPTIONS_INDEXES_SQL)
+                conn.executescript(HOMEWORK_TABLES_SQL)
                 self._seed_default_model_prices(conn)
                 if self.bootstrap_registered_emails and self.count_registered_users(conn) == 0:
                     self._seed_registered_emails(conn, self.bootstrap_registered_emails)
@@ -9076,9 +9109,11 @@ class PortalDatabase:
 
     def list_household_nudge_accounts(self) -> list[int]:
         """Accounts the week nudger has something to look at: a week with
-        anything in it, a birthday to remember, or getting to know them put
-        off to a set day."""
+        anything in it, a birthday to remember, getting to know them put
+        off to a set day, or a family with a child that joined in the last
+        few days and may be due the homework question."""
 
+        recent = (datetime.now(timezone.utc) - timedelta(days=4)).isoformat()
         with self._connection() as conn:
             rows = conn.execute(
                 """
@@ -9087,7 +9122,11 @@ class PortalDatabase:
                 SELECT DISTINCT user_id FROM household_members WHERE group_id = '' AND birthday <> ''
                 UNION
                 SELECT user_id FROM household_profiles WHERE getting_to_know = 'postponed' AND ask_again_on <> ''
-                """
+                UNION
+                SELECT DISTINCT m.user_id FROM household_members AS m JOIN users AS u ON u.id = m.user_id
+                WHERE m.group_id = '' AND m.role = 'child' AND u.registered_at >= ?
+                """,
+                (recent,),
             ).fetchall()
         return sorted(int(row["user_id"]) for row in rows)
 
@@ -9183,6 +9222,121 @@ class PortalDatabase:
                 (int(user_id), normalize_text(nudge_key)[:160], now.isoformat()),
             )
         return cursor.rowcount > 0
+
+    # -- the homework check ----------------------------------------------------
+
+    def create_homework_login_link(self, *, user_id: int, code: str, expires_at: datetime) -> dict[str, Any]:
+        """A fresh link to the login page, replacing any unspent one: the
+        newest link sent is the one that works."""
+
+        normalized_code = normalize_text(code)
+        if int(user_id or 0) <= 0 or not normalized_code:
+            raise ValueError("A homework login link needs an account and a code.")
+        created_at = now_iso()
+        expiry = expires_at.astimezone(timezone.utc).isoformat()
+        with self._connection() as conn:
+            conn.execute(
+                "DELETE FROM homework_login_links WHERE user_id = ? AND used_at IS NULL", (int(user_id),),
+            )
+            conn.execute(
+                "INSERT INTO homework_login_links (code, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)",
+                (normalized_code, int(user_id), created_at, expiry),
+            )
+        return {"code": normalized_code, "userId": int(user_id), "createdAt": created_at, "expiresAt": expiry}
+
+    def get_homework_login_link(self, code: str, *, now: datetime | None = None) -> dict[str, Any] | None:
+        """One link by its code, with where it stands: live, used or expired.
+        None for a code nobody issued."""
+
+        normalized_code = normalize_text(code)
+        if not normalized_code:
+            return None
+        with self._connection() as conn:
+            row = conn.execute(
+                "SELECT code, user_id, created_at, expires_at, used_at FROM homework_login_links WHERE code = ?",
+                (normalized_code,),
+            ).fetchone()
+        if row is None:
+            return None
+        reference = (now or datetime.now(timezone.utc)).astimezone(timezone.utc).isoformat()
+        status = "used" if row["used_at"] else "expired" if str(row["expires_at"]) <= reference else "live"
+        return {
+            "code": str(row["code"]),
+            "userId": int(row["user_id"]),
+            "expiresAt": str(row["expires_at"]),
+            "status": status,
+        }
+
+    def save_homework_login(
+        self, *, code: str, platform: str, username: str, password: str, school_code: str = "",
+        other_platform: str = "", now: datetime | None = None,
+    ) -> dict[str, Any]:
+        """Keep a login typed on the page, encrypted, and spend the link it
+        came through. Fails closed: with no vault nothing is written."""
+
+        if self.credential_vault is None:
+            raise RuntimeError("Credential encryption is not configured.")
+        link = self.get_homework_login_link(code, now=now)
+        if link is None or link["status"] != "live":
+            raise LookupError((link or {}).get("status") or "not_found")
+        username_ciphertext = self.credential_vault.encrypt(username)
+        password_ciphertext = self.credential_vault.encrypt(password)
+        created_at = now_iso()
+        with self._connection() as conn:
+            spent = conn.execute(
+                "UPDATE homework_login_links SET used_at = ? WHERE code = ? AND used_at IS NULL",
+                (created_at, link["code"]),
+            )
+            if spent.rowcount != 1:
+                raise LookupError("used")
+            cursor = conn.execute(
+                """
+                INSERT INTO homework_logins
+                    (user_id, platform, other_platform, school_code, username_ciphertext, password_ciphertext, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    link["userId"], normalize_text(platform), normalize_text(other_platform), normalize_text(school_code),
+                    username_ciphertext, password_ciphertext, created_at,
+                ),
+            )
+        return {"id": int(cursor.lastrowid), "userId": link["userId"], "platform": normalize_text(platform), "createdAt": created_at}
+
+    def list_homework_logins(self, *, user_id: int) -> list[dict[str, Any]]:
+        """The logins kept for a family, without a word of what they are."""
+
+        with self._connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, platform, other_platform, school_code, created_at FROM homework_logins
+                WHERE user_id = ? ORDER BY id
+                """,
+                (int(user_id),),
+            ).fetchall()
+        return [
+            {
+                "id": int(row["id"]),
+                "platform": str(row["platform"]),
+                "otherPlatform": str(row["other_platform"] or ""),
+                "hasSchoolCode": bool(row["school_code"]),
+                "createdAt": str(row["created_at"]),
+            }
+            for row in rows
+        ]
+
+    def delete_homework_logins(self, *, user_id: int, login_id: int = 0) -> int:
+        """Remove one kept login, or every one the family has, with any link
+        still waiting to be used."""
+
+        with self._connection() as conn:
+            if login_id:
+                cursor = conn.execute(
+                    "DELETE FROM homework_logins WHERE user_id = ? AND id = ?", (int(user_id), int(login_id)),
+                )
+            else:
+                cursor = conn.execute("DELETE FROM homework_logins WHERE user_id = ?", (int(user_id),))
+                conn.execute("DELETE FROM homework_login_links WHERE user_id = ?", (int(user_id),))
+        return int(cursor.rowcount or 0)
 
     @staticmethod
     def _schedule_exception_row(row: sqlite3.Row | None) -> dict[str, Any] | None:

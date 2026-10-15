@@ -1,0 +1,49 @@
+/* The homework login page: the week page's palette, one short form. */
+.homework-form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.homework-form p {
+  margin: 0;
+}
+
+input[type="password"] {
+  width: 100%;
+  min-height: 44px;
+  padding: 0 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line);
+  background: var(--surface-solid);
+  color: var(--ink);
+  font: inherit;
+}
+
+input[type="password"]:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+  border-color: transparent;
+}
+
+/* Usernames and codes are Latin and digits even on a Hebrew page. */
+#username,
+#password,
+#schoolCode {
+  direction: ltr;
+  text-align: start;
+}
+
+.lock-note {
+  font-size: 0.9rem;
+  color: var(--muted);
+}
+
+.form-error {
+  color: var(--danger);
+  font-size: 0.9rem;
+}
+
+.homework-form .chip-toggle {
+  position: relative;
+}

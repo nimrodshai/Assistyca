@@ -50,6 +50,9 @@ TEMPLATE_KINDS = (
     TEMPLATE_KIND_REMINDER_AGAIN,
 )
 TEMPLATE_KIND_PAYLOAD_KEY = "templateKind"
+# A message that goes as plain text inside the 24-hour window or not at all:
+# no template is tried for it.
+WINDOW_ONLY_PAYLOAD_KEY = "windowOnly"
 
 # The names as Meta holds them, each approved in `en` and `he`.
 TEMPLATE_NAMES = {
@@ -245,6 +248,7 @@ __all__ = [
     "TEMPLATE_KIND_EVENING_GLANCE",
     "TEMPLATE_KIND_MORNING_DIGEST",
     "TEMPLATE_KIND_PAYLOAD_KEY",
+    "WINDOW_ONLY_PAYLOAD_KEY",
     "TEMPLATE_KIND_REMINDER",
     "TEMPLATE_KIND_REMINDER_AGAIN",
     "TEMPLATE_KIND_WEEK_AHEAD",

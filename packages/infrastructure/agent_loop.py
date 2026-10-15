@@ -25,6 +25,7 @@ from __future__ import annotations
 import base64
 import json
 import re
+import secrets
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -36,6 +37,7 @@ from typing import Any, Callable
 from zoneinfo import ZoneInfo
 from zoneinfo import ZoneInfoNotFoundError
 
+from packages.infrastructure import homework_check
 from packages.infrastructure import household
 
 from packages.infrastructure.agent_proposals import ASSISTANT_CAPABILITIES_PITCH
@@ -360,6 +362,9 @@ class LoopContext:
     # Builds the link a parent forwards to bring someone onto the account,
     # from an invitation code. The server knows the public address.
     join_link: Callable[[str], str] | None = None
+    # Builds the link to the private page where a parent types the school
+    # platform's login for the homework check, from the page's code.
+    homework_link: Callable[[str], str] | None = None
     # Offered links that stay written out in the reply instead of becoming a
     # button: a link meant to be forwarded to somebody else is no use as a
     # button the person taps themselves.
@@ -2529,6 +2534,67 @@ def _tool_invite_family_member(context: LoopContext, args: dict[str, Any]) -> di
     })
 
 
+def _kept_homework_logins(context: LoopContext) -> list[dict[str, Any]]:
+    return [
+        {
+            "id": login["id"],
+            "platform": login.get("otherPlatform") or homework_check.platform_label(login["platform"]),
+            "savedOn": str(login.get("createdAt") or "")[:10],
+        }
+        for login in context.database.list_homework_logins(user_id=context.user_id)
+    ]
+
+
+def _tool_homework_login_link(context: LoopContext, args: dict[str, Any]) -> dict[str, Any]:
+    """The private page where a parent gives the school platform's login, so
+    the homework can be checked for them. The login never passes through
+    the chat: it is typed on the page and kept encrypted."""
+
+    if context.homework_link is None:
+        return _error("not_supported", "The homework page cannot be opened from here.")
+    try:
+        record = context.database.create_homework_login_link(
+            user_id=context.user_id, code=secrets.token_urlsafe(18),
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=homework_check.HOMEWORK_LINK_TTL_HOURS),
+        )
+        link = str(context.homework_link(record["code"]) or "").strip()
+    except Exception as exc:  # noqa: BLE001
+        return _error("internal", f"The homework page could not be made: {exc}", can_retry=True)
+    if not link:
+        return _error("internal", "The homework page could not be made just now.", can_retry=True)
+    _offer_link(context, link, "Add the school login")
+    return _ok({
+        "link": link,
+        "expiresInHours": homework_check.HOMEWORK_LINK_TTL_HOURS,
+        "alreadyKept": _kept_homework_logins(context),
+        "howItIsKept": (
+            "Typed on the page, encrypted the moment it arrives, never shown again - not to you, not in the chat - "
+            "and used only to read the homework. They can remove it here whenever they like."
+        ),
+        "neverInChat": (
+            "Do not ask for the username or password in the chat. If they type one here anyway, do not repeat it; "
+            "tell them the page is the safer place for it."
+        ),
+        "whenChecked": "Every school day when school ends, starting soon after the login is in.",
+    })
+
+
+def _tool_forget_homework_login(context: LoopContext, args: dict[str, Any]) -> dict[str, Any]:
+    """Remove a school login kept for the homework check - one, or all."""
+
+    kept = _kept_homework_logins(context)
+    if not kept:
+        return _ok({"removed": 0, "note": "No school login is kept for this family."})
+    try:
+        login_id = int(args.get("id") or 0)
+    except (TypeError, ValueError):
+        login_id = 0
+    if login_id and login_id not in {login["id"] for login in kept}:
+        return _error("not_found", "No kept login has that id.", kept=kept)
+    removed = context.database.delete_homework_logins(user_id=context.user_id, login_id=login_id)
+    return _ok({"removed": removed, "stillKept": _kept_homework_logins(context)})
+
+
 def _tool_set_connect_offer(context: LoopContext, args: dict[str, Any]) -> dict[str, Any]:
     """Where the offer to connect the mail and the calendar stands, so a "not
     now" is not asked again tomorrow morning."""
@@ -3894,6 +3960,29 @@ TOOLS: list[ToolSpec] = [
         parameters=_params({"name": {"type": "string"}}),
         side_effect=True,
         run=_tool_invite_family_member,
+    ),
+    ToolSpec(
+        name="homework_login_link",
+        description=(
+            "The private page where a parent gives the login of their children's school platform (Mashov, "
+            "Webtop, Google Classroom or another), so you can check the homework for them every school day "
+            "when school ends. For when they say yes to the homework check, or ask for it. Returns the link: "
+            "send it as it is. The login is typed on the page, never in the chat, and kept encrypted. Returns "
+            "alreadyKept too, the logins they have given before."
+        ),
+        parameters=_params({}),
+        side_effect=True,
+        run=_tool_homework_login_link,
+    ),
+    ToolSpec(
+        name="forget_homework_login",
+        description=(
+            "Remove a school login kept for the homework check, when they ask to stop it or to take the login "
+            "back. id is one login from alreadyKept or kept; leave it null to remove every one."
+        ),
+        parameters=_params({"id": {"type": ["integer", "null"]}}),
+        side_effect=True,
+        run=_tool_forget_homework_login,
     ),
     ToolSpec(
         name="save_week_activity",

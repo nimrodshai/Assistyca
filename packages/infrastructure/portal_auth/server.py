@@ -169,6 +169,7 @@ from packages.infrastructure.rate_limiter import (
     LIST_OPEN_PER_IP,
     CONTACT_AGENT_PER_IP,
     CONTACT_PER_IP,
+    HOMEWORK_LOGIN_PER_IP,
     OTP_REQUEST_PER_EMAIL,
     REGISTER_PER_IP,
     VOICE_TRANSCRIBE_PER_USER,
@@ -288,6 +289,7 @@ from packages.infrastructure.whatsapp_agent_chat import guard_resume_ask
 from packages.infrastructure.whatsapp_agent_chat import held_for_seconds
 from packages.infrastructure.whatsapp_agent_chat import build_whatsapp_claim_link
 from packages.infrastructure.whatsapp_agent_chat import build_whatsapp_join_link
+from packages.infrastructure import homework_check
 from packages.infrastructure.whatsapp_agent_chat import infer_timezone_from_wa_id
 from packages.infrastructure.whatsapp_agent_chat import extract_whatsapp_claim_code
 from packages.infrastructure.whatsapp_agent_chat import is_whatsapp_account_email
@@ -1057,6 +1059,11 @@ _WEEK_IMAGE_CODE_RE = re.compile(r"^[a-z0-9]{12,40}$")
 # the family's account. It carries the invitation code and opens WhatsApp on
 # the Assistyca number with the code already written in the message.
 JOIN_PAGE_PREFIX = "/join/"
+# The private page where a parent types the school platform's login for the
+# homework check. The code is spent on the first save, or after two days.
+HOMEWORK_PAGE_PREFIX = homework_check.HOMEWORK_LINK_PREFIX
+HOMEWORK_PAGE = Path("portal/homework.html")
+HOMEWORK_API_PREFIX = "/api/public/homework/"
 # The read-only week the other parent opens from a link.
 WEEK_SHARE_PAGE_PREFIX = "/w/"
 WEEK_SHARE_PAGE = Path("portal/week-share.html")
@@ -4054,6 +4061,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             or path.startswith("/api/public/lists/")
             or path == "/api/household"
             or path.startswith("/api/public/week/")
+            or path.startswith(HOMEWORK_API_PREFIX)
         ):
             self._handle_api_get(parsed)
             return
@@ -4137,6 +4145,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             or path.startswith("/api/household/")
             or path == "/api/findings/scan"
             or path == "/api/inbox-watch/poll"
+            or path.startswith(HOMEWORK_API_PREFIX)
             or path == FAMILY_CALENDAR_DAY_ENDPOINT
         ):
             try:
@@ -4193,6 +4202,8 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             return self._send_static_page(LIST_SHARE_PAGE)
         if parsed.path.startswith(WEEK_SHARE_PAGE_PREFIX) and len(parsed.path) > len(WEEK_SHARE_PAGE_PREFIX):
             return self._send_static_page(WEEK_SHARE_PAGE)
+        if parsed.path.startswith(HOMEWORK_PAGE_PREFIX) and len(parsed.path) > len(HOMEWORK_PAGE_PREFIX):
+            return self._send_static_page(HOMEWORK_PAGE)
         if not is_public_static_path(parsed.path):
             self.send_error(HTTPStatus.NOT_FOUND)
             return None
@@ -4257,6 +4268,9 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             return
         if path.startswith("/api/public/week/"):
             self._handle_public_week_get(parsed)
+            return
+        if path.startswith(HOMEWORK_API_PREFIX):
+            self._handle_homework_link_get(parsed)
             return
         if path == "/api/scheduled-actions":
             self._handle_scheduled_actions_get(parsed)
@@ -4444,6 +4458,10 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
 
         if path == "/api/register":
             self._handle_register_post()
+            return
+
+        if path.startswith(HOMEWORK_API_PREFIX):
+            self._handle_homework_login_post(parsed)
             return
 
         if path in TURN_PATHS:
@@ -11033,6 +11051,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 else self._week_picture_builder(user_id, timezone_name)
             ),
             join_link=None if group else self._join_link_builder(),
+            homework_link=None if group else self._homework_link_builder(),
             speaker=speaker,
             sender_wa_id="" if group else sender_wa_id,
             attached_photo=photo_context,
@@ -14900,6 +14919,74 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             return f"{base}{RECEIPTS_HANDOFF_PREFIX}{code}"
 
         return build
+
+    def _homework_link_builder(self) -> Callable[[str], str]:
+        """The private page where a parent types the school login, on the
+        public address, carrying the page's code."""
+
+        base = self._public_base_url()
+        return lambda code: f"{base}{HOMEWORK_PAGE_PREFIX}{normalize_text(code)}" if normalize_text(code) else ""
+
+    def _homework_link_code(self, parsed: urllib_parse.ParseResult) -> str:
+        return urllib_parse.unquote(parsed.path[len(HOMEWORK_API_PREFIX):]).strip("/")[:64]
+
+    def _handle_homework_link_get(self, parsed: urllib_parse.ParseResult) -> None:
+        """Where the page's link stands, so a spent or old link says so
+        before anyone types a password into it. Says nothing about the
+        family beyond whether the code is live."""
+
+        if not self._enforce_rate_limit(
+            f"homework-ip:{self._client_ip()}", HOMEWORK_LOGIN_PER_IP,
+            message="Too many tries. Please wait a little and open the link again.",
+        ):
+            return
+        link = self.database.get_homework_login_link(self._homework_link_code(parsed))
+        if link is None:
+            json_response(self, HTTPStatus.NOT_FOUND, {"ok": False, "status": "not_found"})
+            return
+        json_response(self, HTTPStatus.OK, {
+            "ok": True,
+            "status": link["status"],
+            "platforms": [
+                {"id": platform, "label": labels["en"], "labelHe": labels["he"]}
+                for platform, labels in homework_check.HOMEWORK_PLATFORMS.items()
+            ],
+        })
+
+    def _handle_homework_login_post(self, parsed: urllib_parse.ParseResult) -> None:
+        """Keep the login a parent typed on the page, encrypted, and spend
+        the link. Nothing of it is written anywhere else, logged or sent
+        back."""
+
+        if not self._enforce_rate_limit(
+            f"homework-ip:{self._client_ip()}", HOMEWORK_LOGIN_PER_IP,
+            message="Too many tries. Please wait a little and open the link again.",
+        ):
+            return
+        try:
+            payload = parse_json_body(self, max_bytes=MAX_PUBLIC_REQUEST_BODY_BYTES)
+        except ValueError as exc:
+            json_response(self, HTTPStatus.BAD_REQUEST, {"ok": False, "error": "invalid_json", "message": str(exc)})
+            return
+        fields, problem = homework_check.clean_login_form(payload)
+        if problem:
+            json_response(self, HTTPStatus.BAD_REQUEST, {"ok": False, "error": problem})
+            return
+        try:
+            saved = self.database.save_homework_login(
+                code=self._homework_link_code(parsed), platform=fields["platform"],
+                other_platform=fields["otherPlatform"], school_code=fields["schoolCode"],
+                username=fields["username"], password=fields["password"],
+            )
+        except LookupError as exc:
+            json_response(self, HTTPStatus.GONE, {"ok": False, "error": "link_" + (str(exc.args[0]) if exc.args else "not_found")})
+            return
+        except Exception as exc:  # noqa: BLE001 - vault missing or broken: nothing was kept
+            print(f"[homework] login not kept: {type(exc).__name__}", flush=True)
+            json_response(self, HTTPStatus.SERVICE_UNAVAILABLE, {"ok": False, "error": "not_kept"})
+            return
+        print(f"[homework] login kept user={saved['userId']} platform={saved['platform']}", flush=True)
+        json_response(self, HTTPStatus.OK, {"ok": True})
 
     def _join_link_builder(self) -> Callable[[str], str]:
         """The link a parent forwards to bring someone onto the account: the

@@ -26,6 +26,7 @@ from packages.infrastructure.notification_templates import TEMPLATE_KIND_REMINDE
 from packages.infrastructure.notification_templates import TEMPLATE_KIND_REMINDER_AGAIN
 from packages.infrastructure.notification_templates import TEMPLATE_NAMES
 from packages.infrastructure.notification_templates import UTILITY_TEMPLATE_NAMES
+from packages.infrastructure.notification_templates import WINDOW_ONLY_PAYLOAD_KEY
 from packages.infrastructure.notification_templates import image_template_for
 from packages.infrastructure.notification_templates import normalize_template_kind
 from packages.infrastructure.notification_templates import pickup_reminder_parameters
@@ -152,6 +153,37 @@ def describe_list_for_message(record: dict[str, Any], *, limit: int = 40) -> str
         lines.append(f"…and {len(items) - limit} more")
     return "\n".join(lines)
 
+
+
+def service_window_open(database: Any, user_id: int, *, now: datetime | None = None, thread_id: str = "") -> bool:
+    """True while Meta still takes plain text for this person: they wrote
+    to the Assistyca number less than a day ago. thread_id is the
+    conversation of the phone being written to - a family member's own
+    when the message is for them, since the window is the phone's."""
+
+    if user_id <= 0:
+        return False
+    try:
+        history = database.list_recent_whatsapp_agent_messages(user_id=user_id, limit=50, thread_id=thread_id)
+    except TypeError:
+        history = database.list_recent_whatsapp_agent_messages(user_id=user_id, limit=50)
+    except Exception:  # noqa: BLE001 - no history means no window, not no reminder
+        return False
+    latest = ""
+    for message in history:
+        if str(message.get("role") or "") == "user":
+            latest = max(latest, str(message.get("createdAt") or ""))
+    if not latest:
+        return False
+    try:
+        written_at = datetime.fromisoformat(latest)
+    except ValueError:
+        return False
+    if written_at.tzinfo is None:
+        written_at = written_at.replace(tzinfo=timezone.utc)
+    reference = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    elapsed = reference - written_at
+    return timedelta(0) <= elapsed < WHATSAPP_SERVICE_WINDOW - WHATSAPP_SERVICE_WINDOW_MARGIN
 
 class ScheduledActionScheduler:
     def __init__(
@@ -384,6 +416,13 @@ class ScheduledActionScheduler:
         action_type = normalize_text(action.get("actionType")).lower()
         channel = normalize_text(action.get("channel")).lower()
         payload = action.get("payload") if isinstance(action.get("payload"), dict) else {}
+        if channel == "whatsapp" and payload.get(WINDOW_ONLY_PAYLOAD_KEY):
+            # Checked before the message is written, so a question that will
+            # not go is never put in the transcript as if it had.
+            user_id = int(action.get("userId") or 0)
+            recipient_ref = self._whatsapp_recipient(action)
+            if not self._service_window_open(user_id, thread_id=self._thread_for_phone(user_id, recipient_ref)):
+                raise RuntimeError("Plain text only, and the 24-hour window is closed: not sent.")
         if action_type == STANDING_TASK_ACTION_TYPE:
             if self.task_runner is None:
                 raise RuntimeError("Standing actions are not enabled on this server.")
@@ -421,9 +460,10 @@ class ScheduledActionScheduler:
                 payload["deliveredVia"] = "whatsapp"
                 return provider_message_id
             except Exception as exc:  # noqa: BLE001 - the message still has to arrive somewhere
-                if normalize_text(action.get("recipientRef")).startswith(GROUP_RECIPIENT_PREFIX):
+                if normalize_text(action.get("recipientRef")).startswith(GROUP_RECIPIENT_PREFIX) or payload.get(WINDOW_ONLY_PAYLOAD_KEY):
                     # A message for a room has no second address: the owner's
                     # own feed is not where the other parents would read it.
+                    # Nor has a question only worth asking on the phone.
                     raise
                 # A configured send that fails should still reach the owner.
                 # The feed is durable and always available, and the payload
@@ -474,34 +514,7 @@ class ScheduledActionScheduler:
         return household.member_thread_id(wa_id) if member else ""
 
     def _service_window_open(self, user_id: int, *, now: datetime | None = None, thread_id: str = "") -> bool:
-        """True while Meta still takes plain text for this person: they wrote
-        to the Assistyca number less than a day ago. thread_id is the
-        conversation of the phone being written to - a family member's own
-        when the message is for them, since the window is the phone's."""
-
-        if user_id <= 0:
-            return False
-        try:
-            history = self.database.list_recent_whatsapp_agent_messages(user_id=user_id, limit=50, thread_id=thread_id)
-        except TypeError:
-            history = self.database.list_recent_whatsapp_agent_messages(user_id=user_id, limit=50)
-        except Exception:  # noqa: BLE001 - no history means no window, not no reminder
-            return False
-        latest = ""
-        for message in history:
-            if str(message.get("role") or "") == "user":
-                latest = max(latest, str(message.get("createdAt") or ""))
-        if not latest:
-            return False
-        try:
-            written_at = datetime.fromisoformat(latest)
-        except ValueError:
-            return False
-        if written_at.tzinfo is None:
-            written_at = written_at.replace(tzinfo=timezone.utc)
-        reference = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
-        elapsed = reference - written_at
-        return timedelta(0) <= elapsed < WHATSAPP_SERVICE_WINDOW - WHATSAPP_SERVICE_WINDOW_MARGIN
+        return service_window_open(self.database, user_id, now=now, thread_id=thread_id)
 
     def _whatsapp_recipient(self, action: dict[str, Any]) -> str:
         """The phone a scheduled WhatsApp message goes to: the group reference
@@ -599,6 +612,11 @@ class ScheduledActionScheduler:
                 return provider_message_id
             except Exception as exc:  # noqa: BLE001 - the template is the next thing to try
                 refusals.append(f"{'buttons' if again else 'picture' if image_url else 'plain text'}: {exc}")
+        if payload.get(WINDOW_ONLY_PAYLOAD_KEY):
+            # A question that is only worth asking while they are talking to
+            # us (the homework offer): no template carries it.
+            refusals.append("plain text only, and the 24-hour window is closed")
+            raise RuntimeError("; ".join(refusals))
         kind = normalize_template_kind(payload.get(TEMPLATE_KIND_PAYLOAD_KEY))
         if image_url:
             # The Utility picture templates first, for the same reason as the
@@ -751,4 +769,5 @@ __all__ = [
     "ScheduledActionScheduler",
     "describe_list_for_message",
     "load_scheduled_action_config",
+    "service_window_open",
 ]
