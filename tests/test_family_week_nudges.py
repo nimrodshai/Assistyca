@@ -98,6 +98,15 @@ class DayDrivesTests(unittest.TestCase):
         self.assertEqual(self.database.get_household_activity(user_id=self.user_id, activity_id=self.gan["id"])["pickUpBy"], "Stav")
 
 
+class MorningPictureLineTests(unittest.TestCase):
+    def test_the_morning_picture_opens_with_the_schedule_line(self) -> None:
+        instruction = FamilyWeekNudger._morning_instruction(lines=["08:00 school"], with_picture=True)
+
+        self.assertIn("הנה הלו״ז שלך להיום", instruction)
+        self.assertIn("Here's your schedule for today", instruction)
+        self.assertNotIn("handing them the picture", instruction)
+
+
 class RulesTests(unittest.TestCase):
     football = {
         "id": 1, "title": "Football", "who": ["Tom"], "days": ["sun"], "startTime": "17:00", "endTime": "18:00",
