@@ -14593,9 +14593,9 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             json_response(self, HTTPStatus.CONFLICT, {
                 "ok": False,
                 "error": "phone_taken",
-                "message": "That WhatsApp number is already connected to an Assistyca account. Open WhatsApp to use it.",
+                "message": "That WhatsApp number already has an Assistyca account.",
                 "fieldErrors": {"phone": "This number is already connected to an account."},
-                "signInUrl": WHATSAPP_CHAT_PATH,
+                "whatsappUrl": WHATSAPP_CHAT_PATH,
             })
             return
 
