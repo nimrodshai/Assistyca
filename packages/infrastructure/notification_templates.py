@@ -12,6 +12,15 @@ same template name, so only the language code changes between people
 (see message_language). The assistant's words ride in the single body
 variable, one line, as before.
 
+Those templates were moved to Marketing by Meta, and Meta stops a marketing
+template to anyone who has not written to us lately (131049) - after the send
+has been accepted, so no fallback catches it. Each kind therefore has a
+Utility template too, tried first (UTILITY_TEMPLATE_NAMES). The fixed text of
+those names the thing itself - whose drive, where, when, how many - with the
+facts in small slots, because a body that is one open line is what Meta files
+as Marketing. Where the slots are not there, the kind's own template carries
+the message as before.
+
 A queued action names its kind in the payload under TEMPLATE_KIND_PAYLOAD_KEY;
 one that names nothing is a reminder. The week-ahead template carries the
 week as its picture header and nothing else, so a message with no picture
@@ -58,15 +67,33 @@ PICTURE_TEMPLATE_NAMES = {
     TEMPLATE_KIND_EVENING_GLANCE: "assistyca_evening_glance_picture",
     TEMPLATE_KIND_WEEK_AHEAD: "assistyca_week_ahead",
 }
+# The Utility templates, tried before the kind's own. The reminders take the
+# assistant's line in their one slot ("Here's the reminder you asked for:");
+# the morning and the evening take the day's figures (schedule_parameters)
+# and are skipped without them.
+UTILITY_TEMPLATE_NAMES = {
+    TEMPLATE_KIND_MORNING_DIGEST: "assistyca_schedule_today",
+    TEMPLATE_KIND_REMINDER: "assistyca_reminder_set",
+    TEMPLATE_KIND_EVENING_GLANCE: "assistyca_schedule_tomorrow",
+    TEMPLATE_KIND_REMINDER_AGAIN: "assistyca_reminder_set_again",
+}
+SCHEDULE_TEMPLATE_KINDS = frozenset({TEMPLATE_KIND_MORNING_DIGEST, TEMPLATE_KIND_EVENING_GLANCE})
+# The day's figures for those two: its date, how many activities, how many
+# drives, and how many of those drives have nobody yet.
+SCHEDULE_SLOTS_PAYLOAD_KEY = "scheduleSlots"
 # Kinds whose only template opens with a picture: sent only with one.
 IMAGE_TEMPLATE_KINDS = frozenset({TEMPLATE_KIND_WEEK_AHEAD})
 
-# The word before a pickup of their own, with its own slots - the kids, where
-# from, the time - and the remind-again button under it. Only a trip that is
-# all pickups rides it ("you're picking up Noa from ballet" cannot say a
-# drop-off); anything else, or a refusal while Meta reviews it, rides the
-# reminder_again template with the assistant's line in its one variable.
+# The word before a drive of their own, with its own slots - the kids, the
+# place, the time - and the remind-again button under it: one template for a
+# trip that is all pickups ("you're picking up Noa from ballet") and one for
+# a trip that is all drop-offs ("you're dropping Noa off at ballet"). A trip
+# with both, or a refusal while Meta reviews them, rides the reminder
+# templates with the assistant's line in their one variable.
 PICKUP_REMINDER_TEMPLATE_NAME = "assistyca_pickup_reminder"
+DROP_OFF_REMINDER_TEMPLATE_NAME = "assistyca_drop_off_reminder"
+RIDE_SLOTS_PAYLOAD_KEY = "rideSlots"
+# What a ride word queued before drop-offs had slots was kept under.
 PICKUP_SLOTS_PAYLOAD_KEY = "pickupSlots"
 LIST_JOINER = {"en": " and ", "he": " ו"}
 
@@ -102,6 +129,36 @@ def image_template_for(kind: Any, language: Any) -> tuple[str, str]:
     return name, template_language(language)
 
 
+def utility_template_for(kind: Any, language: Any) -> tuple[str, str]:
+    """The Utility template of this kind, or an empty name for a kind that
+    has none (the week ahead, which only goes as a picture)."""
+
+    name = UTILITY_TEMPLATE_NAMES.get(normalize_template_kind(kind), "")
+    return (name, template_language(language)) if name else ("", "")
+
+
+def schedule_parameters(slots: Any) -> list[str]:
+    """{{1}} the date, {{2}} activities, {{3}} drives, {{4}} drives with
+    nobody yet - or nothing when a figure is missing, since a blank variable
+    is refused whole by Meta. The figures read the same in both languages."""
+
+    if not isinstance(slots, dict):
+        return []
+    date_text = str(slots.get("date") or "").strip()
+    figures = [slots.get(key) for key in ("activities", "drives", "open")]
+    if not date_text or any(not isinstance(value, int) or isinstance(value, bool) or value < 0 for value in figures):
+        return []
+    return [date_text, *(str(value) for value in figures)]
+
+
+def ride_template_name(slots: Any) -> str:
+    """The template a trip's slots are for: the drop-off one when the slots
+    say so, the pickup one otherwise."""
+
+    leg = str(slots.get("leg") or "") if isinstance(slots, dict) else ""
+    return DROP_OFF_REMINDER_TEMPLATE_NAME if leg == "drop_off" else PICKUP_REMINDER_TEMPLATE_NAME
+
+
 def _joined(items: list[str], language: str) -> str:
     """Noa and Tom; Noa, Tom and Lia - or נועה ותום in Hebrew."""
 
@@ -111,8 +168,9 @@ def _joined(items: list[str], language: str) -> str:
 
 
 def pickup_reminder_parameters(slots: Any, language: Any) -> list[str]:
-    """{{1}} the kids, {{2}} where from, {{3}} the time, or nothing when the
-    slots are not all there: a blank variable is refused whole by Meta."""
+    """{{1}} the kids, {{2}} the place - where from for a pickup, where to for
+    a drop-off - {{3}} the time, or nothing when the slots are not all there:
+    a blank variable is refused whole by Meta."""
 
     if not isinstance(slots, dict):
         return []
@@ -127,10 +185,14 @@ def pickup_reminder_parameters(slots: Any, language: Any) -> list[str]:
 
 __all__ = [
     "DEFAULT_TEMPLATE_KIND",
+    "DROP_OFF_REMINDER_TEMPLATE_NAME",
     "IMAGE_TEMPLATE_KINDS",
     "PICKUP_REMINDER_TEMPLATE_NAME",
     "PICKUP_SLOTS_PAYLOAD_KEY",
     "PICTURE_TEMPLATE_NAMES",
+    "RIDE_SLOTS_PAYLOAD_KEY",
+    "SCHEDULE_SLOTS_PAYLOAD_KEY",
+    "SCHEDULE_TEMPLATE_KINDS",
     "TEMPLATE_KINDS",
     "TEMPLATE_KIND_EVENING_GLANCE",
     "TEMPLATE_KIND_MORNING_DIGEST",
@@ -139,9 +201,13 @@ __all__ = [
     "TEMPLATE_KIND_REMINDER_AGAIN",
     "TEMPLATE_KIND_WEEK_AHEAD",
     "TEMPLATE_NAMES",
+    "UTILITY_TEMPLATE_NAMES",
     "image_template_for",
     "normalize_template_kind",
     "pickup_reminder_parameters",
+    "ride_template_name",
+    "schedule_parameters",
     "template_for",
     "template_language",
+    "utility_template_for",
 ]

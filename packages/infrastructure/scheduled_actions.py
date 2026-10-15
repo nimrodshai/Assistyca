@@ -14,17 +14,25 @@ from zoneinfo import ZoneInfoNotFoundError
 
 from packages.infrastructure.list_due_nudges import describe_due
 from packages.infrastructure.message_language import resolve_message_language
+from packages.infrastructure.notification_templates import DROP_OFF_REMINDER_TEMPLATE_NAME
 from packages.infrastructure.notification_templates import PICKUP_REMINDER_TEMPLATE_NAME
 from packages.infrastructure.notification_templates import PICKUP_SLOTS_PAYLOAD_KEY
+from packages.infrastructure.notification_templates import RIDE_SLOTS_PAYLOAD_KEY
+from packages.infrastructure.notification_templates import SCHEDULE_SLOTS_PAYLOAD_KEY
+from packages.infrastructure.notification_templates import SCHEDULE_TEMPLATE_KINDS
 from packages.infrastructure.notification_templates import TEMPLATE_KIND_PAYLOAD_KEY
 from packages.infrastructure.notification_templates import TEMPLATE_KIND_REMINDER
 from packages.infrastructure.notification_templates import TEMPLATE_KIND_REMINDER_AGAIN
 from packages.infrastructure.notification_templates import TEMPLATE_NAMES
+from packages.infrastructure.notification_templates import UTILITY_TEMPLATE_NAMES
 from packages.infrastructure.notification_templates import image_template_for
 from packages.infrastructure.notification_templates import normalize_template_kind
 from packages.infrastructure.notification_templates import pickup_reminder_parameters
+from packages.infrastructure.notification_templates import ride_template_name
+from packages.infrastructure.notification_templates import schedule_parameters
 from packages.infrastructure.notification_templates import template_for
 from packages.infrastructure.notification_templates import template_language as template_language_for
+from packages.infrastructure.notification_templates import utility_template_for
 from packages.infrastructure.notification_delivery import deliver_portal_notification
 from packages.infrastructure.notification_delivery import send_whatsapp_notification
 from packages.infrastructure.portal_db import PortalDatabase
@@ -606,18 +614,41 @@ class ScheduledActionScheduler:
                 refusals.append(f"template {image_template_name} ({image_template_language}): {exc}")
         plain_text = f"{message_text} {image_url}".strip() if image_url else message_text
         attempts: list[tuple[str, str, list[str]]] = []
-        # A trip of pickups goes out in the template made for it: the kids,
-        # the place and the time in its slots, the button under them.
-        slots = pickup_reminder_parameters(payload.get(PICKUP_SLOTS_PAYLOAD_KEY), language) if again else []
+        # The Utility templates come before the Marketing ones: Meta accepts
+        # a Marketing send and then drops it on the way (131049), which no
+        # attempt below would ever see. A refusal - one still under review -
+        # moves on as before.
+        # A trip of pickups, or of drop-offs, goes out in the template made
+        # for it: the kids, the place and the time in its slots, the button
+        # under them.
+        ride = payload.get(RIDE_SLOTS_PAYLOAD_KEY) or payload.get(PICKUP_SLOTS_PAYLOAD_KEY)
+        slots = pickup_reminder_parameters(ride, language) if again else []
         if kind == TEMPLATE_KIND_REMINDER_AGAIN and slots:
-            attempts.append((PICKUP_REMINDER_TEMPLATE_NAME, template_language_for(language), slots))
+            attempts.append((ride_template_name(ride), template_language_for(language), slots))
+        if kind in SCHEDULE_TEMPLATE_KINDS:
+            # The morning and the evening go in theirs only with the day's
+            # figures; the words alone cannot fill it.
+            figures = schedule_parameters(payload.get(SCHEDULE_SLOTS_PAYLOAD_KEY))
+            if figures:
+                attempts.append((*utility_template_for(kind, language), figures))
+        else:
+            attempts.append((*utility_template_for(kind, language), []))
+        if kind == TEMPLATE_KIND_REMINDER_AGAIN:
+            # Without its button the word still goes as a Utility reminder,
+            # before the Marketing one that has the button.
+            attempts.append((*utility_template_for(TEMPLATE_KIND_REMINDER, language), []))
         attempts.append((*template_for(kind, language), []))
         if kind == TEMPLATE_KIND_REMINDER_AGAIN:
             # Until Meta approves the template with the button, the plain
             # reminder carries the word; the offer waits with it.
             attempts.append((*template_for(TEMPLATE_KIND_REMINDER, language), []))
         attempts.append((self.config.whatsapp_template_name, self.config.whatsapp_template_language, []))
-        button_templates = {PICKUP_REMINDER_TEMPLATE_NAME, TEMPLATE_NAMES[TEMPLATE_KIND_REMINDER_AGAIN]}
+        button_templates = {
+            PICKUP_REMINDER_TEMPLATE_NAME,
+            DROP_OFF_REMINDER_TEMPLATE_NAME,
+            UTILITY_TEMPLATE_NAMES[TEMPLATE_KIND_REMINDER_AGAIN],
+            TEMPLATE_NAMES[TEMPLATE_KIND_REMINDER_AGAIN],
+        }
         tried: set[tuple[str, str]] = set()
         for template_name, template_language, parameters in attempts:
             if not template_name or (template_name, template_language) in tried:

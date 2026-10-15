@@ -5,17 +5,24 @@ message may only go out as a template Meta has approved - and in the language
 the person typed their name in, since nothing else is known about them yet
 (message_language keeps the language from their first message on).
 
-The welcome is `assistyca_welcome_family_hello`, with their first name in
+The welcome is `assistyca_welcome_family_hi`, with their first name in
 {{1}} and nothing else, in English or in Hebrew, and no picture on top. One
 name, two languages, on Meta as here: a new language is a translation added
 under the name, never a new name. It was submitted as Utility on 2026-10-15:
 the earlier welcomes were moved to Marketing by Meta, and Meta stops
-marketing templates to people who never wrote to us (131049).
+marketing templates to people who never wrote to us (131049) - accepted by
+the send, then refused on delivery, so no fallback below ever catches it.
+Only the category does.
 
-The earlier family templates (`assistyca_welcome_family`, then the English
-`_english_short`) stand behind it while Meta reviews it: a template still
-under review is refused whole, and an older welcome is better than none.
-Once it is approved the first send takes and the fallbacks are never tried.
+`_hi` is `_hello` with "and I'm really glad you're here" taken out of the
+English: Meta moved the English `_hello` to Marketing while reviewing it and
+kept the Hebrew, word for word the same in both, as Utility.
+
+The earlier family templates (`_hello`, `assistyca_welcome_family`, then the
+English `_english_short`) stand behind it while Meta reviews it: a template
+still under review is refused whole, and an older welcome is better than
+none. Once it is approved the first send takes and the fallbacks are never
+tried.
 
 The bodies are repeated here as text so the conversation we keep says exactly
 what their phone showed. They are copies of the approved templates, read in
@@ -36,8 +43,11 @@ from packages.infrastructure.portal_db import normalize_text
 from packages.infrastructure.whatsapp_agent_chat import first_name
 
 
-FAMILY_WELCOME_TEMPLATE_NAME = "assistyca_welcome_family_hello"
-# The approved Marketing welcome, with the picture on top: the first fallback.
+FAMILY_WELCOME_TEMPLATE_NAME = "assistyca_welcome_family_hi"
+# The same welcome with the warmer English Meta filed as Marketing: the
+# first fallback, and Utility still in Hebrew.
+WARM_FAMILY_WELCOME_TEMPLATE_NAME = "assistyca_welcome_family_hello"
+# The approved Marketing welcome, with the picture on top.
 MARKETING_FAMILY_WELCOME_TEMPLATE_NAME = "assistyca_welcome_family"
 # The approved English family welcome from before the name above existed:
 # {{1}} only, like the new one. The fallback while Meta reviews the new pair.
@@ -48,8 +58,14 @@ LEGACY_FAMILY_WELCOME_TEMPLATE_NAME = "assistyca_welcome_family_english_short"
 # shows whatever we send, not what the template was approved with.
 FAMILY_WELCOME_HEADER_IMAGE_PATH = "/assets/assistyca-whatsapp-header-family.jpg"
 
-# The welcome as submitted on 2026-10-15, with the name in it.
+# The welcomes as submitted on 2026-10-15, with the name in them. The
+# Hebrew is the same under both names.
 FAMILY_HELLO = (
+    "Hi {name}, it's Assistyca 👋 You're all signed up.\n\n"
+    "To build your family's weekly schedule, I'd like to get to know everyone first. "
+    "Who lives at home with you? Names and the kids' ages are plenty."
+)
+WARM_FAMILY_HELLO = (
     "Hi {name}, it's Assistyca 👋 You're all signed up, and I'm really glad you're here.\n\n"
     "To build your family's weekly schedule, I'd like to get to know everyone first. "
     "Who lives at home with you? Names and the kids' ages are plenty."
@@ -107,6 +123,8 @@ def build_registration_welcome_message(
     shown_name = greeted_name(name)
     if template_name == FAMILY_WELCOME_TEMPLATE_NAME:
         return (HEBREW_FAMILY_HELLO if hebrew else FAMILY_HELLO).format(name=shown_name)
+    if template_name == WARM_FAMILY_WELCOME_TEMPLATE_NAME:
+        return (HEBREW_FAMILY_HELLO if hebrew else WARM_FAMILY_HELLO).format(name=shown_name)
     greeting = (HEBREW_FAMILY_WELCOME_GREETING if hebrew else FAMILY_WELCOME_GREETING).format(name=shown_name)
     return f"{greeting}\n{HEBREW_FAMILY_WELCOME_BODY if hebrew else FAMILY_WELCOME_BODY}"
 
@@ -179,6 +197,7 @@ def registration_welcome_plan(*, base_url: str = "", name: Any = "") -> list[Reg
 
     return [
         entry(FAMILY_WELCOME_TEMPLATE_NAME, language, picture=False),
+        entry(WARM_FAMILY_WELCOME_TEMPLATE_NAME, language, picture=False),
         entry(MARKETING_FAMILY_WELCOME_TEMPLATE_NAME, language),
         entry(LEGACY_FAMILY_WELCOME_TEMPLATE_NAME, LANGUAGE_ENGLISH),
     ]
@@ -200,6 +219,8 @@ __all__ = [
     "LEGACY_FAMILY_WELCOME_TEMPLATE_NAME",
     "MARKETING_FAMILY_WELCOME_TEMPLATE_NAME",
     "RegistrationWelcomeTemplate",
+    "WARM_FAMILY_HELLO",
+    "WARM_FAMILY_WELCOME_TEMPLATE_NAME",
     "build_registration_welcome_message",
     "is_hebrew_name",
     "is_publicly_fetchable",
