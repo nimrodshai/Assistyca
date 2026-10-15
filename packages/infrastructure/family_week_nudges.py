@@ -71,7 +71,8 @@ from zoneinfo import ZoneInfoNotFoundError
 
 from packages.infrastructure.notification_templates import TEMPLATE_KIND_EVENING_GLANCE
 from packages.infrastructure.notification_templates import TEMPLATE_KIND_MORNING_DIGEST
-from packages.infrastructure.notification_templates import PICKUP_SLOTS_PAYLOAD_KEY
+from packages.infrastructure.notification_templates import RIDE_SLOTS_PAYLOAD_KEY
+from packages.infrastructure.notification_templates import SCHEDULE_SLOTS_PAYLOAD_KEY
 from packages.infrastructure.notification_templates import TEMPLATE_KIND_PAYLOAD_KEY
 from packages.infrastructure.notification_templates import TEMPLATE_KIND_REMINDER_AGAIN
 from packages.infrastructure.notification_templates import TEMPLATE_KIND_WEEK_AHEAD
@@ -578,15 +579,20 @@ def ride_fact(ride: dict[str, Any], who: str) -> str:
     return f"nobody is down yet to {fact}" if ride.get("open") else fact
 
 
-def pickup_slots(
+def ride_slots(
     rides: list[dict[str, Any]], owner_names: list[str], viewer_names: list[str] | None = None,
 ) -> dict[str, Any]:
-    """The kids, where from and when, for the template made for a pickup -
-    or nothing when the trip is not all pickups of theirs with a kid to
-    name. The reader is never one of the kids: "me", the account holder's
-    own name, or a family member's own name on their phone is left out."""
+    """The kids, the place and when, for the template made for a pickup or
+    for a drop-off - or nothing when the trip is not all one of them, all
+    theirs, with a kid to name. A drop-off says so under "leg"; a pickup
+    keeps the shape it always had. The reader is never one of the kids:
+    "me", the account holder's own name, or a family member's own name on
+    their phone is left out."""
 
-    if not rides or any(ride.get("leg") == "drop_off" or ride.get("open") for ride in rides):
+    if not rides or any(ride.get("open") for ride in rides):
+        return {}
+    legs = {ride.get("leg") for ride in rides}
+    if legs not in ({"pick_up"}, {"drop_off"}):
         return {}
     kids: list[str] = []
     places: list[str] = []
@@ -604,7 +610,26 @@ def pickup_slots(
     times = sorted(normalize_text(ride.get("at")) for ride in rides if normalize_text(ride.get("at")))
     if not kids or not places or not times:
         return {}
-    return {"kids": kids, "from": places, "at": times[0]}
+    slots: dict[str, Any] = {"kids": kids, "from": places, "at": times[0]}
+    if legs == {"drop_off"}:
+        slots["leg"] = "drop_off"
+    return slots
+
+
+def schedule_slots(
+    plans: list[dict[str, Any]], day: date, members: list[dict[str, Any]] | None, owner_names: list[str],
+) -> dict[str, Any]:
+    """The day's figures for the Utility morning and evening templates: the
+    date, how many activities, how many drives - a grown-up's own plans and
+    the bus are nobody's drive - and how many of those have nobody yet."""
+
+    drives = 0
+    for activity in plans:
+        if members is not None and household.is_grown_up_activity(activity, members, owner_names):
+            continue
+        drives += sum(1 for key in ("dropOffBy", "pickUpBy") if not household.nobody_drives(activity.get(key)))
+    open_drives = sum(len(household.activity_gaps(activity, members, owner_names)) for activity in plans)
+    return {"date": f"{day.day}.{day.month}", "activities": len(plans), "drives": drives, "open": open_drives}
 
 
 def leave_words(
@@ -806,7 +831,8 @@ class FamilyWeekNudger:
     def _queue(
         self, *, user_id: int, now: datetime, timezone_name: str, title: str, instruction: str, fallback: str,
         offer: str = "", recipient_wa_id: str = "", image_url: str = "", kind: str = "",
-        remind_again: dict[str, Any] | None = None, pickup: dict[str, Any] | None = None,
+        remind_again: dict[str, Any] | None = None, ride: dict[str, Any] | None = None,
+        schedule: dict[str, Any] | None = None,
     ) -> None:
         """Queue one message for the account holder, or - with recipient_wa_id
         - for a family member's own phone on the same account. image_url is
@@ -816,8 +842,10 @@ class FamilyWeekNudger:
         remind_again is the offer of one more word five minutes before
         (remind_again_offer): the worker puts the question and its button
         under the message, and the tap is answered from what is kept here.
-        pickup is the trip in the slots of the pickup template (pickup_slots),
-        kept only with the offer, since that template carries the button."""
+        ride is the trip in the slots of the pickup or drop-off template
+        (ride_slots), kept only with the offer, since those templates carry
+        the button. schedule is the day's figures for the Utility morning and
+        evening templates (schedule_slots)."""
 
         connection = self.database.get_whatsapp_connection_by_user_id(user_id) or {}
         owner_wa_id = normalize_text(connection.get("ownerWaId")) or owner_phone(self.database, user_id)
@@ -839,8 +867,10 @@ class FamilyWeekNudger:
         if remind_again:
             payload[REMIND_AGAIN_PAYLOAD_KEY] = dict(remind_again)
             payload[TEMPLATE_KIND_PAYLOAD_KEY] = normalize_template_kind(kind or TEMPLATE_KIND_REMINDER_AGAIN)
-            if pickup:
-                payload[PICKUP_SLOTS_PAYLOAD_KEY] = dict(pickup)
+            if ride:
+                payload[RIDE_SLOTS_PAYLOAD_KEY] = dict(ride)
+        if schedule:
+            payload[SCHEDULE_SLOTS_PAYLOAD_KEY] = dict(schedule)
         self.database.create_scheduled_action(
             user_id=user_id,
             action_type=STANDING_TASK_ACTION_TYPE,
@@ -1031,6 +1061,7 @@ class FamilyWeekNudger:
                             lines=lines, inside_work=bool(inside_work), today=today, today_calendar=today_calendar,
                             with_picture=bool(image_url),
                         ),
+                        schedule=schedule_slots(todays, today, members, owner_names),
                         fallback="Today:\n" + "\n".join(f"• {line}" for line in lines),
                     )
                     counts["morning"] += 1
@@ -1095,6 +1126,9 @@ class FamilyWeekNudger:
                     self._queue(
                         user_id=user_id, now=reference, timezone_name=timezone_name,
                         title="Tomorrow still needs someone", kind=TEMPLATE_KIND_EVENING_GLANCE, image_url=image_url,
+                        # The template asks who takes what is still open, so
+                        # it carries an evening only when something is.
+                        schedule=schedule_slots(tomorrow_on, tomorrow, members, owner_names) if tomorrow_gaps else None,
                         instruction=(
                             "It is the evening. " + (PICTURE_OF_TOMORROW if image_url else "")
                             + "In one or two short sentences, in the language the person writes to you "
@@ -1136,7 +1170,7 @@ class FamilyWeekNudger:
                 self._queue(
                     user_id=user_id, now=reference, timezone_name=timezone_name,
                     title=words["title"], instruction=words["instruction"], fallback=words["fallback"],
-                    remind_again=again or None, pickup=pickup_slots(said, owner_names) if again else None,
+                    remind_again=again or None, ride=ride_slots(said, owner_names) if again else None,
                 )
                 counts["rides"] += 1
 
@@ -1501,6 +1535,7 @@ class FamilyWeekNudger:
                     user_id=user_id, now=reference, timezone_name=timezone_name, recipient_wa_id=wa_id,
                     title="Today in your family's week", kind=TEMPLATE_KIND_MORNING_DIGEST, image_url=image_url,
                     instruction=self._morning_instruction(lines=lines, reader=addressed, with_picture=bool(image_url)),
+                    schedule=schedule_slots(todays, today, members, owner_names),
                     fallback="Today:\n" + "\n".join(f"• {line}" for line in lines),
                 )
                 counts["morning"] += 1
@@ -1518,6 +1553,7 @@ class FamilyWeekNudger:
                     self._queue(
                         user_id=user_id, now=reference, timezone_name=timezone_name, recipient_wa_id=wa_id,
                         title="Tomorrow still needs someone", kind=TEMPLATE_KIND_EVENING_GLANCE, image_url=image_url,
+                        schedule=schedule_slots(tomorrow_on, tomorrow, members, owner_names),
                         instruction=(
                             f"It is the evening, and this message is for {addressed}, a parent in this family writing from "
                             "their own phone. " + (PICTURE_OF_TOMORROW if image_url else "")
@@ -1563,7 +1599,7 @@ class FamilyWeekNudger:
             self._queue(
                 user_id=user_id, now=reference, timezone_name=timezone_name, recipient_wa_id=wa_id,
                 title=words["title"], instruction=words["instruction"], fallback=words["fallback"],
-                remind_again=again or None, pickup=pickup_slots(said, owner_names, names) if again else None,
+                remind_again=again or None, ride=ride_slots(said, owner_names, names) if again else None,
             )
             counts["rides"] += 1
 

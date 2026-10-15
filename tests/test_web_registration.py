@@ -158,7 +158,7 @@ class WebRegistrationTests(unittest.TestCase):
         send = self.template_sent.call_args.kwargs
         self.assertEqual(send["recipient_wa_id"], PHONE)
         self.assertIsNone(send["message_text"])
-        self.assertEqual(send["template"]["name"], "assistyca_welcome_family_hello")
+        self.assertEqual(send["template"]["name"], "assistyca_welcome_family_hi")
         self.assertEqual(send["template"]["language"], {"code": "en"})
         components = {component["type"]: component for component in send["template"]["components"]}
         self.assertEqual([parameter["text"] for parameter in components["body"]["parameters"]], ["Dana"])
@@ -213,7 +213,7 @@ class WebRegistrationTests(unittest.TestCase):
         # approved earlier goes in its place, in their language, and the
         # conversation we keep has its words.
         def not_the_new_one(**kwargs):
-            if (kwargs.get("template") or {}).get("name") == "assistyca_welcome_family_hello":
+            if (kwargs.get("template") or {}).get("name") in ("assistyca_welcome_family_hi", "assistyca_welcome_family_hello"):
                 raise RuntimeError("(#132001) Template name does not exist in the translation")
             return "wamid.welcome-approved"
 
@@ -233,7 +233,7 @@ class WebRegistrationTests(unittest.TestCase):
         # the family still hears from us.
         def only_the_old_one(**kwargs):
             template = kwargs.get("template") or {}
-            if template.get("name") in ("assistyca_welcome_family_hello", "assistyca_welcome_family"):
+            if template.get("name") in ("assistyca_welcome_family_hi", "assistyca_welcome_family_hello", "assistyca_welcome_family"):
                 raise RuntimeError("(#132001) Template name does not exist in the translation")
             return "wamid.welcome-old"
 
@@ -318,7 +318,7 @@ class WebRegistrationTests(unittest.TestCase):
         self.assertEqual(status, 200, payload)
 
         sent = self.template_sent.call_args.kwargs["template"]
-        self.assertEqual(sent["name"], "assistyca_welcome_family_hello")
+        self.assertEqual(sent["name"], "assistyca_welcome_family_hi")
         self.assertEqual(sent["language"], {"code": "he"})
         self.assertEqual([parameter["text"] for parameter in sent["components"][-1]["parameters"]], ["דנה"])
         # The conversation we keep says what their phone showed, in Hebrew.
@@ -369,7 +369,7 @@ class WebRegistrationTests(unittest.TestCase):
         # second attempt goes without it.
         def refuse_the_picture(**kwargs):
             template = kwargs.get("template") or {}
-            if template.get("name") == "assistyca_welcome_family_hello":
+            if template.get("name") in ("assistyca_welcome_family_hi", "assistyca_welcome_family_hello"):
                 raise RuntimeError("(#132001) Template name does not exist in the translation")
             components = template.get("components") or []
             if any(component.get("type") == "header" for component in components):
@@ -383,9 +383,9 @@ class WebRegistrationTests(unittest.TestCase):
 
         self.assertEqual(status, 200, payload)
         self.assertTrue(payload["whatsappSent"])
-        # The new welcome (no picture, refused), the approved one with its
-        # picture (refused), then the approved one without it.
-        self.assertEqual(self.template_sent.call_count, 3)
+        # The two new welcomes (no picture, refused), the approved one with
+        # its picture (refused), then the approved one without it.
+        self.assertEqual(self.template_sent.call_count, 4)
         sent = self.template_sent.call_args.kwargs["template"]
         self.assertEqual([component["type"] for component in sent["components"]], ["body"])
         self.assertEqual(sent["name"], "assistyca_welcome_family")

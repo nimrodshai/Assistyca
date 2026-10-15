@@ -89,8 +89,11 @@ class RideWordOfferTests(unittest.TestCase):
         self.assertNotIn("reader", offer)
         self.assertEqual(word["payload"]["templateKind"], "reminder_again")
         self.assertIn("do not ask or offer that yourself", word["payload"]["instruction"])
-        # A drop-off is not a pickup: the pickup template cannot say it.
-        self.assertNotIn("pickupSlots", word["payload"])
+        # A drop-off rides its own template: the kid, where to and when.
+        self.assertEqual(
+            word["payload"]["rideSlots"],
+            {"kids": ["Tom"], "from": ["Kindergarten"], "at": "08:00", "leg": "drop_off"},
+        )
 
     def test_a_partner_on_their_own_phone_gets_the_offer_too(self) -> None:
         self.assertEqual(self.nudger.run_pending(now=at(SUNDAY, 15, 35))["rides"], 1)
@@ -101,7 +104,7 @@ class RideWordOfferTests(unittest.TestCase):
         self.assertEqual(offer["reader"], "Shirly")
         self.assertEqual(offer["facts"], ["collect Tom - Kindergarten at 16:00, Gan Rimon"])
         # A pickup keeps the kid, where from and when for the pickup template.
-        self.assertEqual(word["payload"]["pickupSlots"], {"kids": ["Tom"], "from": ["Kindergarten"], "at": "16:00"})
+        self.assertEqual(word["payload"]["rideSlots"], {"kids": ["Tom"], "from": ["Kindergarten"], "at": "16:00"})
 
     def test_a_word_that_asks_who_does_a_drive_carries_no_offer(self) -> None:
         # Nobody collects Noa from ballet: the owner is asked who does it.
@@ -183,7 +186,7 @@ class ButtonOnTheSendTests(unittest.TestCase):
         action = self._ride_word()
         send = self._run()
         template = send.call_args.kwargs["template"]
-        self.assertEqual(template["name"], "assistyca_reminder_again")
+        self.assertEqual(template["name"], "assistyca_reminder_set_again")
         self.assertEqual(template["language"], {"code": "en"})
         body, button = template["components"]
         self.assertEqual(body["type"], "body")
@@ -192,7 +195,7 @@ class ButtonOnTheSendTests(unittest.TestCase):
             "parameters": [{"type": "payload", "payload": f"remindagain:{action['id']}"}],
         })
         saved = self.database.get_scheduled_action(int(action["id"])) or {}
-        self.assertEqual(saved["payload"]["whatsappTemplate"], "assistyca_reminder_again:en")
+        self.assertEqual(saved["payload"]["whatsappTemplate"], "assistyca_reminder_set_again:en")
 
     def test_a_hebrew_writer_gets_the_hebrew_question_and_button(self) -> None:
         self.database.save_household_profile(user_id=self.user_id, language="he")
@@ -207,13 +210,15 @@ class ButtonOnTheSendTests(unittest.TestCase):
         action = self._ride_word()
 
         def refuse_the_new_one(**kwargs):
+            if (kwargs.get("template") or {}).get("name") in ("assistyca_reminder_set_again", "assistyca_reminder_set"):
+                raise RuntimeError("(#132001) Template name does not exist in the translation")
             if (kwargs.get("template") or {}).get("name") == "assistyca_reminder_again":
                 raise RuntimeError("(#132001) Template name does not exist in the translation")
             return "wamid.2"
 
         with mock.patch("packages.infrastructure.whatsapp_messaging.send_whatsapp_message", side_effect=refuse_the_new_one) as send:
             self._scheduler().run_pending(now=datetime.now(UTC))
-        self.assertEqual(send.call_count, 2)
+        self.assertEqual(send.call_count, 4)
         template = send.call_args.kwargs["template"]
         self.assertEqual(template["name"], "assistyca_reminder")
         self.assertEqual([c["type"] for c in template["components"]], ["body"])
@@ -235,6 +240,16 @@ class ButtonOnTheSendTests(unittest.TestCase):
         saved = self.database.get_scheduled_action(int(action["id"])) or {}
         self.assertEqual(saved["payload"]["whatsappTemplate"], "assistyca_pickup_reminder:en")
 
+    def test_outside_the_window_a_drop_off_rides_its_own_template_with_the_button(self) -> None:
+        action = self._ride_word(rideSlots={"kids": ["Noa"], "from": ["Ballet"], "at": "16:00", "leg": "drop_off"})
+        send = self._run()
+        self.assertEqual(send.call_count, 1)
+        template = send.call_args.kwargs["template"]
+        self.assertEqual((template["name"], template["language"]), ("assistyca_drop_off_reminder", {"code": "en"}))
+        body, button = template["components"]
+        self.assertEqual([parameter["text"] for parameter in body["parameters"]], ["Noa", "Ballet", "16:00"])
+        self.assertEqual(button["parameters"], [{"type": "payload", "payload": f"remindagain:{action['id']}"}])
+
     def test_a_hebrew_pickup_joins_the_names_the_hebrew_way(self) -> None:
         self.database.save_household_profile(user_id=self.user_id, language="he")
         self._pickup_word()
@@ -255,10 +270,10 @@ class ButtonOnTheSendTests(unittest.TestCase):
             self._scheduler().run_pending(now=datetime.now(UTC))
         self.assertEqual(send.call_count, 2)
         template = send.call_args.kwargs["template"]
-        self.assertEqual(template["name"], "assistyca_reminder_again")
+        self.assertEqual(template["name"], "assistyca_reminder_set_again")
         self.assertEqual(len(template["components"][0]["parameters"]), 1)
         saved = self.database.get_scheduled_action(int(action["id"])) or {}
-        self.assertEqual(saved["payload"]["whatsappTemplate"], "assistyca_reminder_again:en")
+        self.assertEqual(saved["payload"]["whatsappTemplate"], "assistyca_reminder_set_again:en")
 
     def test_inside_the_window_a_pickup_is_still_the_assistants_own_words(self) -> None:
         self.database.save_whatsapp_agent_message(user_id=self.user_id, role="user", text="hi")

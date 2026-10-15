@@ -12,7 +12,10 @@ from packages.infrastructure.notification_templates import TEMPLATE_KIND_PAYLOAD
 from packages.infrastructure.notification_templates import image_template_for
 from packages.infrastructure.notification_templates import normalize_template_kind
 from packages.infrastructure.notification_templates import pickup_reminder_parameters
+from packages.infrastructure.notification_templates import ride_template_name
+from packages.infrastructure.notification_templates import schedule_parameters
 from packages.infrastructure.notification_templates import template_for
+from packages.infrastructure.notification_templates import utility_template_for
 from packages.infrastructure.portal_db import PortalDatabase
 
 
@@ -99,6 +102,29 @@ class PickupReminderParameterTests(unittest.TestCase):
         self.assertEqual(pickup_reminder_parameters({"kids": [], "from": ["Ballet"], "at": "17:30"}, "en"), [])
         self.assertEqual(pickup_reminder_parameters({"kids": ["Noa"], "from": ["Ballet"], "at": ""}, "en"), [])
         self.assertEqual(pickup_reminder_parameters(None, "en"), [])
+
+
+
+class UtilityTemplateTests(unittest.TestCase):
+    def test_every_kind_but_the_week_has_a_utility_template(self) -> None:
+        self.assertEqual(utility_template_for("morning_digest", "he"), ("assistyca_schedule_today", "he"))
+        self.assertEqual(utility_template_for("evening_glance", "en"), ("assistyca_schedule_tomorrow", "en"))
+        self.assertEqual(utility_template_for("reminder", "en"), ("assistyca_reminder_set", "en"))
+        self.assertEqual(utility_template_for("reminder_again", "he"), ("assistyca_reminder_set_again", "he"))
+        self.assertEqual(utility_template_for("week_ahead", "en"), ("", ""))
+
+    def test_the_days_figures_fill_four_slots_or_none(self) -> None:
+        self.assertEqual(
+            schedule_parameters({"date": "16.10", "activities": 3, "drives": 4, "open": 0}), ["16.10", "3", "4", "0"],
+        )
+        # A blank variable is refused whole by Meta: a missing figure sends none.
+        self.assertEqual(schedule_parameters({"date": "16.10", "activities": 3, "drives": 4}), [])
+        self.assertEqual(schedule_parameters({"date": "", "activities": 3, "drives": 4, "open": 0}), [])
+        self.assertEqual(schedule_parameters(None), [])
+
+    def test_a_drop_off_has_its_own_ride_template(self) -> None:
+        self.assertEqual(ride_template_name({"kids": ["Noa"], "leg": "drop_off"}), "assistyca_drop_off_reminder")
+        self.assertEqual(ride_template_name({"kids": ["Noa"]}), "assistyca_pickup_reminder")
 
 
 if __name__ == "__main__":
