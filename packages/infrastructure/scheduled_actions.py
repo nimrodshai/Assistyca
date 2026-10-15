@@ -20,6 +20,7 @@ from packages.infrastructure.notification_templates import PICKUP_SLOTS_PAYLOAD_
 from packages.infrastructure.notification_templates import RIDE_SLOTS_PAYLOAD_KEY
 from packages.infrastructure.notification_templates import SCHEDULE_SLOTS_PAYLOAD_KEY
 from packages.infrastructure.notification_templates import SCHEDULE_TEMPLATE_KINDS
+from packages.infrastructure.notification_templates import TEMPLATE_KIND_EVENING_GLANCE
 from packages.infrastructure.notification_templates import TEMPLATE_KIND_PAYLOAD_KEY
 from packages.infrastructure.notification_templates import TEMPLATE_KIND_REMINDER
 from packages.infrastructure.notification_templates import TEMPLATE_KIND_REMINDER_AGAIN
@@ -29,6 +30,7 @@ from packages.infrastructure.notification_templates import image_template_for
 from packages.infrastructure.notification_templates import normalize_template_kind
 from packages.infrastructure.notification_templates import pickup_reminder_parameters
 from packages.infrastructure.notification_templates import ride_template_name
+from packages.infrastructure.notification_templates import routine_picture_templates
 from packages.infrastructure.notification_templates import schedule_parameters
 from packages.infrastructure.notification_templates import template_for
 from packages.infrastructure.notification_templates import template_language as template_language_for
@@ -599,19 +601,27 @@ class ScheduledActionScheduler:
                 refusals.append(f"{'buttons' if again else 'picture' if image_url else 'plain text'}: {exc}")
         kind = normalize_template_kind(payload.get(TEMPLATE_KIND_PAYLOAD_KEY))
         if image_url:
-            image_template_name, image_template_language = image_template_for(kind, language)
-            try:
-                provider_message_id = send_whatsapp_notification(
-                    recipient_wa_id=recipient_ref,
-                    message_text=message_text,
-                    template_name=image_template_name,
-                    template_language=image_template_language,
-                    template_header_image_url=image_url,
-                )
-                payload["whatsappSendMode"] = "image_template"
-                return provider_message_id
-            except Exception as exc:  # noqa: BLE001 - the plain template with a link is the next thing to try
-                refusals.append(f"template {image_template_name} ({image_template_language}): {exc}")
+            # The Utility picture templates first, for the same reason as the
+            # words below; then the kind's own, which carries the words.
+            picture_attempts: list[tuple[str, str, list[str] | None]] = list(
+                routine_picture_templates(kind, language, payload.get(SCHEDULE_SLOTS_PAYLOAD_KEY))
+            )
+            picture_attempts.append((*image_template_for(kind, language), None))
+            for image_template_name, image_template_language, parameters in picture_attempts:
+                try:
+                    provider_message_id = send_whatsapp_notification(
+                        recipient_wa_id=recipient_ref,
+                        message_text=message_text,
+                        template_name=image_template_name,
+                        template_language=image_template_language,
+                        template_parameters=parameters,
+                        template_header_image_url=image_url,
+                    )
+                    payload["whatsappSendMode"] = "image_template"
+                    payload["whatsappTemplate"] = f"{image_template_name}:{image_template_language}"
+                    return provider_message_id
+                except Exception as exc:  # noqa: BLE001 - the next picture template, then the plain one with a link
+                    refusals.append(f"template {image_template_name} ({image_template_language}): {exc}")
         plain_text = f"{message_text} {image_url}".strip() if image_url else message_text
         attempts: list[tuple[str, str, list[str]]] = []
         # The Utility templates come before the Marketing ones: Meta accepts
@@ -629,7 +639,9 @@ class ScheduledActionScheduler:
             # The morning and the evening go in theirs only with the day's
             # figures; the words alone cannot fill it.
             figures = schedule_parameters(payload.get(SCHEDULE_SLOTS_PAYLOAD_KEY))
-            if figures:
+            # The evening's asks who takes what is still open, so an evening
+            # about a calendar clash alone does not go in it.
+            if figures and not (kind == TEMPLATE_KIND_EVENING_GLANCE and figures[3] == "0"):
                 attempts.append((*utility_template_for(kind, language), figures))
         else:
             attempts.append((*utility_template_for(kind, language), []))

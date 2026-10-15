@@ -12,6 +12,8 @@ from packages.infrastructure.notification_templates import TEMPLATE_KIND_PAYLOAD
 from packages.infrastructure.notification_templates import image_template_for
 from packages.infrastructure.notification_templates import normalize_template_kind
 from packages.infrastructure.notification_templates import pickup_reminder_parameters
+from packages.infrastructure.notification_templates import pickup_status
+from packages.infrastructure.notification_templates import routine_picture_templates
 from packages.infrastructure.notification_templates import ride_template_name
 from packages.infrastructure.notification_templates import schedule_parameters
 from packages.infrastructure.notification_templates import template_for
@@ -121,6 +123,22 @@ class UtilityTemplateTests(unittest.TestCase):
         self.assertEqual(schedule_parameters({"date": "16.10", "activities": 3, "drives": 4}), [])
         self.assertEqual(schedule_parameters({"date": "", "activities": 3, "drives": 4, "open": 0}), [])
         self.assertEqual(schedule_parameters(None), [])
+
+    def test_where_the_pickups_stand_in_a_few_fixed_words(self) -> None:
+        self.assertEqual(pickup_status(0, "en"), "all covered")
+        self.assertEqual(pickup_status(1, "en"), "1 still needs someone")
+        self.assertEqual(pickup_status(3, "en"), "3 still need someone")
+        self.assertEqual(pickup_status(0, "he"), "כולם מכוסים")
+        self.assertEqual(pickup_status(1, "he"), "אחד עוד בלי אחראי")
+        self.assertEqual(pickup_status(2, "he"), "2 עוד בלי אחראי")
+        self.assertEqual(pickup_status(None, "en"), "")
+
+    def test_the_week_picture_tries_the_plain_one_then_the_status_one(self) -> None:
+        self.assertEqual(routine_picture_templates("week_ahead", "he", {"openPickups": 2}), [
+            ("assistyca_routine_week", "he", []),
+            ("assistyca_routine_week_status", "he", ["2 עוד בלי אחראי"]),
+        ])
+        self.assertEqual(routine_picture_templates("reminder", "en", {"openPickups": 2}), [])
 
     def test_a_drop_off_has_its_own_ride_template(self) -> None:
         self.assertEqual(ride_template_name({"kids": ["Noa"], "leg": "drop_off"}), "assistyca_drop_off_reminder")

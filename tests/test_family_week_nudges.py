@@ -287,7 +287,9 @@ class NudgerTests(unittest.TestCase):
         self.assertEqual(payload["templateKind"], "morning_digest")
         self.assertNotIn("offerInstruction", payload)
         # The day's figures for the Utility template: the bus is nobody's drive.
-        self.assertEqual(payload["scheduleSlots"], {"date": "20.9", "activities": 2, "drives": 2, "open": 0})
+        self.assertEqual(
+            payload["scheduleSlots"], {"date": "20.9", "activities": 2, "drives": 2, "open": 0, "openPickups": 0},
+        )
 
     def test_a_morning_missed_by_hours_is_not_sent_late(self) -> None:
         self.nudger.run_pending(now=at(SUNDAY, 13, 0))
