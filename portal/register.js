@@ -258,11 +258,11 @@ window.addEventListener("DOMContentLoaded", () => {
     }
   };
 
-  const setStatusWithSignIn = (text, href) => {
+  const setStatusWithWhatsApp = (text, href) => {
     setStatus(text, "error");
     const link = document.createElement("a");
     link.href = href;
-    link.textContent = "Sign in";
+    link.textContent = "Open WhatsApp";
     status.append(" ", link, ".");
   };
 
@@ -505,8 +505,8 @@ window.addEventListener("DOMContentLoaded", () => {
         showFieldErrors(payload.fieldErrors);
       }
       const message = String(payload.message || "Something went wrong. Please try again in a moment.");
-      if (payload.signInUrl) {
-        setStatusWithSignIn(message, payload.signInUrl);
+      if (payload.whatsappUrl) {
+        setStatusWithWhatsApp(message, payload.whatsappUrl);
       } else {
         setStatus(message, "error");
       }

@@ -341,7 +341,7 @@ class WebRegistrationTests(unittest.TestCase):
         status, payload = self.register(registration())
         self.assertEqual(status, 409)
         self.assertEqual(payload["error"], "phone_taken")
-        self.assertEqual(payload["signInUrl"], "/whatsapp")
+        self.assertEqual(payload["whatsappUrl"], "/whatsapp")
         self.assertFalse(self.template_sent.called)
 
     def test_a_picture_meta_cannot_fetch_does_not_cost_them_the_welcome(self) -> None:
@@ -418,7 +418,7 @@ class WebRegistrationTests(unittest.TestCase):
         self.assertIn("data-phone-country", body)
         self.assertNotIn('type="email"', body)
         # Someone who already has an account texts; they do not sign in.
-        self.assertIn('Already have an account? Click <a href="/whatsapp">here</a>', body)
+        self.assertIn('Already have an account? <a href="/whatsapp">Open WhatsApp</a>', body)
         self.assertNotIn('<a href="/portal/">Sign in</a>', body)
         # Two questions and no choice to make: the name is the first.
         self.assertNotIn('name="kind"', body)
