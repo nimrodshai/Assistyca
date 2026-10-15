@@ -71,6 +71,7 @@ from zoneinfo import ZoneInfoNotFoundError
 
 from packages.infrastructure.notification_templates import TEMPLATE_KIND_EVENING_GLANCE
 from packages.infrastructure.notification_templates import TEMPLATE_KIND_MORNING_DIGEST
+from packages.infrastructure.notification_templates import OPEN_PICKUPS_SLOT
 from packages.infrastructure.notification_templates import RIDE_SLOTS_PAYLOAD_KEY
 from packages.infrastructure.notification_templates import SCHEDULE_SLOTS_PAYLOAD_KEY
 from packages.infrastructure.notification_templates import TEMPLATE_KIND_PAYLOAD_KEY
@@ -621,15 +622,19 @@ def schedule_slots(
 ) -> dict[str, Any]:
     """The day's figures for the Utility morning and evening templates: the
     date, how many activities, how many drives - a grown-up's own plans and
-    the bus are nobody's drive - and how many of those have nobody yet."""
+    the bus are nobody's drive - how many of those have nobody yet, and how
+    many of those are pick-ups, for the picture's line about them."""
 
     drives = 0
     for activity in plans:
         if members is not None and household.is_grown_up_activity(activity, members, owner_names):
             continue
         drives += sum(1 for key in ("dropOffBy", "pickUpBy") if not household.nobody_drives(activity.get(key)))
-    open_drives = sum(len(household.activity_gaps(activity, members, owner_names)) for activity in plans)
-    return {"date": f"{day.day}.{day.month}", "activities": len(plans), "drives": drives, "open": open_drives}
+    gaps = [gap for activity in plans for gap in household.activity_gaps(activity, members, owner_names)]
+    return {
+        "date": f"{day.day}.{day.month}", "activities": len(plans), "drives": drives, "open": len(gaps),
+        OPEN_PICKUPS_SLOT: gaps.count("pick_up"),
+    }
 
 
 def leave_words(
@@ -1126,9 +1131,7 @@ class FamilyWeekNudger:
                     self._queue(
                         user_id=user_id, now=reference, timezone_name=timezone_name,
                         title="Tomorrow still needs someone", kind=TEMPLATE_KIND_EVENING_GLANCE, image_url=image_url,
-                        # The template asks who takes what is still open, so
-                        # it carries an evening only when something is.
-                        schedule=schedule_slots(tomorrow_on, tomorrow, members, owner_names) if tomorrow_gaps else None,
+                        schedule=schedule_slots(tomorrow_on, tomorrow, members, owner_names),
                         instruction=(
                             "It is the evening. " + (PICTURE_OF_TOMORROW if image_url else "")
                             + "In one or two short sentences, in the language the person writes to you "
@@ -1443,6 +1446,10 @@ class FamilyWeekNudger:
                 note = normalize_text(status.get("note"))[:60]
             days.append(WeekDayPlan(day=day, plans=plans, note=note))
         summary = build_week_summary(week_start=week_start, days=days, members=members, owner_names=owner_names)
+        # Where the week's pick-ups stand, for the picture's Utility template.
+        week_slots = {OPEN_PICKUPS_SLOT: sum(
+            schedule_slots(entry.plans, entry.day, members, owner_names)[OPEN_PICKUPS_SLOT] for entry in days
+        )}
         image_url = ""
         base_url = normalize_text(self.config.public_base_url).rstrip("/")
         if base_url.startswith("https://"):
@@ -1481,6 +1488,7 @@ class FamilyWeekNudger:
             self._queue(
                 user_id=user_id, now=reference, timezone_name=timezone_name, title="Your family's week ahead",
                 instruction=instruction, fallback=fallback, image_url=image_url, kind=TEMPLATE_KIND_WEEK_AHEAD,
+                schedule=week_slots,
             )
             sent += 1
         for member in members:
@@ -1492,7 +1500,7 @@ class FamilyWeekNudger:
             self._queue(
                 user_id=user_id, now=reference, timezone_name=timezone_name, title="Your family's week ahead",
                 instruction=instruction, fallback=fallback, image_url=image_url, recipient_wa_id=wa_id,
-                kind=TEMPLATE_KIND_WEEK_AHEAD,
+                kind=TEMPLATE_KIND_WEEK_AHEAD, schedule=week_slots,
             )
             sent += 1
         return sent

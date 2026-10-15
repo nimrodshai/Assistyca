@@ -132,6 +132,17 @@ class RegistrationWelcomeSendTests(unittest.TestCase):
             )
         return send.call_args.kwargs["template"]
 
+    def test_a_template_with_no_variable_goes_with_its_picture_and_no_body(self) -> None:
+        template = self.send(
+            message_text="Here is today.",
+            template_name="assistyca_routine_today",
+            template_language="en",
+            template_parameters=[],
+            template_header_image_url="https://assistyca.com/week/image/day.png",
+        )
+
+        self.assertEqual([component["type"] for component in template["components"]], ["header"])
+
     def test_the_welcome_goes_out_with_its_picture_and_its_variables(self) -> None:
         template = self.send(
             message_text="Hi Dana, I'm Assistyca.",

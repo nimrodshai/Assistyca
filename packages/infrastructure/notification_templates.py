@@ -81,6 +81,24 @@ SCHEDULE_TEMPLATE_KINDS = frozenset({TEMPLATE_KIND_MORNING_DIGEST, TEMPLATE_KIND
 # The day's figures for those two: its date, how many activities, how many
 # drives, and how many of those drives have nobody yet.
 SCHEDULE_SLOTS_PAYLOAD_KEY = "scheduleSlots"
+# The Utility templates for the pictures, tried before the kind's own picture
+# template: the plain one first ("Here's what your family's routine looks
+# like today."), with no variable at all, and then the one that also says
+# where the pick-ups stand (pickup_status). Both were submitted on
+# 2026-10-15 to see which Meta keeps as Utility: a body that is the same for
+# everyone may be filed as Marketing, and then only the second is of use.
+ROUTINE_PICTURE_TEMPLATE_NAMES = {
+    TEMPLATE_KIND_MORNING_DIGEST: ("assistyca_routine_today", "assistyca_routine_today_status"),
+    TEMPLATE_KIND_EVENING_GLANCE: ("assistyca_routine_tomorrow", "assistyca_routine_tomorrow_status"),
+    TEMPLATE_KIND_WEEK_AHEAD: ("assistyca_routine_week", "assistyca_routine_week_status"),
+}
+# How many pick-ups the picture's day or week still has nobody for, kept with
+# the day's figures. Drop-offs are not counted: the line says "Pick-ups".
+OPEN_PICKUPS_SLOT = "openPickups"
+PICKUP_STATUS_WORDS = {
+    "en": {"none": "all covered", "one": "1 still needs someone", "many": "{count} still need someone"},
+    "he": {"none": "כולם מכוסים", "one": "אחד עוד בלי אחראי", "many": "{count} עוד בלי אחראי"},
+}
 # Kinds whose only template opens with a picture: sent only with one.
 IMAGE_TEMPLATE_KINDS = frozenset({TEMPLATE_KIND_WEEK_AHEAD})
 
@@ -151,6 +169,34 @@ def schedule_parameters(slots: Any) -> list[str]:
     return [date_text, *(str(value) for value in figures)]
 
 
+def routine_picture_templates(kind: Any, language: Any, slots: Any) -> list[tuple[str, str, list[str]]]:
+    """The Utility picture templates to try for a picture of this kind, in
+    order, each with its variables: the plain one with none, then the one
+    with where the pick-ups stand - left out when that is not known."""
+
+    names = ROUTINE_PICTURE_TEMPLATE_NAMES.get(normalize_template_kind(kind))
+    if not names:
+        return []
+    resolved = template_language(language)
+    attempts: list[tuple[str, str, list[str]]] = [(names[0], resolved, [])]
+    status = pickup_status(slots.get(OPEN_PICKUPS_SLOT) if isinstance(slots, dict) else None, resolved)
+    if status:
+        attempts.append((names[1], resolved, [status]))
+    return attempts
+
+
+def pickup_status(count: Any, language: Any) -> str:
+    """"all covered", "1 still needs someone", "2 still need someone" - or
+    in Hebrew - or nothing when the count is not a number."""
+
+    if not isinstance(count, int) or isinstance(count, bool) or count < 0:
+        return ""
+    words = PICKUP_STATUS_WORDS.get(template_language(language), PICKUP_STATUS_WORDS["en"])
+    if count == 0:
+        return words["none"]
+    return words["one"] if count == 1 else words["many"].format(count=count)
+
+
 def ride_template_name(slots: Any) -> str:
     """The template a trip's slots are for: the drop-off one when the slots
     say so, the pickup one otherwise."""
@@ -187,10 +233,12 @@ __all__ = [
     "DEFAULT_TEMPLATE_KIND",
     "DROP_OFF_REMINDER_TEMPLATE_NAME",
     "IMAGE_TEMPLATE_KINDS",
+    "OPEN_PICKUPS_SLOT",
     "PICKUP_REMINDER_TEMPLATE_NAME",
     "PICKUP_SLOTS_PAYLOAD_KEY",
     "PICTURE_TEMPLATE_NAMES",
     "RIDE_SLOTS_PAYLOAD_KEY",
+    "ROUTINE_PICTURE_TEMPLATE_NAMES",
     "SCHEDULE_SLOTS_PAYLOAD_KEY",
     "SCHEDULE_TEMPLATE_KINDS",
     "TEMPLATE_KINDS",
@@ -205,7 +253,9 @@ __all__ = [
     "image_template_for",
     "normalize_template_kind",
     "pickup_reminder_parameters",
+    "pickup_status",
     "ride_template_name",
+    "routine_picture_templates",
     "schedule_parameters",
     "template_for",
     "template_language",

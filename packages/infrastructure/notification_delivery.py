@@ -207,7 +207,7 @@ def send_whatsapp_notification(
     hours ahead, and the only way to speak first to someone who registered on
     the website. The message fills the template's single body variable unless
     the caller passes `template_parameters`, which fill {{1}}, {{2}} and so on
-    in order; a template that opens with a picture takes the picture per
+    in order - an empty one for a template with no variable at all; a template that opens with a picture takes the picture per
     message, so `template_header_image_url` has to be an address Meta can
     fetch. Without a template name it sends plain text, or - with
     `image_url` - that picture with the text as its caption, which Meta takes
@@ -256,7 +256,10 @@ def send_whatsapp_notification(
         # a missing variable, so a line cannot be dropped from an approved
         # template by sending "" in its place.
         body_parameters = [flatten_template_parameter(value) for value in raw_parameters]
-        if not body_parameters or not all(body_parameters):
+        # A template whose body has no variable at all is asked for with an
+        # empty sequence, and sends no body component.
+        without_variables = template_parameters is not None and not raw_parameters
+        if not without_variables and (not body_parameters or not all(body_parameters)):
             raise RuntimeError("WhatsApp template delivery requires every body variable to have text.")
         components: list[dict[str, Any]] = []
         header_image_url = normalize_text(template_header_image_url)
@@ -265,10 +268,11 @@ def send_whatsapp_notification(
                 "type": "header",
                 "parameters": [{"type": "image", "image": {"link": header_image_url}}],
             })
-        components.append({
-            "type": "body",
-            "parameters": [{"type": "text", "text": value} for value in body_parameters],
-        })
+        if body_parameters:
+            components.append({
+                "type": "body",
+                "parameters": [{"type": "text", "text": value} for value in body_parameters],
+            })
         for index, button_payload in enumerate(template_button_payloads or ()):
             components.append({
                 "type": "button",
