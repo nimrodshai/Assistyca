@@ -5,14 +5,17 @@ message may only go out as a template Meta has approved - and in the language
 the person typed their name in, since nothing else is known about them yet
 (message_language keeps the language from their first message on).
 
-The welcome is `assistyca_welcome_family`, with their first name in {{1}} and
-nothing else, in English or in Hebrew. One name, two languages, on Meta as
-here: a new language is a translation added under the name, never a new name.
+The welcome is `assistyca_welcome_family_hello`, with their first name in
+{{1}} and nothing else, in English or in Hebrew, and no picture on top. One
+name, two languages, on Meta as here: a new language is a translation added
+under the name, never a new name. It was submitted as Utility on 2026-10-15:
+the earlier welcomes were moved to Marketing by Meta, and Meta stops
+marketing templates to people who never wrote to us (131049).
 
-The earlier family template (`_english_short`) is kept only as the fallback
-while Meta reviews the new one: a template still under review is refused
-whole, and an older welcome in English is better than no welcome. Once the
-new pair is approved the first send takes and the fallback is never tried.
+The earlier family templates (`assistyca_welcome_family`, then the English
+`_english_short`) stand behind it while Meta reviews it: a template still
+under review is refused whole, and an older welcome is better than none.
+Once it is approved the first send takes and the fallbacks are never tried.
 
 The bodies are repeated here as text so the conversation we keep says exactly
 what their phone showed. They are copies of the approved templates, read in
@@ -33,7 +36,9 @@ from packages.infrastructure.portal_db import normalize_text
 from packages.infrastructure.whatsapp_agent_chat import first_name
 
 
-FAMILY_WELCOME_TEMPLATE_NAME = "assistyca_welcome_family"
+FAMILY_WELCOME_TEMPLATE_NAME = "assistyca_welcome_family_hello"
+# The approved Marketing welcome, with the picture on top: the first fallback.
+MARKETING_FAMILY_WELCOME_TEMPLATE_NAME = "assistyca_welcome_family"
 # The approved English family welcome from before the name above existed:
 # {{1}} only, like the new one. The fallback while Meta reviews the new pair.
 LEGACY_FAMILY_WELCOME_TEMPLATE_NAME = "assistyca_welcome_family_english_short"
@@ -43,9 +48,20 @@ LEGACY_FAMILY_WELCOME_TEMPLATE_NAME = "assistyca_welcome_family_english_short"
 # shows whatever we send, not what the template was approved with.
 FAMILY_WELCOME_HEADER_IMAGE_PATH = "/assets/assistyca-whatsapp-header-family.jpg"
 
-# The family welcomes: the greeting with the name, then the body as it is on
-# Meta. The footer ("Didn't register at assistyca.com? Just ignore this
-# message.") is the template's own and is not part of the words we keep.
+# The welcome as submitted on 2026-10-15, with the name in it.
+FAMILY_HELLO = (
+    "Hi {name}, it's Assistyca 👋 You're all signed up, and I'm really glad you're here.\n\n"
+    "To build your family's weekly schedule, I'd like to get to know everyone first. "
+    "Who lives at home with you? Names and the kids' ages are plenty."
+)
+HEBREW_FAMILY_HELLO = (
+    "היי {name}, כאן Assistyca 👋 ההרשמה הושלמה, וטוב שהגעת.\n\n"
+    "כדי לבנות את הלו״ז השבועי של המשפחה, אשמח להכיר קודם את כולם. מי גר איתך בבית? מספיק שמות וגילאי הילדים."
+)
+
+# The earlier family welcomes: the greeting with the name, then the body as
+# it is on Meta. The footer ("Didn't register at assistyca.com? Just ignore
+# this message.") is the template's own and is not part of the words we keep.
 FAMILY_WELCOME_GREETING = "Hi {name} 👋"
 FAMILY_WELCOME_BODY = (
     "I'm your new assistant and I'm here to help.\n"
@@ -80,12 +96,17 @@ def greeted_name(name: Any = "") -> str:
     return first_name(name) or "there"
 
 
-def build_registration_welcome_message(*, name: Any, language: Any = None) -> str:
-    """The welcome as their phone will show it, for the conversation we keep."""
+def build_registration_welcome_message(
+    *, name: Any, language: Any = None, template_name: str = FAMILY_WELCOME_TEMPLATE_NAME,
+) -> str:
+    """The welcome as their phone will show it, for the conversation we keep:
+    the words of whichever template carried it."""
 
     resolved_language = normalize_message_language(language) or welcome_language(name)
     hebrew = resolved_language == LANGUAGE_HEBREW
     shown_name = greeted_name(name)
+    if template_name == FAMILY_WELCOME_TEMPLATE_NAME:
+        return (HEBREW_FAMILY_HELLO if hebrew else FAMILY_HELLO).format(name=shown_name)
     greeting = (HEBREW_FAMILY_WELCOME_GREETING if hebrew else FAMILY_WELCOME_GREETING).format(name=shown_name)
     return f"{greeting}\n{HEBREW_FAMILY_WELCOME_BODY if hebrew else FAMILY_WELCOME_BODY}"
 
@@ -146,17 +167,19 @@ def registration_welcome_plan(*, base_url: str = "", name: Any = "") -> list[Reg
     header = f"{site}{FAMILY_WELCOME_HEADER_IMAGE_PATH}" if is_publicly_fetchable(site) else ""
     language = welcome_language(name)
 
-    def entry(template_name: str, template_language: str) -> RegistrationWelcomeTemplate:
+    def entry(template_name: str, template_language: str, *, picture: bool = True) -> RegistrationWelcomeTemplate:
         return RegistrationWelcomeTemplate(
             name=template_name,
             language=template_language,
-            header_image_url=header,
+            # A picture sent to a template made without one is refused.
+            header_image_url=header if picture else "",
             parameters=tuple(registration_welcome_template_parameters(name=name, language=template_language)),
-            message=build_registration_welcome_message(name=name, language=template_language),
+            message=build_registration_welcome_message(name=name, language=template_language, template_name=template_name),
         )
 
     return [
-        entry(FAMILY_WELCOME_TEMPLATE_NAME, language),
+        entry(FAMILY_WELCOME_TEMPLATE_NAME, language, picture=False),
+        entry(MARKETING_FAMILY_WELCOME_TEMPLATE_NAME, language),
         entry(LEGACY_FAMILY_WELCOME_TEMPLATE_NAME, LANGUAGE_ENGLISH),
     ]
 
@@ -172,7 +195,10 @@ __all__ = [
     "FAMILY_WELCOME_HEADER_IMAGE_PATH",
     "FAMILY_WELCOME_TEMPLATE_NAME",
     "HEBREW_FAMILY_WELCOME_BODY",
+    "FAMILY_HELLO",
+    "HEBREW_FAMILY_HELLO",
     "LEGACY_FAMILY_WELCOME_TEMPLATE_NAME",
+    "MARKETING_FAMILY_WELCOME_TEMPLATE_NAME",
     "RegistrationWelcomeTemplate",
     "build_registration_welcome_message",
     "is_hebrew_name",

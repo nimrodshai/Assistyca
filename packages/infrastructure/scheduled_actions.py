@@ -14,13 +14,17 @@ from zoneinfo import ZoneInfoNotFoundError
 
 from packages.infrastructure.list_due_nudges import describe_due
 from packages.infrastructure.message_language import resolve_message_language
+from packages.infrastructure.notification_templates import PICKUP_REMINDER_TEMPLATE_NAME
+from packages.infrastructure.notification_templates import PICKUP_SLOTS_PAYLOAD_KEY
 from packages.infrastructure.notification_templates import TEMPLATE_KIND_PAYLOAD_KEY
 from packages.infrastructure.notification_templates import TEMPLATE_KIND_REMINDER
 from packages.infrastructure.notification_templates import TEMPLATE_KIND_REMINDER_AGAIN
 from packages.infrastructure.notification_templates import TEMPLATE_NAMES
 from packages.infrastructure.notification_templates import image_template_for
 from packages.infrastructure.notification_templates import normalize_template_kind
+from packages.infrastructure.notification_templates import pickup_reminder_parameters
 from packages.infrastructure.notification_templates import template_for
+from packages.infrastructure.notification_templates import template_language as template_language_for
 from packages.infrastructure.notification_delivery import deliver_portal_notification
 from packages.infrastructure.notification_delivery import send_whatsapp_notification
 from packages.infrastructure.portal_db import PortalDatabase
@@ -601,24 +605,32 @@ class ScheduledActionScheduler:
             except Exception as exc:  # noqa: BLE001 - the plain template with a link is the next thing to try
                 refusals.append(f"template {image_template_name} ({image_template_language}): {exc}")
         plain_text = f"{message_text} {image_url}".strip() if image_url else message_text
-        attempts = [template_for(kind, language)]
+        attempts: list[tuple[str, str, list[str]]] = []
+        # A trip of pickups goes out in the template made for it: the kids,
+        # the place and the time in its slots, the button under them.
+        slots = pickup_reminder_parameters(payload.get(PICKUP_SLOTS_PAYLOAD_KEY), language) if again else []
+        if kind == TEMPLATE_KIND_REMINDER_AGAIN and slots:
+            attempts.append((PICKUP_REMINDER_TEMPLATE_NAME, template_language_for(language), slots))
+        attempts.append((*template_for(kind, language), []))
         if kind == TEMPLATE_KIND_REMINDER_AGAIN:
             # Until Meta approves the template with the button, the plain
             # reminder carries the word; the offer waits with it.
-            attempts.append(template_for(TEMPLATE_KIND_REMINDER, language))
-        attempts.append((self.config.whatsapp_template_name, self.config.whatsapp_template_language))
+            attempts.append((*template_for(TEMPLATE_KIND_REMINDER, language), []))
+        attempts.append((self.config.whatsapp_template_name, self.config.whatsapp_template_language, []))
+        button_templates = {PICKUP_REMINDER_TEMPLATE_NAME, TEMPLATE_NAMES[TEMPLATE_KIND_REMINDER_AGAIN]}
         tried: set[tuple[str, str]] = set()
-        for template_name, template_language in attempts:
+        for template_name, template_language, parameters in attempts:
             if not template_name or (template_name, template_language) in tried:
                 continue
             tried.add((template_name, template_language))
-            with_button = bool(again) and template_name == TEMPLATE_NAMES[TEMPLATE_KIND_REMINDER_AGAIN]
+            with_button = bool(again) and template_name in button_templates
             try:
                 provider_message_id = send_whatsapp_notification(
                     recipient_wa_id=recipient_ref,
                     message_text=plain_text,
                     template_name=template_name,
                     template_language=template_language,
+                    template_parameters=parameters or None,
                     template_button_payloads=[again["id"]] if with_button else None,
                 )
                 payload["whatsappSendMode"] = "template_with_link" if image_url else "template"
