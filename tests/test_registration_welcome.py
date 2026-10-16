@@ -21,20 +21,20 @@ class RegistrationWelcomeTemplateTests(unittest.TestCase):
         with mock.patch.dict(os.environ, {}, clear=True):
             template = resolve_registration_welcome_template(base_url="https://assistyca.com/", name="Dana Levi")
 
-        self.assertEqual((template.name, template.language), ("assistyca_welcome_family_hi", "en"))
+        self.assertEqual((template.name, template.language), ("assistyca_welcome_family_hey", "en"))
         self.assertEqual(template.parameters, ("Dana",))
         # Made without a picture: one sent with it would be refused.
         self.assertEqual(template.header_image_url, "")
-        self.assertTrue(template.message.startswith("Hi Dana, it's Assistyca 👋 You're all signed up.\n\n"))
-        self.assertTrue(template.message.endswith("Who lives at home with you? Names and the kids' ages are plenty."))
+        self.assertTrue(template.message.startswith("Hey Dana, your Assistyca account is up and running 👋\n\n"))
+        self.assertTrue(template.message.endswith("Names and the kids' ages are all I need."))
 
     def test_the_approved_marketing_welcome_keeps_its_picture(self) -> None:
         with mock.patch.dict(os.environ, {}, clear=True):
             plan = registration_welcome_plan(base_url="https://assistyca.com/", name="Dana Levi")
 
-        self.assertEqual(plan[2].name, "assistyca_welcome_family")
-        self.assertEqual(plan[2].header_image_url, "https://assistyca.com/assets/assistyca-whatsapp-header-family.jpg")
-        self.assertTrue(plan[2].message.startswith("Hi Dana 👋\nI'm your new assistant"))
+        self.assertEqual(plan[3].name, "assistyca_welcome_family")
+        self.assertEqual(plan[3].header_image_url, "https://assistyca.com/assets/assistyca-whatsapp-header-family.jpg")
+        self.assertTrue(plan[3].message.startswith("Hi Dana 👋\nI'm your new assistant"))
 
     def test_the_environment_no_longer_names_a_template(self) -> None:
         # The business welcome could be swapped from the environment. The
@@ -45,7 +45,7 @@ class RegistrationWelcomeTemplateTests(unittest.TestCase):
             clear=True,
         ):
             template = resolve_registration_welcome_template(base_url="https://assistyca.com", name="Dana Levi")
-        self.assertEqual((template.name, template.language), ("assistyca_welcome_family_hi", "en"))
+        self.assertEqual((template.name, template.language), ("assistyca_welcome_family_hey", "en"))
 
     def test_a_portal_with_no_public_address_sends_no_picture(self) -> None:
         # Meta fetches the header image itself, so a laptop address is no
@@ -53,7 +53,7 @@ class RegistrationWelcomeTemplateTests(unittest.TestCase):
         # message, not just the header. Better a welcome without the picture.
         with mock.patch.dict(os.environ, {}, clear=True):
             for base_url in ("", "http://127.0.0.1:8765", "http://assistyca.com"):
-                self.assertEqual(registration_welcome_plan(base_url=base_url, name="Dana")[2].header_image_url, "")
+                self.assertEqual(registration_welcome_plan(base_url=base_url, name="Dana")[3].header_image_url, "")
 
     def test_a_hebrew_name_gets_the_hebrew_welcome(self) -> None:
         with mock.patch.dict(os.environ, {}, clear=True):
@@ -72,20 +72,23 @@ class RegistrationWelcomeTemplateTests(unittest.TestCase):
             with self.subTest(name=name), mock.patch.dict(os.environ, {}, clear=True):
                 plan = registration_welcome_plan(name=name)
                 language = "he" if name == "יוני כהן" else "en"
+                # The English-only Utility welcome goes before the rest.
+                english_first = [] if language == "he" else [("assistyca_welcome_family_hey", "en")]
                 self.assertEqual([(t.name, t.language) for t in plan], [
+                    *english_first,
                     ("assistyca_welcome_family_hi", language),
                     ("assistyca_welcome_family_hello", language),
                     ("assistyca_welcome_family", language),
                     ("assistyca_welcome_family_english_short", "en"),
                 ])
-                self.assertEqual([len(t.parameters) for t in plan], [1, 1, 1, 1])
+                self.assertTrue(all(len(t.parameters) == 1 for t in plan))
                 self.assertTrue(plan[-1].message.startswith("Hi "))
 
     def test_any_other_language_gets_english(self) -> None:
         for name in ("Мария", "محمد", "José", ""):
             with self.subTest(name=name), mock.patch.dict(os.environ, {}, clear=True):
                 template = resolve_registration_welcome_template(name=name)
-                self.assertEqual((template.name, template.language), ("assistyca_welcome_family_hi", "en"))
+                self.assertEqual((template.name, template.language), ("assistyca_welcome_family_hey", "en"))
 
 
 class RegistrationWelcomeMessageTests(unittest.TestCase):

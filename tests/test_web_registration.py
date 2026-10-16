@@ -16,6 +16,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 from packages.infrastructure.portal_auth.server import PortalConfig, create_server
+from packages.infrastructure.registration_welcome import ENGLISH_FAMILY_HELLO
 from packages.infrastructure.registration_welcome import FAMILY_HELLO
 from packages.infrastructure.registration_welcome import FAMILY_WELCOME_BODY
 from packages.infrastructure.registration_welcome import HEBREW_FAMILY_HELLO
@@ -158,7 +159,7 @@ class WebRegistrationTests(unittest.TestCase):
         send = self.template_sent.call_args.kwargs
         self.assertEqual(send["recipient_wa_id"], PHONE)
         self.assertIsNone(send["message_text"])
-        self.assertEqual(send["template"]["name"], "assistyca_welcome_family_hi")
+        self.assertEqual(send["template"]["name"], "assistyca_welcome_family_hey")
         self.assertEqual(send["template"]["language"], {"code": "en"})
         components = {component["type"]: component for component in send["template"]["components"]}
         self.assertEqual([parameter["text"] for parameter in components["body"]["parameters"]], ["Dana"])
@@ -206,7 +207,7 @@ class WebRegistrationTests(unittest.TestCase):
         # thing in its conversation, so nothing it said is said again.
         transcript = self.database.list_recent_whatsapp_agent_messages(user_id=user_id)
         self.assertEqual([entry["role"] for entry in transcript], ["assistant", "user", "assistant"])
-        self.assertEqual(transcript[0]["text"], FAMILY_HELLO.format(name="Dana"))
+        self.assertEqual(transcript[0]["text"], ENGLISH_FAMILY_HELLO.format(name="Dana"))
 
     def test_while_meta_reviews_the_new_welcome_the_approved_one_carries_it(self) -> None:
         # Meta refuses the new welcome while the review runs; the one it
@@ -369,7 +370,7 @@ class WebRegistrationTests(unittest.TestCase):
         # second attempt goes without it.
         def refuse_the_picture(**kwargs):
             template = kwargs.get("template") or {}
-            if template.get("name") in ("assistyca_welcome_family_hi", "assistyca_welcome_family_hello"):
+            if template.get("name") in ("assistyca_welcome_family_hey", "assistyca_welcome_family_hi", "assistyca_welcome_family_hello"):
                 raise RuntimeError("(#132001) Template name does not exist in the translation")
             components = template.get("components") or []
             if any(component.get("type") == "header" for component in components):
@@ -383,9 +384,9 @@ class WebRegistrationTests(unittest.TestCase):
 
         self.assertEqual(status, 200, payload)
         self.assertTrue(payload["whatsappSent"])
-        # The two new welcomes (no picture, refused), the approved one with
+        # The three new welcomes (no picture, refused), the approved one with
         # its picture (refused), then the approved one without it.
-        self.assertEqual(self.template_sent.call_count, 4)
+        self.assertEqual(self.template_sent.call_count, 5)
         sent = self.template_sent.call_args.kwargs["template"]
         self.assertEqual([component["type"] for component in sent["components"]], ["body"])
         self.assertEqual(sent["name"], "assistyca_welcome_family")
