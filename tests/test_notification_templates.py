@@ -140,6 +140,12 @@ class UtilityTemplateTests(unittest.TestCase):
         ])
         self.assertEqual(routine_picture_templates("reminder", "en", {"openPickups": 2}), [])
 
+    def test_today_in_english_skips_the_plain_one_meta_filed_as_marketing(self) -> None:
+        self.assertEqual(routine_picture_templates("morning_digest", "en", {"openPickups": 0}), [
+            ("assistyca_routine_today_status", "en", ["all covered"]),
+        ])
+        self.assertEqual(routine_picture_templates("morning_digest", "he", {"openPickups": 0})[0], ("assistyca_routine_today", "he", []))
+
     def test_a_drop_off_has_its_own_ride_template(self) -> None:
         self.assertEqual(ride_template_name({"kids": ["Noa"], "leg": "drop_off"}), "assistyca_drop_off_reminder")
         self.assertEqual(ride_template_name({"kids": ["Noa"]}), "assistyca_pickup_reminder")
