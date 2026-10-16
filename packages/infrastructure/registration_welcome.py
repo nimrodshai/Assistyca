@@ -44,6 +44,11 @@ from packages.infrastructure.whatsapp_agent_chat import first_name
 
 
 FAMILY_WELCOME_TEMPLATE_NAME = "assistyca_welcome_family_hi"
+# English only: Meta filed the English of the name above as Marketing, which
+# it drops (131049) for someone who has not written to us. This one opens on
+# the account so it reads as Utility; submitted 2026-10-16. Until Meta
+# approves it the send is refused at once and the plan moves on.
+ENGLISH_FAMILY_WELCOME_TEMPLATE_NAME = "assistyca_welcome_family_hey"
 # The same welcome with the warmer English Meta filed as Marketing: the
 # first fallback, and Utility still in Hebrew.
 WARM_FAMILY_WELCOME_TEMPLATE_NAME = "assistyca_welcome_family_hello"
@@ -64,6 +69,11 @@ FAMILY_HELLO = (
     "Hi {name}, it's Assistyca 👋 You're all signed up.\n\n"
     "To build your family's weekly schedule, I'd like to get to know everyone first. "
     "Who lives at home with you? Names and the kids' ages are plenty."
+)
+ENGLISH_FAMILY_HELLO = (
+    "Hey {name}, your Assistyca account is up and running 👋\n\n"
+    "First thing I'll need for your weekly schedule: who's at home with you? "
+    "Names and the kids' ages are all I need."
 )
 WARM_FAMILY_HELLO = (
     "Hi {name}, it's Assistyca 👋 You're all signed up, and I'm really glad you're here.\n\n"
@@ -121,6 +131,8 @@ def build_registration_welcome_message(
     resolved_language = normalize_message_language(language) or welcome_language(name)
     hebrew = resolved_language == LANGUAGE_HEBREW
     shown_name = greeted_name(name)
+    if template_name == ENGLISH_FAMILY_WELCOME_TEMPLATE_NAME:
+        return ENGLISH_FAMILY_HELLO.format(name=shown_name)
     if template_name == FAMILY_WELCOME_TEMPLATE_NAME:
         return (HEBREW_FAMILY_HELLO if hebrew else FAMILY_HELLO).format(name=shown_name)
     if template_name == WARM_FAMILY_WELCOME_TEMPLATE_NAME:
@@ -195,7 +207,9 @@ def registration_welcome_plan(*, base_url: str = "", name: Any = "") -> list[Reg
             message=build_registration_welcome_message(name=name, language=template_language, template_name=template_name),
         )
 
+    english_first = [entry(ENGLISH_FAMILY_WELCOME_TEMPLATE_NAME, LANGUAGE_ENGLISH, picture=False)] if language == LANGUAGE_ENGLISH else []
     return [
+        *english_first,
         entry(FAMILY_WELCOME_TEMPLATE_NAME, language, picture=False),
         entry(WARM_FAMILY_WELCOME_TEMPLATE_NAME, language, picture=False),
         entry(MARKETING_FAMILY_WELCOME_TEMPLATE_NAME, language),
@@ -210,6 +224,8 @@ def resolve_registration_welcome_template(*, base_url: str = "", name: Any = "")
 
 
 __all__ = [
+    "ENGLISH_FAMILY_HELLO",
+    "ENGLISH_FAMILY_WELCOME_TEMPLATE_NAME",
     "FAMILY_WELCOME_BODY",
     "FAMILY_WELCOME_HEADER_IMAGE_PATH",
     "FAMILY_WELCOME_TEMPLATE_NAME",
