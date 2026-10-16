@@ -95,6 +95,11 @@ ROUTINE_PICTURE_TEMPLATE_NAMES = {
     TEMPLATE_KIND_EVENING_GLANCE: ("assistyca_routine_tomorrow", "assistyca_routine_tomorrow_status"),
     TEMPLATE_KIND_WEEK_AHEAD: ("assistyca_routine_week", "assistyca_routine_week_status"),
 }
+# Of those, the ones Meta filed as Marketing in one language (2026-10-16).
+# A Marketing template to someone who has not written lately is accepted and
+# then dropped (131049), so a fallback behind it never fires: these are not
+# tried at all, and the one with the pick-ups goes first instead.
+ROUTINE_PICTURES_FILED_AS_MARKETING = frozenset({("assistyca_routine_today", "en")})
 # How many pick-ups the picture's day or week still has nobody for, kept with
 # the day's figures. Drop-offs are not counted: the line says "Pick-ups".
 OPEN_PICKUPS_SLOT = "openPickups"
@@ -185,7 +190,7 @@ def routine_picture_templates(kind: Any, language: Any, slots: Any) -> list[tupl
     status = pickup_status(slots.get(OPEN_PICKUPS_SLOT) if isinstance(slots, dict) else None, resolved)
     if status:
         attempts.append((names[1], resolved, [status]))
-    return attempts
+    return [attempt for attempt in attempts if attempt[:2] not in ROUTINE_PICTURES_FILED_AS_MARKETING]
 
 
 def pickup_status(count: Any, language: Any) -> str:

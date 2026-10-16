@@ -915,20 +915,21 @@ class ScheduledPictureTests(unittest.TestCase):
             },
         )
 
-    def test_a_morning_picture_rides_the_plain_utility_picture_template_first(self) -> None:
+    def test_an_english_morning_picture_rides_the_utility_status_template_first(self) -> None:
+        # Meta filed the plain English one as Marketing, so it is never tried.
         action = self._morning_picture(scheduleSlots={"date": "16.10", "activities": 3, "drives": 4, "open": 1, "openPickups": 1})
         with mock.patch(
             "packages.infrastructure.scheduled_actions.send_whatsapp_notification", return_value="wamid.pic-m",
         ) as send:
             self.scheduler.run_pending(now=datetime.now(timezone.utc))
         self.assertEqual(send.call_count, 1)
-        self.assertEqual(send.call_args.kwargs["template_name"], "assistyca_routine_today")
-        self.assertEqual(send.call_args.kwargs["template_parameters"], [])
+        self.assertEqual(send.call_args.kwargs["template_name"], "assistyca_routine_today_status")
+        self.assertEqual(send.call_args.kwargs["template_parameters"], ["1 still needs someone"])
         self.assertEqual(send.call_args.kwargs["template_header_image_url"], "https://assistyca.example/week/image/day.png")
         saved = self.database.get_scheduled_action(int(action["id"])) or {}
-        self.assertEqual(saved["payload"]["whatsappTemplate"], "assistyca_routine_today:en")
+        self.assertEqual(saved["payload"]["whatsappTemplate"], "assistyca_routine_today_status:en")
 
-    def test_then_the_one_that_says_where_the_pickups_stand_then_the_mornings_own(self) -> None:
+    def test_then_the_mornings_own(self) -> None:
         self._morning_picture(scheduleSlots={"date": "16.10", "activities": 3, "drives": 4, "open": 1, "openPickups": 0})
         calls = []
 
@@ -942,11 +943,11 @@ class ScheduledPictureTests(unittest.TestCase):
             self.scheduler.run_pending(now=datetime.now(timezone.utc))
         self.assertEqual(
             [c["template_name"] for c in calls],
-            ["assistyca_routine_today", "assistyca_routine_today_status", "assistyca_morning_digest_picture"],
+            ["assistyca_routine_today_status", "assistyca_morning_digest_picture"],
         )
         # A drop-off with nobody is not a pick-up: the line says all covered.
-        self.assertEqual(calls[1]["template_parameters"], ["all covered"])
-        self.assertIsNone(calls[2]["template_parameters"])
+        self.assertEqual(calls[0]["template_parameters"], ["all covered"])
+        self.assertIsNone(calls[1]["template_parameters"])
 
     def test_without_the_figures_the_status_one_is_skipped(self) -> None:
         self._morning_picture()
@@ -960,7 +961,7 @@ class ScheduledPictureTests(unittest.TestCase):
 
         with mock.patch("packages.infrastructure.scheduled_actions.send_whatsapp_notification", side_effect=send):
             self.scheduler.run_pending(now=datetime.now(timezone.utc))
-        self.assertEqual([c["template_name"] for c in calls], ["assistyca_routine_today", "assistyca_morning_digest_picture"])
+        self.assertEqual([c["template_name"] for c in calls], ["assistyca_morning_digest_picture"])
 
     def test_until_meta_approves_that_template_the_picture_goes_as_a_link(self) -> None:
         action = self._picture_message()
