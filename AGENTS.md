@@ -17,6 +17,7 @@ When working here:
 - `portal/` for the user-facing web pages and the chat workspace.
 - `scripts/` for shared automation such as setup, sync, evals, and deploy helpers.
 - `docs/` for internal process notes, onboarding, and operating guidance.
+- `docs/experience-brief.md` for what a review of the assistant's voice needs to know about this project.
 
 ## Reuse Rules
 
