@@ -1224,7 +1224,7 @@ class FamilyWeekNudger:
             if facts:
                 # Their own drives end with the offer of one more word five
                 # minutes before; a word that asks who does a drive does not.
-                again = remind_again_offer(said, local_now=local_now, facts=facts) if not open_count else {}
+                again = remind_again_offer(said, local_now=local_now, facts=facts, owner_names=owner_names) if not open_count else {}
                 words = leave_words(facts, open_count, again_offered=bool(again))
                 self._queue(
                     user_id=user_id, now=reference, timezone_name=timezone_name,
@@ -1711,7 +1711,9 @@ class FamilyWeekNudger:
                 said.append(ride)
             if not facts:
                 continue
-            again = remind_again_offer(said, local_now=local_now, facts=facts, reader=first) if not open_count else {}
+            again = remind_again_offer(
+                said, local_now=local_now, facts=facts, reader=first, driver_names=names,
+            ) if not open_count else {}
             words = leave_words(
                 facts, open_count, reader=first, again_offered=bool(again),
                 reader_address=address_word(member.get("addressForm")),

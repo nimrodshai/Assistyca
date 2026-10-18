@@ -12,7 +12,9 @@ button's payload, and this is where it is read: the drive, its time and the
 phone it was for are taken from the action that sent it, a second one-off
 is queued for five minutes before the drive, and the tap is answered. The
 second word is claimed like every nudge, so a button tapped twice sends one
-message. The words of the question and of the button are fixed, like the
+message. It is checked again when it is due: a drive that stopped being
+theirs after the tap - they were put on hold, somebody else said they
+would collect that day, the activity is off - sends nothing. The words of the question and of the button are fixed, like the
 template that holds them, so they are kept here in both languages beside
 the template's name.
 """
@@ -26,17 +28,22 @@ from typing import Any
 from zoneinfo import ZoneInfo
 from zoneinfo import ZoneInfoNotFoundError
 
+from packages.infrastructure import household
 from packages.infrastructure.message_language import DEFAULT_MESSAGE_LANGUAGE
 from packages.infrastructure.message_language import normalize_message_language
 from packages.infrastructure.notification_templates import TEMPLATE_KIND_PAYLOAD_KEY
 from packages.infrastructure.notification_templates import TEMPLATE_KIND_REMINDER
 from packages.infrastructure.portal_db import normalize_text
+from packages.infrastructure.schedule_exceptions import activities_not_excepted
 from packages.infrastructure.standing_tasks import STANDING_TASK_ACTION_TYPE
 
 REMIND_AGAIN_MINUTES = 5
 # The button's payload: this prefix and the id of the action that sent it.
 REMIND_AGAIN_PREFIX = "remindagain:"
 REMIND_AGAIN_PAYLOAD_KEY = "remindAgain"
+# On the second word: the drives it is about and whose they were, read
+# again when it is due (second_word_still_theirs).
+STILL_THEIRS_PAYLOAD_KEY = "stillTheirs"
 # The source the family nudger writes on what it queues
 # (family_week_nudges.NUDGE_SOURCE); not imported, since that module
 # imports the chat and the chat imports this.
@@ -67,11 +74,16 @@ def remind_again_button_label(language: Any) -> str:
     return REMIND_AGAIN_BUTTON_LABEL.get(_language(language), REMIND_AGAIN_BUTTON_LABEL["en"])
 
 
-def remind_again_offer(rides: list[dict[str, Any]], *, local_now: datetime, facts: list[str], reader: str = "") -> dict[str, Any]:
+def remind_again_offer(
+    rides: list[dict[str, Any]], *, local_now: datetime, facts: list[str], reader: str = "",
+    driver_names: list[str] | None = None, owner_names: list[str] | None = None,
+) -> dict[str, Any]:
     """What a ride word keeps so the tap can be answered later: when the
     drive is (the earliest of the trip, as a UTC moment), the facts as the
     reminder had them, and the first name of a family member reading it on
-    their own phone."""
+    their own phone. Which drives they were, on which day and whose - the
+    account holder's (owner_names) or a family member's (driver_names) - is
+    kept too, so the word five minutes before can tell they still are."""
 
     moments = []
     for ride in rides:
@@ -85,11 +97,23 @@ def remind_again_offer(rides: list[dict[str, Any]], *, local_now: datetime, fact
     due = min(moments)
     if due.tzinfo is None:
         due = due.replace(tzinfo=timezone.utc)
+    drives = [
+        {"activityId": int(ride["activity"].get("id") or 0), "leg": normalize_text(ride.get("leg"))}
+        for ride in rides if isinstance(ride.get("activity"), dict)
+    ]
+    still_theirs = {
+        "day": local_now.date().isoformat(),
+        "drives": drives,
+        "owner": driver_names is None,
+        "names": [normalize_text(name) for name in (owner_names or []) if driver_names is None]
+        + [normalize_text(name) for name in (driver_names or [])],
+    } if drives else {}
     return {
         "dueAt": due.astimezone(timezone.utc).isoformat(),
         "minutesBefore": REMIND_AGAIN_MINUTES,
         "facts": [str(fact) for fact in facts],
         **({"reader": normalize_text(reader)} if reader else {}),
+        **({STILL_THEIRS_PAYLOAD_KEY: still_theirs} if still_theirs else {}),
     }
 
 
@@ -212,6 +236,8 @@ def schedule_second_word(
         TEMPLATE_KIND_PAYLOAD_KEY: TEMPLATE_KIND_REMINDER,
         "remindAgainOf": action_id,
     }
+    if isinstance(offer.get(STILL_THEIRS_PAYLOAD_KEY), dict):
+        second_payload[STILL_THEIRS_PAYLOAD_KEY] = offer[STILL_THEIRS_PAYLOAD_KEY]
     if recipient_wa_id:
         second_payload["recipientWaId"] = recipient_wa_id
     database.create_scheduled_action(
@@ -226,12 +252,57 @@ def schedule_second_word(
     return {"outcome": "scheduled", "runAt": run_at.astimezone(zone)}
 
 
+def second_word_still_theirs(database: Any, action: dict[str, Any]) -> bool:
+    """Whether a queued word five minutes before is still about a drive of
+    theirs, read from the week as it stands now: the usual week on that day,
+    what the family has put on hold, and who said they would take or collect
+    that day. A word kept before this was recorded, or a week that cannot be
+    read, goes as it is - a reminder is never lost to a failed check."""
+
+    payload = action.get("payload") if isinstance(action.get("payload"), dict) else {}
+    check = payload.get(STILL_THEIRS_PAYLOAD_KEY)
+    if not isinstance(check, dict) or not check.get("drives"):
+        return True
+    day = household.parse_day(check.get("day"))
+    user_id = int(action.get("userId") or 0)
+    if day is None or user_id <= 0:
+        return True
+    names = [normalize_text(name) for name in check.get("names") or [] if normalize_text(name)]
+    owner = bool(check.get("owner"))
+    try:
+        activities = [
+            activity for activity in database.list_household_activities(user_id=user_id)
+            if household.weekday_code(day) in (activity.get("days") or [])
+        ]
+        exceptions = database.list_schedule_exceptions(user_id=user_id, ending_on_or_after=day.isoformat())
+        lister = getattr(database, "list_household_day_drives", None)
+        day_drives = list(lister(user_id=user_id, from_day=day.isoformat(), to_day=day.isoformat())) if callable(lister) else []
+    except Exception as exc:  # noqa: BLE001 - the reminder goes rather than vanish
+        print(f"[remind-again] week unreadable user={user_id} error={exc!r}", flush=True)
+        return True
+    on_day = household.apply_day_drives(
+        activities_not_excepted(activities, exceptions, day, owner_names=names if owner else []), day_drives, day,
+    )
+    by_id = {int(activity.get("id") or 0): activity for activity in on_day}
+    for drive in check["drives"]:
+        activity = by_id.get(int(drive.get("activityId") or 0))
+        if activity is None:
+            continue
+        driver = activity.get("dropOffBy" if drive.get("leg") == "drop_off" else "pickUpBy")
+        if owner and household.is_self(driver, names):
+            return True
+        if not owner and (household.is_named(driver, names) or any(household.is_named(name, [normalize_text(driver)]) for name in names)):
+            return True
+    return False
+
+
 __all__ = [
     "REMIND_AGAIN_BUTTON_LABEL",
     "REMIND_AGAIN_MINUTES",
     "REMIND_AGAIN_PAYLOAD_KEY",
     "REMIND_AGAIN_PREFIX",
     "REMIND_AGAIN_QUESTION",
+    "STILL_THEIRS_PAYLOAD_KEY",
     "parse_remind_again_id",
     "remind_again_button",
     "remind_again_button_label",
@@ -239,4 +310,5 @@ __all__ = [
     "remind_again_question",
     "schedule_second_word",
     "second_word",
+    "second_word_still_theirs",
 ]

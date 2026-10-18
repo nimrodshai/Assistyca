@@ -49,6 +49,7 @@ from packages.infrastructure.standing_tasks import NothingNewToSend
 from packages.infrastructure import household
 from packages.infrastructure.family_week_nudges import owner_phone
 from packages.infrastructure.remind_again import remind_again_button
+from packages.infrastructure.remind_again import second_word_still_theirs
 from packages.infrastructure.standing_tasks import is_standing_task
 from packages.infrastructure.standing_tasks import next_task_run_at
 
@@ -241,6 +242,17 @@ class ScheduledActionScheduler:
                     self._reschedule(claimed, now=reference, paused=True)
                 else:
                     self._hold(claimed, pause)
+                continue
+            if not second_word_still_theirs(self.database, claimed):
+                # The word five minutes before, for a drive that stopped
+                # being theirs after they asked for it: nothing to say.
+                print(f"[scheduled-actions] action={claimed.get('id')} drive no longer theirs, not sent", flush=True)
+                self.database.finish_scheduled_action(
+                    action_id=int(claimed.get("id") or 0),
+                    status="cancelled",
+                    last_error="The drive this reminder was for is no longer theirs.",
+                    payload=claimed.get("payload") if isinstance(claimed.get("payload"), dict) else {},
+                )
                 continue
             try:
                 provider_message_id = self._dispatch(claimed)

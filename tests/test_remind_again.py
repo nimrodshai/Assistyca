@@ -484,3 +484,89 @@ class TheTapOverTheWebhookTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SecondWordStillTheirsTests(unittest.TestCase):
+    """Oren's question, 2026-10-18: Shirly taps "remind me again" for her
+    16:00 pickup, and then the drive stops being hers - she is put on hold,
+    or the account holder says they will collect today. The word five
+    minutes before is not sent to someone who no longer drives."""
+
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.database = PortalDatabase(Path(self.temp_dir.name) / "portal.db")
+        self.database.register_user("dana@example.com")
+        self.user_id = int((self.database.get_user("dana@example.com") or {})["id"])
+        self.database.link_user_whatsapp_number(user_id=self.user_id, wa_id=PHONE)
+        partner = self.database.save_household_member(user_id=self.user_id, name="Shirly", role="partner")
+        self.database.create_household_invite(
+            user_id=self.user_id, member_id=int(partner["id"]), code="SHR222", expires_at=datetime.now(UTC) + timedelta(days=14),
+        )
+        self.assertTrue(self.database.claim_household_invite(code="SHR222", wa_id=PARTNER_PHONE)["ok"])
+        self.database.save_household_member(user_id=self.user_id, name="Tom", role="child")
+        self.gan = self.database.save_household_activity(
+            user_id=self.user_id, title="Kindergarten", who=["Tom"], days=["sun"],
+            start_time="08:00", end_time="16:00", drop_off_by="me", pick_up_by="Shirly", place="Gan Rimon",
+        )
+        # The family's clock is Israel's, read off the phone: 15:35 there is 12:35 UTC.
+        nudger = FamilyWeekNudger(self.database, config=FamilyWeekNudgeConfig(morning_hour=6, evening_hour=20, ride_lead_minutes=30))
+        self.assertEqual(nudger.run_pending(now=at(SUNDAY, 12, 35))["rides"], 1)
+        [word] = [a for a in self.database.list_scheduled_actions_for_user(self.user_id, limit=50)
+                  if a["recipientRef"] == PARTNER_PHONE and a["payload"].get("remindAgain")]
+        tapped = schedule_second_word(self.database, user_id=self.user_id, interactive_id=f"remindagain:{word['id']}", now=at(SUNDAY, 12, 37))
+        self.assertEqual(tapped["outcome"], "scheduled")
+        self.env = mock.patch.dict("os.environ", {
+            "ASSISTYCA_WHATSAPP_PHONE_NUMBER_ID": "platform-1", "ASSISTYCA_WHATSAPP_ACCESS_TOKEN": "platform-token",
+        }, clear=False)
+        self.env.start()
+
+    def tearDown(self) -> None:
+        self.env.stop()
+        self.temp_dir.cleanup()
+
+    def second_word_after_its_time(self) -> dict:
+        scheduler = ScheduledActionScheduler(
+            self.database, config=ScheduledActionConfig(enabled=True, poll_seconds=1, batch_size=10),
+            task_runner=lambda action: "Time to leave for Tom.",
+        )
+        with mock.patch("packages.infrastructure.whatsapp_messaging.send_whatsapp_message", return_value="wamid.1"):
+            scheduler.run_pending(now=at(SUNDAY, 12, 56))
+        [second] = [a for a in self.database.list_scheduled_actions_for_user(self.user_id, limit=50) if a["payload"].get("remindAgainOf")]
+        return second
+
+    def test_it_goes_when_the_drive_is_still_hers(self) -> None:
+        self.assertEqual(self.second_word_after_its_time()["status"], "sent")
+
+    def test_not_after_she_is_put_on_hold(self) -> None:
+        self.database.save_schedule_exception(
+            user_id=self.user_id, starts_on="2026-09-20", ends_on="2026-09-20", targets=[{"kind": "person", "ref": "Shirly"}],
+        )
+        self.assertEqual(self.second_word_after_its_time()["status"], "cancelled")
+
+    def test_not_after_somebody_else_says_they_collect_today(self) -> None:
+        self.database.save_household_day_drive(
+            user_id=self.user_id, activity_id=int(self.gan["id"]), day="2026-09-20", leg="pick_up", who="me",
+        )
+        self.assertEqual(self.second_word_after_its_time()["status"], "cancelled")
+
+    def test_not_after_the_activity_is_off_today(self) -> None:
+        self.database.save_schedule_exception(
+            user_id=self.user_id, starts_on="2026-09-20", ends_on="2026-09-20", targets=[{"kind": "person", "ref": "Tom"}],
+        )
+        self.assertEqual(self.second_word_after_its_time()["status"], "cancelled")
+
+    def test_the_account_holders_own_drive_is_checked_the_same_way(self) -> None:
+        from packages.infrastructure.remind_again import second_word_still_theirs
+
+        def word(names: list[str]) -> dict:
+            return {"userId": self.user_id, "payload": {"stillTheirs": {
+                "day": "2026-09-20", "owner": True, "names": names,
+                "drives": [{"activityId": int(self.gan["id"]), "leg": "drop_off"}],
+            }}}
+
+        self.assertTrue(second_word_still_theirs(self.database, word(["Dana"])))
+        self.database.save_schedule_exception(
+            user_id=self.user_id, starts_on="2026-09-20", ends_on="2026-09-20", targets=[{"kind": "person", "ref": "Dana"}],
+        )
+        self.assertFalse(second_word_still_theirs(self.database, word(["Dana"])))
+        self.assertTrue(second_word_still_theirs(self.database, {"userId": self.user_id, "payload": {}}), "an older word goes as it is")
