@@ -286,6 +286,35 @@ def partner_note(address_form: str) -> str:
     )
 
 
+def away_note(activity: dict[str, Any], legs: list[str] | tuple[str, ...], owner_names: list[str] | None = None) -> str:
+    """Why a leg is open, when it is open because the one who usually does
+    it is on hold: " (Stav, who usually does it, is away: abroad)". Empty
+    for a leg that simply has nobody."""
+
+    held = activity.get("heldLegs") if isinstance(activity.get("heldLegs"), dict) else {}
+    for leg in legs:
+        record = held.get(leg)
+        if not isinstance(record, dict) or normalize_text(activity.get({"drop_off": "dropOffBy", "pick_up": "pickUpBy"}[leg])):
+            continue
+        who = normalize_text(record.get("who"))
+        if household.is_self(who, owner_names or []):
+            who = _owner_first_name(owner_names or []) or "the account holder"
+        reason = normalize_text(record.get("reason"))
+        return f" ({who}, who usually does it, is away" + (f": {reason}" if reason else "") + ")"
+    return ""
+
+
+def who_could_do_it(reader_word: str, other_word: str, *, reader_away: bool = False, other_away: bool = False) -> str:
+    """Who a question about an open run offers: the reader, the other
+    parent, or somebody else - leaving out whoever is away that day."""
+
+    options = [word for word, away in ((reader_word, reader_away), (other_word, other_away)) if not away]
+    options.append("somebody else")
+    if len(options) == 1:
+        return options[0]
+    return ", ".join(options[:-1]) + ("," if len(options) > 2 else "") + " or " + options[-1]
+
+
 def describe_activity_line(
     activity: dict[str, Any],
     owner_names: list[str],
@@ -321,11 +350,13 @@ def describe_activity_line(
         (f"takes: {takes}" + (" (today only)" if "drop_off" in decided else "")
          + (f" (inside your own {inside['drop_off']}, not settled yet)" if inside.get("drop_off") else ""))
         if takes else ("nobody takes them today" if "drop_off" in decided else "nobody takes them yet")
+        + away_note(activity, ("drop_off",), owner_names)
     )
     parts.append(
         (f"collects: {collects}" + (" (today only)" if "pick_up" in decided else "")
          + (f" (inside your own {inside['pick_up']}, not settled yet)" if inside.get("pick_up") else ""))
         if collects else ("nobody collects them today" if "pick_up" in decided else "nobody collects them yet")
+        + away_note(activity, ("pick_up",), owner_names)
     )
     return ", ".join(parts)
 
@@ -382,7 +413,7 @@ def gap_lines(
         what = f"{activity.get('title')}" + (f" ({_who(activity)})" if _who(activity) else "")
         when = normalize_text(activity.get("startTime") if gaps == ["drop_off"] else activity.get("endTime") or activity.get("startTime"))
         missing = " and ".join({"drop_off": "the drop-off", "pick_up": "the pickup"}[gap] for gap in gaps)
-        lines.append(f"{what}{' at ' + when if when else ''}: nobody is down for {missing}")
+        lines.append(f"{what}{' at ' + when if when else ''}: nobody is down for {missing}{away_note(activity, gaps, owner_names)}")
     return lines
 
 
@@ -621,7 +652,7 @@ def ride_fact(ride: dict[str, Any], who: str) -> str:
     activity = ride["activity"]
     place = normalize_text(activity.get("place"))
     fact = f"{verb} {who} - {activity.get('title')} at {ride['at']}" + (f", {place}" if place else "")
-    return f"nobody is down yet to {fact}" if ride.get("open") else fact
+    return f"nobody is down yet to {fact}{away_note(activity, (ride['leg'],))}" if ride.get("open") else fact
 
 
 def ride_slots(
@@ -1159,6 +1190,7 @@ class FamilyWeekNudger:
                         )
             if tomorrow_gaps or tomorrow_clashes or tomorrow_work:
                 if claim(f"evening:{tomorrow.isoformat()}"):
+                    away_tomorrow = held_people(exceptions, tomorrow)
                     image_url = self._draw_day(
                         user_id=user_id, day=tomorrow, plans=tomorrow_on, status=tomorrow_calendar, members=members,
                         owner_names=owner_names, title="tomorrow",
@@ -1194,8 +1226,14 @@ class FamilyWeekNudger:
                             "in, tell them " + ", and ".join(about) + ". "
                             + (
                                 "This is a question, not a report: end by asking them to decide now who does each "
-                                "drop-off or pickup still open - them, their partner, or somebody else - and leave it "
-                                "easy to answer with a name. " if tomorrow_gaps else ""
+                                "drop-off or pickup still open - " + who_could_do_it(
+                                    "them", "their partner",
+                                    reader_away=any(household.is_self(name, owner_names) for name in away_tomorrow),
+                                    other_away=any(
+                                        household.normalize_role(member.get("role")) == "partner"
+                                        and is_held(member.get("name"), away_tomorrow) for member in members
+                                    ),
+                                ) + " - and leave it easy to answer with a name. " if tomorrow_gaps else ""
                             )
                             + "'you' is the person. The facts are exact; add none, and use no tool."
                             + ("\nTOMORROW:\n" + "\n".join(tomorrow_gaps) if tomorrow_gaps else "")
@@ -1679,8 +1717,13 @@ class FamilyWeekNudger:
                             "their own phone. " + (PICTURE_OF_TOMORROW if image_url else "")
                             + "In one or two short sentences, in the language the family writes to you "
                             "in, tell them what tomorrow still has nobody down for. This is a question, not a report: "
-                            "end by asking them to decide now who does each drop-off or pickup still open - them, "
-                            f"the other parent, or somebody else - and leave it easy to answer with a name. 'you' is "
+                            "end by asking them to decide now who does each drop-off or pickup still open - "
+                            + who_could_do_it(
+                                "them", "the other parent",
+                                reader_away=is_held(names[0], held_people(exceptions, tomorrow)),
+                                other_away=any(household.is_self(name, owner_names) for name in held_people(exceptions, tomorrow)),
+                            )
+                            + f" - and leave it easy to answer with a name. 'you' is "
                             f"{first}. The facts are exact; add none, and use no tool.\nTOMORROW:\n" + "\n".join(gaps)
                         ),
                         fallback="Tomorrow still needs someone - who will do it?\n" + "\n".join(f"• {line}" for line in gaps),

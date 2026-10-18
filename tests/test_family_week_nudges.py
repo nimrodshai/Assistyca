@@ -1223,12 +1223,30 @@ class PersonHoldTests(unittest.TestCase):
         self.assertIn("Gan (Laor) at 16:15: nobody is down for the pickup", owners["Tomorrow still needs someone"]["instruction"])
         morning = owners["Today in your family's week"]["instruction"]
         self.assertIn("08:00-16:15 Gan (Laor), takes: you, nobody collects them yet", morning)
-        self.assertNotIn("Stav", morning.split("TODAY:")[-1])
+        self.assertNotIn("collects: Stav", morning)
         self.assertIn("nobody is down yet to collect Laor - Gan at 16:15", owners["Still needs someone"]["instruction"])
         # Saturday evening she is still home, and is asked like any parent;
         # on the days she is away, nothing reaches her phone.
         stavs = [a for a in sent if a["recipientRef"] == "972500000002"]
         self.assertEqual([(a["payload"]["title"], a["runAt"][:10]) for a in stavs], [("Tomorrow still needs someone", "2026-09-19")])
+
+    def test_the_open_runs_say_why_and_the_away_parent_is_not_offered(self) -> None:
+        saturday = SUNDAY.replace(day=19)
+        for moment in (at(saturday, 20, 10), at(SUNDAY, 7, 5), at(SUNDAY, 15, 50)):
+            self.nudger.run_pending(now=moment)
+        sent = self.queued()
+        why = "(Stav, who usually does it, is away: Stav abroad)"
+        owners = {a["payload"]["title"]: a["payload"] for a in sent if a["recipientRef"] == "owner"}
+        evening = owners["Tomorrow still needs someone"]["instruction"]
+        self.assertIn(f"Gan (Laor) at 16:15: nobody is down for the pickup {why}", evening)
+        self.assertIn("them or somebody else", evening)
+        self.assertNotIn("their partner", evening)
+        self.assertIn(f"nobody collects them yet {why}", owners["Today in your family's week"]["instruction"])
+        self.assertIn(f"nobody is down yet to collect Laor - Gan at 16:15 {why}", owners["Still needs someone"]["instruction"])
+        # Saturday evening Stav is home and asked, but not offered the run herself.
+        [stavs] = [a["payload"] for a in sent if a["recipientRef"] == "972500000002"]
+        self.assertIn("the other parent or somebody else", stavs["instruction"])
+        self.assertNotIn("them, the other parent", stavs["instruction"])
 
     def test_after_the_hold_her_pickup_is_hers_again(self) -> None:
         self.nudger.run_pending(now=at(SUNDAY + timedelta(days=7), 7, 5))

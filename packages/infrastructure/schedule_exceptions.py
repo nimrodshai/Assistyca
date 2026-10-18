@@ -108,14 +108,18 @@ def activity_exception(
     return None
 
 
-def held_people(exceptions: Iterable[dict[str, Any]], day: date) -> list[str]:
-    """The people on hold that day, by the name the person gave."""
-
+def _held_with_reasons(exceptions: Iterable[dict[str, Any]], day: date) -> list[tuple[str, str]]:
     return [
-        target["ref"]
+        (target["ref"], clean(exception.get("reason"), MAX_REASON_LENGTH))
         for exception in exceptions if covers_day(exception, day)
         for target in _targets(exception) if target["kind"] == "person"
     ]
+
+
+def held_people(exceptions: Iterable[dict[str, Any]], day: date) -> list[str]:
+    """The people on hold that day, by the name the person gave."""
+
+    return [name for name, _reason in _held_with_reasons(exceptions, day)]
 
 
 def is_held(who: Any, people: list[str], owner_names: Iterable[str] = ()) -> bool:
@@ -142,10 +146,12 @@ def activities_not_excepted(
     on hold is everything that person does: an activity that is theirs is
     off, and a drop-off or pickup they were down for is left open, so the
     week asks who takes it rather than handing it to someone who is away.
+    Each leg left open this way is kept under heldLegs with who usually
+    does it and the reason they gave, so whoever is asked can be told why.
     owner_names tells "me" apart as the account holder."""
 
     held = list(exceptions)
-    people = held_people(held, day)
+    people = _held_with_reasons(held, day)
     owners = list(owner_names)
     still_on = []
     for activity in activities:
@@ -153,9 +159,12 @@ def activities_not_excepted(
             continue
         if people:
             activity = dict(activity)
-            for key in ("dropOffBy", "pickUpBy"):
-                if is_held(activity.get(key), people, owners):
-                    activity[key] = ""
+            for leg, key in (("drop_off", "dropOffBy"), ("pick_up", "pickUpBy")):
+                for name, reason in people:
+                    if is_held(activity.get(key), [name], owners):
+                        activity.setdefault("heldLegs", {})[leg] = {"who": clean(activity.get(key)), "reason": reason}
+                        activity[key] = ""
+                        break
         still_on.append(activity)
     return still_on
 
