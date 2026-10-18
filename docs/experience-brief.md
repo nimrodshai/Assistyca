@@ -1,7 +1,7 @@
 # Experience brief: Assistyca
 
 What a reviewer of the assistant's voice needs to know about this project.
-The general standard lives with the reviewer (Maya, in the user's Claude
+The general standard lives with the reviewer (Shai, in the user's Claude
 settings); this file holds only what is particular to Assistyca, and wins
 where the two differ.
 
