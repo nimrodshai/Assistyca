@@ -1241,3 +1241,58 @@ class PersonHoldTests(unittest.TestCase):
             user_id=self.user_id, starts_on="2026-09-27", ends_on="2026-09-27", targets=[{"kind": "person", "ref": "Laor"}],
         )
         self.assertEqual(self.nudger.run_pending(now=at(SUNDAY + timedelta(days=7), 7, 5))["morning"], 0)
+
+
+class NamelessOwnerOnPartnersPhoneTests(unittest.TestCase):
+    """Oren's report, 2026-10-18: the account holder has no name kept, and
+    the partner's morning read "takes: me" - as if the partner drove."""
+
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.database = PortalDatabase(Path(self.temp_dir.name) / "portal.db")
+        self.database.register_user("someone@example.com")
+        self.user_id = int((self.database.get_user("someone@example.com") or {})["id"])
+        self.stav = self.database.save_household_member(user_id=self.user_id, name="Stav", role="partner")
+        self.database.save_household_member(user_id=self.user_id, name="Laor", role="child")
+        self.database.save_household_activity(
+            user_id=self.user_id, title="Gan", who=["Laor"], days=["sun"],
+            start_time="08:00", end_time="16:15", drop_off_by="me", pick_up_by="Stav",
+        )
+        self.database.create_household_invite(
+            user_id=self.user_id, member_id=int(self.stav["id"]), code="STV555",
+            expires_at=datetime.now(UTC) + timedelta(days=14),
+        )
+        self.assertTrue(self.database.claim_household_invite(code="STV555", wa_id="972500000002")["ok"])
+        self.nudger = FamilyWeekNudger(self.database, config=FamilyWeekNudgeConfig(morning_hour=7, evening_hour=20))
+
+    def tearDown(self) -> None:
+        self.temp_dir.cleanup()
+
+    def stavs_morning(self) -> dict:
+        self.nudger.run_pending(now=at(SUNDAY, 7, 5))
+        [morning] = [
+            a["payload"] for a in self.database.list_scheduled_actions_for_user(self.user_id, limit=50)
+            if a["recipientRef"] == "972500000002"
+        ]
+        return morning
+
+    def test_the_account_holders_drive_reads_as_the_partners_partner(self) -> None:
+        self.database.save_household_profile(user_id=self.user_id, address_form="f")
+        morning = self.stavs_morning()
+        for text in (morning["instruction"], morning["fallbackText"]):
+            self.assertIn("takes: your partner, collects: you", text)
+            self.assertNotIn("takes: me", text)
+        self.assertIn("the account holder, a woman", morning["instruction"])
+        self.assertIn("בת הזוג שלך", morning["instruction"])
+
+    def test_with_the_gender_unknown_the_word_is_the_other_parent(self) -> None:
+        morning = self.stavs_morning()
+        self.assertIn("takes: your partner", morning["fallbackText"])
+        self.assertIn("ההורה השני", morning["instruction"])
+        self.assertNotIn("בת הזוג", morning["instruction"])
+
+    def test_a_named_account_holder_is_still_named(self) -> None:
+        self.database.save_account_fact(user_id=self.user_id, key="name", fact="Their name is Dana.")
+        morning = self.stavs_morning()
+        self.assertIn("takes: Dana, collects: you", morning["fallbackText"])
+        self.assertNotIn("your partner", morning["instruction"])

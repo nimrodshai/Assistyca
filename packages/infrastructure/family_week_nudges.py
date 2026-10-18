@@ -86,7 +86,10 @@ from packages.infrastructure import homework_check
 from packages.infrastructure import household
 from packages.infrastructure.account_types import account_feature_allowed
 from packages.infrastructure.portal_db import normalize_text
+from packages.infrastructure.person_address import ADDRESS_FEMININE
+from packages.infrastructure.person_address import ADDRESS_MASCULINE
 from packages.infrastructure.person_address import address_word
+from packages.infrastructure.person_address import resolve_address_form
 from packages.infrastructure.remind_again import REMIND_AGAIN_PAYLOAD_KEY
 from packages.infrastructure.remind_again import remind_again_offer
 from packages.infrastructure.schedule_exceptions import activities_not_excepted
@@ -120,6 +123,11 @@ PICTURE_OF_TOMORROW = (
     "the picture does. "
 )
 DEFAULT_RIDE_LEAD_MINUTES = 30
+# The account holder as their partner reads them when no name of theirs is
+# kept: never "me", which on the partner's phone reads as the partner.
+PARTNER_WORD = "your partner"
+# How "your partner" is said in Hebrew, by the account holder's own form.
+PARTNER_WORDS_HE = {ADDRESS_MASCULINE: "בן הזוג שלך", ADDRESS_FEMININE: "בת הזוג שלך", "": "ההורה השני"}
 # Drives of the owner's that follow one another within this many minutes
 # of the first due are said together, as one trip.
 DEFAULT_RIDE_MERGE_MINUTES = 30
@@ -249,16 +257,33 @@ def _ride_word(value: Any, owner_names: list[str], viewer_names: list[str] | Non
     and their own name are "you". Read by a family member on their own
     phone (viewer_names), their name is "you" and the account holder's "me"
     is the account holder's first name - never "you", which would hand them
-    a drive that is not theirs."""
+    a drive that is not theirs, and never "me" either: with no name kept it
+    is "your partner" (partner_note tells the model how to say it)."""
 
     if viewer_names is not None:
         if household.is_named(value, viewer_names):
             return "you"
         if household.is_self(value, owner_names):
-            first = next((normalize_text(name).split(" ")[0] for name in owner_names if normalize_text(name)), "")
-            return first or normalize_text(value)
+            return _owner_first_name(owner_names) or PARTNER_WORD
         return normalize_text(value)
     return "you" if household.is_self(value, owner_names) else normalize_text(value)
+
+
+def _owner_first_name(owner_names: list[str]) -> str:
+    return next((normalize_text(name).split(" ")[0] for name in owner_names if normalize_text(name)), "")
+
+
+def partner_note(address_form: str) -> str:
+    """What the model is told when a partner's facts say "your partner" for
+    the account holder, who has no name kept: who that is, and how their
+    language says it for that person."""
+
+    form = address_form if address_form in PARTNER_WORDS_HE else ""
+    gender = address_word(form) or "gender not known"
+    return (
+        f"'{PARTNER_WORD}' in the facts is the other parent, the account holder, {gender}: say it as "
+        f"'{PARTNER_WORD}' in English and '{PARTNER_WORDS_HE[form]}' in Hebrew, and never as 'me', 'you' or 'they'. "
+    )
 
 
 def describe_activity_line(
@@ -1414,12 +1439,13 @@ class FamilyWeekNudger:
     @staticmethod
     def _morning_instruction(
         *, lines: list[str], reader: str = "", inside_work: bool = False, today: date | None = None,
-        today_calendar: dict[str, Any] | None = None, with_picture: bool = False,
+        today_calendar: dict[str, Any] | None = None, with_picture: bool = False, partner: str = "",
     ) -> str:
         """What the morning message is asked to be. With the day's picture
         attached it is a line or two under it - what still has nobody, and
         nothing the picture already shows; without one it is the day as
-        bullets. reader names a parent on their own phone."""
+        bullets. reader names a parent on their own phone; partner is the
+        note on how to say the account holder when their name is not kept."""
 
         who = f"{reader}" if reader else "the person"
         opening = (
@@ -1427,7 +1453,7 @@ class FamilyWeekNudger:
             "their own phone. " if reader else "It is the morning. "
         )
         language = "in the language the family writes to you in" if reader else "in the language they write to you in"
-        you = f"'you' is {reader}; a name is somebody else. " if reader else "'you' is the person. "
+        you = (f"'you' is {reader}; a name is somebody else. " if reader else "'you' is the person. ") + partner
         work = (
             "Where a drive of theirs is marked as falling inside their own work hours and not settled yet, "
             + ("say so in a few words and " if with_picture else "say so in that bullet in a few words and, at the end, ")
@@ -1614,6 +1640,9 @@ class FamilyWeekNudger:
                 continue
             if "morning" in wants and todays and in_morning and claim(f"morning:{today.isoformat()}{suffix}"):
                 lines = [describe_activity_line(activity, owner_names, members, viewer_names=names) for activity in todays]
+                partner = ""
+                if not _owner_first_name(owner_names) and any(PARTNER_WORD in line for line in lines):
+                    partner = partner_note(resolve_address_form(self.database, user_id=user_id))
                 image_url = self._draw_day(
                     user_id=user_id, day=today, plans=todays, status=None, members=members, owner_names=owner_names,
                     title="today",
@@ -1621,7 +1650,9 @@ class FamilyWeekNudger:
                 self._queue(
                     user_id=user_id, now=reference, timezone_name=timezone_name, recipient_wa_id=wa_id,
                     title="Today in your family's week", kind=TEMPLATE_KIND_MORNING_DIGEST, image_url=image_url,
-                    instruction=self._morning_instruction(lines=lines, reader=addressed, with_picture=bool(image_url)),
+                    instruction=self._morning_instruction(
+                        lines=lines, reader=addressed, with_picture=bool(image_url), partner=partner,
+                    ),
                     schedule=schedule_slots(todays, today, members, owner_names),
                     fallback="Today:\n" + "\n".join(f"• {line}" for line in lines),
                 )
