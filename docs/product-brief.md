@@ -1,9 +1,11 @@
-# Experience brief: Assistyca
+# Product brief: Assistyca
 
-What a reviewer of the assistant's voice needs to know about this project.
+What a product reviewer needs to know about this project: whether the
+features earn their place, and whether the assistant sounds like a person.
 The general standard lives with the reviewer (Shai, in the user's Claude
 settings); this file holds only what is particular to Assistyca, and wins
-where the two differ.
+where the two differ. Whether things work correctly is QA's job; see
+`docs/qa-brief.md`.
 
 ## The product and the person
 
@@ -13,6 +15,37 @@ reminders. The person on the other end is a parent - usually writing in
 Hebrew, sometimes English - holding a full day, often texting in a hurry.
 Partners and grandparents can join from their own phones; grandparents only
 read their own pickups.
+
+## Where the features are
+
+There is no hand-kept feature list, on purpose; read the live code.
+
+- **What the assistant can do:** the `ToolSpec` entries in
+  `packages/infrastructure/agent_loop.py`. Each tool is a capability the
+  model can use in a conversation.
+- **What arrives without being asked:** `family_week_nudges.py` (the day's
+  messages), `scheduled_actions.py` (what a person scheduled), the inbox
+  watch and mailbox findings (`docs/inbox-watch.md`,
+  `docs/mailbox-findings.md`).
+- **Pages a family opens from a link:** `/week`, `/lists`, `/receipts`,
+  `/join/<code>`, `/pay/<code>`, `/register`.
+- **What is switched on:** the admin feature grid (`account_types.py`); a
+  feature can exist in code and be off.
+- **Why a feature exists:** the matching `docs/*.md`.
+
+Product decisions the owner has made, so they are not reopened as findings:
+
+- **Families only** since 2026-10-13. Some capabilities date from the
+  business days (insurance, receipts); the grid decides whether a family
+  gets them. Judge them for a family, and don't propose business features.
+- **Two weeks free, then $4.90 a month.** The price is never pushed during
+  the trial (`docs/family-billing.md`).
+- **Three kinds of action:** a one-off runs now; an on-demand or recurring
+  one is saved and runs again.
+- **Connecting Google is offered, never required.** A family runs on its
+  phone number alone.
+- **Offers come once,** at the moment they fit, and are not repeated on
+  later replies.
 
 ## Where the words come from
 
