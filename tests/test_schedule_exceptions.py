@@ -203,6 +203,28 @@ class ExceptionToolTests(unittest.TestCase):
         self.assertEqual(output["error"]["code"], "not_found")
         self.assertEqual(output["error"]["family"], ["Tom"])
 
+    def test_a_parent_on_hold_is_told_back_as_the_runs_it_leaves_open(self) -> None:
+        self.database.save_household_member(user_id=self.user_id, name="Stav", role="partner")
+        gan = self.database.save_household_activity(
+            user_id=self.user_id, title="Gan", who=["Laor"], days=["sun", "mon"],
+            start_time="08:00", end_time="16:15", drop_off_by="me", pick_up_by="Stav",
+        )
+        # Somebody already said they collect on the Monday: that run is not open.
+        self.database.save_household_day_drive(
+            user_id=self.user_id, activity_id=int(gan["id"]), day="2099-09-21", leg="pick_up", who="me",
+        )
+        _, model = self._turn(_call("add_exception", **_hold(people=["Stav"], reason="Stav abroad")), _reply())
+        output = self._output(model)
+        self.assertTrue(output["ok"], output)
+        self.assertEqual(output["leavesOpen"], [
+            {"date": "2099-09-27", "day": "Sunday", "leg": "collect", "child": "Laor", "activity": "Gan", "at": "16:15"},
+        ])
+        self.assertIn("If leavesOpen is not empty, name those runs in one line and ask once who takes them", output["note"])
+        self.assertIn("assign_day_drive for each date", output["note"])
+        # A child on hold leaves nobody's run open.
+        _, model = self._turn(_call("add_exception", **_hold(people=["Laor"])), _reply())
+        self.assertEqual(self._output(model)["leavesOpen"], [])
+
     def test_a_scheduled_action_of_this_account_can_be_held_and_nobody_else_s(self) -> None:
         _, model = self._turn(_call("add_exception", **_hold(actions=[self.summary["id"]])), _reply())
         output = self._output(model)

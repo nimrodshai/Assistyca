@@ -2366,6 +2366,57 @@ def exceptions_payload(context: LoopContext) -> list[dict[str, Any]]:
         return []
 
 
+# How many runs a person's hold names back at most: a fortnight of a usual
+# week is plenty to ask about; a longer trip is asked about again as it goes.
+MAX_LEFT_OPEN_RUNS = 20
+
+
+def _runs_left_open(
+    context: LoopContext, activities: list[dict[str, Any]], saved: dict[str, Any], starts: date, ends: date,
+) -> list[dict[str, Any]]:
+    """The drop-offs and pickups a hold on a person leaves with nobody: one
+    per date, leg, child and time, from today on. A run somebody already
+    said they would do that day (household.dayDrives) is not open, and a
+    run that had nobody before the hold is not this hold's to raise."""
+
+    if not any(target["kind"] == "person" for target in schedule_exceptions.normalize_targets(saved.get("targets"))):
+        return []
+    try:
+        others = [
+            exception for exception in context.database.list_schedule_exceptions(
+                user_id=context.user_id, group_id=week_scope(context), ending_on_or_after=starts.isoformat(),
+            ) if int(exception.get("id") or 0) != int(saved.get("id") or 0)
+        ]
+    except Exception:  # noqa: BLE001 - the hold is saved; the question is a courtesy
+        others = []
+    owner_names = [] if week_scope(context) else _owner_names(context)
+    first = max(starts, _household_today(context))
+    drives = _day_drives(context, first=first, last=ends)
+    runs: list[dict[str, Any]] = []
+    day = first
+    while day <= ends and len(runs) < MAX_LEFT_OPEN_RUNS:
+        usual = [activity for activity in activities if household.weekday_code(day) in (activity.get("days") or [])]
+        before = {
+            int(activity["id"]): activity for activity in household.apply_day_drives(
+                schedule_exceptions.activities_not_excepted(usual, others, day, owner_names=owner_names), drives, day,
+            )
+        }
+        after = household.apply_day_drives(
+            schedule_exceptions.activities_not_excepted(usual, others + [saved], day, owner_names=owner_names), drives, day,
+        )
+        for activity in after:
+            was = before.get(int(activity["id"])) or {}
+            for leg, who_key, time_key in (("take", "dropOffBy", "startTime"), ("collect", "pickUpBy", "endTime")):
+                if str(was.get(who_key) or "").strip() and not str(activity.get(who_key) or "").strip():
+                    runs.append({
+                        "date": day.isoformat(), "day": day.strftime("%A"), "leg": leg,
+                        "child": ", ".join(activity.get("who") or []), "activity": activity.get("title"),
+                        "at": household.normalize_time(activity.get(time_key)),
+                    })
+        day += timedelta(days=1)
+    return runs[:MAX_LEFT_OPEN_RUNS]
+
+
 def _tool_add_exception(context: LoopContext, args: dict[str, Any]) -> dict[str, Any]:
     starts = schedule_exceptions.parse_day(args.get("from"))
     ends = schedule_exceptions.parse_day(args.get("until"))
@@ -2435,9 +2486,16 @@ def _tool_add_exception(context: LoopContext, args: dict[str, Any]) -> dict[str,
     note = f"Nothing it covers is nudged, reminded or run from {starts.isoformat()} to {ends.isoformat()}; it is all back on {back_on} by itself."
     if wants_actions:
         note += f" A reminder due in those days is not lost: it goes at the same time on {back_on}."
+    leaves_open = _runs_left_open(context, activities, saved, starts, ends)
+    if any(target["kind"] == "person" for target in targets):
+        note += (
+            " A person on hold leaves their drop-offs and pickups open on those days. If leavesOpen is not empty, "
+            "name those runs in one line and ask once who takes them; a name or 'me' is assign_day_drive for each date."
+        )
     return _ok({
         "saved": schedule_exceptions.describe_exception(saved, activities=by_id, actions=actions),
         "note": note,
+        "leavesOpen": leaves_open,
     })
 
 
@@ -4117,7 +4175,7 @@ TOOLS: list[ToolSpec] = [
             "stopped for good is removed or cancelled instead. from and until are the first and last day, "
             "YYYY-MM-DD, the same day for one day. reason is a few words in their language. Say what it covers "
             "with any of: activities (ids from household.week), people (names from household - everything that "
-            "person does), wholeWeek (the family's whole routine: every plan, pickup, drive and birthday "
+            "person does: a child's activities are off, a grown-up's drop-offs and pickups are left open), wholeWeek (the family's whole routine: every plan, pickup, drive and birthday "
             "nudge), actions (ids from show_scheduled - a standing action skips those days, a reminder due in "
             "them waits until the day after) and allActions (every standing action and reminder they have). "
             "Empty arrays and false for what it does not cover."
@@ -4611,7 +4669,8 @@ _FAMILY = (
     "only when asked. The same goes for CONTEXT.exceptions, which is what they told you is off for some days. "
     "Something not happening for a while - a sick day, a trip, a holiday, football off this week - is an "
     "exception: add_exception, never save_week_activity or remove_week_activity, and say in a line when it "
-    "is all back on.\n"
+    "is all back on. When a parent is away, the runs that leaves are said in the same reply, once, as one "
+    "question - not a list of options and not again on later replies.\n"
     "One day is not the week: when they answer about a single day - 'I'll pick up Lahav' to the question of "
     "who collects tomorrow, 'Stav takes him today', 'my mother collects on Thursday' (a date), 'Stav can't "
     "tomorrow' - keep it with assign_day_drive for that date, never save_week_activity, which would make it "
