@@ -364,7 +364,7 @@ function normalizeAdminPaymentStatus(paymentStatus = null) {
   const isPaying = Boolean(
     source.isPaying
     ?? source.isPayingCustomer
-    ?? ["active", "on_trial"].includes(subscriptionStatus),
+    ?? ["active", "on_trial", "past_due"].includes(subscriptionStatus),
   );
   return {
     isPaying,
@@ -373,6 +373,7 @@ function normalizeAdminPaymentStatus(paymentStatus = null) {
     subscriptionStatus,
     customerPortalUrl: String(source.customerPortalUrl || source.customer_portal_url || "").trim(),
     checkoutUrl: String(source.checkoutUrl || source.checkout_url || "").trim(),
+    payLink: String(source.payLink || source.pay_link || "").trim(),
     lastCheckedAt: String(source.lastCheckedAt || source.last_checked_at || "").trim(),
   };
 }
@@ -1550,6 +1551,19 @@ function createAdminUserDetailView(user) {
   editButton.disabled = isDeleting || isStatusSaving;
   editButton.textContent = "Edit client";
   infoActions.append(editButton);
+
+  // The link the assistant sends to pay, for paying on the client's behalf
+  // or trying the checkout. A paying client's link opens where they manage
+  // the subscription instead.
+  if (user.paymentStatus?.payLink) {
+    const payLink = document.createElement("a");
+    payLink.className = "ghost-button small";
+    payLink.href = user.paymentStatus.payLink;
+    payLink.target = "_blank";
+    payLink.rel = "noopener";
+    payLink.textContent = user.paymentStatus.isPaying ? "Manage payment" : "Open payment page";
+    infoActions.append(payLink);
+  }
 
   const deleteButton = document.createElement("button");
   deleteButton.type = "button";

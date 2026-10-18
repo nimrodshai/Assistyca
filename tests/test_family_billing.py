@@ -238,6 +238,20 @@ class BillingServerTests(unittest.TestCase):
         self.assertEqual((status, location), (302, "https://assistyca.lemonsqueezy.com/billing?x=1"))
         checkout.assert_not_called()
 
+    def test_an_admin_sees_each_clients_payment_link(self) -> None:
+        # For paying on a family's behalf, or trying the checkout on staging.
+        self.database.register_user("boss@example.com", is_admin=True)
+        code, _ = self.server.store.issue_challenge("boss@example.com")
+        _, _, result = self.server.store.verify_code("boss@example.com", code)
+        request = urllib_request.Request(
+            f"{self.base_url}/api/admin/users",
+            headers={"Authorization": f"Bearer {(result or {}).get('token')}"},
+        )
+        with urllib_request.urlopen(request, timeout=15) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+        listed = next(user for user in payload["users"] if user["email"] == "family@example.com")
+        self.assertTrue(listed["paymentStatus"]["payLink"].endswith(f"/pay/{self._code()}"))
+
     def test_a_paid_account_is_let_through_after_its_trial(self) -> None:
         self.database.set_user_trial("family@example.com", trial_days=2)
         with self.database._connection() as conn:  # noqa: SLF001 - fixture setup

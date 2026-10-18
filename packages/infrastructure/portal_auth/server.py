@@ -12454,6 +12454,9 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 "customerPortalUrl": normalize_text(billing_customer.get("customerPortalUrl")),
                 "checkoutUrl": normalize_text(billing_customer.get("checkoutUrl")),
                 "lastCheckedAt": billing_customer.get("lastCheckedAt"),
+                # The same link the assistant sends, for paying on someone's
+                # behalf or testing the checkout; empty until payment is set up.
+                "payLink": self._pay_link_builder()(int(user.get("id") or 0)),
             },
             "spend": spend,
         }
