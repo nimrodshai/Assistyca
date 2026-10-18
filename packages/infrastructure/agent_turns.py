@@ -51,13 +51,16 @@ REVISE_PATH = "/api/agent/proposals/revise"
 # The message that offers a held question back after a sign-in. It follows no
 # turn of its own - a sign-in finished somewhere else is what brings it about.
 RESUME_ASK_PATH = "/api/agent/resume-ask"
-TURN_FOLLOW_UP_PATHS = frozenset({RECOVER_PATH, RUN_PATH, COMPOSE_PATH, REVISE_PATH, RESUME_ASK_PATH})
+# The line that answers a tap on "remind me again". It follows no turn either:
+# a button under a reminder the server sent is what brings it about.
+TAP_REPLY_PATH = "/api/agent/tap-reply"
+TURN_FOLLOW_UP_PATHS = frozenset({RECOVER_PATH, RUN_PATH, COMPOSE_PATH, REVISE_PATH, RESUME_ASK_PATH, TAP_REPLY_PATH})
 TURN_PATHS = TURN_STARTING_PATHS | TURN_FOLLOW_UP_PATHS
 
 # Outcomes of rows that are not a customer turn on their own: a lookup the
 # browser ran from a card, a composer call with no turn in front of it. They
 # carry tool calls and tokens but do not count in the fallback denominator.
-NON_TURN_OUTCOMES = frozenset({"tool_only", "compose_only", "revise_only", "resume_ask_only"})
+NON_TURN_OUTCOMES = frozenset({"tool_only", "compose_only", "revise_only", "resume_ask_only", "tap_reply_only"})
 
 MAX_STORED_TEXT = 1000
 MAX_RAW_OUTPUT = 2000
@@ -257,6 +260,15 @@ def describe_response(path: str, request: dict[str, Any], status: int, payload: 
             )
         return described
 
+    if path == TAP_REPLY_PATH:
+        described["outcome"] = "tap_reply"
+        if not ok or payload.get("composed") is False:
+            described.update(
+                fallback_used=True,
+                fallback_reason="tap_reply_computed" + (f":{error_code}" if error_code else ""),
+            )
+        return described
+
     if path == COMPOSE_PATH:
         described["outcome"] = "compose"
         if not ok:
@@ -390,6 +402,8 @@ class TurnRecorder:
                 outcome = "revise_only"
             elif self.path == RESUME_ASK_PATH:
                 outcome = "resume_ask_only"
+            elif self.path == TAP_REPLY_PATH:
+                outcome = "tap_reply_only"
             record["outcome"] = outcome
             record["status_code"] = int(status or 0)
         else:
@@ -800,6 +814,7 @@ __all__ = [
     "DEFAULT_ALERT_RATE",
     "TURN_FOLLOW_UP_PATHS",
     "RESUME_ASK_PATH",
+    "TAP_REPLY_PATH",
     "TURN_PATHS",
     "TURN_STARTING_PATHS",
     "TurnRecorder",

@@ -19,6 +19,7 @@ from unittest import mock
 from packages.infrastructure.family_week_nudges import FamilyWeekNudgeConfig
 from packages.infrastructure.family_week_nudges import FamilyWeekNudger
 from packages.infrastructure.family_week_nudges import leave_words
+from packages.infrastructure.openai_api import OpenAIError
 from packages.infrastructure.portal_auth.server import PortalConfig
 from packages.infrastructure.portal_auth.server import create_server
 from packages.infrastructure.portal_db import PortalDatabase
@@ -411,7 +412,7 @@ class TheTapTests(unittest.TestCase):
         self.assertEqual(result["outcome"], "remind_again_scheduled")
         [second] = self._second_words()
         expected = datetime.fromisoformat(second["runAt"]).astimezone(chat_zone()).strftime("%H:%M")
-        self.assertEqual(send.call_args.kwargs["text"], f"Got it - I'll say so again at {expected}.")
+        self.assertEqual(send.call_args.kwargs["text"], f"Got it - I'll remind you again at {expected}.")
         # The second tap is told it is already set, and the model is never asked.
         with mock.patch.dict("os.environ", {"WHATSAPP_ALLOW_MOCK_SEND": "1"}, clear=False), \
              mock.patch("packages.infrastructure.whatsapp_agent_chat.send_assistyca_text", return_value="wamid.r") as send:
@@ -467,8 +468,10 @@ class TheTapOverTheWebhookTests(unittest.TestCase):
         self.env.start()
         self.send_patch = mock.patch("packages.infrastructure.whatsapp_agent_chat.send_whatsapp_message", return_value="wamid.reply")
         self.sent = self.send_patch.start()
+        # What the tap does is settled by code; only the words of the answer
+        # come from the model, and with none to be had the assembled line goes.
         self.model_patch = mock.patch("packages.infrastructure.portal_auth.server.call_openai_response",
-                                      side_effect=AssertionError("a tap is settled by code, never by the model"))
+                                      side_effect=OpenAIError("no model in this test"))
         self.model_patch.start()
 
     def tearDown(self) -> None:
@@ -502,7 +505,7 @@ class TheTapOverTheWebhookTests(unittest.TestCase):
         seconds = [a for a in self.database.list_scheduled_actions_for_user(self.user_id) if a["payload"].get("remindAgainOf") == word["id"]]
         self.assertEqual(len(seconds), 1)
         self.assertEqual(seconds[0]["payload"]["title"], "Time to leave")
-        self.assertTrue(self.sent.call_args.kwargs["message_text"].startswith("Got it - I'll say so again at "))
+        self.assertTrue(self.sent.call_args.kwargs["message_text"].startswith("Got it - I'll remind you again at "))
 
 
 if __name__ == "__main__":

@@ -32,7 +32,9 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from packages.infrastructure.account_types import account_feature_allowed
 from packages.infrastructure.message_language import remember_message_language
 from packages.infrastructure.message_language import resolve_message_language
+from packages.infrastructure.person_address import address_word
 from packages.infrastructure.person_address import remember_address_form
+from packages.infrastructure.person_address import resolve_address_form
 from packages.infrastructure.notification_delivery import DEFAULT_WHATSAPP_API_VERSION
 from packages.infrastructure.notification_delivery import flatten_template_parameter
 from packages.infrastructure.notification_delivery import normalize_email
@@ -53,6 +55,8 @@ from packages.infrastructure.openai_api import load_openai_config
 from packages.infrastructure.task_complexity import TaskComplexity
 from packages.infrastructure.task_complexity import resolve_task_model
 from packages.infrastructure.task_complexity import resolve_task_reasoning
+from packages.infrastructure.agent_turns import TAP_REPLY_PATH
+from packages.infrastructure.tap_reply import tap_reply_fallback
 from packages.infrastructure.agent_turns import TURN_FOLLOW_UP_PATHS
 from packages.infrastructure.agent_turns import TURN_STARTING_PATHS
 from packages.infrastructure.recovery_reply import build_situation
@@ -1694,22 +1698,16 @@ class WhatsAppAgentChat:
     def _remind_again(self, interactive_id: str) -> dict[str, Any]:
         """Answer the tap under a ride word: the word five minutes before is
         queued from the reminder that carried the button, once, and the tap
-        is acknowledged with the time it will come. A drive whose time has
-        passed, or a button no reminder of theirs sent, is said so."""
+        is acknowledged with the time it will come - or, a few minutes
+        before the drive, told it is time to go. The server writes that line
+        from what is known here (tap_reply), and the assembled one stands
+        in. A drive whose time has passed, or a button no reminder of theirs
+        sent, is said so."""
 
         result = schedule_second_word(self.database, user_id=self.user_id, interactive_id=interactive_id)
         outcome = normalize_text(result.get("outcome"))
-        language = resolve_message_language(self.database, user_id=self.user_id)
-        when = result.get("runAt")
-        clock = when.strftime("%H:%M") if isinstance(when, datetime) else ""
-        if outcome == "scheduled":
-            reply = f"סגור, אזכיר שוב ב-{clock}." if language == "he" else f"Got it - I'll say so again at {clock}."
-        elif outcome == "already":
-            reply = f"כבר מסודר, אזכיר ב-{clock}." if language == "he" else f"Already set - I'll say so at {clock}."
-        elif outcome == "imminent":
-            due = result.get("dueAt")
-            at = due.strftime("%H:%M") if isinstance(due, datetime) else ""
-            reply = f"זה כבר ב-{at} - הגיע הזמן לצאת." if language == "he" else f"It's at {at} - time to head out."
+        if outcome in {"scheduled", "already", "imminent"}:
+            reply = self._tap_reply(outcome, result)
         elif outcome == "past":
             reply = self._recover(
                 build_situation("nothing_found", what_happened="That drive's time has already come, so there is nothing left to remind you of."),
@@ -1725,6 +1723,38 @@ class WhatsAppAgentChat:
                 [],
             )
         return self._reply_and_log(reply, outcome=f"remind_again_{outcome or 'unknown'}")
+
+    def _tap_reply(self, outcome: str, result: dict[str, Any]) -> str:
+        language = resolve_message_language(self.database, user_id=self.user_id)
+        due = result.get("dueAt")
+        drive_at = due.strftime("%H:%M") if isinstance(due, datetime) else ""
+        when = result.get("runAt")
+        clock = drive_at if outcome == "imminent" else (when.strftime("%H:%M") if isinstance(when, datetime) else "")
+        reply = tap_reply_fallback(outcome, clock, language)
+        if not clock:
+            return reply
+        form = resolve_address_form(
+            self.database, user_id=self.user_id, member_id=int(self.connection.get("memberId") or 0),
+        )
+        try:
+            response, status = self._api("POST", TAP_REPLY_PATH, {
+                "outcome": outcome,
+                "clock": clock,
+                "driveAt": drive_at,
+                "about": "; ".join(str(fact) for fact in result.get("facts") or [])[:200],
+                "language": language,
+                "addressForm": address_word(form),
+                "conversation": [
+                    {"role": item["role"], "text": item["text"]}
+                    for item in self.database.list_recent_whatsapp_agent_messages(
+                        user_id=self.user_id, limit=AGENT_CHAT_HISTORY_LIMIT, thread_id=self.thread_id)
+                ][-4:],
+            })
+            if status == 200:
+                reply = normalize_text(response.get("reply")) or reply
+        except WhatsAppAgentChatError as exc:
+            print(f"WhatsApp tap reply could not be written: {exc}", flush=True)
+        return reply
 
     def _answer_calendar_choice(self, pending: dict[str, Any], *, text: str, interactive_id: str) -> dict[str, Any]:
         calendars = [entry for entry in (pending.get("calendars") or []) if isinstance(entry, dict)]

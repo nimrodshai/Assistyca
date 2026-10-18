@@ -297,6 +297,13 @@ from packages.infrastructure.whatsapp_agent_chat import RESUME_ASK_MAX_OUTPUT_TO
 from packages.infrastructure.whatsapp_agent_chat import build_resume_ask
 from packages.infrastructure.whatsapp_agent_chat import build_resume_ask_prompt
 from packages.infrastructure.whatsapp_agent_chat import guard_resume_ask
+from packages.infrastructure.tap_reply import TAP_REPLY_COMPLEXITY
+from packages.infrastructure.tap_reply import TAP_REPLY_INSTRUCTIONS
+from packages.infrastructure.tap_reply import TAP_REPLY_MAX_OUTPUT_TOKENS
+from packages.infrastructure.tap_reply import TAP_REPLY_OUTCOMES
+from packages.infrastructure.tap_reply import build_tap_reply_prompt
+from packages.infrastructure.tap_reply import guard_tap_reply
+from packages.infrastructure.tap_reply import tap_reply_fallback
 from packages.infrastructure.whatsapp_agent_chat import held_for_seconds
 from packages.infrastructure.whatsapp_agent_chat import build_whatsapp_claim_link
 from packages.infrastructure.whatsapp_agent_chat import build_whatsapp_join_link
@@ -4005,6 +4012,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             or path == "/api/agent/answer/compose"
             or path == "/api/agent/recover"
             or path == "/api/agent/resume-ask"
+            or path == "/api/agent/tap-reply"
             or path == "/api/agent/loop"
             or path == "/api/agent/folders/save"
             or path == "/api/agent/folders/delete"
@@ -4132,6 +4140,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             or path == "/api/agent/answer/compose"
             or path == "/api/agent/recover"
             or path == "/api/agent/resume-ask"
+            or path == "/api/agent/tap-reply"
             or path == "/api/agent/loop"
             or path == "/api/agent/folders/save"
             or path == "/api/agent/folders/delete"
@@ -10279,6 +10288,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         "/api/agent/loop": "_handle_agent_loop",
         "/api/agent/recover": "_handle_agent_recover",
         "/api/agent/resume-ask": "_handle_agent_resume_ask",
+        "/api/agent/tap-reply": "_handle_agent_tap_reply",
         "/api/agent/proposals/run": "_handle_agent_proposal_run",
         "/api/agent/answer/compose": "_handle_agent_answer_compose",
         "/api/agent/proposals/revise": "_handle_agent_proposal_revision",
@@ -10811,6 +10821,74 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             conversation=normalize_recovery_conversation(payload.get("conversation")),
         )
         json_response(self, HTTPStatus.OK, {"ok": True, "ask": ask, "composed": composed})
+
+    def _handle_agent_tap_reply(self) -> None:
+        """Write the line that answers a tap on "remind me again".
+
+        The WhatsApp chat has already done what the tap asked and sends what
+        it knows - the outcome, the time, the drive, who is reading - and the
+        words come back from here: the model's when they pass the guard, the
+        assembled line when they do not or no model can run.
+        """
+
+        authenticated = self._require_authenticated_user()
+        if authenticated is None:
+            return
+        session, _authenticated_user = authenticated
+        try:
+            payload = parse_json_body(self, max_bytes=MAX_PUBLIC_REQUEST_BODY_BYTES)
+        except ValueError as exc:
+            json_response(self, HTTPStatus.BAD_REQUEST, {"ok": False, "error": "invalid_json", "message": str(exc)})
+            return
+        outcome = normalize_text(payload.get("outcome")).lower()
+        clock = normalize_contact_single_line(payload.get("clock"), 5)
+        if outcome not in TAP_REPLY_OUTCOMES or not clock:
+            json_response(self, HTTPStatus.BAD_REQUEST, {
+                "ok": False,
+                "error": "invalid_tap_reply_request",
+                "message": "A tap reply needs what the tap did and the time.",
+            })
+            return
+        language = normalize_text(payload.get("language")).lower()[:8]
+        fallback = tap_reply_fallback(outcome, clock, language)
+        model = resolve_task_model(TAP_REPLY_COMPLEXITY, "PORTAL_ASSISTANT_MODEL", "OPENAI_MODEL")
+        prompt = build_tap_reply_prompt(
+            outcome=outcome,
+            clock=clock,
+            drive_at=normalize_contact_single_line(payload.get("driveAt"), 5),
+            about=normalize_contact_single_line(payload.get("about"), 200),
+            language=language,
+            address_form=normalize_contact_single_line(payload.get("addressForm"), 40),
+            conversation=normalize_recovery_conversation(payload.get("conversation")),
+        )
+        reply, composed = fallback, False
+        try:
+            result = call_openai_response(
+                tool_name="portal_tap_reply_composer",
+                tool_id="portal_agent",
+                billing_email=session.email,
+                prompt=prompt,
+                model=model,
+                instructions=TAP_REPLY_INSTRUCTIONS,
+                reasoning=resolve_task_reasoning(TAP_REPLY_COMPLEXITY, "PORTAL_RECOVERY_REASONING_EFFORT"),
+                max_output_tokens=TAP_REPLY_MAX_OUTPUT_TOKENS,
+                temperature=AGENT_ANSWER_TEMPERATURE,
+                usage_recorder=self.database,
+                price_resolver=self.database.get_model_price,
+                config=load_openai_config(
+                    default_model=model,
+                    strict_tracking=False,
+                    include_prompt_in_metadata=False,
+                ),
+                metadata={"source": "portal_agent", "tapReply": "1"},
+            )
+            reply = guard_tap_reply(result.output_text, clock=clock, fallback=fallback)
+            composed = reply != fallback
+        except OpenAIError as exc:
+            print(f"Tap reply composer failed: {exc.message}", flush=True)
+        except Exception as exc:  # noqa: BLE001 - the tap is answered either way
+            print(f"Tap reply composer failed: {exc!r}", flush=True)
+        json_response(self, HTTPStatus.OK, {"ok": True, "reply": reply, "composed": composed})
 
     def _respond_recovered(
         self,
