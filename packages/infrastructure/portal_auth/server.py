@@ -99,7 +99,18 @@ from packages.infrastructure.credential_vault import CredentialVault
 from packages.infrastructure.credential_vault import CredentialVaultError
 from packages.infrastructure.credential_vault import credential_hint
 from packages.infrastructure.credential_vault import normalize_platform_connection_metadata
-from packages.infrastructure.feature_activation import ACTIVE_SUBSCRIPTION_STATUSES
+from packages.infrastructure.family_billing import PAY_PAGE_PREFIX
+from packages.infrastructure.family_billing import create_family_checkout_url
+from packages.infrastructure.family_billing import load_family_billing_config
+from packages.infrastructure.family_billing import pay_code
+from packages.infrastructure.family_billing import subscription_is_paying
+from packages.infrastructure.family_billing import subscription_record_from_event
+from packages.infrastructure.family_billing import user_id_from_pay_code
+from packages.infrastructure.lemon_squeezy_api import LemonSqueezyClient
+from packages.infrastructure.lemon_squeezy_api import LemonSqueezyError
+from packages.infrastructure.lemon_squeezy_api import LemonSqueezySignatureError
+from packages.infrastructure.lemon_squeezy_api import load_lemon_squeezy_config
+from packages.infrastructure.lemon_squeezy_api import parse_webhook_event
 from packages.infrastructure.trial_access import build_trial_expired_message
 from packages.infrastructure.trial_access import describe_trial
 from packages.infrastructure.trial_access import resolve_default_trial_days
@@ -4074,6 +4085,9 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         if path.startswith(JOIN_PAGE_PREFIX):
             self._handle_family_join_page(parsed)
             return
+        if path.startswith(PAY_PAGE_PREFIX):
+            self._handle_pay_page(parsed)
+            return
         if path.startswith(LISTS_HANDOFF_PREFIX):
             self._handle_lists_handoff(parsed)
             return
@@ -4137,6 +4151,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             or path.startswith("/api/source-actions/")
             or path.startswith("/api/notifications/")
             or path == "/webhooks/whatsapp"
+            or path == "/webhooks/lemon-squeezy"
             or path.startswith("/api/whatsapp/")
             or path == "/api/lists"
             or path.startswith("/api/lists/")
@@ -4562,6 +4577,10 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
 
         if path == "/webhooks/whatsapp":
             self._handle_whatsapp_webhook_ingest()
+            return
+
+        if path == "/webhooks/lemon-squeezy":
+            self._handle_lemon_squeezy_webhook()
             return
 
         self.send_error(HTTPStatus.NOT_FOUND)
@@ -10892,7 +10911,8 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         # person's own to decide whatever they pay: deleting the account,
         # signing a phone out, taking back a sign-in. Everything else is
         # withheld from the model and refused if it is asked for anyway.
-        trial_ended = not self._describe_user_trial(authenticated_user).get("allowed")
+        trial = self._describe_user_trial(authenticated_user)
+        trial_ended = not trial.get("allowed")
         try:
             payload = parse_json_body(self, max_bytes=MAX_AGENT_TURN_BODY_BYTES)
         except ValueError as exc:
@@ -11052,6 +11072,8 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             ),
             join_link=None if group else self._join_link_builder(),
             homework_link=None if group else self._homework_link_builder(),
+            pay_link=None if group else (lambda pay=self._pay_link_builder(): pay(user_id)),
+            billing={} if group else self._loop_billing(trial, paying=self._user_is_paying(session.email)),
             speaker=speaker,
             sender_wa_id="" if group else sender_wa_id,
             attached_photo=photo_context,
@@ -12323,8 +12345,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         return session, user
 
     def _user_is_paying(self, email: str) -> bool:
-        customer = self.database.get_billing_customer(email, include_inactive=True) or {}
-        return normalize_text(customer.get("subscriptionStatus")) in ACTIVE_SUBSCRIPTION_STATUSES
+        return subscription_is_paying(self.database.get_billing_customer(email, include_inactive=True))
 
     def _describe_user_trial(self, user: dict[str, Any]) -> dict[str, Any]:
         return describe_trial(
@@ -12346,7 +12367,11 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         json_response(self, HTTPStatus.PAYMENT_REQUIRED, {
             "ok": False,
             "error": "trial_expired",
-            "message": build_trial_expired_message(self.server.config.product_name),
+            "message": build_trial_expired_message(
+                self.server.config.product_name,
+                pay_link=self._pay_link_builder()(int(user.get("id") or 0)),
+                price_label=load_family_billing_config().price_label,
+            ),
             "trial": trial,
         })
         return False
@@ -12406,7 +12431,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         email = normalize_email(user.get("email"))
         billing_customer = self.database.get_billing_customer(email, include_inactive=True) or {}
         subscription_status = normalize_text(billing_customer.get("subscriptionStatus"))
-        is_paying = subscription_status in ACTIVE_SUBSCRIPTION_STATUSES
+        is_paying = subscription_is_paying(billing_customer)
         client_type = normalize_client_type(user.get("clientType")) or ("paying" if is_paying else "demo")
         spend = self._build_admin_user_spend(email, client_type)
         return {
@@ -14293,6 +14318,120 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             f"<p style=\"max-width: 32rem; margin: 0 auto; line-height: 1.6;\">{words}</p></body></html>",
         )
 
+    def _send_words_page(self, status: HTTPStatus, words: str) -> None:
+        """A one-sentence page, for a link opened in a phone's browser that
+        has nowhere better to go."""
+
+        self._send_html(
+            status,
+            "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" "
+            "content=\"width=device-width, initial-scale=1\"><title>Assistyca</title></head>"
+            "<body style=\"font-family: -apple-system, system-ui, sans-serif; margin: 0; padding: 48px 16px; "
+            "color: #26332c; background: #f6f4ee; text-align: center;\">"
+            f"<p style=\"max-width: 32rem; margin: 0 auto; line-height: 1.6;\">{html.escape(words)}</p></body></html>",
+        )
+
+    def _redirect_to(self, location: str) -> None:
+        self.send_response(HTTPStatus.FOUND)
+        self.send_header("Location", location)
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def _handle_pay_page(self, parsed: urllib_parse.ParseResult) -> None:
+        """The link the assistant sends to pay. It makes a fresh checkout for
+        the account the code was signed for and sends the browser on to it;
+        an account already paying goes to where its subscription is managed
+        instead, so a second tap never buys twice."""
+
+        if not self._enforce_rate_limit(
+            f"list-open-ip:{self._client_ip()}",
+            LIST_OPEN_PER_IP,
+            message="Too many attempts. Wait a moment and try again.",
+        ):
+            return
+        code = urllib_parse.unquote(parsed.path[len(PAY_PAGE_PREFIX):]).strip("/")
+        user_id = user_id_from_pay_code(code, self.store.session_secret)
+        user = self.database.get_user_by_id(user_id) if user_id else None
+        if not user:
+            self._send_words_page(
+                HTTPStatus.NOT_FOUND,
+                "This payment link isn't valid. Ask Assistyca on WhatsApp for a fresh one.",
+            )
+            return
+        customer = self.database.get_billing_customer(normalize_email(user.get("email")), include_inactive=True)
+        manage = normalize_text((customer or {}).get("customerPortalUrl"))
+        if subscription_is_paying(customer) and manage:
+            self._redirect_to(manage)
+            return
+        config = load_family_billing_config()
+        lemon = load_lemon_squeezy_config()
+        if not (config.configured and lemon.api_key):
+            self._send_words_page(
+                HTTPStatus.SERVICE_UNAVAILABLE,
+                "Payment isn't open yet. Nothing is needed from you for now.",
+            )
+            return
+        try:
+            url = create_family_checkout_url(
+                LemonSqueezyClient(lemon), config, user_id=user_id,
+                redirect_url=f"{self._public_base_url()}{WHATSAPP_CHAT_PATH}",
+            )
+        except (LemonSqueezyError, ValueError) as exc:
+            print(f"[billing] checkout for user {user_id} could not be made: {exc}", flush=True)
+            url = ""
+        if not url:
+            self._send_words_page(
+                HTTPStatus.SERVICE_UNAVAILABLE,
+                "The payment page couldn't be opened just now. Try the link again in a minute.",
+            )
+            return
+        self._redirect_to(url)
+
+    def _handle_lemon_squeezy_webhook(self) -> None:
+        """Lemon Squeezy telling us a subscription started, renewed, was
+        cancelled or ran out. The signature is checked before anything is
+        read, and the account comes from the id the checkout carried."""
+
+        body = self._read_body(max_bytes=MAX_WEBHOOK_BODY_BYTES)
+        secret = load_lemon_squeezy_config().signing_secret
+        if not secret:
+            self.send_error(HTTPStatus.SERVICE_UNAVAILABLE, "Billing webhooks are not configured")
+            return
+        try:
+            event = parse_webhook_event(
+                body, signature=normalize_text(self.headers.get("X-Signature")), signing_secret=secret,
+            )
+        except LemonSqueezySignatureError:
+            self.send_error(HTTPStatus.FORBIDDEN, "Invalid signature")
+            return
+        except LemonSqueezyError:
+            self.send_error(HTTPStatus.BAD_REQUEST, "Unreadable event")
+            return
+        record = subscription_record_from_event(event)
+        user = self.database.get_user_by_id(record["userId"]) if record else None
+        if record and user:
+            self.database.save_billing_customer(
+                normalize_email(user.get("email")),
+                provider=record["provider"],
+                external_customer_id=record["externalCustomerId"],
+                external_subscription_id=record["externalSubscriptionId"],
+                external_subscription_item_id=record["externalSubscriptionItemId"],
+                subscription_status=record["subscriptionStatus"],
+                product_id=record["productId"],
+                variant_id=record["variantId"],
+                checkout_url="",
+                customer_portal_url=record["customerPortalUrl"],
+                metadata=record["metadata"],
+            )
+            print(
+                f"[billing] {event.event_name} user={record['userId']} status={record['subscriptionStatus']}",
+                flush=True,
+            )
+        elif record:
+            print(f"[billing] {event.event_name} for unknown user {record['userId']}", flush=True)
+        json_response(self, HTTPStatus.OK, {"ok": True})
+
     def _handle_whatsapp_signup(
         self,
         phone_number_id: str,
@@ -14988,6 +15127,32 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             return
         print(f"[homework] login kept user={saved['userId']} platform={saved['platform']}", flush=True)
         json_response(self, HTTPStatus.OK, {"ok": True})
+
+    def _loop_billing(self, trial: dict[str, Any], *, paying: bool) -> dict[str, Any]:
+        """Where the account stands on paying, as the assistant reads it.
+        Empty while payment is not set up, so the trial is never mentioned
+        before there is a way to act on it."""
+
+        config = load_family_billing_config()
+        if not config.configured:
+            return {}
+        billing: dict[str, Any] = {"onTrial": bool(trial.get("onTrial")), "paying": bool(paying)}
+        if trial.get("onTrial"):
+            billing["daysLeft"] = int(trial.get("daysLeft") or 0)
+        if config.price_label:
+            billing["price"] = config.price_label
+        return billing
+
+    def _pay_link_builder(self) -> Callable[[int], str]:
+        """The link an account pays through: the pay page on the public
+        address, carrying the account's signed code. Empty while payment is
+        not set up, so nothing offers a link that leads nowhere."""
+
+        base = self._public_base_url()
+        secret = self.store.session_secret
+        if not load_family_billing_config().configured:
+            return lambda user_id: ""
+        return lambda user_id: f"{base}{PAY_PAGE_PREFIX}{pay_code(user_id, secret)}" if pay_code(user_id, secret) else ""
 
     def _join_link_builder(self) -> Callable[[str], str]:
         """The link a parent forwards to bring someone onto the account: the

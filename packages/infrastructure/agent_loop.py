@@ -365,6 +365,11 @@ class LoopContext:
     # Builds the link to the private page where a parent types the school
     # platform's login for the homework check, from the page's code.
     homework_link: Callable[[str], str] | None = None
+    # The link this account pays through, and where it stands: the trial's
+    # days left and the price as the person reads it ("$4.90 a month").
+    # pay_link is None, and billing empty, while payment is not set up.
+    pay_link: Callable[[], str] | None = None
+    billing: dict[str, Any] = field(default_factory=dict)
     # Offered links that stay written out in the reply instead of becoming a
     # button: a link meant to be forwarded to somebody else is no use as a
     # button the person taps themselves.
@@ -2534,6 +2539,28 @@ def _tool_invite_family_member(context: LoopContext, args: dict[str, Any]) -> di
     })
 
 
+def _tool_payment_link(context: LoopContext, args: dict[str, Any]) -> dict[str, Any]:
+    """The link this account pays through, for when the person asks what it
+    costs or how to keep going, and for the end of the trial. The checkout
+    is made when the link is opened, so the link does not go stale."""
+
+    if context.in_group:
+        return _error("not_supported", "Paying is done in the person's own chat, not in a group.")
+    link = str(context.pay_link() or "").strip() if context.pay_link is not None else ""
+    if not link:
+        return _error(
+            "not_supported",
+            "Payment is not open yet. Say there is nothing for them to pay or do for now.",
+        )
+    _offer_link(context, link, "Keep Assistyca")
+    return _ok({
+        "link": link,
+        "price": str(context.billing.get("price") or ""),
+        "alreadyPaying": bool(context.billing.get("paying")),
+        "opens": "The payment page for this account. Paying with any email is fine; it is tied to the account, not the address.",
+    })
+
+
 def _kept_homework_logins(context: LoopContext) -> list[dict[str, Any]]:
     return [
         {
@@ -3962,6 +3989,18 @@ TOOLS: list[ToolSpec] = [
         run=_tool_invite_family_member,
     ),
     ToolSpec(
+        name="payment_link",
+        description=(
+            "The link this account pays through to keep the assistant once the free trial is over. For when "
+            "they ask what it costs, how to pay or what happens after the trial, and when the trial has ended. "
+            "Returns the link and the price; send the link as it is. alreadyPaying true means the same link "
+            "opens where they manage or cancel what they pay for."
+        ),
+        parameters=_params({}),
+        side_effect=False,
+        run=_tool_payment_link,
+    ),
+    ToolSpec(
         name="homework_login_link",
         description=(
             "The private page where a parent gives the login of their children's school platform (Mashov, "
@@ -4177,6 +4216,8 @@ TOOLS_BY_NAME = {tool.name: tool for tool in TOOLS}
 # itself. Leaving - deleting everything, signing a phone out, taking back a
 # sign-in - is the person's right whether or not they pay.
 ACCOUNT_RIGHTS_TOOLS = frozenset({"delete_account", "sign_out", "disconnect"})
+# What a finished trial still offers: those rights, and the way to pay.
+TRIAL_ENDED_TOOLS = ACCOUNT_RIGHTS_TOOLS | {"payment_link"}
 
 # What changes the family's week, or who is in it. The two parents have
 # these; anyone else who joined the account - a grandparent - reads the week
@@ -4696,11 +4737,27 @@ _PHOTO_RULES = (
 
 _TRIAL_ENDED_RULES = (
     "This account's free trial has ended (CONTEXT.trialEnded), so the only tools offered are the ones over "
-    "the account itself: delete_account, sign_out and disconnect. When the person asks for one of those, "
-    "handle it exactly as you would otherwise, with the same yes first. For anything else, say calmly in a "
-    "line or two that the trial has ended and that getting in touch keeps the assistant running, and that "
-    "they can still delete their account or disconnect what they connected whenever they want. Do not "
-    "offer, promise or describe other help as if it were available.\n"
+    "the account itself - delete_account, sign_out and disconnect - and payment_link. When the person asks "
+    "for one of the first three, handle it exactly as you would otherwise, with the same yes first. For "
+    "anything else, say calmly in a line or two that the trial has ended and that paying keeps the assistant "
+    "running from where it stopped: call payment_link and send the link it returns, with the price it gives "
+    "when there is one. No pressure and no selling - one plain offer - and say too that they can still delete "
+    "their account or disconnect what they connected whenever they want. If payment_link says payment is "
+    "not open yet, say instead that they will hear from you, and nothing more. Do not offer, promise or "
+    "describe other help as if it were available.\n"
+)
+
+# While the trial runs. The price is never brought up for its own sake: it is
+# answered when asked, and said once as the end comes near, the way a person
+# would mention it rather than the way a billing system would.
+_TRIAL_RULES = (
+    "CONTEXT.billing says this account is on its free trial: daysLeft is how many days it has, price what "
+    "keeps it going after. When they ask what it costs, how to pay, or what happens when the trial ends, "
+    "call payment_link and answer with the price and the link. When daysLeft is 3 or fewer and nothing in "
+    "the recent conversation has said so yet, add one short line at the end of a reply that is otherwise "
+    "about something else - the trial ends in that many days, and you can send the link to keep going "
+    "whenever they like - once, and never as the point of the message. Otherwise do not mention the trial "
+    "or the price.\n"
 )
 
 
@@ -4736,6 +4793,7 @@ def build_loop_context_text(
     group: dict[str, Any] | None = None,
     exceptions: list[dict[str, Any]] | None = None,
     speaker: dict[str, Any] | None = None,
+    billing: dict[str, Any] | None = None,
 ) -> str:
     normalized_channel = "whatsapp" if str(channel or "").lower() == "whatsapp" else "portal"
     safe_context = {k: v for k, v in (tool_context or {}).items() if k != "connectLinks"}
@@ -4775,12 +4833,15 @@ def build_loop_context_text(
         context["group"] = group
     if speaker:
         context["speaker"] = speaker
+    if billing:
+        context["billing"] = billing
     return (
         f"{_CHANNEL_RULES[normalized_channel]}\n"
         + (_GROUP_RULES if group else "")
         + (_SPEAKER_RULES if speaker else "")
         + (_PHOTO_RULES if attached_photo else "")
         + (_TRIAL_ENDED_RULES if trial_ended else "")
+        + (_TRIAL_RULES if billing and billing.get("onTrial") and not trial_ended else "")
         + ("" if trial_ended else chat_flow_rules(chat_flow))
         + "Respond to CONTEXT.latestUserMessage using the conversation and the tools.\n"
         f"CONTEXT\n{json.dumps(context, ensure_ascii=False, separators=(',', ':'))}"
@@ -4808,7 +4869,7 @@ def run_agent_loop(
     and returns an OpenAIResult-like object with output_text and raw_response.
     A photo, when there is one, goes in beside the context as an image.
 
-    With trial_ended the model sees only ACCOUNT_RIGHTS_TOOLS, and a call to
+    With trial_ended the model sees only TRIAL_ENDED_TOOLS, and a call to
     anything else is refused here as well."""
 
     started = time.monotonic()
@@ -4825,7 +4886,7 @@ def run_agent_loop(
 
     tools = tool_definitions(context.tool_context, context.blocked_tools, in_group=context.in_group, speaker=context.speaker)
     if trial_ended:
-        tools = [definition for definition in tools if definition["name"] in ACCOUNT_RIGHTS_TOOLS]
+        tools = [definition for definition in tools if definition["name"] in TRIAL_ENDED_TOOLS]
     # The lists page is in the context from the start, not only inside a
     # list result: "can you help with my todos" is answered without a tool,
     # and the answer still has somewhere to point.
@@ -4852,6 +4913,7 @@ def run_agent_loop(
         group=context.group if context.in_group else None,
         exceptions=None if trial_ended else exceptions_payload(context),
         speaker=context.speaker or None,
+        billing=context.billing or None,
     )
     input_items: list[dict[str, Any]] = build_agent_turn_input(context_text, photo) or [
         {"role": "user", "content": context_text},
@@ -4884,7 +4946,7 @@ def run_agent_loop(
             call_id = str(call.get("call_id") or "")
             args = _parse_arguments(call.get("arguments"))
             tool = TOOLS_BY_NAME.get(name)
-            if tool is None or (trial_ended and name not in ACCOUNT_RIGHTS_TOOLS):
+            if tool is None or (trial_ended and name not in TRIAL_ENDED_TOOLS):
                 outcome = _error("not_supported", f"There is no tool called {name}.")
             elif executed >= MAX_TOOL_CALLS_PER_TURN:
                 outcome = _error(
@@ -5176,6 +5238,7 @@ def _guard_reply(reply: str, links_offered: list[str]) -> str:
 
 __all__ = [
     "ACCOUNT_RIGHTS_TOOLS",
+    "TRIAL_ENDED_TOOLS",
     "AGENT_LOOP_INSTRUCTIONS",
     "LOOP_MAX_OUTPUT_TOKENS",
     "MAX_TOOL_CALLS_PER_TURN",

@@ -311,7 +311,8 @@ class LoopMechanicsTests(unittest.TestCase):
 
     def test_an_ended_trial_offers_only_the_tools_over_the_account_itself(self) -> None:
         # Leaving is the person's right whether or not they pay, so deleting
-        # the account still works; reading their mail does not.
+        # the account still works, and so does the way to pay to stay;
+        # reading their mail does not.
         api = FakeApi({"/api/account": ({"ok": True}, 200)})
         model = ScriptedModel([
             _model_round(_call("read_inbox", "c1"), _call("delete_account", "c2")),
@@ -323,7 +324,7 @@ class LoopMechanicsTests(unittest.TestCase):
         )
 
         offered = sorted(tool["name"] for tool in model.tools[0])
-        self.assertEqual(offered, ["delete_account", "disconnect", "sign_out"])
+        self.assertEqual(offered, ["delete_account", "disconnect", "payment_link", "sign_out"])
         self.assertIn('"trialEnded":true', model.inputs[0][0]["content"])
         refused = json.loads(model.inputs[1][-2]["output"])
         self.assertEqual(refused["error"]["code"], "not_supported")

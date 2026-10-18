@@ -100,12 +100,21 @@ def describe_trial(
     }
 
 
-def build_trial_expired_message(product_name: str = "Assistyca") -> str:
+def build_trial_expired_message(product_name: str = "Assistyca", *, pay_link: str = "", price_label: str = "") -> str:
+    """The floor for a finished trial, when the assistant cannot word it
+    itself: where to pay when there is a link, and that leaving stays open."""
+
+    if pay_link:
+        price = f" It's {price_label} to keep going." if price_label else ""
+        return (
+            f"Your {product_name} trial has ended, so I've stopped here.{price} "
+            f"Here's where to carry on, and I'll pick up where we left off:\n{pay_link}\n"
+            "If you'd rather leave, just ask me to delete your account and everything in it."
+        )
     return (
         f"Your {product_name} trial has ended, so I've stopped here. "
         "Get in touch to keep your assistant running and I'll pick up where we left off. "
-        "If you'd rather leave, you can still delete your account and everything in it from Settings, "
-        "or just ask me to."
+        "If you'd rather leave, just ask me to delete your account and everything in it."
     )
 
 
