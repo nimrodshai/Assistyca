@@ -38,6 +38,9 @@ from packages.infrastructure.schedule_exceptions import activities_not_excepted
 from packages.infrastructure.standing_tasks import STANDING_TASK_ACTION_TYPE
 
 REMIND_AGAIN_MINUTES = 5
+# A tap closer to the drive than the word would be, give or take this much,
+# sets nothing: a "five minutes before" sent right now is just a repeat.
+REMIND_AGAIN_MIN_LEAD = timedelta(minutes=1)
 # The button's payload: this prefix and the id of the action that sent it.
 REMIND_AGAIN_PREFIX = "remindagain:"
 REMIND_AGAIN_PAYLOAD_KEY = "remindAgain"
@@ -193,9 +196,12 @@ def schedule_second_word(
     tapped reminder was about, once.
 
     The outcome says what happened - scheduled, already (a second tap on
-    the same button), past (the drive's time has come and gone) or unknown
-    (no reminder of theirs sent that button) - with the moment the word
-    goes, in the person's own zone, where there is one."""
+    the same button), imminent (the drive is too close for a word five
+    minutes before, so none is set), past (the drive's time has come and
+    gone) or unknown (no reminder of theirs sent that button) - with the
+    moment the word goes (runAt) and the drive's own (dueAt), in the
+    person's own zone, and the drive's facts, so the tap can be answered
+    in words about it."""
 
     action_id = parse_remind_again_id(interactive_id)
     action = database.get_scheduled_action(action_id) if action_id else None
@@ -210,17 +216,20 @@ def schedule_second_word(
     except (ZoneInfoNotFoundError, ValueError):
         zone, timezone_name = ZoneInfo("UTC"), "UTC"
     reference = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    facts = [str(fact) for fact in (offer.get("facts") or []) if str(fact or "").strip()]
+    reader = normalize_text(offer.get("reader"))
+    about = {"dueAt": due.astimezone(zone), "facts": facts, **({"reader": reader} if reader else {})}
     if due <= reference:
-        return {"outcome": "past", "dueAt": due.astimezone(zone)}
+        return {"outcome": "past", **about}
     try:
         minutes = int(offer.get("minutesBefore") or REMIND_AGAIN_MINUTES)
     except (TypeError, ValueError):
         minutes = REMIND_AGAIN_MINUTES
-    run_at = max(reference, due - timedelta(minutes=max(1, minutes)))
+    run_at = due - timedelta(minutes=max(1, minutes))
+    if run_at - reference < REMIND_AGAIN_MIN_LEAD:
+        return {"outcome": "imminent", **about}
     if not database.claim_household_nudge(user_id=int(user_id), nudge_key=f"remind-again:{action_id}"):
-        return {"outcome": "already", "runAt": run_at.astimezone(zone)}
-    facts = [str(fact) for fact in (offer.get("facts") or []) if str(fact or "").strip()]
-    reader = normalize_text(offer.get("reader"))
+        return {"outcome": "already", "runAt": run_at.astimezone(zone), **about}
     words = second_word(
         facts or [normalize_text(payload.get("fallbackText")) or "your drive"],
         reader=reader,
@@ -249,7 +258,7 @@ def schedule_second_word(
         timezone_name=timezone_name,
         payload=second_payload,
     )
-    return {"outcome": "scheduled", "runAt": run_at.astimezone(zone)}
+    return {"outcome": "scheduled", "runAt": run_at.astimezone(zone), **about}
 
 
 def second_word_still_theirs(database: Any, action: dict[str, Any]) -> bool:

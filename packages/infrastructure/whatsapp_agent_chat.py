@@ -1706,6 +1706,10 @@ class WhatsAppAgentChat:
             reply = f"סגור, אזכיר שוב ב-{clock}." if language == "he" else f"Got it - I'll say so again at {clock}."
         elif outcome == "already":
             reply = f"כבר מסודר, אזכיר ב-{clock}." if language == "he" else f"Already set - I'll say so at {clock}."
+        elif outcome == "imminent":
+            due = result.get("dueAt")
+            at = due.strftime("%H:%M") if isinstance(due, datetime) else ""
+            reply = f"זה כבר ב-{at} - הגיע הזמן לצאת." if language == "he" else f"It's at {at} - time to head out."
         elif outcome == "past":
             reply = self._recover(
                 build_situation("nothing_found", what_happened="That drive's time has already come, so there is nothing left to remind you of."),

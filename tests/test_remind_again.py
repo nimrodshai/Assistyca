@@ -338,6 +338,8 @@ class TheTapTests(unittest.TestCase):
         first = schedule_second_word(self.database, user_id=self.user_id, interactive_id=f"remindagain:{word['id']}", now=self.now)
         self.assertEqual(first["outcome"], "scheduled")
         self.assertEqual(first["runAt"].strftime("%H:%M"), "07:55")
+        self.assertEqual(first["dueAt"].strftime("%H:%M"), "08:00")
+        self.assertEqual(first["facts"], ["take Tom - Kindergarten at 08:00, Gan Rimon"])
         [second] = self._second_words()
         self.assertEqual(second["runAt"], (due - timedelta(minutes=5)).isoformat())
         self.assertEqual(second["status"], "pending")
@@ -366,16 +368,22 @@ class TheTapTests(unittest.TestCase):
         self.assertEqual(second["payload"]["recipientWaId"], PARTNER_PHONE)
         self.assertIn("This message is for Shirly", second["payload"]["instruction"])
 
-    def test_a_late_tap_goes_now_and_a_tap_after_the_drive_is_told_so(self) -> None:
+    def test_a_late_tap_sets_nothing_and_a_tap_after_the_drive_is_told_so(self) -> None:
+        # Three minutes before the drive there is no "five minutes before"
+        # left: nothing is queued for right now, the tap is told it is time.
         late = self._ride_word(due=self.now + timedelta(minutes=3))
         result = schedule_second_word(self.database, user_id=self.user_id, interactive_id=f"remindagain:{late['id']}", now=self.now)
-        self.assertEqual(result["outcome"], "scheduled")
-        [second] = self._second_words()
-        self.assertEqual(second["runAt"], self.now.isoformat())
+        self.assertEqual(result["outcome"], "imminent")
+        self.assertEqual(result["dueAt"].strftime("%H:%M"), "07:33")
+        self.assertEqual(result["facts"], ["take Tom - Kindergarten at 08:00, Gan Rimon"])
+        self.assertEqual(self._second_words(), [])
+        # Five and a half minutes before is still too close for a word a minute later.
+        closer = self._ride_word(due=self.now + timedelta(minutes=5, seconds=30))
+        self.assertEqual(schedule_second_word(self.database, user_id=self.user_id, interactive_id=f"remindagain:{closer['id']}", now=self.now)["outcome"], "imminent")
         gone = self._ride_word(due=self.now - timedelta(minutes=1))
         result = schedule_second_word(self.database, user_id=self.user_id, interactive_id=f"remindagain:{gone['id']}", now=self.now)
         self.assertEqual(result["outcome"], "past")
-        self.assertEqual(len(self._second_words()), 1)
+        self.assertEqual(self._second_words(), [])
 
     def test_a_button_from_somebody_elses_reminder_is_unknown(self) -> None:
         self.database.register_user("other@example.com")
@@ -410,6 +418,21 @@ class TheTapTests(unittest.TestCase):
             result = chat.handle_message("Yes, 5 min before", message_type="button", interactive_id=f"remindagain:{word['id']}")
         self.assertEqual(result["outcome"], "remind_again_already")
         self.assertTrue(send.call_args.kwargs["text"].startswith("Already set"))
+
+    def test_a_tap_minutes_before_the_drive_is_told_it_is_time_to_go(self) -> None:
+        self.database.link_user_whatsapp_number(user_id=self.user_id, wa_id=PHONE)
+        word = self._ride_word(due=datetime.now(UTC) + timedelta(minutes=3))
+        chat = WhatsAppAgentChat(
+            database=self.database,
+            connection={"userId": self.user_id, "email": "owner@example.com", "ownerWaId": PHONE},
+            base_url="http://127.0.0.1:1", session_token_factory=lambda _email: "token",
+        )
+        with mock.patch.dict("os.environ", {"WHATSAPP_ALLOW_MOCK_SEND": "1"}, clear=False), \
+             mock.patch("packages.infrastructure.whatsapp_agent_chat.send_assistyca_text", return_value="wamid.r") as send:
+            result = chat.handle_message("Yes, 5 min before", message_type="button", interactive_id=f"remindagain:{word['id']}")
+        self.assertEqual(result["outcome"], "remind_again_imminent")
+        self.assertTrue(send.call_args.kwargs["text"].startswith("It's at "), send.call_args.kwargs["text"])
+        self.assertEqual(self._second_words(), [])
 
 
 def chat_zone():
