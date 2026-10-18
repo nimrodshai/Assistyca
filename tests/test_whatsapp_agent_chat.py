@@ -54,6 +54,35 @@ def inbound_image_payload(
     return payload
 
 
+def inbound_document_payload(
+    caption: str = "",
+    *,
+    media_id: str = "media-doc-1",
+    mime_type: str = "application/pdf",
+    filename: str = "timetable.pdf",
+    message_id: str = "wamid.document-1",
+) -> dict:
+    payload = inbound_text_payload("", message_id=message_id)
+    message = payload["entry"][0]["changes"][0]["value"]["messages"][0]
+    message["type"] = "document"
+    del message["text"]
+    message["document"] = {"id": media_id, "mime_type": mime_type, "sha256": "ghi", "filename": filename}
+    if caption:
+        message["document"]["caption"] = caption
+    return payload
+
+
+def _one_page_pdf() -> bytes:
+    import fitz  # PyMuPDF
+
+    document = fitz.open()
+    document.new_page().insert_text((72, 72), "Sun-Thu 8:00-13:30")
+    try:
+        return document.tobytes()
+    finally:
+        document.close()
+
+
 def inbound_audio_payload(
     *,
     media_id: str = "media-voice-1",
@@ -135,6 +164,18 @@ class WhatsAppAgentHelperTests(unittest.TestCase):
         self.assertEqual(captioned[0]["message_text"], "what is this?")
         self.assertEqual(captioned[0]["media"]["id"], "media-8")
         self.assertEqual(extract_inbound_events(inbound_text_payload("hi"))[0]["media"], {})
+
+    def test_an_inbound_pdf_carries_its_id_name_and_caption(self) -> None:
+        from packages.infrastructure.whatsapp_messaging import extract_inbound_events
+
+        events = extract_inbound_events(inbound_document_payload("Noa's week"))
+        self.assertEqual(events[0]["message_type"], "document")
+        self.assertEqual(events[0]["message_text"], "Noa's week")
+        self.assertEqual(events[0]["media"]["kind"], "document")
+        self.assertEqual(events[0]["media"]["id"], "media-doc-1")
+        self.assertEqual(events[0]["media"]["mimeType"], "application/pdf")
+        self.assertEqual(events[0]["media"]["fileName"], "timetable.pdf")
+        self.assertEqual(extract_inbound_events(inbound_document_payload())[0]["message_text"], "[document]")
 
     def test_an_inbound_voice_note_carries_the_id_it_can_be_fetched_by(self) -> None:
         from packages.infrastructure.whatsapp_messaging import extract_inbound_events
@@ -1146,6 +1187,62 @@ class WhatsAppLoopTests(_WhatsAppApiCase):
         self.assertEqual(content[1]["type"], "input_image")
         transcript = self.database.list_recent_whatsapp_agent_messages(user_id=int(self.user["id"]))
         self.assertEqual(transcript[0]["text"], "Have a look at this photo. [photo attached]")
+
+    def test_a_pdf_is_read_as_a_picture_of_its_first_page(self) -> None:
+        # The school's timetable is usually forwarded as the PDF it came as;
+        # asking for a screenshot first is one step too many.
+        pdf = base64.b64encode(_one_page_pdf()).decode("ascii")
+        with (
+            mock.patch(
+                "packages.infrastructure.whatsapp_agent_chat.download_whatsapp_media",
+                return_value={"mimeType": "application/pdf", "imageBase64": pdf, "dataBase64": pdf, "size": 900},
+            ) as download,
+            mock.patch(
+                "packages.infrastructure.portal_auth.server.call_openai_response",
+                side_effect=[_loop_round(reply={"reply": "Sunday to Thursday till 13:30. Who collects her?"})],
+            ) as model,
+        ):
+            response = self._post_webhook(inbound_document_payload(message_id="wamid.document-2"))
+
+        self.assertIn("13:30", self._reply(response))
+        download.assert_called_once_with("media-doc-1")
+        content = model.call_args.kwargs["input"][0]["content"]
+        self.assertIn('"latestUserMessage":"Have a look at this file."', content[0]["text"])
+        self.assertIn('"attachedPhoto":{"fileName":"timetable.pdf","mimeType":"image/png"}', content[0]["text"])
+        self.assertNotIn("[document]", content[0]["text"])
+        self.assertEqual(content[1]["type"], "input_image")
+        self.assertTrue(content[1]["image_url"].startswith("data:image/png;base64,"))
+
+    def test_a_file_that_is_not_a_pdf_is_said_so_without_a_model_turn(self) -> None:
+        with (
+            mock.patch("packages.infrastructure.whatsapp_agent_chat.download_whatsapp_media") as download,
+            mock.patch("packages.infrastructure.portal_auth.server.call_openai_response") as model,
+        ):
+            response = self._post_webhook(inbound_document_payload(
+                mime_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                filename="week.docx", message_id="wamid.document-3",
+            ))
+
+        entry = next(entry for entry in response["results"] if entry.get("action") == "agent_chat_reply")
+        self.assertEqual(entry["outcome"], "document_unreadable")
+        download.assert_not_called()
+        self.assertFalse(any(call.kwargs.get("tool_name") == "portal_agent_loop" for call in model.call_args_list))
+
+    def test_a_pdf_that_cannot_be_drawn_is_said_so_without_a_model_turn(self) -> None:
+        broken = base64.b64encode(b"not a pdf at all").decode("ascii")
+        with (
+            mock.patch(
+                "packages.infrastructure.whatsapp_agent_chat.download_whatsapp_media",
+                return_value={"mimeType": "application/pdf", "imageBase64": broken, "dataBase64": broken, "size": 16},
+            ),
+            mock.patch("packages.infrastructure.portal_auth.server.call_openai_response") as model,
+        ):
+            response = self._post_webhook(inbound_document_payload(message_id="wamid.document-4"))
+
+        entry = next(entry for entry in response["results"] if entry.get("action") == "agent_chat_reply")
+        self.assertEqual(entry["outcome"], "document_unreadable")
+        self.assertIn("pdf", entry["reply_text"].lower())
+        self.assertFalse(any(call.kwargs.get("tool_name") == "portal_agent_loop" for call in model.call_args_list))
 
     def test_a_voice_note_is_written_down_and_answered_as_words(self) -> None:
         with (

@@ -64,6 +64,7 @@ from packages.infrastructure.voice_notes import VoiceNoteError
 from packages.infrastructure.voice_notes import normalize_voice_note_mime_type
 from packages.infrastructure.voice_notes import transcribe_voice_note
 from packages.infrastructure.voice_notes import voice_note_transcript_text
+from packages.infrastructure.week_summary_image import pdf_to_png
 from packages.infrastructure.whatsapp_messaging import send_whatsapp_message
 from packages.infrastructure.whatsapp_messaging import send_whatsapp_typing_indicator
 
@@ -73,6 +74,8 @@ AGENT_CHAT_REPLY_MAX_LENGTH = 3500
 AGENT_CHAT_RECORD_LIMIT = 60
 AGENT_TURN_TIMEOUT_SECONDS = 120
 AGENT_RUN_TIMEOUT_SECONDS = 300
+# What a PDF with no caption stands for: the words ask the model to look.
+AGENT_DOCUMENT_DEFAULT_TEXT = "Have a look at this file."
 # How long a question the chat asked stays open. WhatsApp's own service
 # window is a day; a "yes" the morning after that is a fresh conversation,
 # not consent to whatever was asked last week.
@@ -2627,6 +2630,50 @@ class WhatsAppAgentChat:
                 # webhook reader puts in for it. The model gets words that
                 # ask it to look, not a bracketed type name.
                 text = AGENT_PHOTO_DEFAULT_TEXT
+
+        # A PDF is read the way a photo is: its first page becomes the
+        # picture beside the words. What parents forward is mostly the
+        # school's timetable as the school sent it, and asking them to
+        # screenshot it first is one step too many. Any other kind of file is
+        # said so, rather than handed to the model as "[document]".
+        if kind == "document" and media_id:
+            declared = normalize_text((media or {}).get("mimeType")).lower()
+            file_name = normalize_text((media or {}).get("fileName"))
+            is_pdf = declared == "application/pdf" or file_name.lower().endswith(".pdf")
+            if is_pdf:
+                try:
+                    fetched = download_whatsapp_media(media_id)
+                    page = pdf_to_png(base64.b64decode(fetched.get("dataBase64") or ""))
+                    photo = normalize_agent_photo_context({
+                        "mimeType": "image/png",
+                        "imageBase64": base64.b64encode(page).decode("ascii"),
+                        "fileName": file_name or "document.pdf",
+                    })
+                except Exception as exc:  # noqa: BLE001 - a PDF that cannot be drawn is said so below
+                    print(f"WhatsApp PDF for user {self.user_id} could not be read: {exc}", flush=True)
+            if not photo:
+                reply = self._recover(
+                    build_situation(
+                        "unsupported_message",
+                        what_happened=(
+                            "I couldn't open that PDF." if is_pdf
+                            else "I can read a photo, but not that kind of file."
+                        ),
+                        can_retry=is_pdf,
+                        options=[make_option("retry")] if is_pdf else [],
+                    ),
+                    [],
+                )
+                message_id = self._send_owner_text(reply)
+                return {
+                    "type": "owner",
+                    "action": "agent_chat_reply",
+                    "outcome": "document_unreadable",
+                    "reply_text": reply,
+                    "message_id": message_id,
+                }
+            if not text or text.lower() == "[document]":
+                text = AGENT_DOCUMENT_DEFAULT_TEXT
 
         # A voice note is the message, spoken. It is fetched from Meta,
         # turned into words on the account's bill, and from there the turn

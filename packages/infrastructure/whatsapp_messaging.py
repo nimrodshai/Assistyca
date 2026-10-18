@@ -249,12 +249,13 @@ def extract_message_media(message: dict[str, Any]) -> dict[str, str]:
     """The picture or recording a message carries, as the id Meta will serve
     it under.
 
-    Images and audio: a photo makes a point, a voice note is the message
-    spoken instead of typed. The bytes are fetched later, by whoever needs
-    them, never here.
+    Images, audio and documents: a photo makes a point, a voice note is the
+    message spoken instead of typed, and a PDF is most often the school's
+    timetable forwarded as it came. The bytes are fetched later, by whoever
+    needs them, never here.
     """
     kind = normalize_text(message.get("type"))
-    if kind not in {"image", "audio"}:
+    if kind not in {"image", "audio", "document"}:
         return {}
     media = message.get(kind) if isinstance(message.get(kind), dict) else {}
     media_id = normalize_text(media.get("id"))
@@ -266,6 +267,7 @@ def extract_message_media(message: dict[str, Any]) -> dict[str, str]:
         "mimeType": normalize_text(media.get("mime_type")),
         "sha256": normalize_text(media.get("sha256")),
         "caption": normalize_text(media.get("caption")),
+        "fileName": normalize_text(media.get("filename")),
         # Meta marks a recording made in the chat, as opposed to an audio
         # file someone forwarded. Both are transcribed the same way.
         "voice": "true" if bool(media.get("voice")) else "",
@@ -460,7 +462,9 @@ def extract_message_text(message: dict[str, Any]) -> str:
         if title:
             return title
 
-    caption = get_nested(message, "image", "caption", default="")
+    caption = get_nested(message, "image", "caption", default="") or get_nested(
+        message, "document", "caption", default=""
+    )
     if caption:
         return normalize_text(caption)
 
