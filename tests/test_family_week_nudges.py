@@ -1175,3 +1175,69 @@ class OpenPickupTests(unittest.TestCase):
         # Once each; and the grandmother, who hears only about her own drives, hears nothing.
         self.assertEqual(self.nudger.run_pending(now=at(self.tuesday, 12, 25))["rides"], 0)
         self.assertFalse(any(a["recipientRef"] == "972500000003" for a in self.queued()))
+
+
+class PersonHoldTests(unittest.TestCase):
+    """Oren's report, 2026-10-18: Stav, on her own phone, is abroad Sunday
+    and Monday. Her pickup is open those days - the evening asks who
+    collects, the morning says nobody has it yet - and on those days her
+    phone is quiet."""
+
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.database = PortalDatabase(Path(self.temp_dir.name) / "portal.db")
+        self.database.register_user("dana@example.com", display_name="Dana Levi")
+        self.user_id = int((self.database.get_user("dana@example.com") or {})["id"])
+        self.stav = self.database.save_household_member(user_id=self.user_id, name="Stav", role="partner")
+        self.database.save_household_member(user_id=self.user_id, name="Laor", role="child")
+        self.gan = self.database.save_household_activity(
+            user_id=self.user_id, title="Gan", who=["Laor"], days=["sun", "mon"],
+            start_time="08:00", end_time="16:15", drop_off_by="me", pick_up_by="Stav",
+        )
+        self.database.create_household_invite(
+            user_id=self.user_id, member_id=int(self.stav["id"]), code="STV444",
+            expires_at=datetime.now(UTC) + timedelta(days=14),
+        )
+        self.assertTrue(self.database.claim_household_invite(code="STV444", wa_id="972500000002")["ok"])
+        self.database.save_schedule_exception(
+            user_id=self.user_id, starts_on="2026-09-20", ends_on="2026-09-21",
+            targets=[{"kind": "person", "ref": "Stav"}], reason="Stav abroad",
+        )
+        self.nudger = FamilyWeekNudger(self.database, config=FamilyWeekNudgeConfig(morning_hour=7, evening_hour=20, ride_lead_minutes=30))
+
+    def tearDown(self) -> None:
+        self.temp_dir.cleanup()
+
+    def queued(self) -> list[dict]:
+        return [
+            action for action in self.database.list_scheduled_actions_for_user(self.user_id, limit=50)
+            if (action.get("payload") or {}).get("source") == "family_week"
+        ]
+
+    def test_a_held_parents_drives_are_open_and_she_hears_nothing_those_days(self) -> None:
+        saturday = SUNDAY.replace(day=19)
+        for moment in (at(saturday, 20, 10), at(SUNDAY, 7, 5), at(SUNDAY, 15, 50), at(SUNDAY, 16, 0), at(SUNDAY, 20, 10)):
+            self.nudger.run_pending(now=moment)
+        sent = self.queued()
+        owners = {a["payload"]["title"]: a["payload"] for a in sent if a["recipientRef"] == "owner"}
+        self.assertIn("Gan (Laor) at 16:15: nobody is down for the pickup", owners["Tomorrow still needs someone"]["instruction"])
+        morning = owners["Today in your family's week"]["instruction"]
+        self.assertIn("08:00-16:15 Gan (Laor), takes: you, nobody collects them yet", morning)
+        self.assertNotIn("Stav", morning.split("TODAY:")[-1])
+        self.assertIn("nobody is down yet to collect Laor - Gan at 16:15", owners["Still needs someone"]["instruction"])
+        # Saturday evening she is still home, and is asked like any parent;
+        # on the days she is away, nothing reaches her phone.
+        stavs = [a for a in sent if a["recipientRef"] == "972500000002"]
+        self.assertEqual([(a["payload"]["title"], a["runAt"][:10]) for a in stavs], [("Tomorrow still needs someone", "2026-09-19")])
+
+    def test_after_the_hold_her_pickup_is_hers_again(self) -> None:
+        self.nudger.run_pending(now=at(SUNDAY + timedelta(days=7), 7, 5))
+        stav_morning = [a for a in self.queued() if a["recipientRef"] == "972500000002"]
+        self.assertEqual(len(stav_morning), 1)
+        self.assertIn("collects: you", stav_morning[0]["payload"]["instruction"])
+
+    def test_a_hold_on_the_child_still_takes_the_whole_activity_off(self) -> None:
+        self.database.save_schedule_exception(
+            user_id=self.user_id, starts_on="2026-09-27", ends_on="2026-09-27", targets=[{"kind": "person", "ref": "Laor"}],
+        )
+        self.assertEqual(self.nudger.run_pending(now=at(SUNDAY + timedelta(days=7), 7, 5))["morning"], 0)

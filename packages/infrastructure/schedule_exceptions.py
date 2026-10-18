@@ -28,6 +28,8 @@ from typing import Any
 from typing import Iterable
 
 from packages.infrastructure.household import clean
+from packages.infrastructure.household import is_named
+from packages.infrastructure.household import is_self
 from packages.infrastructure.household import name_key
 
 # What an exception can hold. The first three are the family's week; the
@@ -106,11 +108,56 @@ def activity_exception(
     return None
 
 
+def held_people(exceptions: Iterable[dict[str, Any]], day: date) -> list[str]:
+    """The people on hold that day, by the name the person gave."""
+
+    return [
+        target["ref"]
+        for exception in exceptions if covers_day(exception, day)
+        for target in _targets(exception) if target["kind"] == "person"
+    ]
+
+
+def is_held(who: Any, people: list[str], owner_names: Iterable[str] = ()) -> bool:
+    """Whether "who" - a driver as the week has them, or a family member's
+    name - is one of the people on hold. "me" is the account holder, held
+    when the hold names them."""
+
+    if not clean(who) or not people:
+        return False
+    owners = list(owner_names)
+    if is_self(who, owners) and any(is_self(person, owners) for person in people):
+        return True
+    return is_named(who, people) or any(is_named(person, [clean(who)]) for person in people)
+
+
 def activities_not_excepted(
-    activities: list[dict[str, Any]], exceptions: Iterable[dict[str, Any]], day: date,
+    activities: list[dict[str, Any]],
+    exceptions: Iterable[dict[str, Any]],
+    day: date,
+    *,
+    owner_names: Iterable[str] = (),
 ) -> list[dict[str, Any]]:
+    """What of these activities is still on that day, as it stands. A person
+    on hold is everything that person does: an activity that is theirs is
+    off, and a drop-off or pickup they were down for is left open, so the
+    week asks who takes it rather than handing it to someone who is away.
+    owner_names tells "me" apart as the account holder."""
+
     held = list(exceptions)
-    return [activity for activity in activities if activity_exception(activity, held, day) is None]
+    people = held_people(held, day)
+    owners = list(owner_names)
+    still_on = []
+    for activity in activities:
+        if activity_exception(activity, held, day) is not None:
+            continue
+        if people:
+            activity = dict(activity)
+            for key in ("dropOffBy", "pickUpBy"):
+                if is_held(activity.get(key), people, owners):
+                    activity[key] = ""
+        still_on.append(activity)
+    return still_on
 
 
 def family_week_paused(exceptions: Iterable[dict[str, Any]], day: date) -> bool:
@@ -201,7 +248,9 @@ __all__ = [
     "covers_day",
     "describe_exception",
     "family_week_paused",
+    "held_people",
     "held_until",
+    "is_held",
     "normalize_targets",
     "parse_day",
 ]

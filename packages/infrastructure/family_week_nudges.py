@@ -91,6 +91,8 @@ from packages.infrastructure.remind_again import REMIND_AGAIN_PAYLOAD_KEY
 from packages.infrastructure.remind_again import remind_again_offer
 from packages.infrastructure.schedule_exceptions import activities_not_excepted
 from packages.infrastructure.schedule_exceptions import family_week_paused
+from packages.infrastructure.schedule_exceptions import held_people
+from packages.infrastructure.schedule_exceptions import is_held
 from packages.infrastructure.school_days import SchoolCalendar
 from packages.infrastructure.school_days import describe_day
 from packages.infrastructure.standing_tasks import STANDING_TASK_ACTION_TYPE
@@ -220,13 +222,22 @@ def activities_on(activities: list[dict[str, Any]], day: date) -> list[dict[str,
 
 
 def activities_on_date(
-    activities: list[dict[str, Any]], day_drives: list[dict[str, Any]] | None, day: date,
+    activities: list[dict[str, Any]],
+    day_drives: list[dict[str, Any]] | None,
+    day: date,
+    exceptions: list[dict[str, Any]] | None = None,
+    owner_names: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     """The usual week on that date with the day's own answers over it: who
     said they would collect tomorrow is who collects tomorrow, and nobody
-    else is told."""
+    else is told. With exceptions, what the family said is off goes first:
+    it costs nothing, unlike the school calendar, and a parent on hold
+    leaves a drive open that the usual week has them down for."""
 
-    return household.apply_day_drives(activities_on(activities, day), day_drives, day)
+    usual = activities_on(activities, day)
+    if exceptions:
+        usual = activities_not_excepted(usual, exceptions, day, owner_names=owner_names or [])
+    return household.apply_day_drives(usual, day_drives, day)
 
 
 def _who(activity: dict[str, Any], owner_names: list[str] | None = None, viewer_names: list[str] | None = None) -> str:
@@ -793,15 +804,21 @@ class FamilyWeekNudger:
         activities: list[dict[str, Any]],
         exceptions: list[dict[str, Any]],
         day_drives: list[dict[str, Any]] | None = None,
+        owner_names: list[str] | None = None,
     ) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
         """What of the usual week is really on that day, and what the school
         calendar said about the day when it is not an ordinary one.
 
         What the family said is off goes first and costs nothing; the
         calendar is only asked about what is left. The day's own drives -
-        who said they would collect that day - go over the result last."""
+        who said they would collect that day - go over the result last. A
+        person on hold has their drives left open; owner_names, looked up
+        only when someone is on hold, tells whether that is the account
+        holder's "me"."""
 
-        usual = activities_not_excepted(activities_on(activities, day), exceptions, day)
+        if owner_names is None:
+            owner_names = self._owner_names(user_id) if not group_id and held_people(exceptions, day) else []
+        usual = activities_not_excepted(activities_on(activities, day), exceptions, day, owner_names=owner_names)
         if not usual or self.school_calendar is None:
             return household.apply_day_drives(usual, day_drives, day), None
         user = self.database.get_user_by_id(user_id) or {}
@@ -973,7 +990,7 @@ class FamilyWeekNudger:
             day_drives = self._day_drives(user_id, group_id, today, tomorrow)
             in_evening = self.config.evening_hour <= local_now.hour < self.config.evening_hour + EVENING_WINDOW_HOURS
             tomorrow_gaps = []
-            if in_evening and gap_lines(activities_on_date(activities, day_drives, tomorrow), members):
+            if in_evening and gap_lines(activities_on_date(activities, day_drives, tomorrow, exceptions), members):
                 tomorrow_on, _ = self._on_day(
                     user_id=user_id, group_id=group_id, timezone_name=timezone_name, day=tomorrow,
                     activities=activities, exceptions=exceptions, day_drives=day_drives,
@@ -1090,7 +1107,7 @@ class FamilyWeekNudger:
             tomorrow_clashes: list[str] = []
             tomorrow_work: list[str] = []
             if in_evening:
-                usual_tomorrow = activities_on_date(activities, day_drives, tomorrow)
+                usual_tomorrow = activities_on_date(activities, day_drives, tomorrow, exceptions, owner_names)
                 # The calendar is read once an evening, and only when they are
                 # the one driving tomorrow: nobody else's meetings are theirs
                 # to see, and a day they are not on the road needs no reading.
@@ -1589,6 +1606,12 @@ class FamilyWeekNudger:
             # the word is written to them, in their own gender, not to a crowd.
             addressed = f"{first} ({address_word(member.get('addressForm'))})" if address_word(member.get("addressForm")) else first
             suffix = f":{member['id']}"
+            # Someone on hold - abroad, ill - hears nothing on the days it
+            # covers: their drives are open and go to whoever settles them.
+            # It follows the day a message goes out, so the evening before
+            # the hold starts they are still home and still asked.
+            if is_held(names[0], held_people(exceptions, today)):
+                continue
             if "morning" in wants and todays and in_morning and claim(f"morning:{today.isoformat()}{suffix}"):
                 lines = [describe_activity_line(activity, owner_names, members, viewer_names=names) for activity in todays]
                 image_url = self._draw_day(
@@ -1603,7 +1626,9 @@ class FamilyWeekNudger:
                     fallback="Today:\n" + "\n".join(f"• {line}" for line in lines),
                 )
                 counts["morning"] += 1
-            if "evening" in wants and in_evening and gap_lines(activities_on_date(activities, day_drives, tomorrow), members, owner_names):
+            if "evening" in wants and in_evening and gap_lines(
+                activities_on_date(activities, day_drives, tomorrow, exceptions, owner_names), members, owner_names,
+            ):
                 tomorrow_on, _ = self._on_day(
                     user_id=user_id, timezone_name=timezone_name, day=tomorrow, activities=activities, exceptions=exceptions,
                     day_drives=day_drives,

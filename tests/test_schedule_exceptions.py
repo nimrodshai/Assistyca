@@ -32,6 +32,7 @@ from packages.infrastructure.portal_db import PortalDatabase
 from packages.infrastructure.scheduled_actions import ScheduledActionConfig
 from packages.infrastructure.scheduled_actions import ScheduledActionScheduler
 from packages.infrastructure.schedule_exceptions import action_exception
+from packages.infrastructure.schedule_exceptions import activities_not_excepted
 from packages.infrastructure.schedule_exceptions import activity_exception
 from packages.infrastructure.schedule_exceptions import family_week_paused
 from packages.infrastructure.schedule_exceptions import held_until
@@ -69,6 +70,20 @@ class RulesTests(unittest.TestCase):
         self.assertIsNotNone(activity_exception(GAN, away, date(2026, 9, 25)))
         self.assertTrue(family_week_paused(away, date(2026, 9, 25)))
         self.assertFalse(family_week_paused(sick, date(2026, 9, 21)))
+
+    def test_a_driver_on_hold_leaves_their_drives_open_and_the_activity_on(self) -> None:
+        gan = {**GAN, "dropOffBy": "me", "pickUpBy": "Stav"}
+        monday = date(2026, 9, 21)
+        [stav_away] = activities_not_excepted([gan], [held("2026-09-21", "2026-09-21", {"kind": "person", "ref": "stav"})], monday)
+        self.assertEqual((stav_away["dropOffBy"], stav_away["pickUpBy"]), ("me", ""))
+        self.assertEqual(gan["pickUpBy"], "Stav", "the usual week is not changed")
+        # The account holder on hold, named as the week names them.
+        away = [held("2026-09-21", "2026-09-21", {"kind": "person", "ref": "Dana"})]
+        [owner_away] = activities_not_excepted([gan], away, monday, owner_names=["Dana Levi"])
+        self.assertEqual((owner_away["dropOffBy"], owner_away["pickUpBy"]), ("", "Stav"))
+        self.assertEqual(activities_not_excepted([gan], away, date(2026, 9, 22)), [gan], "only on the days it covers")
+        # The child on hold still takes the whole activity off.
+        self.assertEqual(activities_not_excepted([gan], [held("2026-09-21", "2026-09-21", {"kind": "person", "ref": "Noa"})], monday), [])
 
     def test_actions_are_held_by_number_or_all_together(self) -> None:
         one = [held("2026-09-21", "2026-09-22", {"kind": "action", "ref": "7"})]
