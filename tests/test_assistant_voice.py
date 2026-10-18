@@ -115,6 +115,16 @@ class JudgedForCalmTests(unittest.TestCase):
         self.assertIn("on each of six points", JUDGE_INSTRUCTIONS)
         self.assertIn('"calm":n', JUDGE_INSTRUCTIONS)
 
+    def test_the_voice_adds_the_one_thing_a_person_who_knows_them_would(self) -> None:
+        # Restraint alone answers what was asked and stops. Asked when Noa's
+        # class ends, an assistant that holds the week can also say nobody is
+        # down to collect her - one thing, offered, never a menu.
+        self.assertIn("Being quiet is not the same as being passive", ASSISTANT_VOICE)
+        self.assertIn("say that one thing too", ASSISTANT_VOICE)
+        self.assertIn("offer to take it, briefly, and wait for a yes", ASSISTANT_VOICE)
+        self.assertIn("never a menu of what else you can do", ASSISTANT_VOICE)
+        self.assertIn("Warmth lives in the particulars", ASSISTANT_VOICE)
+
     def test_calm_is_scored_for_what_is_absent_not_for_style(self) -> None:
         # A rubric that rewarded calm as a quality would push replies towards
         # the precious. The criterion has to hand a plain answer full marks.

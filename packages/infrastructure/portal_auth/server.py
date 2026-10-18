@@ -11309,6 +11309,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             family_flow_allowed=bool(household_block),
             household_block=household_block,
             first_contact=first_contact,
+            voice_notes_allowed=account_feature_allowed(self.database, feature_id="voice_notes"),
         )
 
     def _nothing_said_yet(self, user_id: int) -> bool:
