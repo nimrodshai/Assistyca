@@ -28,7 +28,7 @@ $4.90 a month.
 
 Use `/usr/bin/python3` if `python3` lacks packages. Anything that calls the
 model needs the key from `~/.zshrc`, which is not in a non-interactive shell:
-`export OPENAI_API_KEY=$(grep -m1 '^export OPENAI_API_KEY=' ~/.zshrc | cut -d= -f2-)`.
+`export OPENAI_API_KEY=$(grep -m1 '^export OPENAI_API_KEY=' ~/.zshrc | cut -d= -f2- | tr -d "\"'")`.
 Never print it.
 
 1. **Unit tests** - free. Don't run the whole suite with `discover`: a test

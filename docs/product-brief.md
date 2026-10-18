@@ -75,7 +75,7 @@ The live code is `origin/staging`. The shared checkout sits on a stale local
 ## How to run it
 
 Both harnesses call OpenAI on the key in `~/.zshrc`
-(`export OPENAI_API_KEY=$(grep -m1 '^export OPENAI_API_KEY=' ~/.zshrc | cut -d= -f2-)`).
+(`export OPENAI_API_KEY=$(grep -m1 '^export OPENAI_API_KEY=' ~/.zshrc | cut -d= -f2- | tr -d "\"'")`).
 Use `/usr/bin/python3` if `python3` lacks packages.
 
 1. **Mock families** - five families through registration, getting to know,
