@@ -8821,13 +8821,29 @@ class PortalDatabase:
     def _drives_of(self, conn: sqlite3.Connection, *, user_id: int, group_id: str, name: str) -> list[dict[str, Any]]:
         found: list[dict[str, Any]] = []
         titles: dict[int, str] = {}
+        # A drive written with only part of the name - "Savta" for Savta
+        # Ruti - is hers only when it names nobody else in the family; with
+        # a Savta Miri too, it could be either, and is left as written.
+        others = [
+            str(row["name"] or "")
+            for row in conn.execute(
+                "SELECT name FROM household_members WHERE user_id = ? AND group_id = ?", (user_id, group_id),
+            ).fetchall()
+            if household.name_key(row["name"]) != household.name_key(name)
+        ]
+
+        def theirs(who: Any) -> bool:
+            if not household.is_named(who, [name]):
+                return False
+            return household.name_key(who) == household.name_key(name) or not household.is_named(who, others)
+
         for row in conn.execute(
             "SELECT id, title, drop_off_by, pick_up_by FROM household_activities WHERE user_id = ? AND group_id = ? ORDER BY id",
             (user_id, group_id),
         ).fetchall():
             titles[int(row["id"])] = str(row["title"] or "")
             for leg, column in (("drop_off", "drop_off_by"), ("pick_up", "pick_up_by")):
-                if household.is_named(row[column], [name]):
+                if theirs(row[column]):
                     found.append({"activityId": int(row["id"]), "title": str(row["title"] or ""), "leg": leg})
         # From yesterday on UTC's clock, so today on the family's own clock
         # is never missed; a dated drive already gone by says nothing.
@@ -8836,7 +8852,7 @@ class PortalDatabase:
             "SELECT activity_id, day, leg, who FROM household_day_drives WHERE user_id = ? AND group_id = ? AND day >= ? ORDER BY day, id",
             (user_id, group_id, today),
         ).fetchall():
-            if household.is_named(row["who"], [name]):
+            if theirs(row["who"]):
                 found.append({
                     "activityId": int(row["activity_id"]),
                     "title": titles.get(int(row["activity_id"]), ""),

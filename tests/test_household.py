@@ -1215,6 +1215,26 @@ class LeavingTheFamilyTests(unittest.TestCase):
         self.assertEqual(self._status(reminder), "sent")
         self.assertEqual(self._status(standing), "pending", "and stays on for its next run")
 
+    def test_taking_one_savta_off_leaves_a_drive_that_could_be_the_other(self) -> None:
+        self.database.save_household_member(user_id=self.user_id, name="Savta Ruti", role="other")
+        self.database.save_household_member(user_id=self.user_id, name="Savta Miri", role="other")
+        self.database.save_household_day_drive(
+            user_id=self.user_id, activity_id=int(self.activity["id"]), day=self.tomorrow, leg="drop_off", who="Savta",
+        )
+        self.database.save_household_day_drive(
+            user_id=self.user_id, activity_id=int(self.activity["id"]), day=self.tomorrow, leg="pick_up", who="Savta Ruti",
+        )
+
+        removed = self.database.remove_household_member(user_id=self.user_id, name="Savta Ruti")
+
+        self.assertEqual([(d["leg"], d.get("day")) for d in removed["drivesNowOpen"]], [("pick_up", self.tomorrow)])
+        whose = {
+            row["leg"]: row["who"] for row in self.database.list_household_day_drives(
+                user_id=self.user_id, from_day=self.tomorrow, to_day=self.tomorrow,
+            )
+        }
+        self.assertEqual(whose, {"drop_off": "Savta", "pick_up": ""})
+
     def test_their_drives_are_left_open_so_the_week_asks_about_them(self) -> None:
         self.database.save_household_day_drive(
             user_id=self.user_id, activity_id=int(self.activity["id"]), day=self.tomorrow, leg="drop_off", who="Yoav",
