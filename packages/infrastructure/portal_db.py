@@ -580,6 +580,11 @@ CREATE TABLE IF NOT EXISTS household_departures (
     member_name TEXT NOT NULL DEFAULT '',
     left_at TEXT NOT NULL,
     told_at TEXT NOT NULL DEFAULT '',
+    -- How they wrote and were addressed while in the family, so the one
+    -- message telling them they were taken off is in their own language
+    -- and written to them as they are.
+    language TEXT NOT NULL DEFAULT '',
+    address_form TEXT NOT NULL DEFAULT '',
     FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
@@ -1828,6 +1833,11 @@ class PortalDatabase:
             conn.execute("ALTER TABLE household_members ADD COLUMN signed_out_wa_id TEXT NOT NULL DEFAULT ''")
         if "language" not in member_columns:
             conn.execute("ALTER TABLE household_members ADD COLUMN language TEXT NOT NULL DEFAULT ''")
+        departure_columns = {row["name"] for row in conn.execute("PRAGMA table_info(household_departures)").fetchall()}
+        if departure_columns and "language" not in departure_columns:
+            conn.execute("ALTER TABLE household_departures ADD COLUMN language TEXT NOT NULL DEFAULT ''")
+        if departure_columns and "address_form" not in departure_columns:
+            conn.execute("ALTER TABLE household_departures ADD COLUMN address_form TEXT NOT NULL DEFAULT ''")
         open_code_columns = {row["name"] for row in conn.execute("PRAGMA table_info(list_open_codes)").fetchall()}
         if open_code_columns and "wa_id" not in open_code_columns:
             conn.execute("ALTER TABLE list_open_codes ADD COLUMN wa_id TEXT NOT NULL DEFAULT ''")
@@ -9000,7 +9010,7 @@ class PortalDatabase:
         stamp = now_iso()
         with self._connection() as conn:
             existing = conn.execute(
-                "SELECT id, name, wa_id, signed_out_wa_id FROM household_members "
+                "SELECT id, name, wa_id, signed_out_wa_id, language, address_form FROM household_members "
                 "WHERE user_id = ? AND group_id = ? AND name_key = ?",
                 (int(user_id), scope, key),
             ).fetchone()
@@ -9027,15 +9037,20 @@ class PortalDatabase:
                 )
                 conn.execute(
                     """
-                    INSERT INTO household_departures (wa_id, user_id, member_name, left_at, told_at)
-                    VALUES (?, ?, ?, ?, '')
+                    INSERT INTO household_departures (wa_id, user_id, member_name, left_at, told_at, language, address_form)
+                    VALUES (?, ?, ?, ?, '', ?, ?)
                     ON CONFLICT(wa_id) DO UPDATE SET
                         user_id = excluded.user_id,
                         member_name = excluded.member_name,
                         left_at = excluded.left_at,
-                        told_at = ''
+                        told_at = '',
+                        language = excluded.language,
+                        address_form = excluded.address_form
                     """,
-                    (number, int(user_id), member_name, stamp),
+                    (
+                        number, int(user_id), member_name, stamp,
+                        str(existing["language"] or ""), str(existing["address_form"] or ""),
+                    ),
                 )
             opened = self._open_drives_of(conn, user_id=int(user_id), group_id=scope, name=member_name, stamp=stamp)
             conn.execute(
@@ -9168,7 +9183,13 @@ class PortalDatabase:
             ).fetchone()
         if row is None:
             return None
-        return {"userId": int(row["user_id"]), "memberName": str(row["member_name"] or ""), "leftAt": str(row["left_at"])}
+        return {
+            "userId": int(row["user_id"]),
+            "memberName": str(row["member_name"] or ""),
+            "leftAt": str(row["left_at"]),
+            "language": str(row["language"] or "") if "language" in row.keys() else "",
+            "addressForm": str(row["address_form"] or "") if "address_form" in row.keys() else "",
+        }
 
     def phone_left_family(self, *, user_id: int, wa_id: str) -> bool:
         """Whether this phone was taken off this family, told or not."""

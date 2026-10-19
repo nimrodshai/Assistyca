@@ -325,7 +325,7 @@ class WhatsAppSignupTests(unittest.TestCase):
         self.database.link_user_whatsapp_number(user_id=int(self.database.get_user("else@example.com")["id"]), wa_id="972500000077")
         result = self.post("Assistyca family RNA333", sender="972500000077", message_id="wamid.w2", name="Else")
         self.assertEqual(result["results"][0]["action"], "join_link_not_for_this_phone")
-        self.assertIn("its own Assistyca account", prompts[-1]["prompt"])
+        self.assertIn("their own Assistyca account on this phone", prompts[-1]["prompt"])
         self.assertTrue(self.database.get_user("else@example.com"))
         # Rina joins; the spent code from yet another stranger is refused, and
         # no account is opened for that stranger either.
@@ -370,7 +370,8 @@ class WhatsAppSignupTests(unittest.TestCase):
         self.assertEqual(refused["results"][0]["reason"], "number_taken")
         self.assertTrue(self.database.get_user(NEW_HANDLE), "an account with a family in it stays")
         self.assertEqual(self.database.get_user_id_for_whatsapp_number(NEW_PHONE), int(own["id"]))
-        self.assertIn("its own Assistyca account with things kept in it", prompts[-1]["prompt"])
+        self.assertIn("their own Assistyca account on this phone, with things kept in it", prompts[-1]["prompt"])
+        self.assertIn('"reader":{"name":"Yoav"}', prompts[-1]["prompt"])
         self.assertEqual(self.replies()[-1], "COMPOSED REPLY")
 
     def test_a_member_of_another_family_is_told_that_not_about_an_account_of_their_own(self) -> None:
@@ -389,7 +390,7 @@ class WhatsAppSignupTests(unittest.TestCase):
         refused = self.post("Assistyca family ABC234", message_id="wamid.m2", name="Yoav")
         self.assertEqual(refused["results"][0]["reason"], "number_taken")
         self.assertIn("already part of another family", prompts[-1]["prompt"])
-        self.assertNotIn("its own Assistyca account", prompts[-1]["prompt"])
+        self.assertNotIn("their own Assistyca account", prompts[-1]["prompt"])
         self.assertIn('"say":"sign out"', prompts[-1]["prompt"])
 
     def test_words_before_the_join_phrase_do_not_hide_the_code(self) -> None:
@@ -417,7 +418,8 @@ class WhatsAppSignupTests(unittest.TestCase):
         self.assertEqual(self.replies()[-1], "הקישור הזה כבר לא בתוקף")
         self.assertIn('"language":"he"', prompts[-1]["prompt"])
         self.assertIn("a newer link has replaced it", prompts[-1]["prompt"])
-        self.assertIn("Dana Levi", prompts[-1]["prompt"])
+        self.assertIn('"names":{"accountHolder":"Dana"}', prompts[-1]["prompt"])
+        self.assertIn('"reader":{"name":"Yoav"}', prompts[-1]["prompt"])
         self.assertEqual(prompts[-1]["billing_email"], "dana@example.com")
 
         # A mistyped code with nobody behind it is refused the same way, in
@@ -425,6 +427,10 @@ class WhatsAppSignupTests(unittest.TestCase):
         mistyped = self.post("שלום Assistyca family ZZZ234", message_id="wamid.r2", name="Yoav")
         self.assertEqual(mistyped["results"][0]["reason"], "unknown_code")
         self.assertIn('"language":"he"', prompts[-1]["prompt"])
+        # Their code did not match; nothing of ours failed, and the facts say so.
+        self.assertIn("does not match any invitation", prompts[-1]["prompt"])
+        self.assertIn("Nothing went wrong on Assistyca's side", prompts[-1]["prompt"])
+        self.assertIn("for any other code never say something went wrong on your side", prompts[-1]["prompt"])
         self.assertIsNone(self.database.get_user(NEW_HANDLE))
 
         # The newer link still works.
@@ -441,11 +447,29 @@ class WhatsAppSignupTests(unittest.TestCase):
         told = self.post("what's on today?", message_id="wamid.x2", name="Yoav")
         self.assertEqual(told["results"][0]["action"], "told_taken_off_family")
         self.assertIsNone(self.database.get_user(NEW_HANDLE), "no account of their own opened")
-        self.assertIn("Dana Levi took Yoav off the family", prompts[-1]["prompt"])
+        self.assertIn("The account holder took the person writing off the family", prompts[-1]["prompt"])
+        self.assertIn('"reader":{"name":"Yoav"}', prompts[-1]["prompt"])
+        self.assertIn('"names":{"accountHolder":"Dana"}', prompts[-1]["prompt"])
+        self.assertIn("speak to them directly, as you, by situation.reader.name", prompts[-1]["prompt"])
         self.assertIn("fresh invitation link", prompts[-1]["prompt"])
 
         fresh = self.post("ok, then I want my own", message_id="wamid.x3", name="Yoav")
         self.assertEqual(fresh["results"][0]["action"], "signup_completed_without_email")
+
+    def test_someone_taken_off_is_told_in_their_own_language_and_form(self) -> None:
+        owner_id = self._family_with_an_invitation()
+        prompts = self.composed("הוסרת מהמשפחה")
+        self.post("Assistyca family ABC234", message_id="wamid.h1", name="Yoav")
+        yoav = self.database.get_household_member_by_wa_id(NEW_PHONE, user_id=owner_id)
+        self.database.save_household_member_language(user_id=owner_id, member_id=int(yoav["id"]), language="he")
+        self.database.save_household_member_address_form(user_id=owner_id, member_id=int(yoav["id"]), address_form="m", address_basis="self")
+        self.assertTrue(self.database.remove_household_member(user_id=owner_id, name="Yoav"))
+
+        told = self.post("👍", message_id="wamid.h2", name="Yoav")
+        self.assertEqual(told["results"][0]["action"], "told_taken_off_family")
+        self.assertIn('"language":"he"', prompts[-1]["prompt"])
+        self.assertIn('"reader":{"name":"Yoav","addressAs":"a man"}', prompts[-1]["prompt"])
+        self.assertEqual(self.replies()[-1], "הוסרת מהמשפחה")
 
 if __name__ == "__main__":
     unittest.main()

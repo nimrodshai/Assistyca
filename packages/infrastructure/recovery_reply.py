@@ -98,8 +98,17 @@ def build_situation(
     options: Iterable[dict[str, Any]] = (),
     source: str = "",
     since: str = "",
+    reader: dict[str, Any] | None = None,
+    names: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """The report one failure becomes. Every field is something code knows."""
+    """The report one failure becomes. Every field is something code knows.
+
+    reader is set when what happened is about the person reading it - they
+    were taken off a family, their invitation ran out: their name and how
+    they are addressed ("a woman", "a man"), and what_happened then says
+    "the person writing" for them. names gives anyone else the facts name,
+    by their role ("accountHolder"), so the reply can say them by name.
+    """
 
     situation: dict[str, Any] = {
         "code": _clip(code, 40).lower() if _clip(code, 40).lower() in RECOVERY_CODES else "internal",
@@ -113,6 +122,20 @@ def build_situation(
         situation["source"] = _clip(source, 40).lower()
     if since:
         situation["since"] = _clip(since, 40)
+    about = {
+        key: _clip((reader or {}).get(key), 80)
+        for key in ("name", "addressAs")
+        if _clip((reader or {}).get(key), 80)
+    }
+    if about:
+        situation["reader"] = about
+    others = {
+        _clip(role, 40): _clip(name, 80)
+        for role, name in (names or {}).items()
+        if _clip(role, 40) and _clip(name, 80)
+    }
+    if others:
+        situation["names"] = dict(list(others.items())[:4])
     return situation
 
 
@@ -135,6 +158,8 @@ def normalize_situation(value: Any) -> dict[str, Any]:
         options=[option for option in raw_options if isinstance(option, dict)],
         source=_flatten(raw.get("source")),
         since=_flatten(raw.get("since")),
+        reader=raw.get("reader") if isinstance(raw.get("reader"), dict) else None,
+        names=raw.get("names") if isinstance(raw.get("names"), dict) else None,
     )
 
 
@@ -186,7 +211,14 @@ def build_recovery_prompt(
         "fits, and offer at least one; when no option is given, invite them to say what they would like "
         "instead. situation.canRetry false means asking again would not help, so do not suggest it. "
         "situation.code assistant_unavailable means the failure was ours: say in a line that something on "
-        "your side went wrong and is yours to sort out, and never tell them to send it again.\n"
+        "your side went wrong and is yours to sort out, and never tell them to send it again. Only "
+        "assistant_unavailable and internal are failures of yours; for any other code never say something "
+        "went wrong on your side, because it did not.\n"
+        "When situation.reader is given, what happened is about the person reading this, and "
+        "situation.whatHappened calls them \"the person writing\": speak to them directly, as you, by "
+        "situation.reader.name, and where the language marks it, in the form situation.reader.addressAs "
+        "says (a woman or a man). situation.names gives the other people the facts mention, by role "
+        "(accountHolder is whoever holds the account): use their names, not their roles.\n"
         "Read recentConversation so the reply follows on from it and does not repeat the last assistant "
         "message word for word. Sound like a capable assistant who hit a snag, not like a system.\n"
         "Write in the language the person writes in; when CONTEXT.language is given (he is Hebrew, en is "

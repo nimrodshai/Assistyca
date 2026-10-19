@@ -248,6 +248,7 @@ from packages.infrastructure.receipt_pairing import RECEIPT_PAIRING_MAX_CLUSTER
 from packages.infrastructure.receipt_pairing import RECEIPT_PAIRING_MAX_OUTPUT_TOKENS
 from packages.infrastructure.receipt_pairing import RECEIPT_PAIRING_QUESTION_CHARS
 from packages.infrastructure import household
+from packages.infrastructure.person_address import address_word
 from packages.infrastructure import inbox_watch
 from packages.infrastructure import thread_follow
 from packages.infrastructure import mailbox_findings
@@ -14836,28 +14837,50 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         self, outcome: dict[str, Any], invite: dict[str, Any] | None, *, request: str,
     ) -> dict[str, Any]:
         """Why this phone cannot join with this invitation, as the facts the
-        reply is written from, and the one thing that would get them in."""
+        reply is written from, and the one thing that would get them in.
+
+        The facts are about the person reading them, so they say "the person
+        writing", with their name and the account holder's given apart for
+        the reply to speak to them by name."""
 
         reason = normalize_text(outcome.get("reason"))
-        holder = self._account_holder_name(int((invite or {}).get("userId") or outcome.get("inviterUserId") or 0))
-        family = f"{holder}'s family" if holder else "the family"
-        sender = holder or "whoever sent it"
+        holder_user_id = int((invite or {}).get("userId") or outcome.get("inviterUserId") or 0)
+        holder = self._account_holder_name(holder_user_id).split(" ")[0]
+        member = (
+            self.database.get_household_member(user_id=holder_user_id, member_id=int((invite or {}).get("memberId") or 0))
+            if invite else None
+        ) or {}
+        reader = {
+            "name": normalize_text((invite or {}).get("memberName") or outcome.get("memberName")),
+            "addressAs": address_word(member.get("addressForm")),
+        }
+        family = "the account holder's family" if holder else "the family"
+        sender = "the account holder" if holder else "whoever sent it"
         fresh_link = make_option("step", label=f"ask {sender} to send a fresh invitation link")
         if reason == "expired":
-            happened = f"That invitation to join {family} on Assistyca has run out, or a newer link has replaced it."
+            happened = (
+                f"The invitation for the person writing to join {family} on Assistyca has run out, "
+                "or a newer link has replaced it."
+            )
             options = [make_option("step", label=f"open the newest link {sender} sent, or ask {sender} for a fresh one")]
         elif reason == "already_claimed":
-            happened, options = f"That invitation to join {family} has already been used.", [fresh_link]
+            happened, options = f"The invitation for the person writing to join {family} has already been used.", [fresh_link]
         elif reason == "inactive_account":
             happened, options = "The account that invitation is for is no longer open on Assistyca, so it cannot bring anyone in.", []
         elif reason == "number_taken" and outcome.get("takenAs") == "member":
-            happened = f"This phone is already part of another family's account on Assistyca, so it cannot join {family} as well."
+            happened = (
+                "The phone the person writing is using is already part of another family's account on Assistyca, "
+                f"so it cannot join {family} as well."
+            )
             options = [make_option(
                 "say", say="sign out",
                 label="signs this phone out of the other family; after that, opening the invitation again brings them in",
             )]
         elif reason == "number_taken":
-            happened = f"This phone has its own Assistyca account with things kept in it, so it cannot join {family} as well."
+            happened = (
+                "The person writing has their own Assistyca account on this phone, with things kept in it, "
+                f"so this phone cannot join {family} as well."
+            )
             options = [make_option(
                 "step",
                 label=(
@@ -14866,9 +14889,17 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 ),
             )]
         else:
-            happened = "That invitation link is not a valid one: the code in the message does not match any invitation."
-            options = [fresh_link]
-        return build_situation("not_supported", request=request, what_happened=happened, options=options)
+            # A code nobody issued: mistyped, or cut short when it was copied.
+            # Nothing of ours failed, and the reply must not say it did.
+            happened = (
+                "The code in the message the person writing sent does not match any invitation - usually a "
+                "character changed when the link was copied. Nothing went wrong on Assistyca's side."
+            )
+            options = [make_option("step", label="open the invitation link again exactly as it was sent, or ask whoever sent it for a fresh one")]
+        return build_situation(
+            "not_supported", request=request, what_happened=happened, options=options,
+            reader=reader, names={"accountHolder": holder},
+        )
 
     def _send_join_situation(
         self,
@@ -14877,15 +14908,17 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         *,
         message_text: str,
         user_ids: tuple[int, ...] = (),
+        language_hint: str = "",
     ) -> str:
         """Write and send the one reply a phone gets about joining a family.
 
         The words are the composer's, in the person's language: what they
-        wrote beyond the link's own words says it, else the language of the
+        wrote beyond the link's own words says it, else the language they
+        were known to write in (language_hint), else the language of the
         account they are on, else the family's that invited them."""
 
         accounts = [user_id for user_id in user_ids if int(user_id or 0) > 0]
-        language = detect_message_language(words_beyond_family_join(message_text))
+        language = detect_message_language(words_beyond_family_join(message_text)) or normalize_text(language_hint)
         if not language and accounts:
             language = resolve_message_language(self.database, user_id=accounts[0])
         email = ""
@@ -14921,25 +14954,34 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             return None
         self.database.mark_household_departure_told(sender_wa_id)
         family_user_id = int(departure.get("userId") or 0)
-        holder = self._account_holder_name(family_user_id) or "The account holder"
+        holder = self._account_holder_name(family_user_id).split(" ")[0]
         message_text = normalize_text(event.get("message_text"))
+        # Written to the person who was taken off, not about them: their name
+        # and the account holder's are given apart, and the reply is in the
+        # language they wrote in while they were in the family.
         situation = build_situation(
             "not_supported",
             request=message_text,
             what_happened=(
-                f"{holder} took {normalize_text(departure.get('memberName')) or 'them'} off the family's account "
-                "on Assistyca, so this phone no longer reaches the family's week."
+                "The account holder took the person writing off the family's account on Assistyca, so this "
+                "phone no longer reaches the family's week."
             ),
             options=[make_option(
                 "step",
                 label=(
-                    f"if that was a mistake, ask {holder} to send a fresh invitation link; to have an assistant "
-                    "of their own instead, just write again"
+                    "if that was a mistake, ask the account holder for a fresh invitation link; "
+                    "for an assistant of their own instead, just write again"
                 ),
             )],
+            reader={
+                "name": normalize_text(departure.get("memberName")),
+                "addressAs": address_word(departure.get("addressForm")),
+            },
+            names={"accountHolder": holder},
         )
         message_id = self._send_join_situation(
             sender_wa_id, situation, message_text=message_text, user_ids=(family_user_id,),
+            language_hint=normalize_text(departure.get("language")),
         )
         return {
             "type": "family_join",

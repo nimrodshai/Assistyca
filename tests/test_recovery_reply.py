@@ -160,5 +160,17 @@ class SituationShapeTests(unittest.TestCase):
         self.assertIn('"recentConversation":[{"role":"user","text":"hi"}]', prompt)
 
 
+    def test_a_situation_about_its_reader_names_them_apart_and_asks_to_be_said_to_them(self) -> None:
+        situation = normalize_situation(build_situation(
+            "not_supported", what_happened="The account holder took the person writing off the family.",
+            reader={"name": "Yoav", "addressAs": "a man", "phone": "972500000002"},
+            names={"accountHolder": "Dana", "": "nobody"},
+        ))
+        self.assertEqual(situation["reader"], {"name": "Yoav", "addressAs": "a man"})
+        self.assertEqual(situation["names"], {"accountHolder": "Dana"})
+        prompt = build_recovery_prompt(situation, channel="whatsapp")
+        self.assertIn("speak to them directly, as you, by situation.reader.name", prompt)
+        self.assertNotIn("reader", build_situation("internal"))
+
 if __name__ == "__main__":
     unittest.main()
