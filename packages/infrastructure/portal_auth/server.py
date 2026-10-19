@@ -248,6 +248,8 @@ from packages.infrastructure.receipt_pairing import RECEIPT_PAIRING_MAX_CLUSTER
 from packages.infrastructure.receipt_pairing import RECEIPT_PAIRING_MAX_OUTPUT_TOKENS
 from packages.infrastructure.receipt_pairing import RECEIPT_PAIRING_QUESTION_CHARS
 from packages.infrastructure import household
+from packages.infrastructure.person_address import ADDRESS_FEMININE
+from packages.infrastructure.person_address import ADDRESS_MASCULINE
 from packages.infrastructure.person_address import address_word
 from packages.infrastructure import inbox_watch
 from packages.infrastructure import thread_follow
@@ -11240,6 +11242,13 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
 
         name = normalize_text(speaker.get("name")).split(" ")[0]
         holder = normalize_text(speaker.get("accountHolder")).split(" ")[0]
+        # One person, so never the plural welcome: theirs in the form they use
+        # for themselves, or a hello that reads the same for anyone.
+        address_as = normalize_text(speaker.get("addressAs"))
+        hebrew_greeting = {
+            address_word(ADDRESS_FEMININE): "ברוכה הבאה",
+            address_word(ADDRESS_MASCULINE): "ברוך הבא",
+        }.get(address_as, "שלום")
         return build_situation(
             "assistant_unavailable",
             request=user_message,
@@ -11255,7 +11264,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                     "family on Assistyca now. Ask me about the week whenever you like."
                 ),
                 "he": (
-                    f"ברוכים הבאים{', ' + name if name else ''}! הצטרפת {'למשפחה של ' + holder if holder else 'למשפחה'} "
+                    f"{hebrew_greeting}{', ' + name if name else ''}! הצטרפת {'למשפחה של ' + holder if holder else 'למשפחה'} "
                     "ב-Assistyca. אפשר לשאול אותי על השבוע מתי שנוח."
                 ),
             },

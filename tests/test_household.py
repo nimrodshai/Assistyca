@@ -1432,6 +1432,24 @@ class LeavingTheFamilyTests(unittest.TestCase):
         self.assertFalse(self.database.account_holds_nothing(user_id=own, wa_id="447700900123"))
 
 
+class JoinedWelcomeFloorTests(unittest.TestCase):
+    """The welcome sent when no model can write it is to one person, so
+    the Hebrew never greets them in the plural."""
+
+    def _hebrew(self, **speaker: str) -> str:
+        situation = PortalAuthHandler._joined_family_situation(
+            "join code", {"name": "Noa", "accountHolder": "Dana", **speaker},
+        )
+        return situation["floor"]["he"]
+
+    def test_the_greeting_is_in_the_form_they_use_or_one_that_fits_anyone(self) -> None:
+        self.assertTrue(self._hebrew(addressAs="a woman").startswith("ברוכה הבאה, Noa!"))
+        self.assertTrue(self._hebrew(addressAs="a man").startswith("ברוך הבא, Noa!"))
+        self.assertTrue(self._hebrew().startswith("שלום, Noa!"))
+        for hebrew in (self._hebrew(addressAs="a woman"), self._hebrew(addressAs="a man"), self._hebrew()):
+            self.assertNotIn("ברוכים", hebrew)
+
+
 class JoinPageTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp_dir = tempfile.TemporaryDirectory()
