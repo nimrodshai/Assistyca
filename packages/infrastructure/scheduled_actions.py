@@ -350,10 +350,25 @@ class ScheduledActionScheduler:
 
         payload = action.get("payload") if isinstance(action.get("payload"), dict) else {}
         recipient = normalize_text(payload.get("recipientWaId"))
-        if not recipient or recipient.startswith(GROUP_RECIPIENT_PREFIX) or recipient.lower() in OWNER_RECIPIENT_REFS:
-            return "here"
-        number = normalize_whatsapp_lookup_id(recipient)
         user_id = int(action.get("userId") or 0)
+        if recipient.startswith(GROUP_RECIPIENT_PREFIX):
+            return "here"
+        if not recipient or recipient.lower() in OWNER_RECIPIENT_REFS:
+            # The account holder's own phone, whichever it is. A WhatsApp
+            # message for it while no phone of theirs is linked waits for
+            # one, as a reminder set from it does, rather than being marked
+            # sent into a feed nobody reads.
+            if normalize_text(action.get("channel")).lower() != "whatsapp" or user_id <= 0:
+                return "here"
+            try:
+                connection = self.database.get_whatsapp_connection_by_user_id(user_id) or {}
+                if normalize_text(connection.get("ownerWaId")) or owner_phone(self.database, user_id):
+                    return "here"
+            except Exception as exc:  # noqa: BLE001 - a store that cannot say leaves the action to run
+                print(f"[scheduled-actions] action={action.get('id')} could not check the owner's phone: {exc}", flush=True)
+                return "here"
+            return "signed_out"
+        number = normalize_whatsapp_lookup_id(recipient)
         if not number or user_id <= 0:
             return "here"
         try:

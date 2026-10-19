@@ -15028,7 +15028,9 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             self.database.create_scheduled_action(
                 user_id=user_id,
                 action_type=STANDING_TASK_ACTION_TYPE,
-                channel="whatsapp" if owner_wa_id else "portal",
+                # Always for their phone: one signed out for now gets it when
+                # it is back, as their reminders do.
+                channel="whatsapp",
                 recipient_ref="owner",
                 run_at=datetime.now(timezone.utc),
                 timezone_name=infer_timezone_from_wa_id(owner_wa_id) if owner_wa_id else "UTC",

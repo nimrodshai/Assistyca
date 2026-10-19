@@ -1288,6 +1288,40 @@ class LeavingTheFamilyTests(unittest.TestCase):
         self.assertEqual(self._status(reminder), "sent")
         self.assertEqual(self._status(standing), "pending", "and stays on for its next run")
 
+    def test_the_note_that_someone_joined_waits_for_a_signed_out_holder(self) -> None:
+        from datetime import datetime, timedelta, timezone
+        from types import SimpleNamespace
+        from unittest import mock
+
+        from packages.infrastructure.portal_auth.server import PortalAuthHandler
+        from packages.infrastructure.scheduled_actions import ScheduledActionConfig
+        from packages.infrastructure.scheduled_actions import ScheduledActionScheduler
+
+        holder = "972500000001"
+        self.assertTrue(self.database.delete_user_whatsapp_number(user_id=self.user_id, wa_id=holder))
+        PortalAuthHandler._tell_owner_someone_joined(
+            SimpleNamespace(database=self.database), self.user_id, {"name": "Rina", "role": "other"},
+        )
+        [note] = [a for a in self.database.list_scheduled_actions_for_user(self.user_id, limit=20) if a["payload"].get("title") == "Rina joined"]
+        self.assertEqual((note["channel"], note["recipientRef"]), ("whatsapp", "owner"))
+
+        scheduler = ScheduledActionScheduler(
+            self.database,
+            config=ScheduledActionConfig(enabled=True, poll_seconds=1, batch_size=10),
+            task_runner=lambda action: "Rina is in",
+        )
+        now = datetime.now(timezone.utc) + timedelta(seconds=5)
+        with mock.patch.object(ScheduledActionScheduler, "_deliver_whatsapp", return_value="wamid.1") as send:
+            scheduler.run_pending(now=now)
+            send.assert_not_called()
+            self.assertEqual(self._status(note), "pending", "held, not marked sent into a feed nobody reads")
+
+            self.database.link_user_whatsapp_number(user_id=self.user_id, wa_id=holder)
+            scheduler.run_pending(now=now + timedelta(hours=2))
+            send.assert_called_once()
+        self.assertEqual(self._status(note), "sent")
+        self.assertEqual(self.database.get_scheduled_action(int(note["id"]))["payload"]["deliveredVia"], "whatsapp")
+
     def test_taking_one_savta_off_leaves_a_drive_that_could_be_the_other(self) -> None:
         self.database.save_household_member(user_id=self.user_id, name="Savta Ruti", role="other")
         self.database.save_household_member(user_id=self.user_id, name="Savta Miri", role="other")
