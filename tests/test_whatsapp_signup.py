@@ -325,7 +325,7 @@ class WhatsAppSignupTests(unittest.TestCase):
         self.database.link_user_whatsapp_number(user_id=int(self.database.get_user("else@example.com")["id"]), wa_id="972500000077")
         result = self.post("Assistyca family RNA333", sender="972500000077", message_id="wamid.w2", name="Else")
         self.assertEqual(result["results"][0]["action"], "join_link_not_for_this_phone")
-        self.assertIn("their own Assistyca account on this phone", prompts[-1]["prompt"])
+        self.assertIn("its own Assistyca account, belonging to the person writing", prompts[-1]["prompt"])
         self.assertTrue(self.database.get_user("else@example.com"))
         # Rina joins; the spent code from yet another stranger is refused, and
         # no account is opened for that stranger either.
@@ -370,7 +370,7 @@ class WhatsAppSignupTests(unittest.TestCase):
         self.assertEqual(refused["results"][0]["reason"], "number_taken")
         self.assertTrue(self.database.get_user(NEW_HANDLE), "an account with a family in it stays")
         self.assertEqual(self.database.get_user_id_for_whatsapp_number(NEW_PHONE), int(own["id"]))
-        self.assertIn("their own Assistyca account on this phone, with things kept in it", prompts[-1]["prompt"])
+        self.assertIn("its own Assistyca account, belonging to the person writing, with things kept in it", prompts[-1]["prompt"])
         self.assertIn('"reader":{"name":"Yoav"}', prompts[-1]["prompt"])
         self.assertEqual(self.replies()[-1], "COMPOSED REPLY")
 
@@ -390,7 +390,7 @@ class WhatsAppSignupTests(unittest.TestCase):
         refused = self.post("Assistyca family ABC234", message_id="wamid.m2", name="Yoav")
         self.assertEqual(refused["results"][0]["reason"], "number_taken")
         self.assertIn("already part of another family", prompts[-1]["prompt"])
-        self.assertNotIn("their own Assistyca account", prompts[-1]["prompt"])
+        self.assertNotIn("its own Assistyca account", prompts[-1]["prompt"])
         self.assertIn('"say":"sign out"', prompts[-1]["prompt"])
 
     def test_words_before_the_join_phrase_do_not_hide_the_code(self) -> None:

@@ -10881,7 +10881,10 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         in for it, so a person is never left with nothing to go on.
         """
 
-        fallback = computed_recovery_sentence(situation)
+        # The assembled sentence is in the person's own language even when
+        # the prompt is left to read it from the conversation.
+        floor_language = language or self._request_language(email)
+        fallback = computed_recovery_sentence(situation, language=floor_language)
         model = resolve_task_model(
             AGENT_RECOVERY_COMPLEXITY,
             "PORTAL_ASSISTANT_MODEL",
@@ -10920,8 +10923,24 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         except OpenAIError as exc:
             print(f"Recovery composer failed: {exc.message}", flush=True)
             return fallback, False
-        reply = guard_recovery_reply(result.output_text, situation, fallback=fallback)
+        reply = guard_recovery_reply(result.output_text, situation, fallback=fallback, language=floor_language)
         return reply, reply != fallback
+
+    def _request_language(self, email: str) -> str:
+        """The language of whoever this request is for: the family member
+        whose phone the server signed for, else the account's. Empty when
+        it is not known."""
+
+        try:
+            user_id = int((self.database.get_user(email) or {}).get("id") or 0)
+            owner = self._connection_owner(email)
+            member = (
+                self.database.get_household_member_by_wa_id(owner, user_id=user_id)
+                if owner and owner != NO_CONNECTION_OWNER else None
+            )
+            return resolve_message_language(self.database, user_id=user_id, member_id=int((member or {}).get("id") or 0))
+        except Exception:  # noqa: BLE001 - not knowing is English, never a failed reply
+            return ""
 
     def _compose_resume_ask(
         self,
@@ -11172,6 +11191,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             channel=normalize_contact_single_line(payload.get("channel"), 20).lower(),
             timezone_name=timezone_name,
             email=session.email,
+            language=normalize_contact_single_line(payload.get("language"), 8).lower(),
         )
         json_response(self, HTTPStatus.OK, {
             "ok": True,
@@ -14894,7 +14914,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             happened, options = "The account that invitation is for is no longer open on Assistyca, so it cannot bring anyone in.", []
         elif reason == "number_taken" and outcome.get("takenAs") == "member":
             happened = (
-                "The phone the person writing is using is already part of another family's account on Assistyca, "
+                "The phone this message came from is already part of another family's account on Assistyca, "
                 f"so it cannot join {family} as well."
             )
             options = [make_option(
@@ -14903,8 +14923,8 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             )]
         elif reason == "number_taken":
             happened = (
-                "The person writing has their own Assistyca account on this phone, with things kept in it, "
-                f"so this phone cannot join {family} as well."
+                "This phone already has its own Assistyca account, belonging to the person writing, with things "
+                f"kept in it, so it cannot join {family} as well."
             )
             options = [make_option(
                 "step",

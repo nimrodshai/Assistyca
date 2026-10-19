@@ -76,6 +76,41 @@ class ComputedSentenceProperties(unittest.TestCase):
         prompt = build_recovery_prompt(build_situation("assistant_unavailable"), conversation=[], channel="whatsapp", today="2026-09-29")
         self.assertIn("never tell them to send it again", prompt)
 
+    def test_a_hebrew_family_gets_the_floor_in_hebrew_for_every_code(self) -> None:
+        import re
+
+        for code in sorted(RECOVERY_CODES):
+            for options in ([], [make_option("retry")], [make_option("connect", link=GOOGLE)], [make_option("say", say="sign out")],
+                            [make_option("step", label="ask Dana for a fresh invitation link")]):
+                with self.subTest(code=code, options=[o["kind"] for o in options]):
+                    sentence = computed_recovery_sentence(
+                        build_situation(code, what_happened="That can't run here.", options=options), language="he",
+                    )
+                    words = re.sub(r"https://\S+|\"[^\"]*\"", "", sentence)
+                    self.assertRegex(words, r"[א-ת]")
+                    self.assertNotRegex(words, r"[A-Za-z]", sentence)
+
+    def test_a_long_option_is_cut_between_words(self) -> None:
+        label = (
+            "if that was a mistake, ask the account holder for a fresh invitation link; for an assistant of "
+            "their own instead, just write again - and in the meantime nothing set for this phone goes on running at all, "
+            "not the reminders and not the standing actions"
+        )
+        self.assertGreater(len(label), 240)
+        option = make_option("step", label=label)
+        self.assertTrue(label.startswith(option["label"]))
+        self.assertTrue(label[len(option["label"]):].startswith(" "), option["label"])
+        short = make_option("step", label="if that was a mistake, ask the account holder for a fresh invitation link; for an assistant of their own instead, just write again")
+        self.assertTrue(short["label"].endswith("just write again"))
+
+    def test_the_floor_speaks_to_the_reader_and_names_the_account_holder(self) -> None:
+        sentence = computed_recovery_sentence(build_situation(
+            "not_supported",
+            what_happened="The account holder took the person writing off the family's account on Assistyca.",
+            reader={"name": "Yoav"}, names={"accountHolder": "Dana"},
+        ))
+        self.assertTrue(sentence.startswith("Dana took you off the family's account on Assistyca."), sentence)
+
     def test_no_retry_means_no_retry_offered(self) -> None:
         sentence = computed_recovery_sentence(build_situation("not_supported", what_happened="That can't run here."))
         self.assertNotIn("again", sentence)

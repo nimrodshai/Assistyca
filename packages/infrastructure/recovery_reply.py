@@ -53,6 +53,9 @@ RECOVERY_MAX_OUTPUT_TOKENS = 1200
 RECOVERY_MAX_REPLY_LENGTH = 700
 RECOVERY_MAX_CONVERSATION_MESSAGES = 6
 RECOVERY_MAX_TEXT_LENGTH = 400
+# An option's label is a short instruction; long enough for one with a
+# second way out, and cut at a word when it is longer still.
+RECOVERY_MAX_LABEL_LENGTH = 240
 # Words that mean the reply is talking about the machinery rather than to the
 # person. A reply that uses one falls back to the assembled sentence.
 _FORBIDDEN_WORDS = ("openai", "gpt", "llm", "token", "api", "server log", "endpoint", "runner", "json")
@@ -79,7 +82,7 @@ def make_option(kind: str, *, label: str = "", link: str = "", say: str = "", pr
     if option["kind"] not in OPTION_KINDS:
         option["kind"] = "say"
     if label:
-        option["label"] = _clip(label, 120)
+        option["label"] = _clip_words(label, RECOVERY_MAX_LABEL_LENGTH)
     if provider:
         option["provider"] = _clip(provider, 40).lower()
     if link and _link_is_allowed(link):
@@ -241,7 +244,7 @@ def normalize_recovery_conversation(value: Any) -> list[dict[str, str]]:
     return messages
 
 
-def guard_recovery_reply(text: Any, situation: dict[str, Any], *, fallback: str = "") -> str:
+def guard_recovery_reply(text: Any, situation: dict[str, Any], *, fallback: str = "", language: str = "") -> str:
     """Keep the composed reply only when it says nothing it must not.
 
     The checks are the ones code can make: every link is one the situation
@@ -251,7 +254,7 @@ def guard_recovery_reply(text: Any, situation: dict[str, Any], *, fallback: str 
     forgot the link is given it, because the link is the way forward.
     """
 
-    fallback = str(fallback or "").strip() or computed_recovery_sentence(situation)
+    fallback = str(fallback or "").strip() or computed_recovery_sentence(situation, language=language)
     reply = str(text or "").strip()
     if reply.startswith("```"):
         reply = "\n".join(line for line in reply.splitlines() if not line.strip().startswith("```")).strip()
@@ -271,16 +274,37 @@ def guard_recovery_reply(text: Any, situation: dict[str, Any], *, fallback: str 
     return reply
 
 
-def computed_recovery_sentence(situation: dict[str, Any]) -> str:
-    """The reply when no model can write one. Specific, and never a dead end."""
+def computed_recovery_sentence(situation: dict[str, Any], *, language: str = "") -> str:
+    """The reply when no model can write one. Specific, and never a dead end.
 
-    what_happened = str(situation.get("whatHappened") or "").strip()
+    In the person's language: the facts of a report are written in English
+    for the model, so a Hebrew reply says what kind of thing happened and
+    the way forward in Hebrew rather than the facts in English."""
+
+    if _clip(language, 8).lower() == "he":
+        what_happened = _DEFAULT_WHAT_HAPPENED_HE.get(str(situation.get("code") or ""), _DEFAULT_WHAT_HAPPENED_HE["internal"])
+        return f"{what_happened} {_computed_next_step_he(situation)}".strip()
+    what_happened = _said_to_reader(str(situation.get("whatHappened") or "").strip(), situation)
     if not what_happened:
         what_happened = _DEFAULT_WHAT_HAPPENED.get(str(situation.get("code") or ""), "Something got in the way of that just now.")
     if what_happened[-1] not in ".!?":
         what_happened += "."
     next_step = _computed_next_step(situation)
     return f"{what_happened} {next_step}".strip()
+
+
+def _said_to_reader(what_happened: str, situation: dict[str, Any]) -> str:
+    """The facts as said to the person they are about: "the person writing"
+    is "you", and the account holder is called by name when it is known."""
+
+    text = what_happened
+    if situation.get("reader"):
+        text = re.sub(r"\bThe person writing\b", "You", text)
+        text = re.sub(r"\bthe person writing\b", "you", text)
+    holder = str((situation.get("names") or {}).get("accountHolder") or "").strip()
+    if holder:
+        text = re.sub(r"\b[Tt]he account holder\b", holder, text)
+    return text
 
 
 _DEFAULT_WHAT_HAPPENED = {
@@ -296,6 +320,41 @@ _DEFAULT_WHAT_HAPPENED = {
     "unsupported_message": "I couldn't read that kind of message; text, a photo, or a voice note works here.",
     "internal": "Something on my side got in the way of that.",
 }
+
+
+_DEFAULT_WHAT_HAPPENED_HE = {
+    "source_not_connected": "לזה צריך חשבון שעדיין לא מחובר.",
+    "source_needs_attention": "החיבור לזה צריך כניסה מחדש לפני שאפשר לקרוא אותו.",
+    "choice_required": "צריך החלטה אחת לפני שאפשר להמשיך.",
+    "provider_unavailable": "לא הצלחתי להגיע כרגע לשירות שמחזיק את זה.",
+    "nothing_found": "בדקתי, ואין כרגע מה לדווח.",
+    "not_supported": "את זה אי אפשר לעשות מכאן.",
+    "rate_limited": "יש כרגע הרבה בקשות בבת אחת.",
+    "assistant_unavailable": "משהו אצלי השתבש והתשובה לא עברה.",
+    "assistant_unclear": "איבדתי לרגע את החוט.",
+    "unsupported_message": "לא הצלחתי לקרוא הודעה מהסוג הזה; טקסט, תמונה או הקלטה קולית עובדים כאן.",
+    "internal": "משהו אצלי הפריע לזה.",
+}
+
+
+def _computed_next_step_he(situation: dict[str, Any]) -> str:
+    """The way forward in Hebrew, worded the same for a man and a woman."""
+
+    options = situation.get("options") or []
+    by_kind = {str(option.get("kind")): option for option in reversed(options) if isinstance(option, dict)}
+    for kind in ("connect", "reconnect"):
+        option = by_kind.get(kind)
+        if option and option.get("link"):
+            verb = "אפשר להתחבר כאן" if kind == "connect" else "צריך להיכנס שוב כאן"
+            return f"{verb} - זה לוקח כמה שניות - ואמשיך מאיפה שעצרנו:\n{option['link']}"
+    option = by_kind.get("say")
+    if option and option.get("say"):
+        return f"אפשר לכתוב לי \"{option['say']}\" ואמשיך משם."
+    if str(situation.get("code") or "") == "assistant_unavailable" and not by_kind.get("retry"):
+        return "אין מה לתקן מהצד שלך - זה עליי. אם זה דחוף, אפשר לכתוב לי ואנסה שוב."
+    if situation.get("canRetry") or by_kind.get("retry"):
+        return "אפשר לבקש שוב בעוד רגע ואנסה שוב."
+    return "אפשר לכתוב לי מה לעשות במקום, ואמשיך משם."
 
 
 def _computed_next_step(situation: dict[str, Any]) -> str:
@@ -365,6 +424,18 @@ def _flatten(value: Any) -> str:
 
 def _clip(value: Any, limit: int) -> str:
     return _flatten(value)[:limit].strip()
+
+
+def _clip_words(value: Any, limit: int) -> str:
+    """Like _clip, but a cut falls between words, never inside one."""
+
+    text = _flatten(value)
+    if len(text) <= limit:
+        return text.strip()
+    cut = text[:limit]
+    if text[limit] != " " and " " in cut:
+        cut = cut.rsplit(" ", 1)[0]
+    return cut.rstrip(" ,;:-").strip()
 
 
 __all__ = [

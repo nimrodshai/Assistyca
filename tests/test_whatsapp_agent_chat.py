@@ -1020,6 +1020,19 @@ class WhatsAppRecoveryTests(_WhatsAppApiCase):
         self.assertNotIn("Ask me again", reply)
         self.assertNotIn("OpenAI", reply)
 
+    def test_a_hebrew_writer_gets_the_assembled_sentence_in_hebrew(self) -> None:
+        from packages.infrastructure.openai_api import OpenAIRequestError
+
+        with mock.patch(
+            "packages.infrastructure.portal_auth.server.call_openai_response",
+            side_effect=OpenAIRequestError("down", status_code=503),
+        ):
+            response = self._post_webhook(inbound_text_payload("את שם?", message_id="wamid.rec-he"))
+
+        reply = self._reply(response)
+        self.assertRegex(reply, r"[א-ת]")
+        self.assertNotRegex(reply, r"[A-Za-z]", reply)
+
     def test_a_voice_note_is_answered_in_words_the_composer_wrote(self) -> None:
         payload = inbound_text_payload("", message_id="wamid.rec-5")
         message = payload["entry"][0]["changes"][0]["value"]["messages"][0]

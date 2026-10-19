@@ -2172,7 +2172,7 @@ class WhatsAppAgentChat:
         if situations:
             # Part of the question was answered and part hit a wall. The answer
             # stands, and what stopped the rest follows it with its way forward.
-            answer = f"{answer}\n\n{computed_recovery_sentence(situations[0])}"
+            answer = f"{answer}\n\n{computed_recovery_sentence(situations[0], language=self._reply_language())}"
         return answer
 
     def _loop_turn(
@@ -2227,7 +2227,8 @@ class WhatsAppAgentChat:
                 outcome = "error"
                 if status == 402:
                     reply = normalize_text(turn.get("message")) or computed_recovery_sentence(
-                        build_situation("not_supported", what_happened="Your trial has ended.")
+                        build_situation("not_supported", what_happened="Your trial has ended."),
+                        language=self._reply_language(),
                     )
                 else:
                     reply = self._recover(self._situation_for_turn_failure(turn, status, text), conversation)
@@ -2470,13 +2471,26 @@ class WhatsAppAgentChat:
                     "conversation": history[-6:],
                     "channel": "whatsapp",
                     "timezone": self.timezone_name,
+                    "language": self._reply_language(),
                 },
             )
         except WhatsAppAgentChatError as exc:
             print(f"WhatsApp recovery reply failed: {exc}", flush=True)
             response, status = {}, 0
         reply = str(response.get("reply") or "").strip() if status == 200 else ""
-        return reply or computed_recovery_sentence(situation)
+        return reply or computed_recovery_sentence(situation, language=self._reply_language())
+
+    def _reply_language(self) -> str:
+        """The language this phone's person writes in, for a reply put
+        together without the model: a family member's own, else the
+        account's. Empty when nothing is known, which reads as English."""
+
+        try:
+            return resolve_message_language(
+                self.database, user_id=self.user_id, member_id=int(self.connection.get("memberId") or 0),
+            )
+        except Exception:  # noqa: BLE001 - not knowing is English, never a failed reply
+            return ""
 
     # -- sending -----------------------------------------------------------
 
@@ -3016,7 +3030,8 @@ class WhatsAppAgentChat:
                     # A trial that ran out is a fact to state, not a snag to
                     # recover from, and recovering would spend on a model.
                     reply = normalize_text(turn.get("message")) or computed_recovery_sentence(
-                        build_situation("not_supported", what_happened="Your trial has ended.")
+                        build_situation("not_supported", what_happened="Your trial has ended."),
+                        language=self._reply_language(),
                     )
                 else:
                     reply = self._recover(self._situation_for_turn_failure(turn, status, text), conversation)
