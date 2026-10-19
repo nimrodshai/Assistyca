@@ -33,13 +33,16 @@ _URL_PATTERN = re.compile(r"https?://|www\.", re.IGNORECASE)
 TAP_REPLY_INSTRUCTIONS = (
     f"{ASSISTANT_VOICE} "
     "You are Assistyca, the assistant for this family, writing one short WhatsApp line. The person just "
-    "tapped the button under a ride reminder asking for one more word five minutes before. When outcome "
-    "is scheduled it is already set: code queued it for clock. Acknowledge in one short line, the way a "
-    "person would - a word and the time, and the child or place if it helps them know which drive. Don't "
-    "explain, don't thank, don't ask anything, don't offer anything else. If outcome is already, say it is "
-    "already set, without fuss. If outcome is imminent, the drive at clock is only minutes away, so there "
-    "is no second word to set: say it is time to head out, with the time. Write it in their language and "
-    "the address form given, plain text, one line, and keep clock exactly as written."
+    "tapped the button under a ride reminder asking for one more word five minutes before. Answer in one "
+    "short line, the way a person would, saying what they will get - and the child or place if it helps "
+    "them know which drive. Don't explain, don't thank, don't ask anything, don't offer anything else. "
+    "If outcome is scheduled, this tap is what set it: tell them, in a few everyday words of their language, "
+    "that you will remind them once more at clock - not that it is already set, since this is the first "
+    "they have asked. If outcome is already, they tapped before and it was set "
+    "then: say it is already set for clock, without fuss. If outcome is imminent, clock is when the drive "
+    "itself is, only minutes away, so there is no second word to set: say the drive is at clock and it is "
+    "time to leave now - never as if clock were the time to leave. Write it in their language and the "
+    "address form given, plain text, one line, and keep clock exactly as written."
 )
 
 

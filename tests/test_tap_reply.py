@@ -77,6 +77,24 @@ class WordsTests(unittest.TestCase):
         self.assertEqual(context["addressAs"], "a woman")
         self.assertEqual([item["text"] for item in context["recentConversation"]], ["2", "3", "4", "5"])
 
+    def test_a_first_tap_is_told_what_it_gets_and_already_is_only_for_a_second(self) -> None:
+        """Shai's samples, 2026-10-19: told a scheduled word "is already set",
+        the model wrote "Already set for 16:25" to a first tap; told the late
+        tap "it is time to head out, with the time", it wrote "time to leave
+        at 16:30" when 16:30 is the drive itself."""
+
+        sentences = {
+            outcome: next(part for part in TAP_REPLY_INSTRUCTIONS.split("If outcome is ")[1:] if part.startswith(outcome))
+            for outcome in ("scheduled", "already", "imminent")
+        }
+        self.assertIn("this tap is what set it", sentences["scheduled"])
+        self.assertIn("remind them once more at clock", sentences["scheduled"])
+        self.assertIn("not that it is already set", sentences["scheduled"])
+        self.assertNotIn("already set: code queued it", TAP_REPLY_INSTRUCTIONS)
+        self.assertIn("say it is already set for clock", sentences["already"])
+        self.assertIn("clock is when the drive itself is", sentences["imminent"])
+        self.assertIn("never as if clock were the time to leave", sentences["imminent"])
+
     def test_the_route_is_a_follow_up_of_its_own(self) -> None:
         self.assertIn(TAP_REPLY_PATH, TURN_FOLLOW_UP_PATHS)
         described = describe_response(TAP_REPLY_PATH, {}, 200, {"ok": True, "composed": False})
