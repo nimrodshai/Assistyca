@@ -371,7 +371,12 @@ DEFAULT_BILLING_MULTIPLIER = 1.5
 DEFAULT_BILLING_MINIMUM = 50.0
 RESEND_API_URL = "https://api.resend.com/emails"
 JSON_CONTENT_TYPE = "application/json; charset=utf-8"
-SESSION_TOKEN_VERSION = 1
+# Version 2 came with page-link scopes. A version 1 token that names neither a
+# scope nor a family member may have been opened from a page link before links
+# were scoped, and nothing in it tells that apart from a real sign-in, so it
+# is not honoured: its holder signs in again (parse_session_token).
+SESSION_TOKEN_VERSION = 2
+LEGACY_SESSION_TOKEN_VERSION = 1
 SESSION_COOKIE_NAME = "assistyca_portal_session"
 MANUAL_RUN_REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 # Transport-level cap on any single request body, so a declared Content-Length
@@ -2099,7 +2104,14 @@ def parse_session_token(token: str, secret: bytes, *, validate_expiry: bool = Tr
     except (ValueError, UnicodeDecodeError, json.JSONDecodeError):
         return None
 
-    if not isinstance(payload, dict) or payload.get("v") != SESSION_TOKEN_VERSION:
+    if not isinstance(payload, dict):
+        return None
+    if payload.get("v") == LEGACY_SESSION_TOKEN_VERSION:
+        # Kept only where it already says how little it reaches: a page
+        # link's scope, or a family member's phone.
+        if not (payload.get("s") or payload.get("m")):
+            return None
+    elif payload.get("v") != SESSION_TOKEN_VERSION:
         return None
 
     email = normalize_email(payload.get("email", ""))
