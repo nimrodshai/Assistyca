@@ -14066,10 +14066,20 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 self.database.save_whatsapp_agent_pending(user_id=user_id, thread_id=thread_id, pending=pending)
                 picker = build_calendar_choice_interactive(available)
 
+        # A calendar connected while the other parent is on the account from
+        # their own phone: what of it reaches them is only when this person
+        # is busy, for working out the drives - never what it is. Said with
+        # the calendar picker too, which otherwise ends the sign-in here.
+        seen_by = self._busy_times_seen_by(user_id, signed_in_from if member else "") if calendar_connected else []
+        busy_note = f" {' and '.join(seen_by)} will see only when you're busy, never what." if seen_by else ""
+
         if picker is not None:
             if wa_id:
                 try:
-                    send_assistyca_text(recipient_wa_id=wa_id, text=f"{linked or 'Your '}{connected} connected. One thing before I read your calendar:")
+                    send_assistyca_text(
+                        recipient_wa_id=wa_id,
+                        text=f"{linked or 'Your '}{connected} connected.{busy_note} One thing before I read your calendar:",
+                    )
                 except Exception as exc:  # noqa: BLE001 - the page still says what to do
                     print(f"WhatsApp connected note could not be sent: {exc}", flush=True)
                 if not send_assistyca_interactive(recipient_wa_id=wa_id, payload=picker):
@@ -14089,12 +14099,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             if mailbox_connected and load_finding_scan_config().enabled
             else ""
         )
-        # A calendar connected while the other parent is on the account from
-        # their own phone: what of it reaches them is only when this person
-        # is busy, for working out the drives - never what it is.
-        seen_by = self._busy_times_seen_by(user_id, signed_in_from if member else "") if calendar_connected else []
-        if seen_by:
-            looking += f" {' and '.join(seen_by)} will see only when you're busy, never what."
+        looking += busy_note
         if held_text:
             # They asked something, it needed this sign-in, and now the
             # sign-in is done: their own question is the last word, offered
