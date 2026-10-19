@@ -11395,7 +11395,9 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 else self._week_picture_builder(user_id, timezone_name)
             ),
             join_link=None if group else self._join_link_builder(),
-            release_connections=lambda wa_id, email=session.email: self._release_departed_connections(email, wa_id),
+            release_connections=(
+                None if group else lambda wa_id, email=session.email: self._release_departed_connections(email, wa_id)
+            ),
             homework_link=None if group else self._homework_link_builder(),
             pay_link=None if group else (lambda pay=self._pay_link_builder(): pay(user_id)),
             billing={} if group else self._loop_billing(trial, paying=self._user_is_paying(session.email)),
