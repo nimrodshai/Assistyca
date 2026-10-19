@@ -1391,6 +1391,9 @@ CREATE TABLE IF NOT EXISTS list_open_codes (
     -- account holder's own. The browser it opens is that member's, never
     -- the account holder's.
     wa_id TEXT NOT NULL DEFAULT '',
+    -- The surface the link was sent for ("family" for the week and the
+    -- lists, "receipts"); the session it opens reaches that and no more.
+    scope TEXT NOT NULL DEFAULT '',
     FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_list_open_codes_expires_at ON list_open_codes(expires_at);
@@ -1841,6 +1844,8 @@ class PortalDatabase:
         open_code_columns = {row["name"] for row in conn.execute("PRAGMA table_info(list_open_codes)").fetchall()}
         if open_code_columns and "wa_id" not in open_code_columns:
             conn.execute("ALTER TABLE list_open_codes ADD COLUMN wa_id TEXT NOT NULL DEFAULT ''")
+        if open_code_columns and "scope" not in open_code_columns:
+            conn.execute("ALTER TABLE list_open_codes ADD COLUMN scope TEXT NOT NULL DEFAULT ''")
         activity_columns = {row["name"] for row in conn.execute("PRAGMA table_info(household_activities)").fetchall()}
         if "group_id" not in activity_columns:
             conn.execute("ALTER TABLE household_activities ADD COLUMN group_id TEXT NOT NULL DEFAULT ''")
@@ -4112,7 +4117,9 @@ class PortalDatabase:
 
         return row is not None
 
-    def create_list_open_code(self, *, user_id: int, list_id: int, expires_at: float, wa_id: str = "") -> str:
+    def create_list_open_code(
+        self, *, user_id: int, list_id: int, expires_at: float, wa_id: str = "", scope: str = "",
+    ) -> str:
         """A short one-time code that signs a phone in and opens one list.
 
         The code stands in for a signed session token, which is too long to
@@ -4120,7 +4127,7 @@ class PortalDatabase:
         be unguessable, and only lives in this table until it is spent or
         expires; expired codes are swept whenever a new one is minted.
         wa_id is the family member's phone it is sent to, when it is not
-        the account holder's own.
+        the account holder's own; scope is the surface the link is for.
         """
 
         resolved_user_id = int(user_id or 0)
@@ -4134,12 +4141,12 @@ class PortalDatabase:
                 try:
                     conn.execute(
                         """
-                        INSERT INTO list_open_codes (code, user_id, list_id, created_at, expires_at, wa_id)
-                        VALUES (?, ?, ?, ?, ?, ?)
+                        INSERT INTO list_open_codes (code, user_id, list_id, created_at, expires_at, wa_id, scope)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
                         """,
                         (
                             code, resolved_user_id, resolved_list_id, now_iso(), float(expires_at),
-                            normalize_whatsapp_lookup_id(wa_id),
+                            normalize_whatsapp_lookup_id(wa_id), normalize_text(scope).lower(),
                         ),
                     )
                 except sqlite3.IntegrityError as exc:
@@ -4169,7 +4176,8 @@ class PortalDatabase:
                 return None
             row = conn.execute(
                 """
-                SELECT codes.user_id AS user_id, codes.list_id AS list_id, codes.wa_id AS wa_id, users.email AS email
+                SELECT codes.user_id AS user_id, codes.list_id AS list_id, codes.wa_id AS wa_id,
+                       codes.scope AS scope, users.email AS email
                 FROM list_open_codes AS codes
                 JOIN users ON users.id = codes.user_id
                 WHERE codes.code = ?
@@ -4184,6 +4192,7 @@ class PortalDatabase:
             "listId": int(row["list_id"] or 0),
             "email": normalize_email(row["email"]),
             "waId": str(row["wa_id"] or ""),
+            "scope": str(row["scope"] or ""),
         }
 
     def get_whatsapp_connection(self, email: str) -> dict[str, Any] | None:

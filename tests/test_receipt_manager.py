@@ -492,7 +492,7 @@ class ApiTests(unittest.TestCase):
     def test_a_link_from_whatsapp_opens_the_receipts_page_once(self) -> None:
         # The phone has no browser session, so the link carries a one-time
         # code that signs the account in and lands on the receipts page.
-        code = self.server.database.create_list_open_code(user_id=self.user_id, list_id=0, expires_at=time.time() + 3600)
+        code = self.server.database.create_list_open_code(user_id=self.user_id, list_id=0, expires_at=time.time() + 3600, scope="receipts")
 
         class NoRedirect(urllib_request.HTTPRedirectHandler):
             def redirect_request(self, *args, **kwargs):
@@ -598,6 +598,8 @@ class LoopTests(unittest.TestCase):
         self.assertEqual(result["totalsByCurrency"], {"ILS": 262.0, "USD": 25.0})
         self.assertEqual(result["link"], "https://assistyca.test/receipts/open/abc")
         self.assertIn("on its own line", result["note"])
+        # The receipts link is the person's own, never one to pass on.
+        self.assertIn("never suggest forwarding or sharing it", result["linkSharing"])
         self.assertNotIn("folder", json.dumps(result).lower())
 
         failing = LoopContext(api=lambda method, path, payload=None: ({"ok": False}, 500), database=None, email="owner@example.com", user_id=1)

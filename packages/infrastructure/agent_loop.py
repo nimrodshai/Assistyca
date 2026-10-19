@@ -527,6 +527,7 @@ def _run_lookup(context: LoopContext, proposal_type: str, fields: dict[str, Any]
             _offer_link(context, link, RECEIPTS_LINK_LABEL)
         if link:
             data["receiptsPage"] = link
+            data["receiptsPageSharing"] = RECEIPTS_LINK_SHARING
     limits = _describe_search_limits(response)
     if limits:
         data["searchLimits"] = limits
@@ -578,6 +579,17 @@ def _describe_search_limits(response: dict[str, Any]) -> list[str]:
 
 
 RECEIPTS_LINK_LABEL = "Open receipts"
+# Who a page link may go to, said beside the link in the tool result. A
+# week or lists link opens only what the family shares; a receipts link
+# opens what one person's mail held.
+FAMILY_LINK_SHARING = (
+    "This link opens only the family's week and lists - never mail, calendar, receipts or this chat - so "
+    "it is safe to forward to the family."
+)
+RECEIPTS_LINK_SHARING = (
+    "This link opens this person's own receipts, from their own mail; it is theirs alone, so never suggest "
+    "forwarding or sharing it with anyone, family included."
+)
 
 
 def _receipts_page_link(context: LoopContext) -> str:
@@ -653,6 +665,7 @@ def _tool_open_receipts(context: LoopContext, args: dict[str, Any]) -> dict[str,
     if link:
         data["link"] = link
         data["note"] += " Put the link in the reply on its own line exactly as given."
+        data["linkSharing"] = RECEIPTS_LINK_SHARING
     return _ok(data)
 
 
@@ -2402,6 +2415,7 @@ def _tool_show_family_week(context: LoopContext, args: dict[str, Any]) -> dict[s
     link = _week_page_link(context)
     if link:
         data["weekPage"] = link
+        data["weekPageSharing"] = FAMILY_LINK_SHARING
     return _ok(data)
 
 
@@ -2880,6 +2894,7 @@ def _tool_set_getting_to_know(context: LoopContext, args: dict[str, Any]) -> dic
         link = _week_page_link(context)
         if link:
             data["weekPage"] = link
+            data["weekPageSharing"] = FAMILY_LINK_SHARING
         # The week is in, so the other grown-ups can have it too: the offer
         # to bring them onto the account goes out with the finished week.
         candidates = _invite_candidates(context)
@@ -3218,6 +3233,8 @@ def _list_payload(context: LoopContext, record: dict[str, Any], **extra: Any) ->
         "link": _list_link(context, record),
         "note": "The link opens this list on the lists page, where it can be seen and edited by hand; put it in the reply on its own line exactly as given.",
     }
+    if payload["link"]:
+        payload["linkSharing"] = FAMILY_LINK_SHARING
     payload.update(extra)
     return payload
 
@@ -3399,7 +3416,10 @@ def _tool_show_lists(context: LoopContext, args: dict[str, Any]) -> dict[str, An
         "openCount": int(entry.get("openCount") or 0),
     } for entry in records[:40]]
     link = _list_link(context, records[0]) if len(records) == 1 else _lists_home_link(context)
-    return _ok({"lists": lists, "link": link, "note": "The link opens the lists page; put it in the reply on its own line exactly as given."})
+    data = {"lists": lists, "link": link, "note": "The link opens the lists page; put it in the reply on its own line exactly as given."}
+    if link:
+        data["linkSharing"] = FAMILY_LINK_SHARING
+    return _ok(data)
 
 
 def _lists_home_link(context: LoopContext) -> str:

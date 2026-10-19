@@ -531,15 +531,20 @@ class MemberBrowserTests(unittest.TestCase):
         self.thread.join(timeout=5)
         self.temp_dir.cleanup()
 
-    def open_link(self, *, phone: str = "", prefix: str = "/lists/open/") -> tuple[str, str]:
-        """Tap a page link as the loop mints it for this phone; the cookie
-        the browser is given, and where it lands."""
+    def open_link(self, *, phone: str = "", prefix: str = "/lists/open/", opened_at: str = "") -> tuple[str, str]:
+        """Tap a page link as the loop mints it for this phone - scoped to
+        the page it is for - the cookie the browser is given, and where it
+        lands. opened_at is another page's address to open it at."""
 
         code = self.database.create_list_open_code(
             user_id=self.user_id, list_id=0, expires_at=datetime.now(timezone.utc).timestamp() + 60, wa_id=phone,
+            scope="receipts" if prefix == "/receipts/open/" else "family",
         )
+        return self.tap(f"{opened_at or prefix}{code}")
+
+    def tap(self, path: str) -> tuple[str, str]:
         try:
-            urllib_request.build_opener(_NoRedirect).open(f"{self.base_url}{prefix}{code}", timeout=10)
+            urllib_request.build_opener(_NoRedirect).open(f"{self.base_url}{path}", timeout=10)
         except urllib_error.HTTPError as exc:
             cookie = str(exc.headers.get("Set-Cookie") or "").split(";", 1)[0]
             return cookie, str(exc.headers.get("Location") or "")
@@ -590,9 +595,10 @@ class MemberBrowserTests(unittest.TestCase):
         )
         self.assertIsNotNone(self.database.get_user("dana@example.com"))
 
+        # A lists link opens the lists and the week; connections are not
+        # part of what it was sent for, the partner's own included.
         status, connections = self.request("GET", "/api/platform-connections", cookie)
-        self.assertEqual(status, 200, connections)
-        self.assertEqual({row["ownerWaId"] for row in connections["connections"]}, {PARTNER_PHONE})
+        self.assertEqual(status, 403, connections)
         self.assertNotIn("dana@gmail.com", json.dumps(connections))
         self.assertEqual(self.request("GET", "/api/lists", cookie)[0], 200)
         self.assertEqual(self.request("GET", "/api/household", cookie)[0], 200)
@@ -640,16 +646,60 @@ class MemberBrowserTests(unittest.TestCase):
         fresh, _ = self.open_link(phone=PARTNER_PHONE)
         self.assertEqual(self.request("GET", "/api/lists", fresh)[0], 200)
 
-    def test_the_holders_own_link_still_opens_everything(self) -> None:
+    def test_the_holders_receipts_link_opens_her_receipts_and_nothing_else(self) -> None:
         cookie, landed = self.open_link(prefix="/receipts/open/")
         self.assertEqual(landed, "/receipts")
         status, listed = self.request("GET", "/api/receipts", cookie)
         self.assertEqual(status, 200, listed)
         self.assertEqual([row["vendor"] for row in listed["receipts"]], ["Dana's pharmacy"])
-        self.assertEqual(self.request("GET", "/api/agent/email/follows", cookie)[0], 200)
-        status, connections = self.request("GET", "/api/platform-connections", cookie)
-        self.assertEqual({row["ownerWaId"] for row in connections["connections"]}, {""})
+        self.assertEqual(self.request("GET", "/api/agent/email/follows", cookie)[0], 403)
+        self.assertEqual(self.request("GET", "/api/platform-connections", cookie)[0], 403)
+        self.assertEqual(self.request("POST", "/api/agent/loop", cookie, {"message": "hi"})[0], 403)
+        self.assertEqual(self.request("GET", "/api/lists", cookie)[0], 403)
         self.assertEqual(self.request("DELETE", f"/api/receipts/{self.receipt['id']}", cookie)[0], 200)
+
+    def test_the_holders_week_link_forwarded_on_opens_only_what_the_family_shares(self) -> None:
+        # Her own week link, as the model once suggested she share it: the
+        # browser that opens it reaches the week and the lists, and nothing
+        # of hers - not her receipts, connections, threads or assistant.
+        cookie, landed = self.open_link(prefix="/week/open/")
+        self.assertEqual(landed, "/week")
+        refused = self.holders_records(cookie)
+        refused["connections"] = self.request("GET", "/api/platform-connections", cookie)[0]
+        self.assertEqual(set(refused.values()), {403}, refused)
+        self.assertIsNotNone(self.database.get_account_receipt(user_id=self.user_id, receipt_id=int(self.receipt["id"])))
+        self.assertIsNotNone(self.database.get_user("dana@example.com"))
+        self.assertEqual(self.request("GET", "/api/household", cookie)[0], 200)
+        status, week = self.request("POST", "/api/household/activities", cookie, {"title": "Swimming", "days": ["mon"]})
+        self.assertEqual(status, 200, week)
+        self.assertEqual(self.request("GET", "/api/lists", cookie)[0], 200)
+        status, made = self.request("POST", "/api/lists", cookie, {"name": "Groceries"})
+        self.assertIn(status, {200, 201}, made)
+
+    def test_a_link_opened_at_another_pages_address_opens_nothing(self) -> None:
+        cookie, landed = self.open_link(prefix="/week/open/", opened_at="/receipts/open/")
+        self.assertEqual((cookie, landed), ("", "/receipts?expired=1"))
+        # A code minted before codes carried a scope is the family's.
+        code = self.database.create_list_open_code(
+            user_id=self.user_id, list_id=0, expires_at=datetime.now(timezone.utc).timestamp() + 60,
+        )
+        self.assertEqual(self.tap(f"/receipts/open/{code}"), ("", "/receipts?expired=1"))
+
+    def test_an_old_link_of_a_partner_taken_off_and_brought_back_stays_shut(self) -> None:
+        # Links minted before codes existed carried a signed session token.
+        # Tapped after the partner left and joined again, it must not come
+        # back as a sign-in newer than their return.
+        old = self.server.store.issue_session("dana@example.com", member_wa_id=PARTNER_PHONE)["token"]
+        self.database.remove_household_member(user_id=self.user_id, name="Yoav")
+        yoav = self.database.save_household_member(user_id=self.user_id, name="Yoav", role="partner")
+        self.database.create_household_invite(
+            user_id=self.user_id, member_id=int(yoav["id"]), code="YOAV44",
+            expires_at=datetime.now(timezone.utc) + timedelta(days=14),
+        )
+        self.assertTrue(self.database.claim_household_invite(code="YOAV44", wa_id=PARTNER_PHONE)["ok"])
+        cookie, _ = self.tap(f"/lists/open/{old}")
+        self.assertEqual(self.request("GET", "/api/lists", cookie)[0], 401)
+        self.assertEqual(self.request("GET", "/api/household", cookie)[0], 401)
 
     def test_the_receipts_handlers_read_only_the_phone_the_server_signed_for(self) -> None:
         code, _ = self.server.store.issue_challenge("dana@example.com")

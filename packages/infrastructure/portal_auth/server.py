@@ -1107,6 +1107,13 @@ MEMBER_SESSION_OPEN_PATHS = frozenset({
     "/api/register", "/api/contact", "/api/pricing", "/webhooks/whatsapp", "/webhooks/lemon-squeezy",
 })
 MEMBER_SESSION_OPEN_PREFIXES = ("/api/public/",)
+# What a session opened from a page link reaches (session_scope_reaches).
+# The scope comes from what the link was minted for, never from the address
+# it is opened at.
+SESSION_SCOPE_FAMILY = "family"
+SESSION_SCOPE_RECEIPTS = "receipts"
+SESSION_SCOPES = frozenset({SESSION_SCOPE_FAMILY, SESSION_SCOPE_RECEIPTS})
+SESSION_SCOPE_OPEN_PATHS = frozenset({"/api/auth/session", "/api/auth/logout"})
 
 # Every response carries these. The portal serves no inline scripts -- the theme
 # bootstrap and the about-page behaviour live in their own .js files -- so the
@@ -1266,6 +1273,12 @@ class PortalSession:
     # to that phone; empty for the account holder's own. Signed into the
     # token, so a member's browser can never pass for the account holder's.
     member_wa_id: str = ""
+    # The one surface a session opened from a page link reaches
+    # (session_scope_reaches): "family" for the week and the lists,
+    # "receipts" for the receipts page. Empty for a real sign-in, which
+    # reaches the whole account. Signed into the token and kept on renewal,
+    # so a link forwarded on never opens more than it was sent for.
+    scope: str = ""
 
     def __post_init__(self) -> None:
         if self.authenticated_at <= 0:
@@ -1376,11 +1389,21 @@ class PortalAuthStore:
             self._challenges.pop(normalized_email, None)
             return True, "ok", self._issue_session_locked(normalized_email, now)
 
-    def issue_session(self, email: str, *, member_wa_id: str = "") -> dict[str, Any]:
+    def issue_session(
+        self,
+        email: str,
+        *,
+        member_wa_id: str = "",
+        scope: str = "",
+        authenticated_at: float | None = None,
+    ) -> dict[str, Any]:
         """A signed-in session for an account that proved itself another way
         than the emailed code: a signed link tapped from its own WhatsApp.
         member_wa_id is the family member's phone the link was sent to, when
-        it was not the account holder's own."""
+        it was not the account holder's own; scope is the surface the link
+        was for. authenticated_at carries an earlier sign-in's time over to
+        the session that replaces it, so the replacement is not newer than
+        what it replaces."""
 
         normalized_email = normalize_email(email)
         if not self.is_registered_email(normalized_email):
@@ -1388,6 +1411,7 @@ class PortalAuthStore:
         with self._lock:
             return self._issue_session_locked(
                 normalized_email, time.time(), member_wa_id=normalize_whatsapp_lookup_id(member_wa_id),
+                scope=scope, authenticated_at=authenticated_at,
             )
 
     def _issue_session_locked(
@@ -1397,6 +1421,7 @@ class PortalAuthStore:
         *,
         authenticated_at: float | None = None,
         member_wa_id: str = "",
+        scope: str = "",
     ) -> dict[str, Any]:
         authenticated_at = float(authenticated_at) if authenticated_at and authenticated_at > 0 else now
         session = PortalSession(
@@ -1406,6 +1431,7 @@ class PortalAuthStore:
             expires_at=min(now + self.session_ttl_seconds, authenticated_at + self.session_max_lifetime_seconds),
             authenticated_at=authenticated_at,
             member_wa_id=member_wa_id,
+            scope=normalize_session_scope(scope),
         )
         token = create_session_token(session, self.session_secret) if self.session_secret else secrets.token_urlsafe(32)
         session.token = token
@@ -1500,6 +1526,7 @@ class PortalAuthStore:
             return self._issue_session_locked(
                 normalize_email(session.email), now,
                 authenticated_at=session.authenticated_at, member_wa_id=session.member_wa_id,
+                scope=session.scope,
             )
 
     def revoke_all_sessions(self, email: str) -> None:
@@ -2046,6 +2073,8 @@ def create_session_token(session: PortalSession, secret: bytes) -> str:
     }
     if session.member_wa_id:
         payload["m"] = session.member_wa_id
+    if session.scope:
+        payload["s"] = session.scope
     payload_segment = encode_token_segment(json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8"))
     signature_segment = sign_token_segment(payload_segment, secret)
     return f"{payload_segment}.{signature_segment}"
@@ -2107,7 +2136,49 @@ def parse_session_token(token: str, secret: bytes, *, validate_expiry: bool = Tr
         expires_at=expires_at,
         authenticated_at=authenticated_at,
         member_wa_id=normalize_whatsapp_lookup_id(payload.get("m") or ""),
+        scope=normalize_session_scope(payload.get("s")),
     )
+
+
+def normalize_session_scope(value: Any) -> str:
+    """A session's scope as stored: one of SESSION_SCOPES, or empty for a
+    session that reaches the whole account. Anything unknown is read as the
+    narrowest scope there is, never as the whole account."""
+
+    text = normalize_text(value).lower()
+    if not text:
+        return ""
+    return text if text in SESSION_SCOPES else SESSION_SCOPE_FAMILY
+
+
+def session_scope_reaches(scope: str, method: str, path: str) -> bool:
+    """Whether a session opened from a page link may make this request.
+
+    A week or lists link opens what the family shares - the week and the
+    lists - and nothing of the account holder's own: not the receipts, the
+    connections, the followed threads or the assistant. A receipts link
+    opens the receipts and their files, and nothing else. A real sign-in
+    (no scope) reaches everything."""
+
+    if not scope:
+        return True
+    method = normalize_text(method).upper()
+    if path in SESSION_SCOPE_OPEN_PATHS:
+        return True
+    if scope == SESSION_SCOPE_RECEIPTS:
+        if path == "/api/receipts" or path.startswith("/api/receipts/"):
+            return True
+        return path.startswith("/output/agent_receipts/") and method in {"GET", "HEAD"}
+    if scope == SESSION_SCOPE_FAMILY:
+        if path == "/api/lists" or path.startswith("/api/lists/"):
+            return True
+        if path == "/api/household":
+            return method == "GET"
+        if path == "/api/household/share":
+            return method == "POST"
+        if path.startswith("/api/household/activities"):
+            return method in {"POST", "DELETE"}
+    return False
 
 
 def member_session_reaches(method: str, path: str, role: Any) -> bool:
@@ -4145,7 +4216,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             self._handle_api_get(parsed)
             return
         if path.startswith(WEEK_HANDOFF_PREFIX):
-            self._handle_page_handoff(parsed, prefix=WEEK_HANDOFF_PREFIX, page="/week")
+            self._handle_page_handoff(parsed, prefix=WEEK_HANDOFF_PREFIX, page="/week", scope=SESSION_SCOPE_FAMILY)
             return
         if path.startswith(WEEK_IMAGE_PREFIX):
             self._handle_week_image(parsed)
@@ -12620,10 +12691,14 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         self.send_header("Location", location)
         self.end_headers()
 
-    def _get_authenticated_session(self) -> PortalSession | None:
+    def _get_authenticated_session(self, *, within_scope: bool = True) -> PortalSession | None:
         cookie_token = self._cookie_session_token()
         for token in self._extract_session_tokens():
             session = self.store.get_session(token)
+            if session is not None and within_scope and not self._session_scope_reaches_request(session):
+                # Opened from a page link: past the surface that link was
+                # for, it is no session at all.
+                continue
             if session is not None and session.member_wa_id:
                 # A family member's browser: theirs only while they are still
                 # in the family on that phone, and reading only their own.
@@ -12637,6 +12712,13 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                     self._renew_session_cookie(session)
                 return session
         return None
+
+    def _session_scope_reaches_request(self, session: PortalSession) -> bool:
+        if not session.scope:
+            return True
+        path = urllib_parse.urlparse(str(getattr(self, "path", "") or "")).path
+        path = path.rstrip("/") or "/"
+        return session_scope_reaches(session.scope, str(getattr(self, "command", "") or "GET"), path)
 
     def _live_session_member(self, session: PortalSession) -> dict[str, Any] | None:
         """The family member a member session was opened for, while it still
@@ -12661,22 +12743,34 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         family shares. A link sent to a member's phone signs that browser in
         as them, not as the account holder: the lists and the week, as far
         as their role reaches, and their own connections - never the account
-        holder's receipts, mail, threads or assistant."""
+        holder's receipts, mail, threads or assistant. And any browser
+        opened from a page link away from what that link was for
+        (session_scope_reaches)."""
 
         if path in MEMBER_SESSION_OPEN_PATHS or path.startswith(MEMBER_SESSION_OPEN_PREFIXES):
             return False
-        session = self._get_authenticated_session()
-        if session is None or not session.member_wa_id:
+        session = self._get_authenticated_session(within_scope=False)
+        if session is None:
             return False
-        role = (getattr(self, "_session_member", None) or {}).get("role")
-        if member_session_reaches(method, path, role):
-            return False
-        json_response(self, HTTPStatus.FORBIDDEN, {
-            "ok": False,
-            "error": "not_theirs",
-            "message": "This belongs to the account holder, not to this phone.",
-        })
-        return True
+        if session.member_wa_id:
+            role = (getattr(self, "_session_member", None) or {}).get("role")
+            if not member_session_reaches(method, path, role):
+                json_response(self, HTTPStatus.FORBIDDEN, {
+                    "ok": False,
+                    "error": "not_theirs",
+                    "message": "This belongs to the account holder, not to this phone.",
+                })
+                return True
+        if not session_scope_reaches(session.scope, method, path):
+            # Opened from a page link: the week and lists, or the receipts,
+            # and nothing else on the account.
+            json_response(self, HTTPStatus.FORBIDDEN, {
+                "ok": False,
+                "error": "not_this_link",
+                "message": "This link opens one page only. Sign in to reach the rest of the account.",
+            })
+            return True
+        return False
 
     def _renew_session_cookie(self, session: PortalSession) -> None:
         """Swap a cookie that has done a day's work for a fresh one on the way out.
@@ -15819,6 +15913,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 list_id=int(list_id or 0),
                 expires_at=time.time() + LISTS_HANDOFF_TTL_SECONDS,
                 wa_id=wa_id,
+                scope=SESSION_SCOPE_FAMILY,
             )
             return f"{base}{LISTS_HANDOFF_PREFIX}{code}"
 
@@ -15845,6 +15940,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 user_id=user_id,
                 list_id=0,
                 expires_at=time.time() + LISTS_HANDOFF_TTL_SECONDS,
+                scope=SESSION_SCOPE_RECEIPTS,
             )
             return f"{base}{RECEIPTS_HANDOFF_PREFIX}{code}"
 
@@ -15978,10 +16074,13 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             speaker["firstConversation"] = True
         return speaker
 
-    def _page_link_builder(self, email: str, channel: str, *, page: str, prefix: str, wa_id: str = "") -> Callable[[], str]:
+    def _page_link_builder(
+        self, email: str, channel: str, *, page: str, prefix: str, wa_id: str = "", scope: str = SESSION_SCOPE_FAMILY,
+    ) -> Callable[[], str]:
         """A portal page as a link: the page itself in the browser, a short
         one-time sign-in code from WhatsApp, as for lists and receipts, and
-        for a family member's phone (wa_id) a sign-in as them."""
+        for a family member's phone (wa_id) a sign-in as them. The sign-in
+        reaches only the surface scope names."""
 
         base = self._public_base_url()
         is_whatsapp = normalize_text(channel).lower() == "whatsapp"
@@ -15993,6 +16092,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 return f"{base}{page}"
             code = self.database.create_list_open_code(
                 user_id=user_id, list_id=0, expires_at=time.time() + LISTS_HANDOFF_TTL_SECONDS, wa_id=wa_id,
+                scope=scope,
             )
             return f"{base}{prefix}{code}"
 
@@ -16191,20 +16291,26 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
     def _handle_lists_handoff(self, parsed: urllib_parse.ParseResult) -> None:
         """Spend a one-time code from a WhatsApp link and open the lists page."""
 
-        self._handle_page_handoff(parsed, prefix=LISTS_HANDOFF_PREFIX, page="/lists")
+        self._handle_page_handoff(parsed, prefix=LISTS_HANDOFF_PREFIX, page="/lists", scope=SESSION_SCOPE_FAMILY)
 
     def _handle_receipts_handoff(self, parsed: urllib_parse.ParseResult) -> None:
         """Spend a one-time code from a WhatsApp link and open the receipts page."""
 
-        self._handle_page_handoff(parsed, prefix=RECEIPTS_HANDOFF_PREFIX, page="/receipts")
+        self._handle_page_handoff(parsed, prefix=RECEIPTS_HANDOFF_PREFIX, page="/receipts", scope=SESSION_SCOPE_RECEIPTS)
 
-    def _handle_page_handoff(self, parsed: urllib_parse.ParseResult, *, prefix: str, page: str) -> None:
+    def _handle_page_handoff(self, parsed: urllib_parse.ParseResult, *, prefix: str, page: str, scope: str) -> None:
         """Spend a one-time code from a WhatsApp link and open one portal page.
 
         The code is looked up and marked used in one step, so the same link
-        opens nothing a second time, and the browser gets a normal session
-        cookie for the account instead. Links minted before codes existed
-        carried a signed session token; those still open until they expire.
+        opens nothing a second time, and the browser gets a session cookie
+        for that page's surface (scope) and nothing more: a week or lists
+        link is forwarded to the family as a matter of course, so even the
+        account holder's own copy never reaches her receipts, connections,
+        followed threads or the assistant. Her real sign-in still does. The
+        scope is the one the code was minted for; a code opened at another
+        page's address opens nothing. Links minted before codes existed
+        carried a signed session token; those still open until they expire,
+        scoped the same way and no newer than the sign-in they carried.
         """
 
         if not self._enforce_rate_limit(
@@ -16223,10 +16329,15 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
 
         email = ""
         member_wa_id = ""
+        authenticated_at: float | None = None
         spent = self.database.spend_list_open_code(token) if token else None
         if spent is not None:
             email = normalize_email(spent.get("email"))
             list_id = int(spent.get("listId") or 0)
+            # A code from before scopes were kept was for the week or the
+            # lists, or for receipts it can no longer prove: the family's.
+            if (normalize_session_scope(spent.get("scope")) or SESSION_SCOPE_FAMILY) != scope:
+                email = ""
             if normalize_text(spent.get("waId")):
                 # Sent to a phone other than the account holder's: the browser
                 # is that family member's, and a phone no longer on the
@@ -16240,11 +16351,19 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 self.store.revoke_session(token)
                 email = normalize_email(session.email)
                 member_wa_id = session.member_wa_id
+                # The sign-in it carried, not a new one: a family member
+                # taken off and brought back since is linked after it, and
+                # an old link of theirs stays shut (_live_session_member).
+                authenticated_at = session.authenticated_at
+                if session.scope and session.scope != scope:
+                    email = ""
 
         issued: dict[str, Any] = {}
         if email:
             try:
-                issued = self.store.issue_session(email, member_wa_id=member_wa_id)
+                issued = self.store.issue_session(
+                    email, member_wa_id=member_wa_id, scope=scope, authenticated_at=authenticated_at,
+                )
             except ValueError:
                 issued = {}
         if not issued.get("token"):
