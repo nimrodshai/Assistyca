@@ -8789,6 +8789,7 @@ class PortalDatabase:
             "language": str(row["language"] or "") if "language" in row.keys() else "",
             "waId": str(row["wa_id"] or "") if "wa_id" in row.keys() else "",
             "waLinkedAt": str(row["wa_linked_at"] or "") if "wa_linked_at" in row.keys() else "",
+            "signedOutWaId": str(row["signed_out_wa_id"] or "") if "signed_out_wa_id" in row.keys() else "",
             "createdAt": str(row["created_at"] or ""),
             "updatedAt": str(row["updated_at"] or ""),
         }
@@ -8988,8 +8989,9 @@ class PortalDatabase:
         the week asks who takes them instead of reminding someone who is no
         longer there.
 
-        Returns what changed - the name, whether a phone went, and the drives
-        now open - or None when nobody by that name is in the family."""
+        Returns what changed - the name, whether a phone went, every phone
+        that was theirs (linked or signed out), and the drives now open - or
+        None when nobody by that name is in the family."""
 
         key = household.name_key(name)
         if int(user_id or 0) <= 0 or not key:
@@ -9013,7 +9015,8 @@ class PortalDatabase:
                 )
             # A phone they signed out still has what was set for it held,
             # and that ends with them as a linked phone's does.
-            for number in dict.fromkeys(filter(None, (linked, str(existing["signed_out_wa_id"] or "")))):
+            phones = list(dict.fromkeys(filter(None, (linked, str(existing["signed_out_wa_id"] or "")))))
+            for number in phones:
                 conn.execute(
                     "DELETE FROM whatsapp_agent_thread_state WHERE user_id = ? AND thread_id = ?",
                     (int(user_id), household.member_thread_id(number)),
@@ -9041,7 +9044,7 @@ class PortalDatabase:
             )
             conn.execute("DELETE FROM household_members WHERE id = ?", (int(existing["id"]),))
             conn.commit()
-        return {"name": member_name, "phoneUnlinked": bool(linked), "drivesNowOpen": opened}
+        return {"name": member_name, "phoneUnlinked": bool(linked), "phones": phones, "drivesNowOpen": opened}
 
     def household_member_drives(self, *, user_id: int, name: str, group_id: str = "") -> list[dict[str, Any]]:
         """The drives written under one person's name: each weekly leg, and

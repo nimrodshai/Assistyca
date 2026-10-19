@@ -11371,6 +11371,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 else self._week_picture_builder(user_id, timezone_name)
             ),
             join_link=None if group else self._join_link_builder(),
+            release_connections=lambda wa_id, email=session.email: self._release_departed_connections(email, wa_id),
             homework_link=None if group else self._homework_link_builder(),
             pay_link=None if group else (lambda pay=self._pay_link_builder(): pay(user_id)),
             billing={} if group else self._loop_billing(trial, paying=self._user_is_paying(session.email)),
@@ -14156,6 +14157,44 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             )
         return parsed
 
+    def _release_departed_connections(self, email: str, wa_id: str) -> dict[str, Any]:
+        """Disconnect everything a phone that has left the family connected,
+        and hand Google's permission for it back. Leaving the family is
+        leaving: their mail and calendar are theirs, and the account has no
+        business holding a way into them. A grant another row on the account
+        still uses (connected twice over) stays with that row.
+
+        Says how many went, and whether Google confirmed every withdrawal."""
+
+        number = normalize_whatsapp_lookup_id(wa_id)
+        if not number:
+            return {"disconnected": 0, "googleRevoked": True}
+        records = self.database.list_platform_connection_secret_records(
+            email, include_statuses=(), owner_wa_id=number,
+        )
+        revoked_all = True
+        handed_back: set[str] = set()
+        for record in records:
+            fingerprint = normalize_text(record.get("secretFingerprint"))
+            if not fingerprint or fingerprint not in handed_back:
+                own_rows = sum(1 for other in records if normalize_text(other.get("secretFingerprint")) == fingerprint)
+                shared_elsewhere = bool(fingerprint) and (
+                    self.database.count_platform_connections_with_secret_fingerprint(email, fingerprint) > own_rows
+                )
+                if not shared_elsewhere:
+                    revoked, _warning = self._revoke_connection_grant(record)
+                    is_google = connection_vendor(record) == GOOGLE_VENDOR and normalize_text(record.get("authType")).lower() == "oauth"
+                    revoked_all = revoked_all and (revoked or not is_google)
+                handed_back.add(fingerprint)
+            self.database.delete_platform_connection(email, connection_id=normalize_text(record.get("id")))
+        if records:
+            print(
+                f"[household] released {len(records)} connection(s) of a phone that left the family "
+                f"google_revoked={revoked_all}",
+                flush=True,
+            )
+        return {"disconnected": len(records), "googleRevoked": revoked_all}
+
     def _revoke_connection_grant(self, record: dict[str, str]) -> tuple[bool, str]:
         """Hand one stored connection back to the provider that issued it.
 
@@ -15998,6 +16037,8 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             removed = self.database.remove_household_activity(user_id=user_id, activity_id=self._parse_list_id(parts[1]))
         elif len(parts) == 2 and parts[0] == "members":
             removed = self.database.remove_household_member(user_id=user_id, name=parts[1])
+            for phone in (removed or {}).get("phones") or []:
+                self._release_departed_connections(_session.email, phone)
         else:
             self.send_error(HTTPStatus.NOT_FOUND)
             return

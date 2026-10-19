@@ -371,6 +371,10 @@ class LoopContext:
     # Builds the link a parent forwards to bring someone onto the account,
     # from an invitation code. The server knows the public address.
     join_link: Callable[[str], str] | None = None
+    # Disconnects everything a phone that has left the family had connected
+    # and hands its Google permission back, given the phone. The server
+    # holds the credentials, so it does this; it says what went.
+    release_connections: Callable[[str], dict[str, Any]] | None = None
     # Builds the link to the private page where a parent types the school
     # platform's login for the homework check, from the page's code.
     homework_link: Callable[[str], str] | None = None
@@ -2108,10 +2112,26 @@ def describe_remove_family_member(context: LoopContext, args: dict[str, Any]) ->
             f"{name}'s phone stops reaching the account, their conversation here and what was set to go to "
             "their phone are deleted, and coming back takes a fresh invitation"
         )
+    if _member_connections(context, member):
+        parts.append(
+            f"the mail and calendar {name} connected are disconnected, and their Google permission is withdrawn"
+        )
     drives = context.database.household_member_drives(user_id=context.user_id, name=name, group_id=week_scope(context))
     if drives:
         parts.append(f"the {len(drives)} drive(s) that are {name}'s are left with nobody down for them")
     return "; ".join(parts)
+
+
+def _member_connections(context: LoopContext, member: dict[str, Any]) -> list[dict[str, Any]]:
+    """What a family member connected from their own phone, linked or signed out."""
+
+    found: list[dict[str, Any]] = []
+    for phone in dict.fromkeys(filter(None, (member.get("waId"), member.get("signedOutWaId")))):
+        try:
+            found.extend(context.database.list_platform_connections(context.email, owner_wa_id=str(phone)))
+        except Exception:  # noqa: BLE001 - a store that cannot say names nothing
+            continue
+    return found
 
 
 def _tool_remove_family_member(context: LoopContext, args: dict[str, Any]) -> dict[str, Any]:
@@ -2130,6 +2150,17 @@ def _tool_remove_family_member(context: LoopContext, args: dict[str, Any]) -> di
     result: dict[str, Any] = {"removed": removed.get("name") or name}
     if removed.get("phoneUnlinked"):
         result["phoneUnlinked"] = True
+    # Leaving takes their own connections with them: the mail and calendar
+    # they connected are disconnected, and Google's permission handed back.
+    released = [
+        context.release_connections(phone)
+        for phone in removed.get("phones") or []
+        if context.release_connections is not None
+    ]
+    disconnected = sum(int(entry.get("disconnected") or 0) for entry in released)
+    if disconnected:
+        result["theirConnectionsDisconnected"] = disconnected
+        result["googlePermissionWithdrawn"] = all(entry.get("googleRevoked", True) for entry in released)
     opened = removed.get("drivesNowOpen") or []
     if opened:
         # Their drives are open now, and the week will ask about them; the

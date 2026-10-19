@@ -682,5 +682,92 @@ class MemberBrowserTests(unittest.TestCase):
         self.assertEqual(kept["amount"], "42.00")
 
 
+class LeavingTakesTheirConnectionsTests(unittest.TestCase):
+    """Taking someone off the family disconnects what they connected and
+    hands Google's permission back. Signing their phone out does neither:
+    it holds, like their reminders."""
+
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        root = Path(__file__).resolve().parents[1]
+        self.server = create_server(
+            "127.0.0.1", 0, root, PortalConfig(db_path=Path(self.temp_dir.name) / "portal.db", session_secret=SECRET),
+        )
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+        self.base_url = f"http://127.0.0.1:{self.server.server_address[1]}"
+        self.database = self.server.database
+        self.user_id = _family(self.database)
+        code, _ = self.server.store.issue_challenge("dana@example.com")
+        ok, error, result = self.server.store.verify_code("dana@example.com", code)
+        self.assertTrue(ok, error)
+        self.token = str((result or {}).get("token") or "")
+        self.revoked: list[str] = []
+
+        def revoke(handler, encrypted_secret):
+            self.revoked.append(encrypted_secret)
+            return True, ""
+
+        patcher = mock.patch(f"{SERVER}.PortalAuthHandler._revoke_google_calendar_connection", new=revoke)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def tearDown(self) -> None:
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join(timeout=5)
+        self.temp_dir.cleanup()
+
+    def owners(self) -> list[str]:
+        return sorted(row["ownerWaId"] for row in self.database.list_platform_connections("dana@example.com"))
+
+    def test_removing_the_partner_on_the_week_page_disconnects_and_revokes_theirs_only(self) -> None:
+        request = urllib_request.Request(
+            f"{self.base_url}/api/household/members/Yoav", method="DELETE",
+            headers={"Authorization": f"Bearer {self.token}", "Content-Type": "application/json"},
+        )
+        with urllib_request.urlopen(request, timeout=20) as response:
+            self.assertEqual(response.status, 200)
+        self.assertEqual(self.owners(), ["", ""], "Dana's own mail and calendar stay")
+        self.assertEqual(sorted(self.revoked), ["calendar-yoav@gmail.com", "mail-yoav@gmail.com"])
+
+    def test_removing_the_partner_in_the_chat_disconnects_theirs_and_says_so(self) -> None:
+        from packages.infrastructure.portal_auth.server import PortalAuthHandler
+
+        released: list[str] = []
+
+        def release(wa_id: str) -> dict:
+            released.append(wa_id)
+            return PortalAuthHandler._release_departed_connections(
+                SimpleNamespace(
+                    database=self.database,
+                    _revoke_connection_grant=lambda record: (self.revoked.append(record["secretCiphertext"]) or True, ""),
+                ),
+                "dana@example.com", wa_id,
+            )
+
+        context = LoopContext(
+            api=lambda *a, **k: ({}, 200), database=self.database, email="dana@example.com",
+            user_id=self.user_id, timezone_name="Asia/Jerusalem", channel="whatsapp", release_connections=release,
+        )
+        from packages.infrastructure.agent_loop import describe_remove_family_member
+
+        self.assertIn("Google permission is withdrawn", describe_remove_family_member(context, {"name": "Yoav"}))
+        result = TOOLS_BY_NAME["remove_family_member"].run(context, {"name": "Yoav"})
+        self.assertTrue(result["ok"], result)
+        self.assertEqual((result["theirConnectionsDisconnected"], result["googlePermissionWithdrawn"]), (2, True))
+        self.assertEqual(released, [PARTNER_PHONE])
+        self.assertEqual(self.owners(), ["", ""])
+        self.assertEqual(sorted(self.revoked), ["calendar-yoav@gmail.com", "mail-yoav@gmail.com"])
+
+    def test_signing_the_phone_out_keeps_their_connections(self) -> None:
+        self.assertTrue(self.database.delete_user_whatsapp_number(user_id=self.user_id, wa_id=PARTNER_PHONE))
+        self.assertEqual(self.owners(), ["", "", PARTNER_PHONE, PARTNER_PHONE])
+        self.assertEqual(self.revoked, [])
+        # Taken off later, from signed out: theirs still go.
+        removed = self.database.remove_household_member(user_id=self.user_id, name="Yoav")
+        self.assertEqual(removed["phones"], [PARTNER_PHONE])
+
+
 if __name__ == "__main__":
     unittest.main()
