@@ -29,6 +29,8 @@ from zoneinfo import ZoneInfo
 from zoneinfo import ZoneInfoNotFoundError
 
 from packages.infrastructure.account_types import account_feature_allowed
+from packages.infrastructure.connection_owner import CONNECTION_VIEWER_HEADER
+from packages.infrastructure.connection_owner import NOBODY_VIEWER
 from packages.infrastructure.inbox_watch import poll_interval_seconds
 from packages.infrastructure.mailbox_finding_scans import account_timezone
 from packages.infrastructure.portal_db import PortalDatabase
@@ -100,11 +102,15 @@ class InboxWatchScheduler:
         base_url: str = "",
         session_token_factory: Callable[[str], str] | None = None,
         poll: Callable[[dict[str, Any], str], dict[str, Any]] | None = None,
+        viewer_signer: Callable[[str, str], str] | None = None,
     ) -> None:
         self.database = database
         self.config = config or load_inbox_watch_config()
         self.base_url = str(base_url or "").rstrip("/")
         self.session_token_factory = session_token_factory
+        # Signs a family member's phone, so their poll reads their own
+        # mailboxes and tells them alone (connection_owner).
+        self.viewer_signer = viewer_signer
         # How one account is polled: over loopback, or whatever a test
         # hands in. Takes the account and its timezone, returns the
         # endpoint's answer.
@@ -114,14 +120,18 @@ class InboxWatchScheduler:
         if not self.base_url or self.session_token_factory is None:
             raise RuntimeError("The inbox watch is not wired to the server.")
         body = json.dumps({"timezone": timezone_name}, ensure_ascii=False).encode("utf-8")
+        headers = {
+            "Authorization": f"Bearer {self.session_token_factory(account['email'])}",
+            "Content-Type": "application/json",
+        }
+        if account.get("memberWaId"):
+            signed = self.viewer_signer(account["email"], account["memberWaId"]) if self.viewer_signer else ""
+            headers[CONNECTION_VIEWER_HEADER] = signed or NOBODY_VIEWER
         request = urllib_request.Request(
             f"{self.base_url}{POLL_ENDPOINT}",
             data=body,
             method="POST",
-            headers={
-                "Authorization": f"Bearer {self.session_token_factory(account['email'])}",
-                "Content-Type": "application/json",
-            },
+            headers=headers,
         )
         try:
             with urllib_request.urlopen(request, timeout=POLL_TIMEOUT_SECONDS) as response:
@@ -143,6 +153,23 @@ class InboxWatchScheduler:
             detail = normalize_text(result.get("message"))
             raise RuntimeError(f"The inbox poll failed ({code or f'HTTP {status}'}{': ' + detail if detail else ''}).")
         return result
+
+    def _poll_each_person(self, account: dict[str, Any], timezone_name: str) -> dict[str, Any]:
+        """One poll per person on the account with a mailbox of their own:
+        the account holder's, and each family member's who connected theirs.
+        Each reads only that person's mail and tells only them."""
+
+        user_id = int(account.get("userId") or 0)
+        owners = self.database.list_connection_owners(user_id=user_id, platform="email") or [""]
+        totals: dict[str, Any] = {}
+        for owner in owners:
+            result = self._poll({**account, "memberWaId": owner}, timezone_name)
+            for key, value in result.items():
+                if isinstance(value, int) and not isinstance(value, bool):
+                    totals[key] = int(totals.get(key) or 0) + value
+                else:
+                    totals.setdefault(key, value)
+        return totals
 
     def run_pending(self, *, now: datetime | None = None) -> dict[str, Any]:
         reference = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
@@ -169,7 +196,7 @@ class InboxWatchScheduler:
                 self.database.set_inbox_watch_next_poll(user_id=user_id, next_poll_at=reference + TRIAL_OVER_PAUSE)
                 continue
             try:
-                result = self._poll(account, timezone_name)
+                result = self._poll_each_person(account, timezone_name)
             except TrialOver:
                 paused += 1
                 self.database.set_inbox_watch_next_poll(user_id=user_id, next_poll_at=reference + TRIAL_OVER_PAUSE)

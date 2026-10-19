@@ -291,6 +291,14 @@ class NudgerTests(unittest.TestCase):
             payload["scheduleSlots"], {"date": "20.9", "activities": 2, "drives": 2, "open": 0, "openPickups": 0},
         )
 
+    def test_the_account_holders_morning_is_written_to_her_in_her_own_form(self) -> None:
+        from packages.infrastructure.person_address import keep_address_form
+
+        self.assertTrue(keep_address_form(self.database, user_id=self.user_id, form="f", basis="self"))
+        self.nudger.run_pending(now=at(SUNDAY, 7, 5))
+        [action] = [a for a in self.queued() if a["payload"]["title"] == "Today in your family's week"]
+        self.assertIn("'you' is the person (a woman), written to in that form.", action["payload"]["instruction"])
+
     def test_a_morning_missed_by_hours_is_not_sent_late(self) -> None:
         self.nudger.run_pending(now=at(SUNDAY, 13, 0))
         self.assertEqual(self.queued(), [])
@@ -1175,3 +1183,299 @@ class OpenPickupTests(unittest.TestCase):
         # Once each; and the grandmother, who hears only about her own drives, hears nothing.
         self.assertEqual(self.nudger.run_pending(now=at(self.tuesday, 12, 25))["rides"], 0)
         self.assertFalse(any(a["recipientRef"] == "972500000003" for a in self.queued()))
+
+
+class PersonHoldTests(unittest.TestCase):
+    """Oren's report, 2026-10-18: Stav, on her own phone, is abroad Sunday
+    and Monday. Her pickup is open those days - the evening asks who
+    collects, the morning says nobody has it yet - and on those days her
+    phone is quiet."""
+
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.database = PortalDatabase(Path(self.temp_dir.name) / "portal.db")
+        self.database.register_user("dana@example.com", display_name="Dana Levi")
+        self.user_id = int((self.database.get_user("dana@example.com") or {})["id"])
+        self.stav = self.database.save_household_member(user_id=self.user_id, name="Stav", role="partner")
+        self.database.save_household_member(user_id=self.user_id, name="Laor", role="child")
+        self.gan = self.database.save_household_activity(
+            user_id=self.user_id, title="Gan", who=["Laor"], days=["sun", "mon"],
+            start_time="08:00", end_time="16:15", drop_off_by="me", pick_up_by="Stav",
+        )
+        self.database.create_household_invite(
+            user_id=self.user_id, member_id=int(self.stav["id"]), code="STV444",
+            expires_at=datetime.now(UTC) + timedelta(days=14),
+        )
+        self.assertTrue(self.database.claim_household_invite(code="STV444", wa_id="972500000002")["ok"])
+        self.database.save_schedule_exception(
+            user_id=self.user_id, starts_on="2026-09-20", ends_on="2026-09-21",
+            targets=[{"kind": "person", "ref": "Stav"}], reason="Stav abroad",
+        )
+        self.nudger = FamilyWeekNudger(self.database, config=FamilyWeekNudgeConfig(morning_hour=7, evening_hour=20, ride_lead_minutes=30))
+
+    def tearDown(self) -> None:
+        self.temp_dir.cleanup()
+
+    def queued(self) -> list[dict]:
+        return [
+            action for action in self.database.list_scheduled_actions_for_user(self.user_id, limit=50)
+            if (action.get("payload") or {}).get("source") == "family_week"
+        ]
+
+    def test_a_held_parents_drives_are_open_and_she_hears_nothing_those_days(self) -> None:
+        saturday = SUNDAY.replace(day=19)
+        for moment in (at(saturday, 20, 10), at(SUNDAY, 7, 5), at(SUNDAY, 15, 50), at(SUNDAY, 16, 0), at(SUNDAY, 20, 10)):
+            self.nudger.run_pending(now=moment)
+        sent = self.queued()
+        owners = {a["payload"]["title"]: a["payload"] for a in sent if a["recipientRef"] == "owner"}
+        self.assertIn("Gan (Laor) at 16:15: nobody is down for the pickup", owners["Tomorrow still needs someone"]["instruction"])
+        morning = owners["Today in your family's week"]["instruction"]
+        self.assertIn("08:00-16:15 Gan (Laor), takes: you, nobody collects them yet", morning)
+        self.assertNotIn("collects: Stav", morning)
+        self.assertIn("nobody is down yet to collect Laor - Gan at 16:15", owners["Still needs someone"]["instruction"])
+        # Saturday evening she is still home, and is asked like any parent;
+        # on the days she is away, nothing reaches her phone.
+        stavs = [a for a in sent if a["recipientRef"] == "972500000002"]
+        self.assertEqual([(a["payload"]["title"], a["runAt"][:10]) for a in stavs], [("Tomorrow still needs someone", "2026-09-19")])
+
+    def test_the_open_runs_say_why_and_the_away_parent_is_not_offered(self) -> None:
+        saturday = SUNDAY.replace(day=19)
+        for moment in (at(saturday, 20, 10), at(SUNDAY, 7, 5), at(SUNDAY, 15, 50)):
+            self.nudger.run_pending(now=moment)
+        sent = self.queued()
+        why = "(Stav, who usually does it, is away: Stav abroad)"
+        owners = {a["payload"]["title"]: a["payload"] for a in sent if a["recipientRef"] == "owner"}
+        evening = owners["Tomorrow still needs someone"]["instruction"]
+        self.assertIn(f"Gan (Laor) at 16:15: nobody is down for the pickup {why}", evening)
+        self.assertIn("them or somebody else", evening)
+        self.assertNotIn("their partner", evening)
+        self.assertIn(f"nobody collects them yet {why}", owners["Today in your family's week"]["instruction"])
+        self.assertIn(f"nobody is down yet to collect Laor - Gan at 16:15 {why}", owners["Still needs someone"]["instruction"])
+        # Saturday evening Stav is home and asked, but not offered the run herself.
+        [stavs] = [a["payload"] for a in sent if a["recipientRef"] == "972500000002"]
+        self.assertIn("the other parent or somebody else", stavs["instruction"])
+        self.assertNotIn("them, the other parent", stavs["instruction"])
+
+    def test_after_the_hold_her_pickup_is_hers_again(self) -> None:
+        self.nudger.run_pending(now=at(SUNDAY + timedelta(days=7), 7, 5))
+        stav_morning = [a for a in self.queued() if a["recipientRef"] == "972500000002"]
+        self.assertEqual(len(stav_morning), 1)
+        self.assertIn("collects: you", stav_morning[0]["payload"]["instruction"])
+
+    def test_a_hold_on_the_child_still_takes_the_whole_activity_off(self) -> None:
+        self.database.save_schedule_exception(
+            user_id=self.user_id, starts_on="2026-09-27", ends_on="2026-09-27", targets=[{"kind": "person", "ref": "Laor"}],
+        )
+        self.assertEqual(self.nudger.run_pending(now=at(SUNDAY + timedelta(days=7), 7, 5))["morning"], 0)
+
+
+class NamelessOwnerOnPartnersPhoneTests(unittest.TestCase):
+    """Oren's report, 2026-10-18: the account holder has no name kept, and
+    the partner's morning read "takes: me" - as if the partner drove."""
+
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.database = PortalDatabase(Path(self.temp_dir.name) / "portal.db")
+        self.database.register_user("someone@example.com")
+        self.user_id = int((self.database.get_user("someone@example.com") or {})["id"])
+        self.stav = self.database.save_household_member(user_id=self.user_id, name="Stav", role="partner")
+        self.database.save_household_member(user_id=self.user_id, name="Laor", role="child")
+        self.database.save_household_activity(
+            user_id=self.user_id, title="Gan", who=["Laor"], days=["sun"],
+            start_time="08:00", end_time="16:15", drop_off_by="me", pick_up_by="Stav",
+        )
+        self.database.create_household_invite(
+            user_id=self.user_id, member_id=int(self.stav["id"]), code="STV555",
+            expires_at=datetime.now(UTC) + timedelta(days=14),
+        )
+        self.assertTrue(self.database.claim_household_invite(code="STV555", wa_id="972500000002")["ok"])
+        self.nudger = FamilyWeekNudger(self.database, config=FamilyWeekNudgeConfig(morning_hour=7, evening_hour=20))
+
+    def tearDown(self) -> None:
+        self.temp_dir.cleanup()
+
+    def stavs_morning(self) -> dict:
+        self.nudger.run_pending(now=at(SUNDAY, 7, 5))
+        [morning] = [
+            a["payload"] for a in self.database.list_scheduled_actions_for_user(self.user_id, limit=50)
+            if a["recipientRef"] == "972500000002"
+        ]
+        return morning
+
+    def test_the_account_holders_drive_reads_as_the_partners_partner(self) -> None:
+        self.database.save_household_profile(user_id=self.user_id, address_form="f")
+        morning = self.stavs_morning()
+        for text in (morning["instruction"], morning["fallbackText"]):
+            self.assertIn("takes: your partner, collects: you", text)
+            self.assertNotIn("takes: me", text)
+        self.assertIn("the account holder, a woman", morning["instruction"])
+        self.assertIn("בת הזוג שלך", morning["instruction"])
+
+    def test_with_the_gender_unknown_the_word_is_the_other_parent(self) -> None:
+        morning = self.stavs_morning()
+        self.assertIn("takes: your partner", morning["fallbackText"])
+        self.assertIn("ההורה השני", morning["instruction"])
+        self.assertNotIn("בת הזוג", morning["instruction"])
+
+    def test_a_named_account_holder_is_still_named(self) -> None:
+        self.database.save_account_fact(user_id=self.user_id, key="name", fact="Their name is Dana.")
+        morning = self.stavs_morning()
+        self.assertIn("takes: Dana, collects: you", morning["fallbackText"])
+        self.assertNotIn("your partner", morning["instruction"])
+
+
+class OwnerHoldTests(unittest.TestCase):
+    """Oren's report, 2026-10-19: Dana, the account holder, does the
+    drop-offs and is away Monday in Eilat. She is never offered her own
+    runs, and they reach Stav on his own phone with the reason said for
+    him. Only when she handed Monday to Stav is she left in peace: one calm
+    word that morning, and a run of hers still uncovered on the day."""
+
+    MONDAY = SUNDAY.replace(day=21)
+
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.database = PortalDatabase(Path(self.temp_dir.name) / "portal.db")
+        self.database.register_user("dana@example.com", display_name="Dana Levi")
+        self.user_id = int((self.database.get_user("dana@example.com") or {})["id"])
+        self.stav = self.database.save_household_member(user_id=self.user_id, name="Stav", role="partner")
+        self.database.save_household_member(user_id=self.user_id, name="Laor", role="child")
+        self.gan = self.database.save_household_activity(
+            user_id=self.user_id, title="Gan", who=["Laor"], days=["sun", "mon"],
+            start_time="08:00", end_time="16:15", drop_off_by="Dana", pick_up_by="Stav",
+        )
+        self.swimming = self.database.save_household_activity(
+            user_id=self.user_id, title="Swimming", who=["Laor"], days=["mon"],
+            start_time="16:30", end_time="17:15", drop_off_by="me", pick_up_by="Stav",
+        )
+        # Tuesday has a gap, so an evening question on Monday would be due.
+        self.database.save_household_activity(
+            user_id=self.user_id, title="Piano", who=["Laor"], days=["tue"], start_time="17:00", end_time="18:00",
+        )
+        self.join(self.stav, "STV666", "972500000002")
+        self.nudger = FamilyWeekNudger(self.database, config=FamilyWeekNudgeConfig(morning_hour=7, evening_hour=20, ride_lead_minutes=30))
+
+    def tearDown(self) -> None:
+        self.temp_dir.cleanup()
+
+    def join(self, member: dict, code: str, phone: str) -> None:
+        self.database.create_household_invite(
+            user_id=self.user_id, member_id=int(member["id"]), code=code, expires_at=datetime.now(UTC) + timedelta(days=14),
+        )
+        self.assertTrue(self.database.claim_household_invite(code=code, wa_id=phone)["ok"])
+
+    def hold(self, ref: str) -> dict:
+        return self.database.save_schedule_exception(
+            user_id=self.user_id, starts_on="2026-09-21", ends_on="2026-09-21",
+            targets=[{"kind": "person", "ref": ref}], reason="Eilat",
+        )
+
+    def run_through_monday(self) -> list[dict]:
+        for moment in (
+            at(SUNDAY, 20, 5), at(self.MONDAY, 7, 5), at(self.MONDAY, 7, 35), at(self.MONDAY, 16, 5),
+            at(self.MONDAY, 20, 5),
+        ):
+            self.nudger.run_pending(now=moment)
+        return [
+            action for action in self.database.list_scheduled_actions_for_user(self.user_id, limit=50)
+            if (action.get("payload") or {}).get("source") == "family_week"
+        ]
+
+    @staticmethod
+    def sent_to(sent: list[dict], ref: str) -> dict[tuple[str, str], dict]:
+        return {(a["payload"]["title"], a["runAt"][:10]): a["payload"] for a in sent if a["recipientRef"] == ref}
+
+    def test_without_a_hand_over_she_keeps_her_messages_and_is_never_offered_her_runs(self) -> None:
+        for ref in ("Dana", "me"):
+            with self.subTest(hold=ref):
+                self.tearDown()
+                self.setUp()
+                self.hold(ref)
+                sent = [a for a in self.run_through_monday() if a["recipientRef"] == "owner"]
+                self.assertEqual(sorted((a["payload"]["title"], a["runAt"][:10]) for a in sent), [
+                    ("Still needs someone", "2026-09-21"), ("Still needs someone", "2026-09-21"),
+                    ("Today in your family's week", "2026-09-21"),
+                    ("Tomorrow still needs someone", "2026-09-20"), ("Tomorrow still needs someone", "2026-09-21"),
+                ])
+                owners = self.sent_to(sent, "owner")
+                mine = "(you usually do it, and you are away: Eilat)"
+                evening = owners[("Tomorrow still needs someone", "2026-09-20")]["instruction"]
+                self.assertIn(f"Gan (Laor) at 08:00: nobody is down for the drop-off {mine}", evening)
+                self.assertIn("their partner or somebody else", evening)
+                words = [a["payload"]["instruction"] for a in sent if a["payload"]["title"] == "Still needs someone"]
+                self.assertTrue(any(f"OPEN: nobody is down yet to take Laor - Gan at 08:00 {mine}" in word for word in words))
+                for word in words:
+                    self.assertIn("somebody else - not them, they are away today -", word)
+                for payload in (a["payload"] for a in sent):
+                    self.assertNotIn("the account holder", payload["instruction"] + payload["fallbackText"])
+
+    def test_her_open_runs_go_to_the_partner_with_the_reason_said_for_him(self) -> None:
+        self.hold("Dana")
+        stavs = self.sent_to(self.run_through_monday(), "972500000002")
+        why = "(Dana, who usually does it, is away: Eilat)"
+        evening = stavs[("Tomorrow still needs someone", "2026-09-20")]["instruction"]
+        self.assertIn(f"Gan (Laor) at 08:00: nobody is down for the drop-off {why}", evening)
+        self.assertIn("them or somebody else", evening)
+        self.assertIn(f"nobody takes them yet {why}", stavs[("Today in your family's week", "2026-09-21")]["instruction"])
+        word = stavs[("Still needs someone", "2026-09-21")]["instruction"]
+        self.assertIn(f"OPEN: nobody is down yet to take Laor - Gan at 08:00 {why}", word)
+        self.assertIn("them or somebody else -", word)
+        for payload in stavs.values():
+            self.assertNotIn("the account holder", payload["instruction"] + payload["fallbackText"])
+
+    def test_with_no_name_kept_she_is_your_partner_to_him(self) -> None:
+        self.database.register_user("someone@example.com")
+        self.user_id = int((self.database.get_user("someone@example.com") or {})["id"])
+        self.stav = self.database.save_household_member(user_id=self.user_id, name="Stav", role="partner")
+        self.database.save_household_member(user_id=self.user_id, name="Laor", role="child")
+        self.database.save_household_activity(
+            user_id=self.user_id, title="Gan", who=["Laor"], days=["mon"],
+            start_time="08:00", end_time="16:15", drop_off_by="me", pick_up_by="Stav",
+        )
+        self.join(self.stav, "STV777", "972500000007")
+        self.database.save_household_profile(user_id=self.user_id, address_form="f")
+        self.hold("me")
+        stavs = self.sent_to(self.run_through_monday(), "972500000007")
+        why = "(your partner, who usually does it, is away: Eilat)"
+        for key in (("Tomorrow still needs someone", "2026-09-20"), ("Still needs someone", "2026-09-21")):
+            self.assertIn(why, stavs[key]["instruction"])
+            self.assertIn("בת הזוג שלך", stavs[key]["instruction"])
+            self.assertNotIn("the account holder", stavs[key]["fallbackText"])
+
+    def test_handed_over_she_hears_one_calm_word_and_only_an_uncovered_run_after_it(self) -> None:
+        hold = self.hold("Dana")
+        self.database.hand_over_schedule_exception(user_id=self.user_id, exception_id=int(hold["id"]), handed_to="Stav")
+        for activity in (self.gan, self.swimming):
+            self.database.save_household_day_drive(
+                user_id=self.user_id, activity_id=int(activity["id"]), day="2026-09-21", leg="drop_off", who="Stav",
+            )
+        # Stav can't do the swimming drop-off after all: it is open again.
+        self.database.save_household_day_drive(
+            user_id=self.user_id, activity_id=int(self.swimming["id"]), day="2026-09-21", leg="drop_off", who="",
+        )
+        sent = self.run_through_monday()
+        owners = self.sent_to(sent, "owner")
+        # The evening before is not a held day: she is asked as usual.
+        self.assertEqual(sorted(owners), [
+            ("Still needs someone", "2026-09-21"), ("Tomorrow still needs someone", "2026-09-20"),
+            ("While you're away", "2026-09-21"),
+        ])
+        calm = owners[("While you're away", "2026-09-21")]
+        self.assertIn("PARTNER: Stav\nREASON: Eilat\nBACK: Tuesday (2026-09-22)", calm["instruction"])
+        self.assertEqual(calm["templateKind"], "morning_digest")
+        self.assertEqual(calm["fallbackText"], "While you're away, Stav has everything. You'll hear from me again on Tuesday ☺️")
+        self.assertNotIn("\n", calm["fallbackText"])
+        uncovered = owners[("Still needs someone", "2026-09-21")]["instruction"]
+        self.assertIn("OPEN: nobody is down yet to take Laor - Swimming at 16:30 (you usually do it, and you are away: Eilat)", uncovered)
+        self.assertIn("not them, they are away today", uncovered)
+        # The runs she handed over are Stav's: his morning says so, and he is reminded.
+        stavs = self.sent_to(sent, "972500000002")
+        self.assertIn("08:00-16:15 Gan (Laor), takes: you (today only)", stavs[("Today in your family's week", "2026-09-21")]["instruction"])
+        self.assertIn("nobody is down yet to take Laor - Swimming at 16:30 (Dana, who usually does it, is away: Eilat)", stavs[("Time to leave soon", "2026-09-21")]["instruction"])
+
+    def test_a_hold_on_the_child_still_takes_the_activity_off(self) -> None:
+        self.database.save_schedule_exception(
+            user_id=self.user_id, starts_on="2026-09-21", ends_on="2026-09-21", targets=[{"kind": "person", "ref": "Laor"}],
+        )
+        sent = [a for a in self.run_through_monday() if a["runAt"][:10] == "2026-09-21"]
+        self.assertFalse(any("Gan" in a["payload"]["instruction"] or "Swimming" in a["payload"]["instruction"] for a in sent))

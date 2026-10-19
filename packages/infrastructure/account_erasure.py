@@ -19,6 +19,7 @@ from dataclasses import field
 from pathlib import Path
 from typing import Any
 from typing import Callable
+from typing import Iterable
 
 from packages.infrastructure.portal_db import normalize_email
 
@@ -46,6 +47,7 @@ def erase_account(
     root: Path,
     receipt_output_root: Path | None = None,
     receipt_owner_key: str = "",
+    member_receipt_owner_keys: Iterable[str] = (),
     revoke_grant: RevokeGrant | None = None,
     db_path: Path | None = None,
 ) -> AccountErasure:
@@ -82,8 +84,11 @@ def erase_account(
             if warning:
                 result.revocation_warnings.append(warning)
 
-    owner_root = _receipt_owner_root(receipt_output_root, receipt_owner_key)
-    if owner_root is not None and owner_root.is_dir():
+    # The account holder's saved files, and each family member's beside them.
+    for key in (receipt_owner_key, *member_receipt_owner_keys):
+        owner_root = _receipt_owner_root(receipt_output_root, key)
+        if owner_root is None or not owner_root.is_dir():
+            continue
         try:
             shutil.rmtree(owner_root)
         except OSError:

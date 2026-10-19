@@ -581,6 +581,89 @@ class StandingTaskApiTests(unittest.TestCase):
         self.assertEqual((self.database.get_whatsapp_agent_pending(user_id=user_id) or {}).get("approvalId"), "appr-old")
 
 
+    def test_a_scheduled_question_to_each_parent_lands_in_their_own_conversation(self) -> None:
+        # Ruth holds the account; Daniel joined it from his own phone. The
+        # evening question about a pickup nobody has taken goes to both, and
+        # each is written in, and kept in, that phone's own conversation.
+        from packages.infrastructure.whatsapp_agent_chat import WhatsAppAgentChat
+
+        user_id = int(self.user["id"])
+        partner_wa_id = "972500000002"
+        daniel = self.database.save_household_member(user_id=user_id, name="Daniel", role="partner")
+        self.database.create_household_invite(
+            user_id=user_id, member_id=int(daniel["id"]), code="DAN111",
+            expires_at=datetime.now(timezone.utc) + timedelta(days=14),
+        )
+        self.assertTrue(self.database.claim_household_invite(code="DAN111", wa_id=partner_wa_id)["ok"])
+        partner_thread = household.member_thread_id(partner_wa_id)
+        self.assertEqual(
+            household.phone_conversation(self.database, user_id=user_id, wa_id=partner_wa_id),
+            {"agentThreadId": partner_thread, "memberId": int(daniel["id"])},
+        )
+        self.assertEqual(household.phone_conversation(self.database, user_id=user_id, wa_id=OWNER_WA_ID), {})
+        self.database.save_whatsapp_agent_message(user_id=user_id, role="user", text="Ruth: thanks")
+        self.database.save_whatsapp_agent_message(user_id=user_id, role="user", text="Daniel: ok", thread_id=partner_thread)
+        # A question already waiting in Ruth's conversation is not Daniel's.
+        self.database.save_whatsapp_agent_pending(user_id=user_id, pending={"kind": "tool_confirmation", "approvalId": "ruth-old"})
+
+        def action(recipient: str) -> dict:
+            payload = {"title": "Tomorrow's pickups", "instruction": "PLAIN ask", "offerInstruction": "OFFER ask",
+                       "oneOff": True, "source": "family_week"}
+            if recipient:
+                payload["recipientWaId"] = recipient
+            created = self.database.create_scheduled_action(
+                user_id=user_id, action_type="run_task", channel="whatsapp", recipient_ref=recipient or "owner",
+                run_at=datetime.now(timezone.utc), timezone_name=JERUSALEM, payload=payload,
+            )
+            return self.database.get_scheduled_action(int(created["id"])) or created
+
+        seen: list[tuple[dict, dict]] = []
+
+        def api(chat, method, path, payload=None, **kwargs):
+            seen.append((dict(chat.connection), payload))
+            who = "Daniel" if chat.connection.get("memberId") else "Ruth"
+            return {"ok": True, "reply": f"{who}, who collects Noa tomorrow?",
+                    "pendingConfirmation": {"id": f"appr-{who}", "tool": "save_day_drive"}}, 200
+
+        runner = StandingTaskRunner(
+            database=self.database, base_url=self.base_url,
+            session_token_factory=lambda email: mint_agent_session_token(self.server.store, email),
+        )
+        with mock.patch.object(WhatsAppAgentChat, "_api", autospec=True, side_effect=api):
+            runner.run(action(""))
+            runner.run(action(partner_wa_id))
+
+        (ruth_connection, ruth_request), (daniel_connection, daniel_request) = seen
+        self.assertEqual(ruth_connection.get("agentThreadId", ""), "")
+        self.assertEqual([m["text"] for m in ruth_request["conversation"]], ["Ruth: thanks"])
+        self.assertEqual(daniel_connection["agentThreadId"], partner_thread)
+        self.assertEqual(daniel_connection["memberId"], int(daniel["id"]))
+        self.assertEqual(daniel_request["senderWaId"], partner_wa_id)
+        self.assertEqual([m["text"] for m in daniel_request["conversation"]], ["Daniel: ok"])
+        self.assertIn("OFFER ask", daniel_request["userMessage"], "Ruth's waiting question does not hold Daniel's back")
+
+        ruth_transcript = self.database.list_recent_whatsapp_agent_messages(user_id=user_id)
+        daniel_transcript = self.database.list_recent_whatsapp_agent_messages(user_id=user_id, thread_id=partner_thread)
+        self.assertEqual(ruth_transcript[-1]["text"], "Ruth, who collects Noa tomorrow?")
+        self.assertNotIn("Daniel", " ".join(m["text"] for m in ruth_transcript[1:]))
+        self.assertEqual(daniel_transcript[-1]["text"], "Daniel, who collects Noa tomorrow?")
+        self.assertEqual((self.database.get_whatsapp_agent_pending(user_id=user_id) or {}).get("approvalId"), "ruth-old")
+        held = self.database.get_whatsapp_agent_pending(user_id=user_id, thread_id=partner_thread) or {}
+        self.assertEqual(held.get("approvalId"), "appr-Daniel")
+        self.assertEqual(held.get("question"), "Daniel, who collects Noa tomorrow?")
+
+        # Daniel's answer comes in on his phone: the chat built for it reads
+        # his own conversation, and finds the question there.
+        incoming = WhatsAppAgentChat(
+            database=self.database,
+            connection={"userId": user_id, "email": "owner@example.com", "ownerWaId": partner_wa_id,
+                        **household.phone_conversation(self.database, user_id=user_id, wa_id=partner_wa_id)},
+            base_url=self.base_url, session_token_factory=lambda email: "t",
+        )
+        history = self.database.list_recent_whatsapp_agent_messages(user_id=user_id, thread_id=incoming.thread_id)
+        self.assertEqual(history[-1]["text"], "Daniel, who collects Noa tomorrow?")
+
+
 # -- the chat tools, driven by a scripted model ------------------------------
 
 

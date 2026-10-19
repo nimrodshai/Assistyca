@@ -76,6 +76,54 @@ class ComputedSentenceProperties(unittest.TestCase):
         prompt = build_recovery_prompt(build_situation("assistant_unavailable"), conversation=[], channel="whatsapp", today="2026-09-29")
         self.assertIn("never tell them to send it again", prompt)
 
+    def test_a_hebrew_family_gets_the_floor_in_hebrew_for_every_code(self) -> None:
+        import re
+
+        for code in sorted(RECOVERY_CODES):
+            for options in ([], [make_option("retry")], [make_option("connect", link=GOOGLE)], [make_option("say", say="sign out")],
+                            [make_option("step", label="ask Dana for a fresh invitation link")]):
+                with self.subTest(code=code, options=[o["kind"] for o in options]):
+                    sentence = computed_recovery_sentence(
+                        build_situation(code, what_happened="That can't run here.", options=options), language="he",
+                    )
+                    words = re.sub(r"https://\S+|\"[^\"]*\"", "", sentence)
+                    self.assertRegex(words, r"[א-ת]")
+                    self.assertNotRegex(words, r"[A-Za-z]", sentence)
+
+    def test_a_long_option_is_cut_between_words(self) -> None:
+        label = (
+            "if that was a mistake, ask the account holder for a fresh invitation link; for an assistant of "
+            "their own instead, just write again - and in the meantime nothing set for this phone goes on running at all, "
+            "not the reminders and not the standing actions"
+        )
+        self.assertGreater(len(label), 240)
+        option = make_option("step", label=label)
+        self.assertTrue(label.startswith(option["label"]))
+        self.assertTrue(label[len(option["label"]):].startswith(" "), option["label"])
+        short = make_option("step", label="if that was a mistake, ask the account holder for a fresh invitation link; for an assistant of their own instead, just write again")
+        self.assertTrue(short["label"].endswith("just write again"))
+
+    def test_the_floor_speaks_to_the_reader_and_names_the_account_holder(self) -> None:
+        sentence = computed_recovery_sentence(build_situation(
+            "not_supported",
+            what_happened="The account holder took the person writing off the family's account on Assistyca.",
+            reader={"name": "Yoav"}, names={"accountHolder": "Dana"},
+        ))
+        self.assertTrue(sentence.startswith("Dana took you off the family's account on Assistyca."), sentence)
+
+    def test_a_situation_with_its_own_floor_is_said_with_it_and_the_model_never_sees_it(self) -> None:
+        situation = build_situation(
+            "not_supported", what_happened="The code the person writing sent matches nothing.",
+            floor={"en": "That code doesn't match any invitation.", "he": "הקוד הזה לא תואם אף הזמנה.", "fr": "x"},
+        )
+        self.assertEqual(computed_recovery_sentence(situation), "That code doesn't match any invitation.")
+        self.assertEqual(computed_recovery_sentence(situation, language="he"), "הקוד הזה לא תואם אף הזמנה.")
+        self.assertEqual(set(situation["floor"]), {"en", "he"})
+        prompt = build_recovery_prompt(situation, channel="whatsapp")
+        self.assertNotIn("floor", prompt)
+        self.assertNotIn("doesn't match any invitation", prompt)
+        self.assertNotIn("floor", build_situation("internal"))
+
     def test_no_retry_means_no_retry_offered(self) -> None:
         sentence = computed_recovery_sentence(build_situation("not_supported", what_happened="That can't run here."))
         self.assertNotIn("again", sentence)
@@ -159,6 +207,18 @@ class SituationShapeTests(unittest.TestCase):
         self.assertIn('"code":"assistant_unavailable"', prompt)
         self.assertIn('"recentConversation":[{"role":"user","text":"hi"}]', prompt)
 
+
+    def test_a_situation_about_its_reader_names_them_apart_and_asks_to_be_said_to_them(self) -> None:
+        situation = normalize_situation(build_situation(
+            "not_supported", what_happened="The account holder took the person writing off the family.",
+            reader={"name": "Yoav", "addressAs": "a man", "phone": "972500000002"},
+            names={"accountHolder": "Dana", "": "nobody"},
+        ))
+        self.assertEqual(situation["reader"], {"name": "Yoav", "addressAs": "a man"})
+        self.assertEqual(situation["names"], {"accountHolder": "Dana"})
+        prompt = build_recovery_prompt(situation, channel="whatsapp")
+        self.assertIn("speak to them directly, as you, by situation.reader.name", prompt)
+        self.assertNotIn("reader", build_situation("internal"))
 
 if __name__ == "__main__":
     unittest.main()

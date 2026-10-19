@@ -281,6 +281,54 @@ class PortalSecurityTests(unittest.TestCase):
 
         self.assertEqual(status, 404)
 
+    def _raw_get(self, path: str, cookie: str) -> int:
+        # http.client sends the path exactly as written, dots and all, the way
+        # a hand-made request would.
+        connection = http_client.HTTPConnection("127.0.0.1", self.server.server_address[1], timeout=5)
+        try:
+            connection.request("GET", path, headers={"Cookie": cookie})
+            response = connection.getresponse()
+            response.read()
+            return response.status
+        finally:
+            connection.close()
+
+    def _plant(self, owner_key: str) -> None:
+        folder = Path(self.temp_dir.name) / "agent_receipts" / owner_key / "Receipts" / "Oct2026"
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / "bundle.json").write_text("{\"secret\": true}", encoding="utf-8")
+
+    def test_a_saved_file_address_cannot_climb_into_another_accounts_folder(self) -> None:
+        self.server.database.register_user("victim@example.com")
+        cookie = self._cookie()
+        own_key = build_agent_receipt_owner_key("owner@example.com")
+        victim_key = build_agent_receipt_owner_key("victim@example.com")
+        self._plant(own_key)
+        self._plant(victim_key)
+        tail = f"{victim_key}/Receipts/Oct2026/bundle.json"
+
+        # The caller's own file still opens, so the refusals below are the climb.
+        self.assertEqual(self._raw_get(f"/output/agent_receipts/{own_key}/Receipts/Oct2026/bundle.json", cookie), 200)
+        for climb in ("..", "%2e%2e", "%2E%2E", "%2e.", "%252e%252e", "..%5C..", "./.."):
+            with self.subTest(climb=climb):
+                status = self._raw_get(f"/output/agent_receipts/{own_key}/{climb}/{tail}", cookie)
+                self.assertEqual(status, 404)
+        self.assertEqual(self._raw_get(f"/output/agent_receipts/{own_key}/..%5C{tail}", cookie), 404)
+        self.assertEqual(self._raw_get(f"/output/agent_receipts/{own_key}%2F..%2F{tail}", cookie), 404)
+
+    def test_a_saved_file_address_cannot_climb_into_a_partners_folder(self) -> None:
+        cookie = self._cookie()
+        own_key = build_agent_receipt_owner_key("owner@example.com")
+        partner_key = build_agent_receipt_owner_key("owner@example.com", "972500000002")
+        self._plant(partner_key)
+
+        for climb in ("..", "%2e%2e", "%2E%2E"):
+            with self.subTest(climb=climb):
+                status = self._raw_get(
+                    f"/output/agent_receipts/{own_key}/{climb}/{partner_key}/Receipts/Oct2026/bundle.json", cookie,
+                )
+                self.assertEqual(status, 404)
+
 
 if __name__ == "__main__":
     unittest.main()

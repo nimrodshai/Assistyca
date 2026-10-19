@@ -156,11 +156,39 @@ def can_change_week(role: Any) -> bool:
     return clean(role).lower() in WEEK_EDITOR_ROLES
 
 
+def can_connect_own_sources(role: Any) -> bool:
+    """Whether someone with this role may connect their own mail and
+    calendar, and keep lists: the two parents. A grandparent has the week to
+    read and their own drives, and nothing else on the account."""
+
+    return clean(role).lower() in WEEK_EDITOR_ROLES
+
+
 def member_thread_id(wa_id: Any) -> str:
     """The conversation key for a phone that joined the family."""
 
     number = re.sub(r"\D+", "", str(wa_id or ""))
     return f"{MEMBER_THREAD_PREFIX}{number}" if number else ""
+
+
+def phone_conversation(database: Any, *, user_id: int, wa_id: Any) -> dict[str, Any]:
+    """Whose conversation a phone has on this account, in the keys a chat
+    connection carries: a family member's own thread and member id when the
+    phone joined the family, and nothing for the account holder's own phone.
+    The message that came in and the message that goes out both read it
+    here, so the two can never file the same phone in different places."""
+
+    resolved_user_id = int(user_id or 0)
+    finder = getattr(database, "get_household_member_by_wa_id", None)
+    if resolved_user_id <= 0 or not str(wa_id or "").strip() or not callable(finder):
+        return {}
+    try:
+        member = finder(str(wa_id), user_id=resolved_user_id)
+    except Exception:  # noqa: BLE001 - a store that cannot say treats the phone as the owner's
+        return {}
+    if not member:
+        return {}
+    return {"agentThreadId": member_thread_id(wa_id), "memberId": int(member.get("id") or 0)}
 
 
 def describe_speaker(member: dict[str, Any] | None, *, owner_name: str = "") -> dict[str, Any]:
@@ -215,6 +243,25 @@ def member_nudges(role: Any) -> tuple[str, ...]:
     if normalize_role(role) == "partner":
         return ("morning", "evening", "rides")
     return ("rides",)
+
+
+def what_joining_shares(role: Any) -> dict[str, Any]:
+    """What someone joining from their own phone shares with the account
+    holder, and what stays the account holder's, so an invitation can say
+    it exactly. A partner shares the family's running of things; each
+    person's mail, calendar and receipts stay their own, and of a calendar
+    only when its owner is busy crosses, to work out the drives."""
+
+    if normalize_role(role) == "partner":
+        return {
+            "shared": ["the family's week", "the lists", "the scheduled tasks"],
+            "staysTheAccountHolders": ["their mail", "their calendar", "their receipts"],
+            "calendarsCross": "only when each parent is busy, never what it is - for working out the drives",
+        }
+    return {
+        "shared": ["the family's week, to read", "a word before the drives that are theirs"],
+        "staysTheAccountHolders": ["their mail", "their calendar", "their receipts", "the lists"],
+    }
 
 
 def nobody_drives(who: Any) -> bool:
@@ -868,6 +915,9 @@ def describe_household(
                     "phone": member.get("phone") or None,
                     "notes": member.get("notes") or None,
                     "onWhatsApp": True if member.get("waId") else None,
+                    # The gender they are spoken of and to in, once kept,
+                    # so the family's partner is the same person every turn.
+                    "addressAs": address_word(member.get("addressForm")) or None,
                 }.items()
                 if value not in (None, "")
             }
@@ -931,12 +981,14 @@ __all__ = [
     "INVITE_TTL_DAYS",
     "MEMBER_THREAD_PREFIX",
     "WEEK_EDITOR_ROLES",
+    "can_connect_own_sources",
     "can_change_week",
     "describe_speaker",
     "invite_candidates",
     "is_named",
     "member_nudges",
     "member_thread_id",
+    "phone_conversation",
     "MAX_ACTIVITIES",
     "MAX_MEMBERS",
     "MEMBER_ROLES",

@@ -29,6 +29,7 @@ from packages.infrastructure.agent_approvals import approval_matches
 from packages.infrastructure.feature_catalog import load_default_feature_catalog
 from packages.infrastructure.insurance_manager import INSURANCE_POLICY_STATUSES
 from packages.infrastructure import household
+from packages.infrastructure.person_address import ADDRESS_BASES
 from packages.infrastructure.insurance_manager import choose_applicable_version
 from packages.infrastructure.insurance_manager import match_expense_to_policies
 from packages.infrastructure.insurance_manager import normalize_policy_version
@@ -50,6 +51,9 @@ BOOTSTRAP_ACTIVE_SUBSCRIPTION_STATUS = "active"
 # abandoned (crash, redeploy, or killed daemon thread) and returned to the queue.
 STALE_CLAIM_SECONDS = 15 * 60
 MAX_SCHEDULED_ACTION_ATTEMPTS = 3
+# How long a chat message is kept. The assistant reads only the last few turns
+# of a conversation, so anything older is private words stored for nobody.
+WHATSAPP_AGENT_MESSAGE_RETENTION_DAYS = 90
 VALID_CLIENT_TYPES = ("paying", "demo", "qa")
 MONTH_KEY_RE = re.compile(r"^\d{4}-\d{2}$")
 RAW_CENTS_QUANT = Decimal("0.0001")
@@ -171,6 +175,9 @@ CREATE TABLE IF NOT EXISTS account_receipts (
     decided_at TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
+    -- Whose mailbox it came from: empty for the account holder (and for one
+    -- typed in on the receipts page), else the family member's phone.
+    owner_wa_id TEXT NOT NULL DEFAULT '',
     FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
@@ -268,11 +275,11 @@ CREATE TABLE IF NOT EXISTS account_findings (
     first_seen_at TEXT NOT NULL,
     told_at TEXT,
     updated_at TEXT NOT NULL,
+    -- Whose mailbox it was found in: empty for the account holder, else the
+    -- phone of the family member whose own mailbox it is. Only they hear it.
+    owner_wa_id TEXT NOT NULL DEFAULT '',
     FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
 );
-
-CREATE UNIQUE INDEX IF NOT EXISTS idx_account_findings_key
-ON account_findings(user_id, finding_key);
 
 -- The scans themselves: one row per scan due to run, claimed by the worker
 -- like a scheduled action and finished with what it found.
@@ -290,6 +297,8 @@ CREATE TABLE IF NOT EXISTS account_finding_scans (
     last_error TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
+    -- Whose mailboxes this scan reads, as on account_findings.
+    owner_wa_id TEXT NOT NULL DEFAULT '',
     FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
@@ -388,6 +397,9 @@ CREATE TABLE IF NOT EXISTS followed_threads (
     closed_at TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
+    -- Whose mailbox the conversation is in: empty for the account holder,
+    -- else the family member's phone. Only they hear about it.
+    owner_wa_id TEXT NOT NULL DEFAULT '',
     FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
@@ -490,6 +502,10 @@ CREATE TABLE IF NOT EXISTS household_profiles (
     -- ('f' or 'm'), kept from what they write about themselves; empty
     -- until they have said it (person_address).
     address_form TEXT NOT NULL DEFAULT '',
+    -- What address_form rests on: 'name', 'others' or 'self' when it was
+    -- read from the conversation, 'confirmed' when they said it outright.
+    -- A weaker reading never replaces a stronger one (person_address).
+    address_basis TEXT NOT NULL DEFAULT '',
     share_token TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
@@ -519,11 +535,21 @@ CREATE TABLE IF NOT EXISTS household_members (
     -- it, kept from what they write about themselves from their own phone;
     -- empty until they have said it (person_address).
     address_form TEXT NOT NULL DEFAULT '',
+    -- What address_form rests on, as on household_profiles.
+    address_basis TEXT NOT NULL DEFAULT '',
+    -- The language this person writes in from their own phone ('he' or
+    -- 'en'); empty until they have. What goes to their phone comes in it,
+    -- and it never changes the account holder's (message_language).
+    language TEXT NOT NULL DEFAULT '',
     -- The WhatsApp number this person joined the account from, once they
     -- have: it is how a message from that phone is known to be theirs. The
     -- phone column above is what the parent typed and is never read for it.
     wa_id TEXT NOT NULL DEFAULT '',
     wa_linked_at TEXT NOT NULL DEFAULT '',
+    -- The phone they signed out of the account, while it is signed out:
+    -- what was set for it is held, not ended, and is ended with them if
+    -- they are taken off the family.
+    signed_out_wa_id TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
@@ -542,6 +568,23 @@ CREATE TABLE IF NOT EXISTS household_invites (
     expires_at TEXT NOT NULL,
     claimed_at TEXT,
     claimed_wa_id TEXT NOT NULL DEFAULT '',
+    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+-- A phone taken off a family by the account holder. Its next message would
+-- otherwise read as a stranger's hello and quietly open an account of its
+-- own; it is told once that it was taken off instead. told_at is when.
+CREATE TABLE IF NOT EXISTS household_departures (
+    wa_id TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    member_name TEXT NOT NULL DEFAULT '',
+    left_at TEXT NOT NULL,
+    told_at TEXT NOT NULL DEFAULT '',
+    -- How they wrote and were addressed while in the family, so the one
+    -- message telling them they were taken off is in their own language
+    -- and written to them as they are.
+    language TEXT NOT NULL DEFAULT '',
+    address_form TEXT NOT NULL DEFAULT '',
     FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
@@ -658,6 +701,7 @@ CREATE TABLE IF NOT EXISTS schedule_exceptions (
     ends_on TEXT NOT NULL,
     reason TEXT NOT NULL DEFAULT '',
     targets_json TEXT NOT NULL DEFAULT '[]',
+    handed_to TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL,
     FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
 );
@@ -666,6 +710,36 @@ CREATE TABLE IF NOT EXISTS schedule_exceptions (
 SCHEDULE_EXCEPTIONS_INDEXES_SQL = """
 CREATE INDEX IF NOT EXISTS idx_schedule_exceptions_scope
 ON schedule_exceptions(user_id, group_id, ends_on);
+"""
+
+# The homework check (homework_check). A link to the private page where a
+# parent types the school platform's login: one code, spent on the first
+# save or after two days. The login itself is kept as ciphertext only - the
+# username too, which is often the child's ID number - and is never read
+# back into a prompt or a page.
+HOMEWORK_TABLES_SQL = """
+CREATE TABLE IF NOT EXISTS homework_login_links (
+    code TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    used_at TEXT,
+    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS homework_logins (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    platform TEXT NOT NULL,
+    other_platform TEXT NOT NULL DEFAULT '',
+    school_code TEXT NOT NULL DEFAULT '',
+    username_ciphertext TEXT NOT NULL,
+    password_ciphertext TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_homework_logins_user ON homework_logins(user_id);
 """
 
 
@@ -731,6 +805,8 @@ def _erased_phone_hash(wa_id: str) -> str:
 
 
 USER_OWNED_TABLES = (
+    "homework_logins",
+    "homework_login_links",
     "followed_threads",
     "account_receipts",
     "receipt_mail_reads",
@@ -758,6 +834,24 @@ USER_OWNED_TABLES = (
     "usage_events",
     "user_billing",
 )
+
+
+# Where a family member's own single-account connection (a calendar) keeps
+# whose it is, in the address slot the table's uniqueness reads.
+CONNECTION_OWNER_ADDRESS_PREFIX = "phone:"
+# The owner to ask for when the person writing cannot be vouched for: it
+# matches no connection at all, so nobody's mail is read on a guess.
+NO_CONNECTION_OWNER = "-"
+
+
+def _connection_owner_filter(owner_wa_id: str | None) -> tuple[str, tuple[Any, ...]]:
+    """The clause narrowing connections to one person's, or none for None."""
+
+    if owner_wa_id is None:
+        return "", ()
+    if owner_wa_id == NO_CONNECTION_OWNER:
+        return " AND 0 = 1", ()
+    return " AND owner_wa_id = ?", (normalize_whatsapp_lookup_id(owner_wa_id),)
 
 
 @dataclass
@@ -789,6 +883,10 @@ CREATE TABLE IF NOT EXISTS platform_connections (
     account_address TEXT NOT NULL DEFAULT '',
     account_label TEXT NOT NULL DEFAULT '',
     provider TEXT NOT NULL DEFAULT '',
+    -- Whose this connection is: empty for the account holder, or the phone
+    -- of the family member who connected it from their own phone. Mail and
+    -- calendar belong to whoever connected them, not to the family account.
+    owner_wa_id TEXT NOT NULL DEFAULT '',
     connected_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     -- A user may hold several mailboxes, so uniqueness is per account rather
@@ -1289,6 +1387,13 @@ CREATE TABLE IF NOT EXISTS list_open_codes (
     created_at TEXT NOT NULL,
     expires_at REAL NOT NULL,
     used_at TEXT,
+    -- The family member's phone the link was sent to; empty for the
+    -- account holder's own. The browser it opens is that member's, never
+    -- the account holder's.
+    wa_id TEXT NOT NULL DEFAULT '',
+    -- The surface the link was sent for ("family" for the week and the
+    -- lists, "receipts"); the session it opens reaches that and no more.
+    scope TEXT NOT NULL DEFAULT '',
     FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_list_open_codes_expires_at ON list_open_codes(expires_at);
@@ -1672,12 +1777,19 @@ class PortalDatabase:
                 conn.executescript(RECEIPT_MAIL_READS_TABLE_SQL)
                 conn.executescript(STANDING_NEWS_SENT_TABLE_SQL)
                 conn.executescript(MAILBOX_FINDINGS_TABLE_SQL)
+                self._migrate_mailbox_findings_tables(conn)
                 conn.executescript(INBOX_WATCH_TABLE_SQL)
                 conn.executescript(FOLLOWED_THREADS_TABLE_SQL)
+                columns = {str(row["name"]) for row in conn.execute("PRAGMA table_info(followed_threads)").fetchall()}
+                if "owner_wa_id" not in columns:
+                    # No index: production's table predates the column.
+                    conn.execute("ALTER TABLE followed_threads ADD COLUMN owner_wa_id TEXT NOT NULL DEFAULT ''")
                 self._ensure_insurance_tables(conn)
                 self._ensure_household_tables(conn)
                 conn.executescript(SCHEDULE_EXCEPTIONS_TABLE_SQL)
+                self._migrate_schedule_exceptions_table(conn)
                 conn.executescript(SCHEDULE_EXCEPTIONS_INDEXES_SQL)
+                conn.executescript(HOMEWORK_TABLES_SQL)
                 self._seed_default_model_prices(conn)
                 if self.bootstrap_registered_emails and self.count_registered_users(conn) == 0:
                     self._seed_registered_emails(conn, self.bootstrap_registered_emails)
@@ -1718,6 +1830,22 @@ class PortalDatabase:
             conn.execute("ALTER TABLE household_members ADD COLUMN wa_linked_at TEXT NOT NULL DEFAULT ''")
         if "address_form" not in member_columns:
             conn.execute("ALTER TABLE household_members ADD COLUMN address_form TEXT NOT NULL DEFAULT ''")
+        if "address_basis" not in member_columns:
+            conn.execute("ALTER TABLE household_members ADD COLUMN address_basis TEXT NOT NULL DEFAULT ''")
+        if "signed_out_wa_id" not in member_columns:
+            conn.execute("ALTER TABLE household_members ADD COLUMN signed_out_wa_id TEXT NOT NULL DEFAULT ''")
+        if "language" not in member_columns:
+            conn.execute("ALTER TABLE household_members ADD COLUMN language TEXT NOT NULL DEFAULT ''")
+        departure_columns = {row["name"] for row in conn.execute("PRAGMA table_info(household_departures)").fetchall()}
+        if departure_columns and "language" not in departure_columns:
+            conn.execute("ALTER TABLE household_departures ADD COLUMN language TEXT NOT NULL DEFAULT ''")
+        if departure_columns and "address_form" not in departure_columns:
+            conn.execute("ALTER TABLE household_departures ADD COLUMN address_form TEXT NOT NULL DEFAULT ''")
+        open_code_columns = {row["name"] for row in conn.execute("PRAGMA table_info(list_open_codes)").fetchall()}
+        if open_code_columns and "wa_id" not in open_code_columns:
+            conn.execute("ALTER TABLE list_open_codes ADD COLUMN wa_id TEXT NOT NULL DEFAULT ''")
+        if open_code_columns and "scope" not in open_code_columns:
+            conn.execute("ALTER TABLE list_open_codes ADD COLUMN scope TEXT NOT NULL DEFAULT ''")
         activity_columns = {row["name"] for row in conn.execute("PRAGMA table_info(household_activities)").fetchall()}
         if "group_id" not in activity_columns:
             conn.execute("ALTER TABLE household_activities ADD COLUMN group_id TEXT NOT NULL DEFAULT ''")
@@ -1731,6 +1859,8 @@ class PortalDatabase:
             conn.execute("ALTER TABLE household_profiles ADD COLUMN language TEXT NOT NULL DEFAULT ''")
         if "address_form" not in profile_columns:
             conn.execute("ALTER TABLE household_profiles ADD COLUMN address_form TEXT NOT NULL DEFAULT ''")
+        if "address_basis" not in profile_columns:
+            conn.execute("ALTER TABLE household_profiles ADD COLUMN address_basis TEXT NOT NULL DEFAULT ''")
         if "own_week_asked_on" not in profile_columns:
             conn.execute("ALTER TABLE household_profiles ADD COLUMN own_week_asked_on TEXT NOT NULL DEFAULT ''")
             # Before this column, the question was put whenever the week was
@@ -1794,6 +1924,23 @@ class PortalDatabase:
         )
 
     @staticmethod
+    def _migrate_mailbox_findings_tables(conn: sqlite3.Connection) -> None:
+        """Findings and scans are each one person's: the owner column, and a
+        finding's key kept unique per person rather than per account, since
+        two people's mailboxes can find the same renewal. The index is built
+        here, after the column exists - production's table predates it."""
+
+        for table in ("account_findings", "account_finding_scans"):
+            columns = {str(row["name"]) for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+            if "owner_wa_id" not in columns:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN owner_wa_id TEXT NOT NULL DEFAULT ''")
+        conn.execute("DROP INDEX IF EXISTS idx_account_findings_key")
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_account_findings_owner_key "
+            "ON account_findings(user_id, owner_wa_id, finding_key)"
+        )
+
+    @staticmethod
     def _migrate_account_receipts_table(conn: sqlite3.Connection) -> None:
         """Key a provider message by the mailbox that owns its opaque id.
 
@@ -1807,6 +1954,11 @@ class PortalDatabase:
             "CREATE UNIQUE INDEX idx_account_receipts_message "
             "ON account_receipts(user_id, mailbox, message_id) WHERE message_id <> ''"
         )
+        # Whose receipt it is. No index: production's table predates the
+        # column, and every read narrows by account first.
+        columns = {str(row["name"]) for row in conn.execute("PRAGMA table_info(account_receipts)").fetchall()}
+        if "owner_wa_id" not in columns:
+            conn.execute("ALTER TABLE account_receipts ADD COLUMN owner_wa_id TEXT NOT NULL DEFAULT ''")
 
     def _migrate_feature_tables(self, conn: sqlite3.Connection) -> None:
         """Drop the per-client tool access columns. Every client sees every active tool."""
@@ -1988,6 +2140,13 @@ class PortalDatabase:
         if "access_token_fingerprint" not in columns:
             conn.execute("ALTER TABLE whatsapp_connections ADD COLUMN access_token_fingerprint TEXT NOT NULL DEFAULT ''")
 
+    def _migrate_schedule_exceptions_table(self, conn: sqlite3.Connection) -> None:
+        columns = {str(row["name"]) for row in conn.execute("PRAGMA table_info(schedule_exceptions)").fetchall()}
+        if "handed_to" not in columns:
+            # Who the account holder handed her days to when she went away;
+            # empty for every hold kept before it could be asked.
+            conn.execute("ALTER TABLE schedule_exceptions ADD COLUMN handed_to TEXT NOT NULL DEFAULT ''")
+
     def _migrate_platform_connections_table(self, conn: sqlite3.Connection) -> None:
         columns = {
             str(row["name"])
@@ -2001,6 +2160,10 @@ class PortalDatabase:
             conn.execute("ALTER TABLE platform_connections ADD COLUMN account_address TEXT NOT NULL DEFAULT ''")
         if "account_label" not in columns:
             conn.execute("ALTER TABLE platform_connections ADD COLUMN account_label TEXT NOT NULL DEFAULT ''")
+        if "owner_wa_id" not in columns:
+            # No index over it: production's table predates the column, and
+            # every read already narrows by user first.
+            conn.execute("ALTER TABLE platform_connections ADD COLUMN owner_wa_id TEXT NOT NULL DEFAULT ''")
         self._widen_platform_connection_uniqueness(conn)
 
     def _widen_platform_connection_uniqueness(self, conn: sqlite3.Connection) -> None:
@@ -2752,7 +2915,7 @@ class PortalDatabase:
             f"""
             SELECT id, user_id, platform, provider, auth_type, secret_hint,
                    connection_status, metadata_json, account_address, account_label,
-                   connected_at, updated_at
+                   owner_wa_id, connected_at, updated_at
             FROM platform_connections
             WHERE {" AND ".join(where)}
             LIMIT 1
@@ -2777,6 +2940,7 @@ class PortalDatabase:
             "metadata": _load_json_dict(payload.get("metadata_json")),
             "accountAddress": normalize_text(payload.get("account_address")),
             "accountLabel": normalize_text(payload.get("account_label")),
+            "ownerWaId": normalize_text(payload.get("owner_wa_id")),
             "connectedAt": normalize_text(payload.get("connected_at")),
             "updatedAt": normalize_text(payload.get("updated_at")),
             "hasCredential": True,
@@ -3953,13 +4117,17 @@ class PortalDatabase:
 
         return row is not None
 
-    def create_list_open_code(self, *, user_id: int, list_id: int, expires_at: float) -> str:
+    def create_list_open_code(
+        self, *, user_id: int, list_id: int, expires_at: float, wa_id: str = "", scope: str = "",
+    ) -> str:
         """A short one-time code that signs a phone in and opens one list.
 
         The code stands in for a signed session token, which is too long to
         read in a chat message. It is drawn from a large enough alphabet to
         be unguessable, and only lives in this table until it is spent or
         expires; expired codes are swept whenever a new one is minted.
+        wa_id is the family member's phone it is sent to, when it is not
+        the account holder's own; scope is the surface the link is for.
         """
 
         resolved_user_id = int(user_id or 0)
@@ -3973,10 +4141,13 @@ class PortalDatabase:
                 try:
                     conn.execute(
                         """
-                        INSERT INTO list_open_codes (code, user_id, list_id, created_at, expires_at)
-                        VALUES (?, ?, ?, ?, ?)
+                        INSERT INTO list_open_codes (code, user_id, list_id, created_at, expires_at, wa_id, scope)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
                         """,
-                        (code, resolved_user_id, resolved_list_id, now_iso(), float(expires_at)),
+                        (
+                            code, resolved_user_id, resolved_list_id, now_iso(), float(expires_at),
+                            normalize_whatsapp_lookup_id(wa_id), normalize_text(scope).lower(),
+                        ),
                     )
                 except sqlite3.IntegrityError as exc:
                     if "UNIQUE" in str(exc).upper():
@@ -4005,7 +4176,8 @@ class PortalDatabase:
                 return None
             row = conn.execute(
                 """
-                SELECT codes.user_id AS user_id, codes.list_id AS list_id, users.email AS email
+                SELECT codes.user_id AS user_id, codes.list_id AS list_id, codes.wa_id AS wa_id,
+                       codes.scope AS scope, users.email AS email
                 FROM list_open_codes AS codes
                 JOIN users ON users.id = codes.user_id
                 WHERE codes.code = ?
@@ -4019,6 +4191,8 @@ class PortalDatabase:
             "userId": int(row["user_id"] or 0),
             "listId": int(row["list_id"] or 0),
             "email": normalize_email(row["email"]),
+            "waId": str(row["wa_id"] or ""),
+            "scope": str(row["scope"] or ""),
         }
 
     def get_whatsapp_connection(self, email: str) -> dict[str, Any] | None:
@@ -4091,10 +4265,16 @@ class PortalDatabase:
                 migrated += 1
         return migrated
 
-    def list_platform_connections(self, email: str) -> list[dict[str, Any]]:
+    def list_platform_connections(self, email: str, *, owner_wa_id: str | None = None) -> list[dict[str, Any]]:
+        """The account's connections. owner_wa_id narrows them to one
+        person's: "" for the account holder's own, a phone for the family
+        member who connected from it. None is every one, for the account's
+        own housekeeping - never for what a person is shown."""
+
         normalized_email = normalize_email(email)
         if not normalized_email:
             return []
+        owner_sql, owner_params = _connection_owner_filter(owner_wa_id)
 
         with self._connection() as conn:
             try:
@@ -4104,14 +4284,14 @@ class PortalDatabase:
             if user_id <= 0:
                 return []
             rows = conn.execute(
-                """
+                f"""
                 SELECT id, user_id, platform, auth_type, secret_hint,
                        connection_status, metadata_json, connected_at, updated_at
                 FROM platform_connections
-                WHERE user_id = ?
+                WHERE user_id = ?{owner_sql}
                 ORDER BY updated_at DESC, platform ASC
                 """,
-                (user_id,),
+                (user_id, *owner_params),
             ).fetchall()
             return [
                 item
@@ -4132,6 +4312,7 @@ class PortalDatabase:
         platform: str,
         *,
         include_statuses: tuple[str, ...] = ("connected",),
+        owner_wa_id: str | None = None,
     ) -> str | None:
         """Return ciphertext for server-side tools; never serialize this to the portal."""
 
@@ -4151,6 +4332,7 @@ class PortalDatabase:
             return None
 
         placeholders = ", ".join("?" for _ in statuses)
+        owner_sql, owner_params = _connection_owner_filter(owner_wa_id)
         with self._connection() as conn:
             try:
                 user_id = self._resolve_active_user_id(conn, normalized_email)
@@ -4160,10 +4342,10 @@ class PortalDatabase:
                 f"""
                 SELECT secret_ciphertext
                 FROM platform_connections
-                WHERE user_id = ? AND platform = ? AND connection_status IN ({placeholders})
+                WHERE user_id = ? AND platform = ? AND connection_status IN ({placeholders}){owner_sql}
                 LIMIT 1
                 """,
-                (user_id, normalized_platform, *statuses),
+                (user_id, normalized_platform, *statuses, *owner_params),
             ).fetchone()
             return normalize_text(row["secret_ciphertext"]) if row else None
 
@@ -4174,6 +4356,7 @@ class PortalDatabase:
         *,
         include_statuses: tuple[str, ...] = ("connected",),
         include_inactive_user: bool = False,
+        owner_wa_id: str | None = None,
     ) -> list[dict[str, str]]:
         """Return accounts with their ciphertext, for server-side runs.
 
@@ -4209,7 +4392,8 @@ class PortalDatabase:
             filters.append("platform = ?")
         if statuses:
             filters.append(f"connection_status IN ({', '.join('?' for _ in statuses)})")
-        where_sql = " AND ".join(filters)
+        owner_sql, owner_params = _connection_owner_filter(owner_wa_id)
+        where_sql = " AND ".join(filters) + owner_sql
         with self._connection() as conn:
             try:
                 user_id = self._resolve_user_id(conn, normalized_email, include_inactive=include_inactive_user)
@@ -4221,10 +4405,11 @@ class PortalDatabase:
             if normalized_platform:
                 parameters.append(normalized_platform)
             parameters.extend(statuses)
+            parameters.extend(owner_params)
             rows = conn.execute(
                 f"""
                 SELECT id, platform, provider, auth_type, secret_ciphertext, secret_fingerprint,
-                       account_address, account_label, connection_status, metadata_json
+                       account_address, account_label, connection_status, metadata_json, owner_wa_id
                 FROM platform_connections
                 WHERE {where_sql}
                 ORDER BY account_address ASC, connected_at ASC, id ASC
@@ -4243,6 +4428,7 @@ class PortalDatabase:
                     "accountLabel": normalize_text(row["account_label"]),
                     "connectionStatus": normalize_text(row["connection_status"]).lower() or "connected",
                     "metadata": _load_json_dict(row["metadata_json"]),
+                    "ownerWaId": normalize_text(row["owner_wa_id"]),
                 }
                 for row in rows
             ]
@@ -4331,6 +4517,8 @@ class PortalDatabase:
         self,
         email: str,
         connection_id: str,
+        *,
+        owner_wa_id: str | None = None,
     ) -> dict[str, str] | None:
         """Return one connection's encrypted secret for server-side lifecycle work.
 
@@ -4344,6 +4532,7 @@ class PortalDatabase:
         normalized_id = normalize_text(connection_id)
         if not normalized_email or not normalized_id:
             return None
+        owner_sql, owner_params = _connection_owner_filter(owner_wa_id)
 
         with self._connection() as conn:
             try:
@@ -4353,14 +4542,14 @@ class PortalDatabase:
             if user_id <= 0:
                 return None
             row = conn.execute(
-                """
+                f"""
                 SELECT id, platform, provider, auth_type, secret_ciphertext,
                        secret_fingerprint, connection_status
                 FROM platform_connections
-                WHERE user_id = ? AND id = ?
+                WHERE user_id = ? AND id = ?{owner_sql}
                 LIMIT 1
                 """,
-                (user_id, normalized_id),
+                (user_id, normalized_id, *owner_params),
             ).fetchone()
             if row is None:
                 return None
@@ -4407,6 +4596,7 @@ class PortalDatabase:
         platform: str,
         provider: str,
         account_address: str,
+        owner_wa_id: str = "",
     ) -> sqlite3.Row | None:
         """The row a connect should write over, if this account already has one.
 
@@ -4422,11 +4612,11 @@ class PortalDatabase:
             SELECT id, connected_at
             FROM platform_connections
             WHERE user_id = ? AND platform = ? AND account_address = ?
-              AND provider IN (?, '')
+              AND provider IN (?, '') AND owner_wa_id = ?
             ORDER BY CASE WHEN provider = ? THEN 0 ELSE 1 END, connected_at ASC, id ASC
             LIMIT 1
             """,
-            (user_id, platform, account_address, provider, provider),
+            (user_id, platform, account_address, provider, owner_wa_id, provider),
         ).fetchone()
 
     def save_platform_connection(
@@ -4444,12 +4634,19 @@ class PortalDatabase:
         connection_status: str = "connected",
         account_address: str = "",
         account_label: str = "",
+        owner_wa_id: str = "",
     ) -> dict[str, Any]:
         normalized_email = normalize_email(email)
         normalized_platform = normalize_text(platform).lower()
         # The account address identifies which of a user's several accounts
-        # this row is. Single-account platforms pass nothing and keep one row.
+        # this row is. Single-account platforms pass nothing and keep one row
+        # per person: a family member's own calendar is told apart from the
+        # account holder's by whose it is, written where the address goes,
+        # because the table's uniqueness is over the address.
+        normalized_owner = normalize_whatsapp_lookup_id(owner_wa_id)
         normalized_address = normalize_email(account_address) or normalize_text(account_address).lower()
+        if normalized_owner and not normalized_address:
+            normalized_address = f"{CONNECTION_OWNER_ADDRESS_PREFIX}{normalized_owner}"
         normalized_label = normalize_text(account_label)
         normalized_auth_type = normalize_text(auth_type).lower() or "api_token"
         normalized_ciphertext = normalize_text(secret_ciphertext)
@@ -4488,8 +4685,9 @@ class PortalDatabase:
                 platform=normalized_platform,
                 provider=normalized_provider,
                 account_address=normalized_address,
+                owner_wa_id=normalized_owner,
             )
-            if existing is None and normalized_address:
+            if existing is None and normalized_address and not normalized_owner:
                 # A row saved before addresses were captured is unidentified.
                 # The connect happening now is the best identification available,
                 # so adopt that row instead of leaving a stale duplicate beside
@@ -4516,9 +4714,9 @@ class PortalDatabase:
                     id, user_id, platform, auth_type, secret_ciphertext,
                     key_version, secret_fingerprint,
                     secret_hint, connection_status, metadata_json,
-                    account_address, account_label, provider,
+                    account_address, account_label, provider, owner_wa_id,
                     connected_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 -- The row to reuse was already resolved above, so the conflict
                 -- target is the id. Keying it on (user_id, platform) would
                 -- collapse a second mailbox back onto the first.
@@ -4549,6 +4747,7 @@ class PortalDatabase:
                     normalized_address,
                     normalized_label,
                     normalized_provider,
+                    normalized_owner,
                     connected_at,
                     now,
                 ),
@@ -4567,13 +4766,15 @@ class PortalDatabase:
         connection_id: str = "",
         connection_status: str,
         metadata_updates: dict[str, Any] | None = None,
+        owner_wa_id: str | None = None,
     ) -> dict[str, Any] | None:
         """Update non-secret connection health metadata after provider validation.
 
         Pass ``connection_id`` to flag one specific account. Passing only
         ``platform`` still resolves to a single row, which is right for
         single-account platforms but would pick an arbitrary mailbox once a
-        user has several.
+        user has several - and, on a family account, whichever person's
+        calendar came first, so owner_wa_id says whose it is.
         """
 
         normalized_email = normalize_email(email)
@@ -4590,14 +4791,15 @@ class PortalDatabase:
         with self._connection() as conn:
             user_id = self._resolve_active_user_id(conn, normalized_email)
             where = "id = ?" if normalized_id else "platform = ?"
+            owner_sql, owner_params = _connection_owner_filter(owner_wa_id)
             row = conn.execute(
                 f"""
                 SELECT id, metadata_json, connected_at
                 FROM platform_connections
-                WHERE user_id = ? AND {where}
+                WHERE user_id = ? AND {where}{owner_sql}
                 LIMIT 1
                 """,
-                (user_id, normalized_id or normalized_platform),
+                (user_id, normalized_id or normalized_platform, *owner_params),
             ).fetchone()
             if row is None:
                 return None
@@ -4625,6 +4827,31 @@ class PortalDatabase:
                 user_id=user_id,
                 connection_id=normalize_text(row["id"]),
             )
+
+    def list_connection_owners(self, *, user_id: int, platform: str = "") -> list[str]:
+        """Whose connections the account holds, one entry per person: "" for
+        the account holder, a phone for each family member who connected
+        their own. The jobs that read mail and calendars run once for each,
+        so each person's own is read for them and told to them alone."""
+
+        if int(user_id or 0) <= 0:
+            return []
+        normalized_platform = normalize_text(platform).lower()
+        with self._connection() as conn:
+            # Someone who has left the family is nobody's to read for.
+            rows = conn.execute(
+                """
+                SELECT DISTINCT c.owner_wa_id FROM platform_connections AS c
+                WHERE c.user_id = ? AND c.connection_status IN ('connected', 'needs_attention')
+                  AND (? = '' OR c.platform = ?)
+                  AND (c.owner_wa_id = '' OR EXISTS (
+                      SELECT 1 FROM household_members AS m WHERE m.user_id = c.user_id AND m.wa_id = c.owner_wa_id
+                  ))
+                ORDER BY c.owner_wa_id ASC
+                """,
+                (int(user_id), normalized_platform, normalized_platform),
+            ).fetchall()
+        return [normalize_text(row["owner_wa_id"]) for row in rows]
 
     def delete_platform_connection(self, email: str, *, connection_id: str = "", platform: str = "") -> bool:
         normalized_email = normalize_email(email)
@@ -5381,13 +5608,18 @@ class PortalDatabase:
                 # A family member who joined from this phone stays in the
                 # family; only the phone stops being theirs to write from.
                 conn.execute(
-                    "UPDATE household_members SET wa_id = '', wa_linked_at = '', updated_at = ? WHERE user_id = ? AND wa_id = ?",
+                    "UPDATE household_members SET wa_id = '', wa_linked_at = '', signed_out_wa_id = wa_id, updated_at = ? "
+                    "WHERE user_id = ? AND wa_id = ?",
                     (now_iso(), resolved_user_id, number),
                 )
                 conn.execute(
                     "DELETE FROM whatsapp_agent_thread_state WHERE user_id = ? AND thread_id = ?",
                     (resolved_user_id, household.member_thread_id(number)),
                 )
+                # Nothing set for this phone is called off, whoever's it is:
+                # a sign-out keeps what is saved, and the scheduler holds it
+                # until the phone is linked again. Only taking someone off
+                # the family or deleting the account ends it.
             conn.commit()
             return int(cursor.rowcount or 0) > 0
 
@@ -5933,6 +6165,38 @@ class PortalDatabase:
             }
             for row in reversed(rows)
         ]
+
+    def delete_old_whatsapp_agent_messages(
+        self, *, now: datetime | None = None, keep_days: int = WHATSAPP_AGENT_MESSAGE_RETENTION_DAYS,
+    ) -> int:
+        """Delete chat messages older than keep_days, in every conversation -
+        the account holder's, family members' and groups'. Only the words of
+        the chat go: what the family told us (the week, its people, lists),
+        waiting questions, scheduled actions and turn records stay.
+
+        Rows are written in time order, so the first message young enough to
+        keep is found walking up from the oldest id - a short walk once the
+        old ones are gone - and everything below it is deleted by id, with no
+        index over the date needed."""
+
+        cutoff = ((now or datetime.now(timezone.utc)) - timedelta(days=max(1, int(keep_days)))).astimezone(timezone.utc)
+        cutoff_iso = cutoff.isoformat()
+        with self._connection() as conn:
+            first_kept = conn.execute(
+                "SELECT id FROM whatsapp_agent_messages WHERE created_at >= ? ORDER BY id LIMIT 1",
+                (cutoff_iso,),
+            ).fetchone()
+            if first_kept is None:
+                cursor = conn.execute("DELETE FROM whatsapp_agent_messages WHERE created_at < ?", (cutoff_iso,))
+            else:
+                # The date is checked as well, so a row out of order (a clock
+                # stepped back) is never taken before its time.
+                cursor = conn.execute(
+                    "DELETE FROM whatsapp_agent_messages WHERE id < ? AND created_at < ?",
+                    (int(first_kept["id"]), cutoff_iso),
+                )
+            conn.commit()
+            return int(cursor.rowcount or 0)
 
     def get_whatsapp_agent_active_proposal(self, *, user_id: int, thread_id: str = "") -> dict[str, Any] | None:
         """The proposal the WhatsApp conversation is currently discussing, if any."""
@@ -6889,6 +7153,7 @@ class PortalDatabase:
             "decidedAt": str(row["decided_at"] or ""),
             "createdAt": str(row["created_at"] or ""),
             "updatedAt": str(row["updated_at"] or ""),
+            "ownerWaId": str(row["owner_wa_id"] or ""),
         }
 
     @staticmethod
@@ -6905,11 +7170,14 @@ class PortalDatabase:
         kind = normalize_text(value).lower()
         return kind if kind in ACCOUNT_RECEIPT_KINDS else ""
 
-    def get_account_receipt(self, *, user_id: int, receipt_id: int) -> dict[str, Any] | None:
+    def get_account_receipt(self, *, user_id: int, receipt_id: int, owner_wa_id: str | None = "") -> dict[str, Any] | None:
+        """One receipt of one person's: the account holder's by default."""
+
+        owner_sql, owner_params = _connection_owner_filter(owner_wa_id)
         with self._connection() as conn:
             row = conn.execute(
-                "SELECT * FROM account_receipts WHERE user_id = ? AND id = ? LIMIT 1",
-                (int(user_id), int(receipt_id)),
+                f"SELECT * FROM account_receipts WHERE user_id = ? AND id = ?{owner_sql} LIMIT 1",
+                (int(user_id), int(receipt_id), *owner_params),
             ).fetchone()
         return self._receipt_row_to_record(row)
 
@@ -6991,14 +7259,15 @@ class PortalDatabase:
                     INSERT INTO account_receipts (
                         user_id, message_id, mailbox, status, kind, vendor, paid_to, subject,
                         mail_date, receipt_date, amount, currency, reason, notes, snippet,
-                        attachments_json, manual_amount, decided_at, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?)
+                        attachments_json, manual_amount, decided_at, created_at, updated_at, owner_wa_id
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?, ?)
                     """,
                     (
                         int(user_id), message_id, values["mailbox"], status, kind, values["vendor"],
                         values["paid_to"], values["subject"], values["mail_date"], values["receipt_date"],
                         values["amount"], values["currency"], values["reason"], values["notes"],
                         values["snippet"], attachments_json, now, now,
+                        normalize_whatsapp_lookup_id(record.get("ownerWaId")),
                     ),
                 )
                 receipt_id = int(cursor.lastrowid or 0)
@@ -7338,14 +7607,24 @@ class PortalDatabase:
                     )
         return written
 
-    def list_mail_facts(self, *, user_id: int, since: str = "", facts_version: str = "") -> list[dict[str, Any]]:
+    def list_mail_facts(
+        self, *, user_id: int, since: str = "", facts_version: str = "", mailboxes: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
         """Every remembered fact for the account from ``since`` on, flat,
-        oldest first. Facts read under other wording are left out."""
+        oldest first. Facts read under other wording are left out, and with
+        ``mailboxes`` so is every mailbox not named - one person's scan
+        derives from their own mail only."""
 
         if int(user_id or 0) <= 0:
             return []
         clauses = ["user_id = ?", "kind <> 'none'"]
         params: list[Any] = [int(user_id)]
+        if mailboxes is not None:
+            names = [normalize_text(name) for name in mailboxes if normalize_text(name)]
+            if not names:
+                return []
+            clauses.append(f"mailbox IN ({', '.join('?' for _ in names)})")
+            params.extend(names)
         if normalize_text(since):
             clauses.append("message_date >= ?")
             params.append(normalize_text(since)[:10])
@@ -7406,13 +7685,17 @@ class PortalDatabase:
             "updatedAt": str(row["updated_at"] or ""),
         }
 
-    def upsert_account_findings(self, *, user_id: int, findings: list[dict[str, Any]]) -> list[str]:
-        """Keep what a scan derived. Returns the keys that are new to the
-        account. A finding seen before keeps its status and gets its figures
+    def upsert_account_findings(
+        self, *, user_id: int, findings: list[dict[str, Any]], owner_wa_id: str = "",
+    ) -> list[str]:
+        """Keep what a scan of one person's mailboxes derived (owner_wa_id:
+        "" for the account holder). Returns the keys that are new to them.
+        A finding seen before keeps its status and gets its figures
         refreshed; a resolved one that comes back is new again."""
 
         if int(user_id or 0) <= 0:
             raise ValueError("User id is required.")
+        owner = normalize_whatsapp_lookup_id(owner_wa_id)
         now = now_iso()
         new_keys: list[str] = []
         with self._connection() as conn:
@@ -7426,21 +7709,21 @@ class PortalDatabase:
                 amount_text = f"{float(amount):.2f}" if isinstance(amount, (int, float)) and not isinstance(amount, bool) else ""
                 payload = {name: value for name, value in finding.items() if name not in {"id", "userId", "status", "firstSeenAt", "toldAt", "updatedAt"}}
                 existing = conn.execute(
-                    "SELECT id, status FROM account_findings WHERE user_id = ? AND finding_key = ? LIMIT 1",
-                    (int(user_id), key),
+                    "SELECT id, status FROM account_findings WHERE user_id = ? AND owner_wa_id = ? AND finding_key = ? LIMIT 1",
+                    (int(user_id), owner, key),
                 ).fetchone()
                 if existing is None:
                     conn.execute(
                         """
                         INSERT INTO account_findings (
                             user_id, finding_key, detector, status, title, amount, currency, due_on,
-                            payload_json, first_seen_at, told_at, updated_at
-                        ) VALUES (?, ?, ?, 'new', ?, ?, ?, ?, ?, ?, NULL, ?)
+                            payload_json, first_seen_at, told_at, updated_at, owner_wa_id
+                        ) VALUES (?, ?, ?, 'new', ?, ?, ?, ?, ?, ?, NULL, ?, ?)
                         """,
                         (
                             int(user_id), key, normalize_text(finding.get("detector")), normalize_text(finding.get("title"))[:300],
                             amount_text, normalize_text(finding.get("currency"))[:3], normalize_text(finding.get("dueOn"))[:10],
-                            json.dumps(payload, ensure_ascii=True, sort_keys=True, default=str), now, now,
+                            json.dumps(payload, ensure_ascii=True, sort_keys=True, default=str), now, now, owner,
                         ),
                     )
                     new_keys.append(key)
@@ -7465,17 +7748,19 @@ class PortalDatabase:
                     new_keys.append(key)
         return new_keys
 
-    def resolve_missing_account_findings(self, *, user_id: int, active_keys: list[str]) -> int:
-        """A finding a fresh scan no longer derives has gone away - the
-        payment came, the renewal passed. Mark it resolved; a dismissal stays."""
+    def resolve_missing_account_findings(self, *, user_id: int, active_keys: list[str], owner_wa_id: str = "") -> int:
+        """A finding a fresh scan of this person's mailboxes no longer
+        derives has gone away - the payment came, the renewal passed. Mark
+        it resolved; a dismissal stays, and nobody else's is touched."""
 
         if int(user_id or 0) <= 0:
             return 0
         keep = {normalize_text(key) for key in active_keys if normalize_text(key)}
+        owner_sql, owner_params = _connection_owner_filter(owner_wa_id)
         with self._connection() as conn:
             rows = conn.execute(
-                "SELECT id, finding_key FROM account_findings WHERE user_id = ? AND status IN ('new', 'told')",
-                (int(user_id),),
+                f"SELECT id, finding_key FROM account_findings WHERE user_id = ? AND status IN ('new', 'told'){owner_sql}",
+                (int(user_id), *owner_params),
             ).fetchall()
             stale = [int(row["id"]) for row in rows if str(row["finding_key"] or "") not in keep]
             now = now_iso()
@@ -7492,59 +7777,65 @@ class PortalDatabase:
         user_id: int,
         statuses: tuple[str, ...] = ("new", "told"),
         limit: int = 200,
+        owner_wa_id: str | None = "",
     ) -> list[dict[str, Any]]:
-        """The account's findings in these statuses, best first."""
+        """One person's findings in these statuses, best first: the account
+        holder's by default, a family member's by their phone."""
 
         if int(user_id or 0) <= 0:
             return []
         wanted = [status for status in statuses if status in ACCOUNT_FINDING_STATUSES] or ["new", "told"]
         placeholders = ",".join("?" for _ in wanted)
+        owner_sql, owner_params = _connection_owner_filter(owner_wa_id)
         with self._connection() as conn:
             rows = conn.execute(
                 f"""
                 SELECT * FROM account_findings
-                WHERE user_id = ? AND status IN ({placeholders})
+                WHERE user_id = ? AND status IN ({placeholders}){owner_sql}
                 ORDER BY updated_at DESC, id DESC LIMIT ?
                 """,
-                (int(user_id), *wanted, max(1, int(limit))),
+                (int(user_id), *wanted, *owner_params, max(1, int(limit))),
             ).fetchall()
         records = [record for record in (self._finding_row_to_record(row) for row in rows) if record]
         records.sort(key=lambda record: (-float(record.get("score") or 0), record["id"]))
         return records
 
-    def get_account_finding(self, *, user_id: int, finding_id: int) -> dict[str, Any] | None:
+    def get_account_finding(self, *, user_id: int, finding_id: int, owner_wa_id: str | None = "") -> dict[str, Any] | None:
+        owner_sql, owner_params = _connection_owner_filter(owner_wa_id)
         with self._connection() as conn:
             row = conn.execute(
-                "SELECT * FROM account_findings WHERE user_id = ? AND id = ? LIMIT 1",
-                (int(user_id), int(finding_id)),
+                f"SELECT * FROM account_findings WHERE user_id = ? AND id = ?{owner_sql} LIMIT 1",
+                (int(user_id), int(finding_id), *owner_params),
             ).fetchone()
         return self._finding_row_to_record(row)
 
-    def mark_account_findings_told(self, *, user_id: int, keys: list[str]) -> int:
+    def mark_account_findings_told(self, *, user_id: int, keys: list[str], owner_wa_id: str = "") -> int:
         wanted = [normalize_text(key) for key in keys if normalize_text(key)]
         if int(user_id or 0) <= 0 or not wanted:
             return 0
         now = now_iso()
         placeholders = ",".join("?" for _ in wanted)
+        owner_sql, owner_params = _connection_owner_filter(owner_wa_id)
         with self._connection() as conn:
             cursor = conn.execute(
                 f"""
                 UPDATE account_findings
                 SET status = 'told', told_at = ?, updated_at = ?
-                WHERE user_id = ? AND status = 'new' AND finding_key IN ({placeholders})
+                WHERE user_id = ? AND status = 'new' AND finding_key IN ({placeholders}){owner_sql}
                 """,
-                (now, now, int(user_id), *wanted),
+                (now, now, int(user_id), *wanted, *owner_params),
             )
         return int(cursor.rowcount or 0)
 
-    def set_account_finding_status(self, *, user_id: int, finding_id: int, status: str) -> bool:
+    def set_account_finding_status(self, *, user_id: int, finding_id: int, status: str, owner_wa_id: str | None = "") -> bool:
         wanted = normalize_text(status).lower()
         if wanted not in ACCOUNT_FINDING_STATUSES:
             raise ValueError("Unknown finding status.")
+        owner_sql, owner_params = _connection_owner_filter(owner_wa_id)
         with self._connection() as conn:
             cursor = conn.execute(
-                "UPDATE account_findings SET status = ?, updated_at = ? WHERE user_id = ? AND id = ?",
-                (wanted, now_iso(), int(user_id), int(finding_id)),
+                f"UPDATE account_findings SET status = ?, updated_at = ? WHERE user_id = ? AND id = ?{owner_sql}",
+                (wanted, now_iso(), int(user_id), int(finding_id), *owner_params),
             )
         return cursor.rowcount > 0
 
@@ -7569,6 +7860,7 @@ class PortalDatabase:
             "summary": summary if isinstance(summary, dict) else {},
             "lastError": str(row["last_error"] or ""),
             "createdAt": str(row["created_at"] or ""),
+            "ownerWaId": str(row["owner_wa_id"] or ""),
         }
 
     def schedule_finding_scan(
@@ -7579,10 +7871,13 @@ class PortalDatabase:
         run_at: str | datetime,
         timezone_name: str = "",
         after_scan_id: int = 0,
+        owner_wa_id: str = "",
     ) -> dict[str, Any] | None:
-        """Put a scan on the queue for this account.
+        """Put a scan of one person's mailboxes on the queue for this account
+        (owner_wa_id: "" for the account holder, else the family member's
+        phone).
 
-        One scan waits per account. A first scan asked for while a morning
+        One scan waits per person. A first scan asked for while a morning
         scan is waiting takes that row over, since a first scan reads
         everything a morning scan would; any other repeat leaves the
         waiting row as it is and returns it. ``after_scan_id`` is the scan
@@ -7593,15 +7888,16 @@ class PortalDatabase:
             raise ValueError("User id is required.")
         wanted = normalize_text(kind).lower() or "daily"
         run_at_text = parse_datetime(run_at).astimezone(timezone.utc).isoformat()
+        owner = normalize_whatsapp_lookup_id(owner_wa_id)
         now = now_iso()
         with self._connection() as conn:
             waiting = conn.execute(
                 """
                 SELECT * FROM account_finding_scans
-                WHERE user_id = ? AND status IN ('pending', 'running') AND id <> ?
+                WHERE user_id = ? AND owner_wa_id = ? AND status IN ('pending', 'running') AND id <> ?
                 ORDER BY id ASC LIMIT 1
                 """,
-                (int(user_id), int(after_scan_id or 0)),
+                (int(user_id), owner, int(after_scan_id or 0)),
             ).fetchone()
             if waiting is not None:
                 if wanted == "first" and str(waiting["kind"]) != "first" and str(waiting["status"]) == "pending":
@@ -7615,10 +7911,11 @@ class PortalDatabase:
             cursor = conn.execute(
                 """
                 INSERT INTO account_finding_scans (
-                    user_id, kind, status, run_at, timezone, attempt_count, summary_json, last_error, created_at, updated_at
-                ) VALUES (?, ?, 'pending', ?, ?, 0, '{}', '', ?, ?)
+                    user_id, kind, status, run_at, timezone, attempt_count, summary_json, last_error, created_at, updated_at,
+                    owner_wa_id
+                ) VALUES (?, ?, 'pending', ?, ?, 0, '{}', '', ?, ?, ?)
                 """,
-                (int(user_id), wanted, run_at_text, normalize_text(timezone_name), now, now),
+                (int(user_id), wanted, run_at_text, normalize_text(timezone_name), now, now, owner),
             )
             row = conn.execute("SELECT * FROM account_finding_scans WHERE id = ?", (int(cursor.lastrowid),)).fetchone()
         return self._finding_scan_row(row)
@@ -7636,11 +7933,12 @@ class PortalDatabase:
             ).fetchall()
         return [record for record in (self._finding_scan_row(row) for row in rows) if record]
 
-    def list_finding_scans_for_user(self, *, user_id: int, limit: int = 5) -> list[dict[str, Any]]:
+    def list_finding_scans_for_user(self, *, user_id: int, limit: int = 5, owner_wa_id: str | None = None) -> list[dict[str, Any]]:
+        owner_sql, owner_params = _connection_owner_filter(owner_wa_id)
         with self._connection() as conn:
             rows = conn.execute(
-                "SELECT * FROM account_finding_scans WHERE user_id = ? ORDER BY id DESC LIMIT ?",
-                (int(user_id), max(1, int(limit))),
+                f"SELECT * FROM account_finding_scans WHERE user_id = ?{owner_sql} ORDER BY id DESC LIMIT ?",
+                (int(user_id), *owner_params, max(1, int(limit))),
             ).fetchall()
         return [record for record in (self._finding_scan_row(row) for row in rows) if record]
 
@@ -7914,15 +8212,24 @@ class PortalDatabase:
                     )
         return inserted
 
-    def list_held_inbox_watch_messages(self, *, user_id: int, due_by: str | datetime | None = None) -> list[dict[str, Any]]:
+    def list_held_inbox_watch_messages(
+        self, *, user_id: int, due_by: str | datetime | None = None, mailboxes: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
         """Messages waiting to be told, oldest first; with ``due_by``, only
-        those whose hold has run out by then."""
+        those whose hold has run out by then; with ``mailboxes``, only those
+        that arrived in one of them - one person's own."""
 
         params: list[Any] = [int(user_id)]
         clause = ""
         if due_by is not None:
             clause = " AND notify_after <= ?"
             params.append(parse_datetime(due_by).astimezone(timezone.utc).isoformat())
+        if mailboxes is not None:
+            names = [normalize_text(name) for name in mailboxes if normalize_text(name)]
+            if not names:
+                return []
+            clause += f" AND mailbox IN ({', '.join('?' for _ in names)})"
+            params.extend(names)
         with self._connection() as conn:
             rows = conn.execute(
                 f"SELECT * FROM inbox_watch_messages WHERE user_id = ? AND status = 'held'{clause} ORDER BY notify_after ASC, id ASC",
@@ -7959,14 +8266,28 @@ class PortalDatabase:
             )
         return cursor.rowcount > 0
 
-    def count_inbox_watch_notified_since(self, *, user_id: int, since: str | datetime) -> int:
+    def count_inbox_watch_notified_since(
+        self, *, user_id: int, since: str | datetime, mailboxes: list[str] | None = None,
+    ) -> int:
+        """Alerts told since a moment; with ``mailboxes``, only one person's,
+        so each person's day has its own allowance."""
+
         cutoff = parse_datetime(since).astimezone(timezone.utc).isoformat()
+        clause = ""
+        params: list[Any] = [int(user_id), cutoff]
+        if mailboxes is not None:
+            names = [normalize_text(name) for name in mailboxes if normalize_text(name)]
+            if not names:
+                return 0
+            clause = f" AND mailbox IN ({', '.join('?' for _ in names)})"
+            params.extend(names)
         with self._connection() as conn:
             return int(conn.execute(
                 # Answers in a thread the person asked to follow are not alerts they
                 # did not ask for, so they never use up the day's allowance.
-                "SELECT COUNT(*) FROM inbox_watch_messages WHERE user_id = ? AND status = 'notified' AND reason <> 'followed_thread' AND notified_at >= ?",
-                (int(user_id), cutoff),
+                "SELECT COUNT(*) FROM inbox_watch_messages WHERE user_id = ? AND status = 'notified' "
+                f"AND reason <> 'followed_thread' AND notified_at >= ?{clause}",
+                params,
             ).fetchone()[0] or 0)
 
     def list_inbox_watch_messages(self, *, user_id: int, statuses: tuple[str, ...] = ("notified",), limit: int = 50) -> list[dict[str, Any]]:
@@ -8003,6 +8324,7 @@ class PortalDatabase:
             "nudgedAt": str(row["nudged_at"] or ""),
             "startedAt": str(row["started_at"] or ""),
             "closedAt": str(row["closed_at"] or ""),
+            "ownerWaId": str(row["owner_wa_id"] or ""),
         }
 
     def follow_thread(self, *, user_id: int, entry: dict[str, Any]) -> dict[str, Any]:
@@ -8024,8 +8346,8 @@ class PortalDatabase:
                 INSERT INTO followed_threads (
                     user_id, connection_id, mailbox, provider, thread_id, subject, counterpart, waiting_for,
                     expect_answer_by, status, last_message_id, last_activity_at, nudge_after, nudged_at,
-                    started_at, closed_at, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'waiting', ?, ?, ?, '', ?, '', ?, ?)
+                    started_at, closed_at, created_at, updated_at, owner_wa_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'waiting', ?, ?, ?, '', ?, '', ?, ?, ?)
                 ON CONFLICT(user_id, connection_id, thread_id) DO UPDATE SET
                     mailbox = excluded.mailbox,
                     provider = excluded.provider,
@@ -8047,7 +8369,7 @@ class PortalDatabase:
                     normalize_text(entry.get("provider"))[:40], thread_id, normalize_text(entry.get("subject"))[:300],
                     normalize_text(entry.get("counterpart"))[:300], normalize_text(entry.get("waitingFor"))[:200],
                     normalize_text(entry.get("expectAnswerBy"))[:10], normalize_text(entry.get("lastMessageId"))[:300],
-                    activity, nudge_text, now, now, now,
+                    activity, nudge_text, now, now, now, normalize_whatsapp_lookup_id(entry.get("ownerWaId")),
                 ),
             )
             row = conn.execute(
@@ -8064,13 +8386,20 @@ class PortalDatabase:
             ).fetchone()
         return self._followed_thread_row(row)
 
-    def list_followed_threads(self, *, user_id: int, statuses: tuple[str, ...] = ("waiting", "answered"), limit: int = 50) -> list[dict[str, Any]]:
+    def list_followed_threads(
+        self, *, user_id: int, statuses: tuple[str, ...] = ("waiting", "answered"), limit: int = 50,
+        owner_wa_id: str | None = "",
+    ) -> list[dict[str, Any]]:
+        """One person's followed conversations: the account holder's by
+        default, a family member's by their phone."""
+
         wanted = [status for status in statuses if status in FOLLOWED_THREAD_STATUSES] or ["waiting", "answered"]
         placeholders = ",".join("?" for _ in wanted)
+        owner_sql, owner_params = _connection_owner_filter(owner_wa_id)
         with self._connection() as conn:
             rows = conn.execute(
-                f"SELECT * FROM followed_threads WHERE user_id = ? AND status IN ({placeholders}) ORDER BY id DESC LIMIT ?",
-                (int(user_id), *wanted, max(1, int(limit))),
+                f"SELECT * FROM followed_threads WHERE user_id = ? AND status IN ({placeholders}){owner_sql} ORDER BY id DESC LIMIT ?",
+                (int(user_id), *wanted, *owner_params, max(1, int(limit))),
             ).fetchall()
         return [record for record in (self._followed_thread_row(row) for row in rows) if record]
 
@@ -8093,16 +8422,19 @@ class PortalDatabase:
             )
         return cursor.rowcount > 0
 
-    def list_followed_threads_due_nudge(self, *, user_id: int, now: str | datetime) -> list[dict[str, Any]]:
+    def list_followed_threads_due_nudge(
+        self, *, user_id: int, now: str | datetime, owner_wa_id: str | None = "",
+    ) -> list[dict[str, Any]]:
         reference = parse_datetime(now).astimezone(timezone.utc).isoformat()
+        owner_sql, owner_params = _connection_owner_filter(owner_wa_id)
         with self._connection() as conn:
             rows = conn.execute(
-                """
+                f"""
                 SELECT * FROM followed_threads
-                WHERE user_id = ? AND status = 'waiting' AND nudge_after <> '' AND nudge_after <= ? AND nudged_at = ''
+                WHERE user_id = ? AND status = 'waiting' AND nudge_after <> '' AND nudge_after <= ? AND nudged_at = ''{owner_sql}
                 ORDER BY nudge_after ASC, id ASC
                 """,
-                (int(user_id), reference),
+                (int(user_id), reference, *owner_params),
             ).fetchall()
         return [record for record in (self._followed_thread_row(row) for row in rows) if record]
 
@@ -8131,12 +8463,14 @@ class PortalDatabase:
             )
         return cursor.rowcount > 0
 
-    def close_followed_thread(self, *, user_id: int, row_id: int) -> bool:
+    def close_followed_thread(self, *, user_id: int, row_id: int, owner_wa_id: str | None = None) -> bool:
         now = now_iso()
+        owner_sql, owner_params = _connection_owner_filter(owner_wa_id)
         with self._connection() as conn:
             cursor = conn.execute(
-                "UPDATE followed_threads SET status = 'closed', closed_at = ?, updated_at = ? WHERE user_id = ? AND id = ? AND status <> 'closed'",
-                (now, now, int(user_id), int(row_id)),
+                "UPDATE followed_threads SET status = 'closed', closed_at = ?, updated_at = ? "
+                f"WHERE user_id = ? AND id = ? AND status <> 'closed'{owner_sql}",
+                (now, now, int(user_id), int(row_id), *owner_params),
             )
         return cursor.rowcount > 0
 
@@ -8177,7 +8511,7 @@ class PortalDatabase:
                 "UPDATE account_receipts SET attachments_json = ?, updated_at = ? WHERE user_id = ? AND id = ?",
                 (payload, now_iso(), int(user_id), int(receipt_id)),
             )
-        return self.get_account_receipt(user_id=user_id, receipt_id=receipt_id)
+        return self.get_account_receipt(user_id=user_id, receipt_id=receipt_id, owner_wa_id=None)
 
     def update_account_receipt(
         self,
@@ -8192,10 +8526,12 @@ class PortalDatabase:
         paid_to: str | None = None,
         receipt_date: str | None = None,
         notes: str | None = None,
+        owner_wa_id: str | None = "",
     ) -> dict[str, Any] | None:
         """What the owner changes on the page: a yes or a no, the kind, the
         amount, the vendor, the date, a note. Each is remembered as theirs, so
-        a later search never writes over it."""
+        a later search never writes over it. Only one person's receipt is
+        changed: the account holder's by default."""
 
         assignments: list[str] = []
         params: list[Any] = []
@@ -8249,23 +8585,26 @@ class PortalDatabase:
             assignments.append("notes = ?")
             params.append(normalize_text(notes)[:ACCOUNT_RECEIPT_NOTES_LENGTH])
         if not assignments:
-            return self.get_account_receipt(user_id=user_id, receipt_id=receipt_id)
+            return self.get_account_receipt(user_id=user_id, receipt_id=receipt_id, owner_wa_id=owner_wa_id)
         assignments.append("updated_at = ?")
         params.append(now_iso())
-        params.extend([int(user_id), int(receipt_id)])
+        owner_sql, owner_params = _connection_owner_filter(owner_wa_id)
+        params.extend([int(user_id), int(receipt_id), *owner_params])
         with self._connection() as conn:
             cursor = conn.execute(
-                f"UPDATE account_receipts SET {', '.join(assignments)} WHERE user_id = ? AND id = ?",
+                f"UPDATE account_receipts SET {', '.join(assignments)} WHERE user_id = ? AND id = ?{owner_sql}",
                 params,
             )
             if int(cursor.rowcount or 0) == 0:
                 return None
-        return self.get_account_receipt(user_id=user_id, receipt_id=receipt_id)
+        return self.get_account_receipt(user_id=user_id, receipt_id=receipt_id, owner_wa_id=owner_wa_id)
 
-    def delete_account_receipt(self, *, user_id: int, receipt_id: int) -> bool:
+    def delete_account_receipt(self, *, user_id: int, receipt_id: int, owner_wa_id: str | None = "") -> bool:
+        owner_sql, owner_params = _connection_owner_filter(owner_wa_id)
         with self._connection() as conn:
             cursor = conn.execute(
-                "DELETE FROM account_receipts WHERE user_id = ? AND id = ?", (int(user_id), int(receipt_id)),
+                f"DELETE FROM account_receipts WHERE user_id = ? AND id = ?{owner_sql}",
+                (int(user_id), int(receipt_id), *owner_params),
             )
             return int(cursor.rowcount or 0) > 0
 
@@ -8278,15 +8617,20 @@ class PortalDatabase:
         date_from: str = "",
         date_to: str = "",
         limit: int = ACCOUNT_RECEIPT_MAX_ROWS,
+        owner_wa_id: str | None = "",
     ) -> list[dict[str, Any]]:
-        """The receipts in a date range, newest first.
+        """One person's receipts in a date range, newest first: the account
+        holder's by default, a family member's by their phone.
 
         A range keeps only dated receipts inside it. Without one, everything
-        the account keeps comes back, undated receipts last.
+        they keep comes back, undated receipts last.
         """
 
         clauses = ["user_id = ?"]
         params: list[Any] = [int(user_id)]
+        if owner_wa_id is not None:
+            clauses.append("owner_wa_id = ?")
+            params.append(NO_CONNECTION_OWNER if owner_wa_id == NO_CONNECTION_OWNER else normalize_whatsapp_lookup_id(owner_wa_id))
         kept_status = self._receipt_status(status) if status else ""
         if kept_status:
             clauses.append("status = ?")
@@ -8320,7 +8664,7 @@ class PortalDatabase:
 
     _HOUSEHOLD_PROFILE_SELECT = """
         SELECT u.id AS user_id, p.getting_to_know, p.ask_again_on,
-               p.connect_offer, p.connect_ask_again_on, p.own_week_asked_on, p.language, p.address_form, p.share_token,
+               p.connect_offer, p.connect_ask_again_on, p.own_week_asked_on, p.language, p.address_form, p.address_basis, p.share_token,
                p.created_at, p.updated_at
         FROM users u LEFT JOIN household_profiles p ON p.user_id = u.id
     """
@@ -8337,6 +8681,7 @@ class PortalDatabase:
             "ownWeekAskedOn": str(row["own_week_asked_on"] or ""),
             "language": str(row["language"] or ""),
             "addressForm": str(row["address_form"] or ""),
+            "addressBasis": str(row["address_basis"] or ""),
             "shareToken": str(row["share_token"] or ""),
             "createdAt": str(row["created_at"] or ""),
             "updatedAt": str(row["updated_at"] or ""),
@@ -8363,6 +8708,7 @@ class PortalDatabase:
         own_week_asked_on: str | None = None,
         language: str | None = None,
         address_form: str | None = None,
+        address_basis: str | None = None,
     ) -> dict[str, Any]:
         """Set what is given and keep the rest."""
 
@@ -8376,6 +8722,8 @@ class PortalDatabase:
             raise ValueError("language must be 'he', 'en' or empty.")
         if address_form is not None and normalize_text(address_form).lower() not in {"", "f", "m"}:
             raise ValueError("address_form must be 'f', 'm' or empty.")
+        if address_basis is not None and normalize_text(address_basis).lower() not in ADDRESS_BASES:
+            raise ValueError("address_basis must be 'name', 'others', 'self', 'confirmed' or empty.")
         now = now_iso()
         with self._connection() as conn:
             conn.execute(
@@ -8408,6 +8756,9 @@ class PortalDatabase:
             if address_form is not None:
                 updates.append("address_form = ?")
                 values.append(normalize_text(address_form).lower())
+            if address_basis is not None:
+                updates.append("address_basis = ?")
+                values.append(normalize_text(address_basis).lower())
             if updates:
                 conn.execute(
                     f"UPDATE household_profiles SET {', '.join(updates)}, updated_at = ? WHERE user_id = ?",
@@ -8453,8 +8804,11 @@ class PortalDatabase:
             "phone": str(row["phone"] or ""),
             "notes": str(row["notes"] or ""),
             "addressForm": str(row["address_form"] or "") if "address_form" in row.keys() else "",
+            "addressBasis": str(row["address_basis"] or "") if "address_basis" in row.keys() else "",
+            "language": str(row["language"] or "") if "language" in row.keys() else "",
             "waId": str(row["wa_id"] or "") if "wa_id" in row.keys() else "",
             "waLinkedAt": str(row["wa_linked_at"] or "") if "wa_linked_at" in row.keys() else "",
+            "signedOutWaId": str(row["signed_out_wa_id"] or "") if "signed_out_wa_id" in row.keys() else "",
             "createdAt": str(row["created_at"] or ""),
             "updatedAt": str(row["updated_at"] or ""),
         }
@@ -8469,19 +8823,40 @@ class PortalDatabase:
             ).fetchone()
         return self._household_member_row(row)
 
-    def save_household_member_address_form(self, *, user_id: int, member_id: int, address_form: str) -> dict[str, Any]:
-        """Keep how a family member is addressed, from what they wrote
-        about themselves on their own phone (person_address)."""
+    def save_household_member_address_form(
+        self, *, user_id: int, member_id: int, address_form: str, address_basis: str = "",
+    ) -> dict[str, Any]:
+        """Keep how a family member is addressed and what that rests on
+        (person_address)."""
 
         form = normalize_text(address_form).lower()
         if form not in {"", "f", "m"}:
             raise ValueError("address_form must be 'f', 'm' or empty.")
+        basis = normalize_text(address_basis).lower()
+        if basis not in ADDRESS_BASES:
+            raise ValueError("address_basis must be 'name', 'others', 'self', 'confirmed' or empty.")
         if int(user_id or 0) <= 0 or int(member_id or 0) <= 0:
             raise ValueError("User id and member id are required.")
         with self._connection() as conn:
             conn.execute(
-                "UPDATE household_members SET address_form = ?, updated_at = ? WHERE user_id = ? AND id = ?",
-                (form, now_iso(), int(user_id), int(member_id)),
+                "UPDATE household_members SET address_form = ?, address_basis = ?, updated_at = ? WHERE user_id = ? AND id = ?",
+                (form, basis, now_iso(), int(user_id), int(member_id)),
+            )
+        return self.get_household_member(user_id=user_id, member_id=member_id) or {}
+
+    def save_household_member_language(self, *, user_id: int, member_id: int, language: str) -> dict[str, Any]:
+        """Keep the language a family member writes in from their own phone
+        (message_language)."""
+
+        value = normalize_text(language).lower()
+        if value not in {"", "he", "en"}:
+            raise ValueError("language must be 'he', 'en' or empty.")
+        if int(user_id or 0) <= 0 or int(member_id or 0) <= 0:
+            raise ValueError("User id and member id are required.")
+        with self._connection() as conn:
+            conn.execute(
+                "UPDATE household_members SET language = ?, updated_at = ? WHERE user_id = ? AND id = ?",
+                (value, now_iso(), int(user_id), int(member_id)),
             )
         return self.get_household_member(user_id=user_id, member_id=member_id) or {}
 
@@ -8625,38 +9000,306 @@ class PortalDatabase:
             ).fetchone()
         return self._household_member_row(row) or {}
 
-    def remove_household_member(self, *, user_id: int, name: str, group_id: str = "") -> bool:
+    def remove_household_member(self, *, user_id: int, name: str, group_id: str = "") -> dict[str, Any] | None:
         """Take someone out of the family. A phone they joined from goes with
-        them: it no longer reaches the account, and an invitation still
-        standing for them is withdrawn."""
+        them: it no longer reaches the account, what was set to go to it is
+        called off, and an invitation still standing for them is withdrawn.
+        The drives that were theirs are left with nobody down for them, so
+        the week asks who takes them instead of reminding someone who is no
+        longer there.
+
+        The receipts they kept go too: leaving is leaving, and what their
+        mail held is theirs, not the family's. Their saved files sit on disk,
+        which the caller clears for each phone returned.
+
+        Returns what changed - the name, whether a phone went, every phone
+        that was theirs (linked or signed out), and the drives now open - or
+        None when nobody by that name is in the family."""
 
         key = household.name_key(name)
         if int(user_id or 0) <= 0 or not key:
-            return False
+            return None
         scope = normalize_text(group_id)
+        stamp = now_iso()
         with self._connection() as conn:
             existing = conn.execute(
-                "SELECT id, wa_id FROM household_members WHERE user_id = ? AND group_id = ? AND name_key = ?",
+                "SELECT id, name, wa_id, signed_out_wa_id, language, address_form FROM household_members "
+                "WHERE user_id = ? AND group_id = ? AND name_key = ?",
                 (int(user_id), scope, key),
             ).fetchone()
             if existing is None:
-                return False
-            number = str(existing["wa_id"] or "")
-            if number:
+                return None
+            member_name = str(existing["name"] or "")
+            linked = str(existing["wa_id"] or "")
+            if linked:
                 conn.execute(
                     "DELETE FROM user_whatsapp_numbers WHERE wa_id = ? AND user_id = ?",
-                    (number, int(user_id)),
+                    (linked, int(user_id)),
                 )
+            # A phone they signed out still has what was set for it held,
+            # and that ends with them as a linked phone's does.
+            phones = list(dict.fromkeys(filter(None, (linked, str(existing["signed_out_wa_id"] or "")))))
+            for number in phones:
                 conn.execute(
                     "DELETE FROM whatsapp_agent_thread_state WHERE user_id = ? AND thread_id = ?",
                     (int(user_id), household.member_thread_id(number)),
                 )
+                self._cancel_scheduled_actions_for_phone(
+                    conn, user_id=int(user_id), wa_id=number,
+                    reason=f"{member_name} was taken off the family, and this phone with them.",
+                )
+                conn.execute(
+                    """
+                    INSERT INTO household_departures (wa_id, user_id, member_name, left_at, told_at, language, address_form)
+                    VALUES (?, ?, ?, ?, '', ?, ?)
+                    ON CONFLICT(wa_id) DO UPDATE SET
+                        user_id = excluded.user_id,
+                        member_name = excluded.member_name,
+                        left_at = excluded.left_at,
+                        told_at = '',
+                        language = excluded.language,
+                        address_form = excluded.address_form
+                    """,
+                    (
+                        number, int(user_id), member_name, stamp,
+                        str(existing["language"] or ""), str(existing["address_form"] or ""),
+                    ),
+                )
+                conn.execute(
+                    "DELETE FROM account_receipts WHERE user_id = ? AND owner_wa_id = ?",
+                    (int(user_id), normalize_whatsapp_lookup_id(number)),
+                )
+            opened = self._open_drives_of(conn, user_id=int(user_id), group_id=scope, name=member_name, stamp=stamp)
             conn.execute(
                 "DELETE FROM household_invites WHERE user_id = ? AND member_id = ?",
                 (int(user_id), int(existing["id"])),
             )
             conn.execute("DELETE FROM household_members WHERE id = ?", (int(existing["id"]),))
             conn.commit()
+        return {"name": member_name, "phoneUnlinked": bool(linked), "phones": phones, "drivesNowOpen": opened}
+
+    def household_receipt_owner_phones(self, *, user_id: int) -> list[str]:
+        """Every phone that has kept receipts on this account: each member's,
+        linked or signed out, each phone that has left the family, and any
+        phone a receipt is still filed under. What an account deletion has to
+        clear beside the account holder's own."""
+
+        if int(user_id or 0) <= 0:
+            return []
+        with self._connection() as conn:
+            rows = [
+                *conn.execute(
+                    "SELECT wa_id AS phone FROM household_members WHERE user_id = ? "
+                    "UNION SELECT signed_out_wa_id FROM household_members WHERE user_id = ? "
+                    "UNION SELECT wa_id FROM household_departures WHERE user_id = ? "
+                    "UNION SELECT owner_wa_id FROM account_receipts WHERE user_id = ?",
+                    (int(user_id),) * 4,
+                ).fetchall(),
+            ]
+        phones = {normalize_whatsapp_lookup_id(row["phone"]) for row in rows}
+        return sorted(phone for phone in phones if phone)
+
+    def household_member_drives(self, *, user_id: int, name: str, group_id: str = "") -> list[dict[str, Any]]:
+        """The drives written under one person's name: each weekly leg, and
+        each dated one from today on, as {activityId, title, leg, day?}."""
+
+        if int(user_id or 0) <= 0 or not household.name_key(name):
+            return []
+        with self._connection() as conn:
+            return self._drives_of(conn, user_id=int(user_id), group_id=normalize_text(group_id), name=name)
+
+    def _drives_of(self, conn: sqlite3.Connection, *, user_id: int, group_id: str, name: str) -> list[dict[str, Any]]:
+        found: list[dict[str, Any]] = []
+        titles: dict[int, str] = {}
+        # A drive written with only part of the name - "Savta" for Savta
+        # Ruti - is hers only when it names nobody else in the family; with
+        # a Savta Miri too, it could be either, and is left as written.
+        others = [
+            str(row["name"] or "")
+            for row in conn.execute(
+                "SELECT name FROM household_members WHERE user_id = ? AND group_id = ?", (user_id, group_id),
+            ).fetchall()
+            if household.name_key(row["name"]) != household.name_key(name)
+        ]
+
+        def theirs(who: Any) -> bool:
+            if not household.is_named(who, [name]):
+                return False
+            return household.name_key(who) == household.name_key(name) or not household.is_named(who, others)
+
+        for row in conn.execute(
+            "SELECT id, title, drop_off_by, pick_up_by FROM household_activities WHERE user_id = ? AND group_id = ? ORDER BY id",
+            (user_id, group_id),
+        ).fetchall():
+            titles[int(row["id"])] = str(row["title"] or "")
+            for leg, column in (("drop_off", "drop_off_by"), ("pick_up", "pick_up_by")):
+                if theirs(row[column]):
+                    found.append({"activityId": int(row["id"]), "title": str(row["title"] or ""), "leg": leg})
+        # From yesterday on UTC's clock, so today on the family's own clock
+        # is never missed; a dated drive already gone by says nothing.
+        today = (datetime.now(timezone.utc) - timedelta(days=1)).date().isoformat()
+        for row in conn.execute(
+            "SELECT activity_id, day, leg, who FROM household_day_drives WHERE user_id = ? AND group_id = ? AND day >= ? ORDER BY day, id",
+            (user_id, group_id, today),
+        ).fetchall():
+            if theirs(row["who"]):
+                found.append({
+                    "activityId": int(row["activity_id"]),
+                    "title": titles.get(int(row["activity_id"]), ""),
+                    "leg": str(row["leg"] or ""),
+                    "day": str(row["day"] or ""),
+                })
+        return found
+
+    def _open_drives_of(
+        self, conn: sqlite3.Connection, *, user_id: int, group_id: str, name: str, stamp: str,
+    ) -> list[dict[str, Any]]:
+        """Leave every drive written under this name with nobody down for it.
+        A dated one stays as an empty answer for its day rather than going,
+        so that day is asked about instead of falling back to the usual
+        driver, who may be the reason it was somebody else's that day."""
+
+        opened = self._drives_of(conn, user_id=user_id, group_id=group_id, name=name)
+        for drive in opened:
+            if drive.get("day"):
+                conn.execute(
+                    "UPDATE household_day_drives SET who = '', updated_at = ? "
+                    "WHERE user_id = ? AND group_id = ? AND activity_id = ? AND day = ? AND leg = ?",
+                    (stamp, user_id, group_id, drive["activityId"], drive["day"], drive["leg"]),
+                )
+            else:
+                column = "drop_off_by" if drive["leg"] == "drop_off" else "pick_up_by"
+                conn.execute(
+                    f"UPDATE household_activities SET {column} = '', updated_at = ? WHERE id = ?",
+                    (stamp, drive["activityId"]),
+                )
+        return opened
+
+    def _cancel_scheduled_actions_for_phone(
+        self, conn: sqlite3.Connection, *, user_id: int, wa_id: str, reason: str,
+    ) -> int:
+        """Call off everything still waiting to go to one phone on this
+        account: its reminders and its standing actions. A phone that has
+        left the account is owed nothing from it, and a standing action
+        left running would go on acting with the account's own reach."""
+
+        number = normalize_whatsapp_lookup_id(wa_id)
+        if not number:
+            return 0
+        stamp = now_iso()
+        cancelled = 0
+        for row in conn.execute(
+            "SELECT id, payload_json FROM scheduled_actions WHERE user_id = ? AND status = 'pending'",
+            (int(user_id),),
+        ).fetchall():
+            try:
+                payload = json.loads(row["payload_json"] or "{}")
+            except (TypeError, ValueError):
+                continue
+            if not isinstance(payload, dict) or normalize_whatsapp_lookup_id(payload.get("recipientWaId")) != number:
+                continue
+            conn.execute(
+                "UPDATE scheduled_actions SET status = 'cancelled', last_error = ?, completed_at = ?, updated_at = ? "
+                "WHERE id = ? AND status = 'pending'",
+                (normalize_text(reason)[:2000], stamp, stamp, int(row["id"])),
+            )
+            cancelled += 1
+        return cancelled
+
+    def get_household_departure(self, wa_id: str, *, max_age_days: int = 30) -> dict[str, Any] | None:
+        """The family this phone was taken off lately, while it has not yet
+        been told: {userId, memberName, leftAt}. None otherwise."""
+
+        number = normalize_whatsapp_lookup_id(wa_id)
+        if not number:
+            return None
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=max(1, int(max_age_days)))).isoformat()
+        with self._connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM household_departures WHERE wa_id = ? AND told_at = '' AND left_at >= ?",
+                (number, cutoff),
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "userId": int(row["user_id"]),
+            "memberName": str(row["member_name"] or ""),
+            "leftAt": str(row["left_at"]),
+            "language": str(row["language"] or "") if "language" in row.keys() else "",
+            "addressForm": str(row["address_form"] or "") if "address_form" in row.keys() else "",
+        }
+
+    def phone_left_family(self, *, user_id: int, wa_id: str) -> bool:
+        """Whether this phone was taken off this family, told or not."""
+
+        number = normalize_whatsapp_lookup_id(wa_id)
+        if int(user_id or 0) <= 0 or not number:
+            return False
+        with self._connection() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM household_departures WHERE wa_id = ? AND user_id = ? LIMIT 1",
+                (number, int(user_id)),
+            ).fetchone()
+        return row is not None
+
+    def mark_household_departure_told(self, wa_id: str) -> None:
+        number = normalize_whatsapp_lookup_id(wa_id)
+        if not number:
+            return
+        with self._connection() as conn:
+            conn.execute("UPDATE household_departures SET told_at = ? WHERE wa_id = ?", (now_iso(), number))
+            conn.commit()
+
+    # What an account a phone opened by texting may hold and still have
+    # nothing in it to lose: the conversation so far and the bookkeeping
+    # around it. Anything else - a family, a list, a reminder, a mailbox, a
+    # payment, and any table added later - is something the person made.
+    _NOTHING_TO_LOSE_TABLES = frozenset({
+        "agent_turns", "agent_action_approvals", "household_profiles", "household_nudges",
+        "notifications", "usage_events", "user_billing", "whatsapp_signups",
+        "whatsapp_agent_messages", "whatsapp_agent_state", "whatsapp_agent_thread_state",
+        "feature_assignments", "feature_entitlements", "feature_activations", "feature_activation_events",
+        "feature_monitor_runs", "feature_monitor_notifications", "household_departures", "list_open_codes",
+    })
+
+    def account_holds_nothing(self, *, user_id: int, wa_id: str) -> bool:
+        """Whether an account is only a conversation: reached by this one
+        phone and nobody else, no admin, and nothing saved in it beyond the
+        name it was opened under. Such an account can give way to a family
+        invitation without anyone losing anything."""
+
+        resolved_user_id = int(user_id or 0)
+        number = normalize_whatsapp_lookup_id(wa_id)
+        if resolved_user_id <= 0 or not number:
+            return False
+        with self._connection() as conn:
+            user = conn.execute("SELECT is_admin FROM users WHERE id = ?", (resolved_user_id,)).fetchone()
+            if user is None or bool(user["is_admin"]):
+                return False
+            tables = [
+                str(row["name"])
+                for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
+            ]
+            for table in tables:
+                if table == "users" or table in self._NOTHING_TO_LOSE_TABLES:
+                    continue
+                columns = {str(row["name"]) for row in conn.execute(f'PRAGMA table_info("{table}")').fetchall()}
+                if "user_id" not in columns:
+                    continue
+                if table == "user_whatsapp_numbers":
+                    clause, params = "wa_id <> ?", (number,)
+                elif table == "account_facts":
+                    clause, params = "fact_key <> 'name'", ()
+                elif table == "scheduled_actions":
+                    clause, params = "status IN ('pending', 'running')", ()
+                else:
+                    clause, params = "1 = 1", ()
+                found = conn.execute(
+                    f'SELECT 1 FROM "{table}" WHERE user_id = ? AND {clause} LIMIT 1',
+                    (resolved_user_id, *params),
+                ).fetchone()
+                if found is not None:
+                    return False
         return True
 
     # -- joining the account from another phone ------------------------------
@@ -8679,9 +9322,13 @@ class PortalDatabase:
         created_at = now_iso()
         expiry = expires_at.astimezone(timezone.utc).isoformat()
         with self._connection() as conn:
+            # The older link is retired by running it out now rather than
+            # forgotten: opened later, it is still known as this family's,
+            # so the person is told in the family's language to use the
+            # newer one instead of being taken for a stranger.
             conn.execute(
-                "DELETE FROM household_invites WHERE user_id = ? AND member_id = ? AND claimed_at IS NULL",
-                (int(user_id), int(member_id)),
+                "UPDATE household_invites SET expires_at = ? WHERE user_id = ? AND member_id = ? AND claimed_at IS NULL AND expires_at > ?",
+                (created_at, int(user_id), int(member_id), created_at),
             )
             conn.execute(
                 """
@@ -8806,8 +9453,21 @@ class PortalDatabase:
             if existing is not None and int(existing["user_id"]) != user_id:
                 # The phone already answers for another account. Joining a
                 # family must never take someone's own conversation from them.
+                # Whose it is - their own account, or another family they
+                # joined - is said, because each is answered differently.
+                elsewhere = conn.execute(
+                    "SELECT 1 FROM household_members WHERE user_id = ? AND wa_id = ? LIMIT 1",
+                    (int(existing["user_id"]), number),
+                ).fetchone()
                 conn.rollback()
-                return {"ok": False, "reason": "number_taken"}
+                return {
+                    "ok": False,
+                    "reason": "number_taken",
+                    "takenAs": "member" if elsewhere is not None else "own_account",
+                    "takenByUserId": int(existing["user_id"]),
+                    "inviterUserId": user_id,
+                    "memberName": str(row["member_name"] or ""),
+                }
             stamp = moment.isoformat()
             conn.execute(
                 """
@@ -8830,10 +9490,16 @@ class PortalDatabase:
                 "UPDATE household_members SET wa_id = ?, wa_linked_at = ?, updated_at = ? WHERE id = ?",
                 (number, stamp, stamp, int(row["member_id"])),
             )
+            # Back on the phone it signed out: what was held for it goes on.
+            conn.execute(
+                "UPDATE household_members SET signed_out_wa_id = '' WHERE user_id = ? AND signed_out_wa_id = ?",
+                (user_id, number),
+            )
             conn.execute(
                 "UPDATE household_invites SET claimed_at = ?, claimed_wa_id = ? WHERE code = ?",
                 (stamp, number, normalized_code),
             )
+            conn.execute("DELETE FROM household_departures WHERE wa_id = ?", (number,))
             conn.commit()
         member = self.get_household_member(user_id=user_id, member_id=int(row["member_id"])) or {}
         return {"ok": True, "userId": user_id, "waId": number, "member": member, "claimedAt": stamp}
@@ -9076,9 +9742,11 @@ class PortalDatabase:
 
     def list_household_nudge_accounts(self) -> list[int]:
         """Accounts the week nudger has something to look at: a week with
-        anything in it, a birthday to remember, or getting to know them put
-        off to a set day."""
+        anything in it, a birthday to remember, getting to know them put
+        off to a set day, or a family with a child that joined in the last
+        few days and may be due the homework question."""
 
+        recent = (datetime.now(timezone.utc) - timedelta(days=4)).isoformat()
         with self._connection() as conn:
             rows = conn.execute(
                 """
@@ -9087,7 +9755,11 @@ class PortalDatabase:
                 SELECT DISTINCT user_id FROM household_members WHERE group_id = '' AND birthday <> ''
                 UNION
                 SELECT user_id FROM household_profiles WHERE getting_to_know = 'postponed' AND ask_again_on <> ''
-                """
+                UNION
+                SELECT DISTINCT m.user_id FROM household_members AS m JOIN users AS u ON u.id = m.user_id
+                WHERE m.group_id = '' AND m.role = 'child' AND u.registered_at >= ?
+                """,
+                (recent,),
             ).fetchall()
         return sorted(int(row["user_id"]) for row in rows)
 
@@ -9184,6 +9856,121 @@ class PortalDatabase:
             )
         return cursor.rowcount > 0
 
+    # -- the homework check ----------------------------------------------------
+
+    def create_homework_login_link(self, *, user_id: int, code: str, expires_at: datetime) -> dict[str, Any]:
+        """A fresh link to the login page, replacing any unspent one: the
+        newest link sent is the one that works."""
+
+        normalized_code = normalize_text(code)
+        if int(user_id or 0) <= 0 or not normalized_code:
+            raise ValueError("A homework login link needs an account and a code.")
+        created_at = now_iso()
+        expiry = expires_at.astimezone(timezone.utc).isoformat()
+        with self._connection() as conn:
+            conn.execute(
+                "DELETE FROM homework_login_links WHERE user_id = ? AND used_at IS NULL", (int(user_id),),
+            )
+            conn.execute(
+                "INSERT INTO homework_login_links (code, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)",
+                (normalized_code, int(user_id), created_at, expiry),
+            )
+        return {"code": normalized_code, "userId": int(user_id), "createdAt": created_at, "expiresAt": expiry}
+
+    def get_homework_login_link(self, code: str, *, now: datetime | None = None) -> dict[str, Any] | None:
+        """One link by its code, with where it stands: live, used or expired.
+        None for a code nobody issued."""
+
+        normalized_code = normalize_text(code)
+        if not normalized_code:
+            return None
+        with self._connection() as conn:
+            row = conn.execute(
+                "SELECT code, user_id, created_at, expires_at, used_at FROM homework_login_links WHERE code = ?",
+                (normalized_code,),
+            ).fetchone()
+        if row is None:
+            return None
+        reference = (now or datetime.now(timezone.utc)).astimezone(timezone.utc).isoformat()
+        status = "used" if row["used_at"] else "expired" if str(row["expires_at"]) <= reference else "live"
+        return {
+            "code": str(row["code"]),
+            "userId": int(row["user_id"]),
+            "expiresAt": str(row["expires_at"]),
+            "status": status,
+        }
+
+    def save_homework_login(
+        self, *, code: str, platform: str, username: str, password: str, school_code: str = "",
+        other_platform: str = "", now: datetime | None = None,
+    ) -> dict[str, Any]:
+        """Keep a login typed on the page, encrypted, and spend the link it
+        came through. Fails closed: with no vault nothing is written."""
+
+        if self.credential_vault is None:
+            raise RuntimeError("Credential encryption is not configured.")
+        link = self.get_homework_login_link(code, now=now)
+        if link is None or link["status"] != "live":
+            raise LookupError((link or {}).get("status") or "not_found")
+        username_ciphertext = self.credential_vault.encrypt(username)
+        password_ciphertext = self.credential_vault.encrypt(password)
+        created_at = now_iso()
+        with self._connection() as conn:
+            spent = conn.execute(
+                "UPDATE homework_login_links SET used_at = ? WHERE code = ? AND used_at IS NULL",
+                (created_at, link["code"]),
+            )
+            if spent.rowcount != 1:
+                raise LookupError("used")
+            cursor = conn.execute(
+                """
+                INSERT INTO homework_logins
+                    (user_id, platform, other_platform, school_code, username_ciphertext, password_ciphertext, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    link["userId"], normalize_text(platform), normalize_text(other_platform), normalize_text(school_code),
+                    username_ciphertext, password_ciphertext, created_at,
+                ),
+            )
+        return {"id": int(cursor.lastrowid), "userId": link["userId"], "platform": normalize_text(platform), "createdAt": created_at}
+
+    def list_homework_logins(self, *, user_id: int) -> list[dict[str, Any]]:
+        """The logins kept for a family, without a word of what they are."""
+
+        with self._connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, platform, other_platform, school_code, created_at FROM homework_logins
+                WHERE user_id = ? ORDER BY id
+                """,
+                (int(user_id),),
+            ).fetchall()
+        return [
+            {
+                "id": int(row["id"]),
+                "platform": str(row["platform"]),
+                "otherPlatform": str(row["other_platform"] or ""),
+                "hasSchoolCode": bool(row["school_code"]),
+                "createdAt": str(row["created_at"]),
+            }
+            for row in rows
+        ]
+
+    def delete_homework_logins(self, *, user_id: int, login_id: int = 0) -> int:
+        """Remove one kept login, or every one the family has, with any link
+        still waiting to be used."""
+
+        with self._connection() as conn:
+            if login_id:
+                cursor = conn.execute(
+                    "DELETE FROM homework_logins WHERE user_id = ? AND id = ?", (int(user_id), int(login_id)),
+                )
+            else:
+                cursor = conn.execute("DELETE FROM homework_logins WHERE user_id = ?", (int(user_id),))
+                conn.execute("DELETE FROM homework_login_links WHERE user_id = ?", (int(user_id),))
+        return int(cursor.rowcount or 0)
+
     @staticmethod
     def _schedule_exception_row(row: sqlite3.Row | None) -> dict[str, Any] | None:
         if row is None:
@@ -9199,6 +9986,7 @@ class PortalDatabase:
             "endsOn": str(row["ends_on"]),
             "reason": str(row["reason"] or ""),
             "targets": targets if isinstance(targets, list) else [],
+            "handedTo": str(row["handed_to"] or "") if "handed_to" in row.keys() else "",
             "createdAt": str(row["created_at"]),
         }
 
@@ -9254,6 +10042,23 @@ class PortalDatabase:
                 (int(user_id), normalize_text(group_id), normalize_text(ending_on_or_after)),
             ).fetchall()
         return [exception for exception in (self._schedule_exception_row(row) for row in rows) if exception]
+
+    def hand_over_schedule_exception(self, *, user_id: int, exception_id: int, handed_to: str) -> dict[str, Any] | None:
+        """Keep who the account holder handed the days of her own hold to,
+        so she is left in peace on them. None when the hold is not hers."""
+
+        if int(user_id or 0) <= 0:
+            return None
+        with self._connection() as conn:
+            conn.execute(
+                "UPDATE schedule_exceptions SET handed_to = ? WHERE id = ? AND user_id = ? AND group_id = ''",
+                (normalize_text(handed_to)[:80], int(exception_id), int(user_id)),
+            )
+            row = conn.execute(
+                "SELECT * FROM schedule_exceptions WHERE id = ? AND user_id = ? AND group_id = ''",
+                (int(exception_id), int(user_id)),
+            ).fetchone()
+        return self._schedule_exception_row(row)
 
     def remove_schedule_exception(self, *, user_id: int, exception_id: int, group_id: str = "") -> bool:
         if int(user_id or 0) <= 0:

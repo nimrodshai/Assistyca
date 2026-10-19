@@ -31,6 +31,7 @@ from typing import Callable
 from zoneinfo import ZoneInfo
 from zoneinfo import ZoneInfoNotFoundError
 
+from packages.infrastructure import household
 from packages.infrastructure.portal_db import normalize_text
 from packages.infrastructure.standing_news import news_window_start
 
@@ -278,14 +279,19 @@ class StandingTaskRunner:
         database: Any,
         base_url: str,
         session_token_factory: Callable[[str], str],
+        viewer_signer: Callable[[str, str], str] | None = None,
     ) -> None:
         self.database = database
         self.base_url = str(base_url or "").rstrip("/")
         self.session_token_factory = session_token_factory
+        # Signs the phone a run is for, so it reads that person's own mail
+        # and calendar and nobody else's (connection_owner).
+        self.viewer_signer = viewer_signer
 
     def _connection_for(self, action: dict[str, Any]) -> dict[str, Any]:
         """The account behind the action, in the shape the chat wants: user
-        id, email, and the phone the reply is for when there is one."""
+        id, email, and the phone the reply is for when there is one - with
+        that phone's own conversation when it is a family member's."""
 
         user_id = int(action.get("userId") or 0)
         if user_id <= 0:
@@ -302,7 +308,10 @@ class StandingTaskRunner:
         if not owner_wa_id:
             linked = self.database.list_user_whatsapp_numbers(user_id=user_id)
             owner_wa_id = normalize_text(linked[0].get("waId")) if linked else ""
-        return {**connection, "userId": user_id, "email": email, "ownerWaId": owner_wa_id}
+        return {
+            **connection, "userId": user_id, "email": email, "ownerWaId": owner_wa_id,
+            **household.phone_conversation(self.database, user_id=user_id, wa_id=owner_wa_id),
+        }
 
     def run(self, action: dict[str, Any]) -> str:
         # Imported here: the chat module imports nearly everything, and the
@@ -319,6 +328,13 @@ class StandingTaskRunner:
         connection = self._connection_for(action)
         channel = "whatsapp" if normalize_text(action.get("channel")).lower() == "whatsapp" else "portal"
         user_id = int(connection["userId"])
+        # The conversation this message is written in and kept in: a group's
+        # own when the nudge is for a group, else the phone's - a family
+        # member's own thread when it goes to their phone, so it reads their
+        # transcript and leaves its question where their answer will come in.
+        group = payload.get("group") if isinstance(payload.get("group"), dict) else {}
+        group_id = normalize_text(group.get("id"))
+        thread_id = group_id or normalize_text(connection.get("agentThreadId"))
         # An offer needs somewhere for the yes to land: the WhatsApp chat,
         # with no other question already waiting there. Otherwise the plain
         # instruction runs and the alert only tells.
@@ -327,7 +343,7 @@ class StandingTaskRunner:
             offer_instruction
             and channel == "whatsapp"
             and not is_standing_task(action)
-            and not self.database.get_whatsapp_agent_pending(user_id=user_id)
+            and not self.database.get_whatsapp_agent_pending(user_id=user_id, thread_id=thread_id)
         )
         if may_offer:
             instruction = offer_instruction
@@ -336,16 +352,15 @@ class StandingTaskRunner:
             connection=connection,
             base_url=self.base_url,
             session_token_factory=self.session_token_factory,
+            viewer_signer=self.viewer_signer,
         )
         timezone_name = normalize_text(action.get("timezone")) or chat.timezone_name
 
-        # A nudge that belongs to a group is written in the group's own
-        # conversation and with a group's own turn: nothing of the account is
-        # readable there, and the room is what it is talking to.
-        group = payload.get("group") if isinstance(payload.get("group"), dict) else {}
-        group_id = normalize_text(group.get("id"))
+        # A nudge that belongs to a group is written with a group's own turn:
+        # nothing of the account is readable there, and the room is what it
+        # is talking to.
         history = self.database.list_recent_whatsapp_agent_messages(
-            user_id=user_id, limit=AGENT_CHAT_HISTORY_LIMIT, thread_id=group_id,
+            user_id=user_id, limit=AGENT_CHAT_HISTORY_LIMIT, thread_id=thread_id,
         )
         conversation = [{"role": item["role"], "text": item["text"]} for item in history]
         request: dict[str, Any] = {
@@ -399,10 +414,10 @@ class StandingTaskRunner:
             raise RuntimeError("The assistant ran the action but wrote nothing to send.")
         if channel == "whatsapp":
             # The result joins the WhatsApp transcript so "which meeting was
-            # that?" the next morning has something to refer to - the group's
-            # own transcript when the nudge was for a group.
+            # that?" the next morning has something to refer to - in the
+            # conversation it was written in.
             self.database.save_whatsapp_agent_message(
-                user_id=user_id, role="assistant", text=reply, thread_id=group_id,
+                user_id=user_id, role="assistant", text=reply, thread_id=thread_id,
             )
         pending = turn.get("pendingConfirmation") if isinstance(turn.get("pendingConfirmation"), dict) else None
         approval_id = normalize_text((pending or {}).get("id"))
@@ -411,6 +426,7 @@ class StandingTaskRunner:
             # so the answer to the alert runs the proposed action as proposed.
             self.database.save_whatsapp_agent_pending(
                 user_id=user_id,
+                thread_id=thread_id,
                 pending={
                     "kind": "tool_confirmation",
                     "approvalId": approval_id,

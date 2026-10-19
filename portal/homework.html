@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>שיעורי בית</title>
+    <meta name="color-scheme" content="light dark" />
+    <meta name="robots" content="noindex" />
+    <meta name="referrer" content="no-referrer" />
+    <script src="/portal/theme-init.js?v=1"></script>
+    <link rel="stylesheet" href="/portal/week.css?v=2" />
+    <link rel="stylesheet" href="/portal/homework.css?v=1" />
+  </head>
+  <body data-view="loading">
+    <header class="topbar">
+      <h1 class="topbar-title" data-text="title">שיעורי בית</h1>
+      <a class="topbar-link" href="/">Assistyca</a>
+    </header>
+
+    <main class="shell">
+      <section id="loadingView" class="view" aria-live="polite" aria-busy="true">
+        <div class="spinner" aria-hidden="true"></div>
+      </section>
+
+      <section id="goneView" class="view is-hidden">
+        <div class="card">
+          <h2 data-text="goneTitle">הקישור הזה כבר לא פעיל</h2>
+          <p data-text="goneBody">אפשר לבקש ממני קישור חדש בוואטסאפ.</p>
+        </div>
+      </section>
+
+      <section id="formView" class="view is-hidden">
+        <form id="loginForm" class="card homework-form" autocomplete="off" novalidate>
+          <p data-text="intro">
+            הפרטים של מערכת בית הספר, כדי שאבדוק בשבילך כל יום מה יש לשיעורי בית.
+          </p>
+
+          <fieldset class="field">
+            <legend class="field-label" data-text="platform">באיזו מערכת משתמשים?</legend>
+            <div id="platforms" class="chips"></div>
+          </fieldset>
+
+          <label id="otherField" class="field is-hidden">
+            <span class="field-label" data-text="otherPlatform">איך קוראים לה?</span>
+            <input id="otherPlatform" type="text" maxlength="80" />
+          </label>
+
+          <label id="schoolField" class="field">
+            <span class="field-label" data-text="schoolCode">סמל מוסד (במשו"ב צריך אותו)</span>
+            <input id="schoolCode" type="text" inputmode="numeric" maxlength="20" />
+          </label>
+
+          <label class="field">
+            <span class="field-label" data-text="username">שם משתמש</span>
+            <input id="username" type="text" maxlength="200" autocapitalize="off" spellcheck="false" required />
+          </label>
+
+          <label class="field">
+            <span class="field-label" data-text="password">סיסמה</span>
+            <input id="password" type="password" maxlength="200" autocomplete="new-password" required />
+          </label>
+
+          <p class="lock-note" data-text="safe">
+            🔒 הפרטים נשמרים מוצפנים, לא מוצגים שוב לאף אחד, ומשמשים רק לבדיקת שיעורי הבית.
+            אפשר למחוק אותם בכל רגע - פשוט לכתוב לי בוואטסאפ.
+          </p>
+
+          <p id="formError" class="form-error is-hidden" role="alert"></p>
+
+          <button id="saveButton" class="button primary" type="submit" data-text="save">שמירה</button>
+        </form>
+      </section>
+
+      <section id="doneView" class="view is-hidden">
+        <div class="card">
+          <h2 data-text="doneTitle">נשמר 🙂</h2>
+          <p data-text="doneBody">אפשר לסגור את הדף ולחזור לוואטסאפ.</p>
+        </div>
+      </section>
+    </main>
+    <script src="/portal/homework.js?v=1"></script>
+  </body>
+</html>

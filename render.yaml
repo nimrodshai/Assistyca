@@ -119,6 +119,21 @@ services:
       # How many free days a newly created account starts with.
       - key: PORTAL_DEFAULT_TRIAL_DAYS
         value: "14"
+      # Paying after the trial, through Lemon Squeezy (docs/family-billing.md).
+      # Until the store and variant are set, nothing offers a payment link.
+      - key: LEMON_SQUEEZY_API_KEY
+        sync: false
+      - key: LEMON_SQUEEZY_STORE_ID
+        sync: false
+      - key: LEMON_SQUEEZY_VARIANT_ID
+        sync: false
+      - key: LEMON_SQUEEZY_SIGNING_SECRET
+        sync: false
+      - key: LEMON_SQUEEZY_TEST_MODE
+        sync: false
+      # The price as the assistant may say it, e.g. "$4.90 a month".
+      - key: ASSISTYCA_PRICE_LABEL
+        sync: false
       # The Assistyca WhatsApp number in plain digits, used to build the
       # tap-to-open wa.me link handed out with a claim code.
       - key: ASSISTYCA_WHATSAPP_DISPLAY_NUMBER

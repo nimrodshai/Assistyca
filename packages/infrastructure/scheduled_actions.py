@@ -26,6 +26,7 @@ from packages.infrastructure.notification_templates import TEMPLATE_KIND_REMINDE
 from packages.infrastructure.notification_templates import TEMPLATE_KIND_REMINDER_AGAIN
 from packages.infrastructure.notification_templates import TEMPLATE_NAMES
 from packages.infrastructure.notification_templates import UTILITY_TEMPLATE_NAMES
+from packages.infrastructure.notification_templates import WINDOW_ONLY_PAYLOAD_KEY
 from packages.infrastructure.notification_templates import image_template_for
 from packages.infrastructure.notification_templates import normalize_template_kind
 from packages.infrastructure.notification_templates import pickup_reminder_parameters
@@ -39,6 +40,7 @@ from packages.infrastructure.notification_delivery import deliver_portal_notific
 from packages.infrastructure.notification_delivery import send_whatsapp_notification
 from packages.infrastructure.portal_db import PortalDatabase
 from packages.infrastructure.portal_db import normalize_text
+from packages.infrastructure.portal_db import normalize_whatsapp_lookup_id
 from packages.infrastructure.schedule_exceptions import action_exception
 from packages.infrastructure.schedule_exceptions import held_until
 from packages.infrastructure.standing_tasks import STANDING_TASK_ACTION_TYPE
@@ -48,12 +50,16 @@ from packages.infrastructure.standing_tasks import NothingNewToSend
 from packages.infrastructure import household
 from packages.infrastructure.family_week_nudges import owner_phone
 from packages.infrastructure.remind_again import remind_again_button
+from packages.infrastructure.remind_again import second_word_still_theirs
 from packages.infrastructure.standing_tasks import is_standing_task
 from packages.infrastructure.standing_tasks import next_task_run_at
 
 
 DEFAULT_SCHEDULED_ACTION_POLL_SECONDS = 10
 DEFAULT_SCHEDULED_ACTION_BATCH_SIZE = 25
+# How often a reminder for a signed-out phone is looked at again.
+SIGNED_OUT_RECHECK = timedelta(hours=1)
+MESSAGE_PRUNE_INTERVAL = timedelta(days=1)
 # The generic template every scheduled message used to ride. It is the
 # last resort now: a message goes first on the template made for its kind,
 # in the person's language (notification_templates), and falls back to
@@ -153,6 +159,37 @@ def describe_list_for_message(record: dict[str, Any], *, limit: int = 40) -> str
     return "\n".join(lines)
 
 
+
+def service_window_open(database: Any, user_id: int, *, now: datetime | None = None, thread_id: str = "") -> bool:
+    """True while Meta still takes plain text for this person: they wrote
+    to the Assistyca number less than a day ago. thread_id is the
+    conversation of the phone being written to - a family member's own
+    when the message is for them, since the window is the phone's."""
+
+    if user_id <= 0:
+        return False
+    try:
+        history = database.list_recent_whatsapp_agent_messages(user_id=user_id, limit=50, thread_id=thread_id)
+    except TypeError:
+        history = database.list_recent_whatsapp_agent_messages(user_id=user_id, limit=50)
+    except Exception:  # noqa: BLE001 - no history means no window, not no reminder
+        return False
+    latest = ""
+    for message in history:
+        if str(message.get("role") or "") == "user":
+            latest = max(latest, str(message.get("createdAt") or ""))
+    if not latest:
+        return False
+    try:
+        written_at = datetime.fromisoformat(latest)
+    except ValueError:
+        return False
+    if written_at.tzinfo is None:
+        written_at = written_at.replace(tzinfo=timezone.utc)
+    reference = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    elapsed = reference - written_at
+    return timedelta(0) <= elapsed < WHATSAPP_SERVICE_WINDOW - WHATSAPP_SERVICE_WINDOW_MARGIN
+
 class ScheduledActionScheduler:
     def __init__(
         self,
@@ -167,6 +204,9 @@ class ScheduledActionScheduler:
         # wrote. The server wires one in; without it a standing action fails
         # plainly instead of pretending.
         self.task_runner = task_runner
+        # When old chat messages were last cleared. This loop runs in every
+        # deployment, so it carries the daily clean-up.
+        self._messages_pruned_at: datetime | None = None
 
     def run_pending(self, *, now: datetime | None = None) -> dict[str, Any]:
         reference = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
@@ -209,6 +249,41 @@ class ScheduledActionScheduler:
                     self._reschedule(claimed, now=reference, paused=True)
                 else:
                     self._hold(claimed, pause)
+                continue
+            if not second_word_still_theirs(self.database, claimed):
+                # The word five minutes before, for a drive that stopped
+                # being theirs after they asked for it: nothing to say.
+                print(f"[scheduled-actions] action={claimed.get('id')} drive no longer theirs, not sent", flush=True)
+                self.database.finish_scheduled_action(
+                    action_id=int(claimed.get("id") or 0),
+                    status="cancelled",
+                    last_error="The drive this reminder was for is no longer theirs.",
+                    payload=claimed.get("payload") if isinstance(claimed.get("payload"), dict) else {},
+                )
+                continue
+            whereabouts = self._recipient_whereabouts(claimed)
+            if whereabouts == "left":
+                # Set up from a phone since taken off the family: it is owed
+                # nothing, and a standing action would otherwise go on acting
+                # with the account's own reach.
+                print(f"[scheduled-actions] action={claimed.get('id')} its phone left the family, not sent", flush=True)
+                self.database.finish_scheduled_action(
+                    action_id=int(claimed.get("id") or 0),
+                    status="cancelled",
+                    last_error="The phone this was for was taken off the family.",
+                    payload=claimed.get("payload") if isinstance(claimed.get("payload"), dict) else {},
+                )
+                continue
+            if whereabouts == "signed_out":
+                # A phone signed out for now, the holder's or a member's. Signing out
+                # keeps what is saved, so nothing is called off: a standing
+                # action skips this run and comes back on its own, and a
+                # reminder waits and goes once the phone is linked again.
+                print(f"[scheduled-actions] action={claimed.get('id')} its phone is signed out, held", flush=True)
+                if standing:
+                    self._reschedule(claimed, now=reference, paused=True)
+                else:
+                    self._wait_for_phone(claimed, now=reference)
                 continue
             try:
                 provider_message_id = self._dispatch(claimed)
@@ -263,6 +338,68 @@ class ScheduledActionScheduler:
             "fallback": fallback,
             "recovered": recovered,
         }
+
+    def _recipient_whereabouts(self, action: dict[str, Any]) -> str:
+        """Where the phone this action was set up for stands with its
+        account: "here" while it still reaches it, "left" once it was taken
+        off the family, "signed_out" when it is unlinked for now. A group
+        is always here; "the owner" is signed out while no phone of the
+        account holder's is linked. A phone taken off the family has left;
+        any other unlinked phone, the account holder's or a family
+        member's, is only signed out and is waited for."""
+
+        payload = action.get("payload") if isinstance(action.get("payload"), dict) else {}
+        recipient = normalize_text(payload.get("recipientWaId"))
+        user_id = int(action.get("userId") or 0)
+        sent_to = recipient or normalize_text(action.get("recipientRef"))
+        if sent_to.startswith(GROUP_RECIPIENT_PREFIX):
+            return "here"
+        if sent_to.lower() in OWNER_RECIPIENT_REFS:
+            # The account holder's own phone, whichever it is. A WhatsApp
+            # message for it while no phone of theirs is linked waits for
+            # one, as a reminder set from it does, rather than being marked
+            # sent into a feed nobody reads.
+            if normalize_text(action.get("channel")).lower() != "whatsapp" or user_id <= 0:
+                return "here"
+            try:
+                connection = self.database.get_whatsapp_connection_by_user_id(user_id) or {}
+                if normalize_text(connection.get("ownerWaId")) or owner_phone(self.database, user_id):
+                    return "here"
+            except Exception as exc:  # noqa: BLE001 - a store that cannot say leaves the action to run
+                print(f"[scheduled-actions] action={action.get('id')} could not check the owner's phone: {exc}", flush=True)
+                return "here"
+            return "signed_out"
+        if not recipient:
+            return "here"
+        number = normalize_whatsapp_lookup_id(recipient)
+        if not number or user_id <= 0:
+            return "here"
+        try:
+            if self.database.get_user_id_for_whatsapp_number(number) == user_id:
+                return "here"
+            connection = self.database.get_whatsapp_connection_by_user_id(user_id) or {}
+            # The older setup keeps the owner's own number on the connection
+            # rather than as a linked phone; that number is the account's.
+            if normalize_whatsapp_lookup_id(connection.get("ownerWaId")) == number:
+                return "here"
+            if self.database.phone_left_family(user_id=user_id, wa_id=number):
+                return "left"
+        except Exception as exc:  # noqa: BLE001 - a store that cannot say leaves the action to run
+            print(f"[scheduled-actions] action={action.get('id')} could not check its phone: {exc}", flush=True)
+            return "here"
+        return "signed_out"
+
+    def _wait_for_phone(self, action: dict[str, Any], *, now: datetime) -> None:
+        """Look at a reminder again in a while: its phone is signed out, and
+        it goes the first time it is due with the phone back."""
+
+        payload = dict(action.get("payload") if isinstance(action.get("payload"), dict) else {})
+        payload["heldBy"] = {"signedOut": True}
+        self.database.reschedule_scheduled_action(
+            action_id=int(action.get("id") or 0),
+            run_at=now + SIGNED_OUT_RECHECK,
+            payload=payload,
+        )
 
     def _pause_for(self, action: dict[str, Any]) -> dict[str, Any] | None:
         """The exception holding this action today, on the person's clock,
@@ -384,6 +521,13 @@ class ScheduledActionScheduler:
         action_type = normalize_text(action.get("actionType")).lower()
         channel = normalize_text(action.get("channel")).lower()
         payload = action.get("payload") if isinstance(action.get("payload"), dict) else {}
+        if channel == "whatsapp" and payload.get(WINDOW_ONLY_PAYLOAD_KEY):
+            # Checked before the message is written, so a question that will
+            # not go is never put in the transcript as if it had.
+            user_id = int(action.get("userId") or 0)
+            recipient_ref = self._whatsapp_recipient(action)
+            if not self._service_window_open(user_id, thread_id=self._thread_for_phone(user_id, recipient_ref)):
+                raise RuntimeError("Plain text only, and the 24-hour window is closed: not sent.")
         if action_type == STANDING_TASK_ACTION_TYPE:
             if self.task_runner is None:
                 raise RuntimeError("Standing actions are not enabled on this server.")
@@ -421,9 +565,10 @@ class ScheduledActionScheduler:
                 payload["deliveredVia"] = "whatsapp"
                 return provider_message_id
             except Exception as exc:  # noqa: BLE001 - the message still has to arrive somewhere
-                if normalize_text(action.get("recipientRef")).startswith(GROUP_RECIPIENT_PREFIX):
+                if normalize_text(action.get("recipientRef")).startswith(GROUP_RECIPIENT_PREFIX) or payload.get(WINDOW_ONLY_PAYLOAD_KEY):
                     # A message for a room has no second address: the owner's
                     # own feed is not where the other parents would read it.
+                    # Nor has a question only worth asking on the phone.
                     raise
                 # A configured send that fails should still reach the owner.
                 # The feed is durable and always available, and the payload
@@ -464,44 +609,10 @@ class ScheduledActionScheduler:
         thread when the phone joined the family, the owner's otherwise. The
         plain-text window is the phone's, so it is read from that thread."""
 
-        finder = getattr(self.database, "get_household_member_by_wa_id", None)
-        if not callable(finder):
-            return ""
-        try:
-            member = finder(wa_id, user_id=user_id)
-        except Exception:  # noqa: BLE001 - a store that cannot say treats the phone as the owner's
-            return ""
-        return household.member_thread_id(wa_id) if member else ""
+        return str(household.phone_conversation(self.database, user_id=user_id, wa_id=wa_id).get("agentThreadId") or "")
 
     def _service_window_open(self, user_id: int, *, now: datetime | None = None, thread_id: str = "") -> bool:
-        """True while Meta still takes plain text for this person: they wrote
-        to the Assistyca number less than a day ago. thread_id is the
-        conversation of the phone being written to - a family member's own
-        when the message is for them, since the window is the phone's."""
-
-        if user_id <= 0:
-            return False
-        try:
-            history = self.database.list_recent_whatsapp_agent_messages(user_id=user_id, limit=50, thread_id=thread_id)
-        except TypeError:
-            history = self.database.list_recent_whatsapp_agent_messages(user_id=user_id, limit=50)
-        except Exception:  # noqa: BLE001 - no history means no window, not no reminder
-            return False
-        latest = ""
-        for message in history:
-            if str(message.get("role") or "") == "user":
-                latest = max(latest, str(message.get("createdAt") or ""))
-        if not latest:
-            return False
-        try:
-            written_at = datetime.fromisoformat(latest)
-        except ValueError:
-            return False
-        if written_at.tzinfo is None:
-            written_at = written_at.replace(tzinfo=timezone.utc)
-        reference = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
-        elapsed = reference - written_at
-        return timedelta(0) <= elapsed < WHATSAPP_SERVICE_WINDOW - WHATSAPP_SERVICE_WINDOW_MARGIN
+        return service_window_open(self.database, user_id, now=now, thread_id=thread_id)
 
     def _whatsapp_recipient(self, action: dict[str, Any]) -> str:
         """The phone a scheduled WhatsApp message goes to: the group reference
@@ -527,6 +638,19 @@ class ScheduledActionScheduler:
         if not recipient_ref:
             raise RuntimeError("WhatsApp recipient is missing.")
         return recipient_ref
+
+    def _recipient_language(self, user_id: int, recipient_wa_id: str) -> str:
+        """The language of whoever this phone belongs to: a family member
+        who joined from it gets their own, anyone else the account
+        holder's."""
+
+        member_id = 0
+        try:
+            member = self.database.get_household_member_by_wa_id(recipient_wa_id, user_id=user_id) if user_id > 0 else None
+            member_id = int((member or {}).get("id") or 0)
+        except Exception as exc:  # noqa: BLE001 - the account's language is the fallback
+            print(f"[scheduled-actions] could not tell whose phone {recipient_wa_id[-4:]} is: {exc}", flush=True)
+        return resolve_message_language(self.database, user_id=user_id, member_id=member_id)
 
     def _message_shape(self, action: dict[str, Any]) -> str:
         """Lines when the message will go as plain text (a group, or a phone
@@ -575,7 +699,7 @@ class ScheduledActionScheduler:
 
         refusals: list[str] = []
         image_url = normalize_text(payload.get("imageUrl"))
-        language = resolve_message_language(self.database, user_id=user_id)
+        language = self._recipient_language(user_id, recipient_ref)
         # A word that offers one more word five minutes before ends with
         # that question and a button to say yes: under the plain text
         # inside the window, in the template made for it outside.
@@ -599,6 +723,11 @@ class ScheduledActionScheduler:
                 return provider_message_id
             except Exception as exc:  # noqa: BLE001 - the template is the next thing to try
                 refusals.append(f"{'buttons' if again else 'picture' if image_url else 'plain text'}: {exc}")
+        if payload.get(WINDOW_ONLY_PAYLOAD_KEY):
+            # A question that is only worth asking while they are talking to
+            # us (the homework offer): no template carries it.
+            refusals.append("plain text only, and the 24-hour window is closed")
+            raise RuntimeError("; ".join(refusals))
         kind = normalize_template_kind(payload.get(TEMPLATE_KIND_PAYLOAD_KEY))
         if image_url:
             # The Utility picture templates first, for the same reason as the
@@ -719,6 +848,16 @@ class ScheduledActionScheduler:
         )
         return f"portal-notification-{int(notification.get('id') or 0)}"
 
+    def prune_old_messages(self, *, now: datetime | None = None) -> int | None:
+        """Delete chat messages past their keeping time, at most once a day.
+        None when it is not yet time; else how many went."""
+
+        reference = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+        if self._messages_pruned_at is not None and reference - self._messages_pruned_at < MESSAGE_PRUNE_INTERVAL:
+            return None
+        self._messages_pruned_at = reference
+        return int(self.database.delete_old_whatsapp_agent_messages(now=reference))
+
     def serve_forever(
         self,
         stop_event: threading.Event,
@@ -727,6 +866,12 @@ class ScheduledActionScheduler:
     ) -> None:
         logger = log or (lambda _message: None)
         while not stop_event.is_set():
+            try:
+                pruned = self.prune_old_messages()
+                if pruned:
+                    logger(f"[scheduled-actions] deleted {pruned} chat messages older than the keeping time")
+            except Exception as exc:  # noqa: BLE001 - a clean-up that fails waits for tomorrow
+                logger(f"[scheduled-actions] message clean-up error: {exc}")
             try:
                 summary = self.run_pending()
                 if int(summary.get("processed") or 0) > 0:
@@ -751,4 +896,5 @@ __all__ = [
     "ScheduledActionScheduler",
     "describe_list_for_message",
     "load_scheduled_action_config",
+    "service_window_open",
 ]

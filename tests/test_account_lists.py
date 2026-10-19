@@ -226,6 +226,7 @@ class ListToolTests(unittest.TestCase):
         self.assertTrue(output["ok"])
         self.assertEqual([item["text"] for item in output["list"]["items"]], ["Milk", "Eggs"])
         self.assertEqual(output["link"], LINK.format(id=1))
+        self.assertIn("safe to forward to the family", output["linkSharing"])
         self.assertIn(LINK.format(id=1), result.reply)
         self.assertEqual(result.completed, ["create_list"])
         self.assertEqual(self.database.list_account_lists(user_id=self.user_id)[0]["name"], "Shopping")

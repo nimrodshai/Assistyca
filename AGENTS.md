@@ -17,6 +17,9 @@ When working here:
 - `portal/` for the user-facing web pages and the chat workspace.
 - `scripts/` for shared automation such as setup, sync, evals, and deploy helpers.
 - `docs/` for internal process notes, onboarding, and operating guidance.
+- `docs/product-brief.md` for what a product review (feature value and the assistant's voice) needs to know about this project.
+- `docs/qa-brief.md` for what a QA pass needs to know: live code, how to run the tests, harnesses and a local app, and the flows to cover.
+- `docs/dev-brief.md` for how to change code here: the working branch, the shared checkout, and how to test and push.
 
 ## Reuse Rules
 

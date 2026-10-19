@@ -623,7 +623,8 @@ class GoogleWriteEndpointTests(unittest.TestCase):
         self._connect("email", granted_scope=f"{GOOGLE_GMAIL_OAUTH_SCOPE} {GMAIL_SEND_OAUTH_SCOPE}", address="owner@gmail.com")
         self._connect("calendar", granted_scope=GOOGLE_CALENDAR_OAUTH_SCOPE)
         # The browser claims both can write; the rows decide.
-        context = PortalAuthHandler._with_google_write_access(SimpleNamespace(database=self.server.database), "owner@example.com", {
+        handler = SimpleNamespace(database=self.server.database, _connection_owner=lambda email: "")
+        context = PortalAuthHandler._with_google_write_access(handler, "owner@example.com", {
             "gmail": {"platformConnected": True, "connectionStatus": "connected", "writeAccess": False},
             "calendar": {"platformConnected": True, "connectionStatus": "connected", "writeAccess": True},
         })

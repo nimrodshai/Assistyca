@@ -59,6 +59,7 @@ def describe_chat_flow(
     family_flow_allowed: bool = True,
     household_block: dict[str, Any] | None = None,
     first_contact: bool = False,
+    voice_notes_allowed: bool = True,
 ) -> dict[str, Any]:
     """Where this account's opening stands, as the assistant reads it each turn.
 
@@ -74,6 +75,10 @@ def describe_chat_flow(
     first_contact is true when nothing has ever been said to this person: no
     welcome went out and no turn has answered them yet. The assistant then
     introduces itself first.
+
+    voice_notes_allowed is false when the house switched voice notes off for
+    this account: the getting-to-know then never offers to take the week as a
+    voice note, because one sent would only be refused.
     """
 
     profile = profile or {}
@@ -90,6 +95,8 @@ def describe_chat_flow(
                 flow["weekGaps"] = gaps
             if first_contact:
                 flow["introduce"] = True
+            if not voice_notes_allowed:
+                flow["voiceNotesOff"] = True
             return flow
 
     connect_status = _status(profile.get("connectOffer"))
@@ -200,6 +207,19 @@ _INTRODUCTION = (
     "or anything to set up.\n"
 )
 
+# A timetable the school already wrote is quicker to send than to type, and
+# most parents would not think to try. Offered once, where it saves the most:
+# the first school week, before it is asked about piece by piece.
+_TIMETABLE_SHORTCUT = (
+    "When you first come to a child's school or kindergarten, say once, in a line with that question, "
+    "that if they have the timetable as a picture they can simply send it{voice}. Name a picture, never "
+    "a PDF or a file, even though one they send is read just the same. "
+    "Whatever it shows is answered: save it, and ask only for what it leaves out - a timetable never says "
+    "who takes them in or who collects them. Offer it that one time in the getting-to-know and not again; "
+    "if they send a timetable later for another child, take it the same way.\n"
+)
+_VOICE_SHORTCUT = ", or tell it to you in a voice message if that is easier than typing"
+
 _FAMILY_GETTING_TO_KNOW = (
     "Getting to know this family is the work, not the preamble to it. What you are here to carry is their "
     "week: which child is where on each day, what time it ends, and - the whole point - who takes them and "
@@ -216,7 +236,10 @@ _FAMILY_GETTING_TO_KNOW = (
     "their school or kindergarten and have not yet asked what they do once it ends; 'own_week' means the "
     "children are in and you have not yet asked the person about their own week. Answer whatever "
     "they wrote first, then ask about the first gap - one question in a message, warmly and briefly, never "
-    "a list and never a form. Start with the people: whether there is a partner and their name, then each "
+    "a list and never a form. One question is not one field: ask it the way a friend would, about the "
+    "thing as a whole - how Noa's school day goes, say, rather than its days, then its finishing time, then "
+    "who takes her, each in a message of its own - so that a person who knows the answer can give it all "
+    "at once, and ask afterwards only for the part they left out. Start with the people: whether there is a partner and their name, then each "
     "child's name, then each one's birthday, which is worth having for its own sake (an age is enough when "
     "they would rather not say). Then, child by child: school or kindergarten - which days, what time it "
     "ends, who takes them in the morning and who collects them - and then, before you move on to the next "
@@ -227,6 +250,7 @@ _FAMILY_GETTING_TO_KNOW = (
     "they name a "
     "person who is not in household, that is somebody new: save them too, so you know who the pickups "
     "belong to.\n"
+    "{shortcut}"
     "When the 'own_week' gap comes up, ask the person, once and in one message, whether they want to put "
     "their own week in too - the days and hours they work, and the regular things of their week - so you "
     "know when they cannot be the one collecting; and say in the same breath that if their week already "
@@ -304,7 +328,9 @@ def chat_flow_rules(flow: dict[str, Any] | None) -> str:
     goal = str(flow.get("goal") or "done")
     rules = FAMILY_ACCOUNT_RULES + (_INTRODUCTION if flow.get("introduce") else "")
     if goal == "family":
-        return f"{rules}{_FAMILY_GETTING_TO_KNOW}"
+        voice = "" if flow.get("voiceNotesOff") else _VOICE_SHORTCUT
+        shortcut = _TIMETABLE_SHORTCUT.replace("{voice}", voice)
+        return f"{rules}{_FAMILY_GETTING_TO_KNOW.replace('{shortcut}', shortcut)}"
     if goal == "connect":
         return f"{rules}{_CONNECT_OPENING} {_CONNECT_RULES}"
     return rules

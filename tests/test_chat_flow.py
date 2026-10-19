@@ -176,12 +176,35 @@ class RulesTests(unittest.TestCase):
         getting_to_know = chat_flow.chat_flow_rules({"goal": "family"})
         self.assertIn("one question in a message", getting_to_know)
         self.assertIn("set_getting_to_know", getting_to_know)
+        # One question at a time, but about the thing as a whole: asking the
+        # days, then the hour, then who drives, each in its own message, is
+        # the intake form the opening is meant not to be.
+        self.assertIn("One question is not one field", getting_to_know)
+        self.assertIn("give it all at once", getting_to_know)
+        # The school already wrote the timetable: a picture or a voice
+        # message is offered once, and only who drives is asked after it. A
+        # PDF is read too but never offered.
+        self.assertIn("timetable as a picture", getting_to_know)
+        self.assertIn("in a voice message", getting_to_know)
+        self.assertIn("Name a picture, never", getting_to_know)
+        self.assertIn("never says who takes them in or who collects them", getting_to_know)
+        self.assertNotIn("{shortcut}", getting_to_know)
+        self.assertNotIn("{voice}", getting_to_know)
         self.assertNotIn("set_connect_offer", getting_to_know)
 
         then_connecting = chat_flow.chat_flow_rules({"goal": "connect"})
         self.assertIn("their household and their week", then_connecting)
         self.assertIn("Their family and their week are in", then_connecting)
         self.assertIn("set_connect_offer", then_connecting)
+
+    def test_a_voice_note_is_never_offered_where_voice_notes_are_off(self) -> None:
+        flow = chat_flow.describe_chat_flow(
+            profile={}, connected=(), today="2026-10-18", voice_notes_allowed=False,
+        )
+        self.assertTrue(flow["voiceNotesOff"])
+        rules = chat_flow.chat_flow_rules(flow)
+        self.assertIn("timetable as a picture", rules)
+        self.assertNotIn("voice message", rules)
 
     def test_the_introduction_comes_first_and_only_when_asked_for(self) -> None:
         introduced = chat_flow.chat_flow_rules({"goal": "family", "introduce": True})

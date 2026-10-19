@@ -3,6 +3,7 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import sqlite3
 import tempfile
 import threading
 import unittest
@@ -30,6 +31,52 @@ class ScheduledActionTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.temp_dir.cleanup()
+
+    def test_chat_messages_older_than_ninety_days_are_deleted_and_nothing_else(self) -> None:
+        user_id = int(self.user["id"])
+        now = datetime(2026, 10, 19, 3, 0, tzinfo=timezone.utc)
+
+        def said(text: str, days_ago: int, thread_id: str = "") -> None:
+            moment = (now - timedelta(days=days_ago)).isoformat()
+            with mock.patch("packages.infrastructure.portal_db.now_iso", return_value=moment):
+                self.database.save_whatsapp_agent_message(user_id=user_id, role="user", text=text, thread_id=thread_id)
+
+        # Every conversation: the account holder's, a family member's, a
+        # group's - written in time order, as messages arrive.
+        for label, days_ago in (("old", 120), ("just too old", 91), ("recent", 89), ("today", 0)):
+            for thread in ("", "member:972500000002", "group-1"):
+                said(f"{label} {thread}", days_ago, thread)
+        # The family's facts, a waiting question and a scheduled action stay.
+        self.database.save_household_member(user_id=user_id, name="Daniel", role="partner")
+        self.database.save_household_activity(
+            user_id=user_id, title="gan", who=["Noa"], days=["sun"], start_time="08:00", end_time="12:00",
+            drop_off_by="me", pick_up_by="",
+        )
+        self.database.save_whatsapp_agent_pending(user_id=user_id, pending={"kind": "held_question", "text": "q"})
+        self.database.create_scheduled_action(
+            user_id=user_id, action_type="send_message", channel="portal", recipient_ref="owner",
+            run_at=now, timezone_name="UTC", payload={"messageText": "x"},
+        )
+
+        def counts() -> dict[str, int]:
+            with sqlite3.connect(self.database.path) as conn:
+                tables = [row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")]
+                return {table: conn.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()[0] for table in tables}
+
+        before = counts()
+        scheduler = ScheduledActionScheduler(self.database, config=ScheduledActionConfig(enabled=True))
+        self.assertEqual(scheduler.prune_old_messages(now=now), 6)
+        after = counts()
+
+        self.assertEqual(after.pop("whatsapp_agent_messages"), before.pop("whatsapp_agent_messages") - 6)
+        self.assertEqual(after, before, "no other table is touched")
+        for thread in ("", "member:972500000002", "group-1"):
+            texts = [m["text"] for m in self.database.list_recent_whatsapp_agent_messages(user_id=user_id, thread_id=thread)]
+            self.assertEqual(texts, [f"recent {thread}".strip(), f"today {thread}".strip()])
+        # Once a day, not on every turn of the loop; a month on, the
+        # 89-day-old messages have aged out too.
+        self.assertIsNone(scheduler.prune_old_messages(now=now + timedelta(hours=23)))
+        self.assertEqual(scheduler.prune_old_messages(now=now + timedelta(days=30)), 3)
 
     def test_claim_scheduled_action_is_atomic(self) -> None:
         action = self.database.create_scheduled_action(

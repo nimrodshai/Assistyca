@@ -192,7 +192,8 @@ class TrialEnforcementTests(unittest.TestCase):
         with mock.patch("packages.infrastructure.portal_auth.server.call_openai_response", side_effect=model):
             status, payload = self._loop({"userMessage": "delete my account"})
         self.assertEqual(status, 200, payload)
-        self.assertEqual(seen_tools[0], ["delete_account", "disconnect", "sign_out"])
+        # Leaving, and the way to pay to stay: nothing else.
+        self.assertEqual(seen_tools[0], ["delete_account", "disconnect", "payment_link", "sign_out"])
         approval_id = payload["pendingConfirmation"]["id"]
 
         rounds = [round_(reply="Done. Your account is gone.")]

@@ -96,6 +96,79 @@ class AccountDeletionTests(unittest.TestCase):
         self.assertEqual(self.server.database.list_platform_connections("owner@example.com"), [])
         self.assertFalse(owner_folder.parent.exists())
 
+    def test_account_delete_takes_each_family_members_saved_files_too(self) -> None:
+        from datetime import datetime, timedelta, timezone
+
+        database = self.server.database
+        database.register_user("owner@example.com")
+        user_id = int(database.get_user("owner@example.com")["id"])
+        member = database.save_household_member(user_id=user_id, name="Yoav", role="partner")
+        database.create_household_invite(
+            user_id=user_id, member_id=int(member["id"]), code="YOAV55",
+            expires_at=datetime.now(timezone.utc) + timedelta(days=14),
+        )
+        self.assertTrue(database.claim_household_invite(code="YOAV55", wa_id="972500000002")["ok"])
+        partner_folder = self.receipt_root / build_agent_receipt_owner_key("owner@example.com", "972500000002") / "Receipts"
+        partner_folder.mkdir(parents=True)
+        (partner_folder / "yoav.pdf").write_bytes(b"%PDF")
+
+        self.assertTrue(self._delete_account(self._cookie())["ok"])
+        self.assertFalse(partner_folder.parent.exists())
+
+    def _partner_with_receipts(self, phone: str = "972500000002") -> tuple[int, Path]:
+        from datetime import datetime, timedelta, timezone
+
+        database = self.server.database
+        database.register_user("owner@example.com")
+        user_id = int(database.get_user("owner@example.com")["id"])
+        member = database.save_household_member(user_id=user_id, name="Yoav", role="partner")
+        database.create_household_invite(
+            user_id=user_id, member_id=int(member["id"]), code="YOAV55",
+            expires_at=datetime.now(timezone.utc) + timedelta(days=14),
+        )
+        self.assertTrue(database.claim_household_invite(code="YOAV55", wa_id=phone)["ok"])
+        database.create_account_receipt(
+            user_id=user_id, record={"vendor": "Pharmacy", "amount": "40", "receiptDate": "2026-10-01", "ownerWaId": phone},
+        )
+        database.create_account_receipt(
+            user_id=user_id, record={"vendor": "Bakery", "amount": "12", "receiptDate": "2026-10-02"},
+        )
+        folder = self.receipt_root / build_agent_receipt_owner_key("owner@example.com", phone) / "Receipts"
+        folder.mkdir(parents=True)
+        (folder / "yoav.pdf").write_bytes(b"%PDF")
+        return user_id, folder
+
+    def test_taking_a_partner_off_the_family_takes_their_receipts_and_files(self) -> None:
+        user_id, partner_folder = self._partner_with_receipts()
+        cookie = self._cookie()
+        request = urllib_request.Request(
+            f"{self.base_url}/api/household/members/Yoav",
+            headers={"Cookie": cookie, "Origin": self.base_url},
+            method="DELETE",
+        )
+        with urllib_request.urlopen(request) as response:
+            self.assertEqual(response.status, 200)
+
+        left = self.server.database.list_account_receipts(user_id=user_id, owner_wa_id=None)
+        self.assertEqual([row["vendor"] for row in left], ["Bakery"])
+        self.assertFalse(partner_folder.parent.exists())
+
+    def test_account_delete_takes_the_files_of_someone_who_already_left(self) -> None:
+        # Taken off before leaving cleared their files: the folder is still
+        # on disk, and only the departure and the receipt rows remember it.
+        user_id, partner_folder = self._partner_with_receipts()
+        self.server.database.remove_household_member(user_id=user_id, name="Yoav")
+        stray_folder = self.receipt_root / build_agent_receipt_owner_key("owner@example.com", "972500000009") / "Receipts"
+        stray_folder.mkdir(parents=True)
+        self.server.database.create_account_receipt(
+            user_id=user_id, record={"vendor": "Garage", "amount": "300", "receiptDate": "2026-10-03", "ownerWaId": "972500000009"},
+        )
+        self.assertTrue(partner_folder.is_dir())
+
+        self.assertTrue(self._delete_account(self._cookie())["ok"])
+        self.assertFalse(partner_folder.parent.exists())
+        self.assertFalse(stray_folder.parent.exists())
+
     def test_account_delete_takes_the_whatsapp_signup_conversation_with_it(self) -> None:
         # The signup row is keyed on the phone, not the account: it holds the
         # name, the business and the first messages, and no cascade reaches it.

@@ -32,7 +32,9 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from packages.infrastructure.account_types import account_feature_allowed
 from packages.infrastructure.message_language import remember_message_language
 from packages.infrastructure.message_language import resolve_message_language
-from packages.infrastructure.person_address import remember_address_form
+from packages.infrastructure.person_address import address_word
+from packages.infrastructure.person_address import learn_address_forms
+from packages.infrastructure.person_address import resolve_address_form
 from packages.infrastructure.notification_delivery import DEFAULT_WHATSAPP_API_VERSION
 from packages.infrastructure.notification_delivery import flatten_template_parameter
 from packages.infrastructure.notification_delivery import normalize_email
@@ -43,6 +45,7 @@ from packages.infrastructure.notification_delivery import resolve_whatsapp_sende
 from packages.infrastructure.agent_proposals import AGENT_PHOTO_DEFAULT_TEXT
 from packages.infrastructure.agent_proposals import AGENT_PHOTO_MAX_BYTES
 from packages.infrastructure.assistant_voice import ASSISTANT_VOICE
+from packages.infrastructure.connection_owner import CONNECTION_VIEWER_HEADER
 from packages.infrastructure.agent_proposals import missing_sources_for_lookup
 from packages.infrastructure.agent_proposals import normalize_agent_photo_context
 from packages.infrastructure.group_chat_voice import GROUP_VOICE_INSTRUCTIONS
@@ -53,6 +56,8 @@ from packages.infrastructure.openai_api import load_openai_config
 from packages.infrastructure.task_complexity import TaskComplexity
 from packages.infrastructure.task_complexity import resolve_task_model
 from packages.infrastructure.task_complexity import resolve_task_reasoning
+from packages.infrastructure.agent_turns import TAP_REPLY_PATH
+from packages.infrastructure.tap_reply import tap_reply_fallback
 from packages.infrastructure.agent_turns import TURN_FOLLOW_UP_PATHS
 from packages.infrastructure.agent_turns import TURN_STARTING_PATHS
 from packages.infrastructure.recovery_reply import build_situation
@@ -64,6 +69,7 @@ from packages.infrastructure.voice_notes import VoiceNoteError
 from packages.infrastructure.voice_notes import normalize_voice_note_mime_type
 from packages.infrastructure.voice_notes import transcribe_voice_note
 from packages.infrastructure.voice_notes import voice_note_transcript_text
+from packages.infrastructure.week_summary_image import pdf_to_png
 from packages.infrastructure.whatsapp_messaging import send_whatsapp_message
 from packages.infrastructure.whatsapp_messaging import send_whatsapp_typing_indicator
 
@@ -73,6 +79,8 @@ AGENT_CHAT_REPLY_MAX_LENGTH = 3500
 AGENT_CHAT_RECORD_LIMIT = 60
 AGENT_TURN_TIMEOUT_SECONDS = 120
 AGENT_RUN_TIMEOUT_SECONDS = 300
+# What a PDF with no caption stands for: the words ask the model to look.
+AGENT_DOCUMENT_DEFAULT_TEXT = "Have a look at this file."
 # How long a question the chat asked stays open. WhatsApp's own service
 # window is a day; a "yes" the morning after that is a fresh conversation,
 # not consent to whatever was asked last week.
@@ -214,6 +222,32 @@ def build_whatsapp_claim_link(code: str) -> str:
 # What a phone sends to join a family's account: the words a join link puts
 # in the message, with the invitation code after them.
 FAMILY_JOIN_WORDS = "Assistyca family"
+_FAMILY_JOIN_RE = re.compile(r"\bassistyca\s+family\b", re.IGNORECASE)
+
+
+def read_family_join(text: Any) -> tuple[str, bool]:
+    """The invitation code in a message, and whether the message is a join.
+
+    A join link writes "Assistyca family CODE", and the code is the one
+    after those words - not the first word of the right shape, which in
+    "THANKS Assistyca family YE7MJU" is THANKS. A message with the words is
+    someone joining whatever the code says, so a code nobody issued is
+    still answered; without them, the code is looked for anywhere and an
+    unknown one means nothing.
+    """
+
+    value = str(text or "")
+    match = _FAMILY_JOIN_RE.search(value)
+    if match is None:
+        return extract_whatsapp_claim_code(value), False
+    return extract_whatsapp_claim_code(value[match.end():]), True
+
+
+def words_beyond_family_join(text: Any) -> str:
+    """What someone wrote around a join link's own words and code: the only
+    part of such a message that says which language they write in."""
+
+    return " ".join(_CLAIM_CODE_RE.sub(" ", _FAMILY_JOIN_RE.sub(" ", str(text or ""))).split())
 
 
 def build_whatsapp_join_link(code: str) -> str:
@@ -1416,6 +1450,7 @@ class WhatsAppAgentChat:
         session_token_factory: Callable[[str], str],
         api_version: str = DEFAULT_WHATSAPP_API_VERSION,
         connect_links: dict[str, str] | None = None,
+        viewer_signer: Callable[[str, str], str] | None = None,
     ) -> None:
         self.connect_links = {
             key: value for key, value in (connect_links or {}).items() if str(value or "").startswith("https://")
@@ -1433,6 +1468,12 @@ class WhatsAppAgentChat:
         # wrote in is one that joined the family. Each thread keeps its own
         # transcript and its own open question.
         self.thread_id = normalize_text(self.connection.get("agentThreadId"))
+        # Whose mail and calendars this conversation reads: a family
+        # member's own on their thread, the account holder's otherwise. The
+        # server reads it from a header it signed for this phone
+        # (connection_owner), so every call says which phone is asking.
+        self.connection_owner = re.sub(r"\D", "", self.owner_wa_id) if self.thread_id else ""
+        self.viewer_signer = viewer_signer
         self.timezone_name = infer_timezone_from_wa_id(self.owner_wa_id)
         # The turn the server is recording for this message. A turn reply
         # carries its id; every later call for the same message - a lookup,
@@ -1457,14 +1498,19 @@ class WhatsAppAgentChat:
             if payload is not None
             else None
         )
+        headers = {
+            "Authorization": f"Bearer {self.session_token_factory(self.email)}",
+            "Content-Type": "application/json",
+        }
+        if self.viewer_signer is not None and self.owner_wa_id:
+            signed = self.viewer_signer(self.email, self.owner_wa_id)
+            if signed:
+                headers[CONNECTION_VIEWER_HEADER] = signed
         request = urllib_request.Request(
             f"{self.base_url}{path}",
             data=body,
             method=method,
-            headers={
-                "Authorization": f"Bearer {self.session_token_factory(self.email)}",
-                "Content-Type": "application/json",
-            },
+            headers=headers,
         )
         try:
             with urllib_request.urlopen(request, timeout=timeout) as response:
@@ -1502,7 +1548,8 @@ class WhatsAppAgentChat:
 
         mailboxes: list[dict[str, str]] = []
         try:
-            platform_connections = self.database.list_platform_connections(self.email)
+            # Only what the person writing connected themselves.
+            platform_connections = self.database.list_platform_connections(self.email, owner_wa_id=self.connection_owner)
         except Exception:  # noqa: BLE001 - context is best-effort, the turn still runs
             platform_connections = []
         for record in platform_connections:
@@ -1691,18 +1738,16 @@ class WhatsAppAgentChat:
     def _remind_again(self, interactive_id: str) -> dict[str, Any]:
         """Answer the tap under a ride word: the word five minutes before is
         queued from the reminder that carried the button, once, and the tap
-        is acknowledged with the time it will come. A drive whose time has
-        passed, or a button no reminder of theirs sent, is said so."""
+        is acknowledged with the time it will come - or, a few minutes
+        before the drive, told it is time to go. The server writes that line
+        from what is known here (tap_reply), and the assembled one stands
+        in. A drive whose time has passed, or a button no reminder of theirs
+        sent, is said so."""
 
         result = schedule_second_word(self.database, user_id=self.user_id, interactive_id=interactive_id)
         outcome = normalize_text(result.get("outcome"))
-        language = resolve_message_language(self.database, user_id=self.user_id)
-        when = result.get("runAt")
-        clock = when.strftime("%H:%M") if isinstance(when, datetime) else ""
-        if outcome == "scheduled":
-            reply = f"סגור, אזכיר שוב ב-{clock}." if language == "he" else f"Got it - I'll say so again at {clock}."
-        elif outcome == "already":
-            reply = f"כבר מסודר, אזכיר ב-{clock}." if language == "he" else f"Already set - I'll say so at {clock}."
+        if outcome in {"scheduled", "already", "imminent"}:
+            reply = self._tap_reply(outcome, result)
         elif outcome == "past":
             reply = self._recover(
                 build_situation("nothing_found", what_happened="That drive's time has already come, so there is nothing left to remind you of."),
@@ -1718,6 +1763,63 @@ class WhatsAppAgentChat:
                 [],
             )
         return self._reply_and_log(reply, outcome=f"remind_again_{outcome or 'unknown'}")
+
+    def _learn_address_forms(self, text: str, member_id: int) -> None:
+        def learn(conversation: list[dict[str, Any]]) -> None:
+            try:
+                learn_address_forms(
+                    self.database, user_id=self.user_id, member_id=member_id, text=text,
+                    conversation=conversation, billing_email=self.email,
+                )
+            except Exception as exc:  # noqa: BLE001
+                print(f"WhatsApp address form for user {self.user_id} could not be kept: {exc}", flush=True)
+
+        try:
+            history = self.database.list_recent_whatsapp_agent_messages(
+                user_id=self.user_id, limit=AGENT_CHAT_HISTORY_LIMIT, thread_id=self.thread_id)
+            conversation = [{"role": item["role"], "text": item["text"]} for item in history]
+            known = resolve_address_form(self.database, user_id=self.user_id, member_id=member_id)
+        except Exception as exc:  # noqa: BLE001
+            print(f"WhatsApp address form for user {self.user_id} could not be read: {exc}", flush=True)
+            return
+        if known:
+            threading.Thread(target=learn, args=(conversation,), name="whatsapp-address-form", daemon=True).start()
+        else:
+            learn(conversation)
+
+    def _tap_reply(self, outcome: str, result: dict[str, Any]) -> str:
+        language = resolve_message_language(
+            self.database, user_id=self.user_id, member_id=int(self.connection.get("memberId") or 0),
+        )
+        due = result.get("dueAt")
+        drive_at = due.strftime("%H:%M") if isinstance(due, datetime) else ""
+        when = result.get("runAt")
+        clock = drive_at if outcome == "imminent" else (when.strftime("%H:%M") if isinstance(when, datetime) else "")
+        reply = tap_reply_fallback(outcome, clock, language)
+        if not clock:
+            return reply
+        form = resolve_address_form(
+            self.database, user_id=self.user_id, member_id=int(self.connection.get("memberId") or 0),
+        )
+        try:
+            response, status = self._api("POST", TAP_REPLY_PATH, {
+                "outcome": outcome,
+                "clock": clock,
+                "driveAt": drive_at,
+                "about": "; ".join(str(fact) for fact in result.get("facts") or [])[:200],
+                "language": language,
+                "addressForm": address_word(form),
+                "conversation": [
+                    {"role": item["role"], "text": item["text"]}
+                    for item in self.database.list_recent_whatsapp_agent_messages(
+                        user_id=self.user_id, limit=AGENT_CHAT_HISTORY_LIMIT, thread_id=self.thread_id)
+                ][-4:],
+            })
+            if status == 200:
+                reply = normalize_text(response.get("reply")) or reply
+        except WhatsAppAgentChatError as exc:
+            print(f"WhatsApp tap reply could not be written: {exc}", flush=True)
+        return reply
 
     def _answer_calendar_choice(self, pending: dict[str, Any], *, text: str, interactive_id: str) -> dict[str, Any]:
         calendars = [entry for entry in (pending.get("calendars") or []) if isinstance(entry, dict)]
@@ -1797,7 +1899,7 @@ class WhatsAppAgentChat:
         """Name exactly what would go, and hold the disconnect until a yes."""
 
         try:
-            records = self.database.list_platform_connections(self.email)
+            records = self.database.list_platform_connections(self.email, owner_wa_id=self.connection_owner)
         except Exception:  # noqa: BLE001 - a list that cannot be read is an empty one
             records = []
         chosen = connections_for_disconnect(records, targets)
@@ -2070,7 +2172,7 @@ class WhatsAppAgentChat:
         if situations:
             # Part of the question was answered and part hit a wall. The answer
             # stands, and what stopped the rest follows it with its way forward.
-            answer = f"{answer}\n\n{computed_recovery_sentence(situations[0])}"
+            answer = f"{answer}\n\n{computed_recovery_sentence(situations[0], language=self._reply_language())}"
         return answer
 
     def _loop_turn(
@@ -2125,7 +2227,8 @@ class WhatsAppAgentChat:
                 outcome = "error"
                 if status == 402:
                     reply = normalize_text(turn.get("message")) or computed_recovery_sentence(
-                        build_situation("not_supported", what_happened="Your trial has ended.")
+                        build_situation("not_supported", what_happened="Your trial has ended."),
+                        language=self._reply_language(),
                     )
                 else:
                     reply = self._recover(self._situation_for_turn_failure(turn, status, text), conversation)
@@ -2368,13 +2471,26 @@ class WhatsAppAgentChat:
                     "conversation": history[-6:],
                     "channel": "whatsapp",
                     "timezone": self.timezone_name,
+                    "language": self._reply_language(),
                 },
             )
         except WhatsAppAgentChatError as exc:
             print(f"WhatsApp recovery reply failed: {exc}", flush=True)
             response, status = {}, 0
         reply = str(response.get("reply") or "").strip() if status == 200 else ""
-        return reply or computed_recovery_sentence(situation)
+        return reply or computed_recovery_sentence(situation, language=self._reply_language())
+
+    def _reply_language(self) -> str:
+        """The language this phone's person writes in, for a reply put
+        together without the model: a family member's own, else the
+        account's. Empty when nothing is known, which reads as English."""
+
+        try:
+            return resolve_message_language(
+                self.database, user_id=self.user_id, member_id=int(self.connection.get("memberId") or 0),
+            )
+        except Exception:  # noqa: BLE001 - not knowing is English, never a failed reply
+            return ""
 
     # -- sending -----------------------------------------------------------
 
@@ -2628,6 +2744,50 @@ class WhatsAppAgentChat:
                 # ask it to look, not a bracketed type name.
                 text = AGENT_PHOTO_DEFAULT_TEXT
 
+        # A PDF is read the way a photo is: its first page becomes the
+        # picture beside the words. What parents forward is mostly the
+        # school's timetable as the school sent it, and asking them to
+        # screenshot it first is one step too many. Any other kind of file is
+        # said so, rather than handed to the model as "[document]".
+        if kind == "document" and media_id:
+            declared = normalize_text((media or {}).get("mimeType")).lower()
+            file_name = normalize_text((media or {}).get("fileName"))
+            is_pdf = declared == "application/pdf" or file_name.lower().endswith(".pdf")
+            if is_pdf:
+                try:
+                    fetched = download_whatsapp_media(media_id)
+                    page = pdf_to_png(base64.b64decode(fetched.get("dataBase64") or ""))
+                    photo = normalize_agent_photo_context({
+                        "mimeType": "image/png",
+                        "imageBase64": base64.b64encode(page).decode("ascii"),
+                        "fileName": file_name or "document.pdf",
+                    })
+                except Exception as exc:  # noqa: BLE001 - a PDF that cannot be drawn is said so below
+                    print(f"WhatsApp PDF for user {self.user_id} could not be read: {exc}", flush=True)
+            if not photo:
+                reply = self._recover(
+                    build_situation(
+                        "unsupported_message",
+                        what_happened=(
+                            "I couldn't open that PDF." if is_pdf
+                            else "I can read a photo, but not that kind of file."
+                        ),
+                        can_retry=is_pdf,
+                        options=[make_option("retry")] if is_pdf else [],
+                    ),
+                    [],
+                )
+                message_id = self._send_owner_text(reply)
+                return {
+                    "type": "owner",
+                    "action": "agent_chat_reply",
+                    "outcome": "document_unreadable",
+                    "reply_text": reply,
+                    "message_id": message_id,
+                }
+            if not text or text.lower() == "[document]":
+                text = AGENT_DOCUMENT_DEFAULT_TEXT
+
         # A voice note is the message, spoken. It is fetched from Meta,
         # turned into words on the account's bill, and from there the turn
         # runs exactly as it would for typed text. A recording that cannot
@@ -2696,21 +2856,25 @@ class WhatsAppAgentChat:
         # come in. Words only: a photo with no caption and a button tap say
         # nothing about it, and a language that could not be kept never
         # stops the turn.
+        # Each is the writer's own: the family member's when this is their
+        # phone, else the account holder's. A join link's own words are the
+        # link's, not theirs, and say nothing about either.
         if text and (kind == "text" or voice_note):
+            member_id = int(self.connection.get("memberId") or 0)
             try:
-                remember_message_language(self.database, user_id=self.user_id, text=text)
-            except Exception as exc:  # noqa: BLE001
-                print(f"WhatsApp message language for user {self.user_id} could not be kept: {exc}", flush=True)
-            # And the gender they speak of themselves in, which is how they
-            # are addressed from now on: the family member's own when this
-            # is their phone, else the account holder's.
-            try:
-                remember_address_form(
-                    self.database, user_id=self.user_id, text=text,
-                    member_id=int(self.connection.get("memberId") or 0),
+                remember_message_language(
+                    self.database, user_id=self.user_id, member_id=member_id,
+                    text=words_beyond_family_join(text) if read_family_join(text)[1] else text,
                 )
             except Exception as exc:  # noqa: BLE001
-                print(f"WhatsApp address form for user {self.user_id} could not be kept: {exc}", flush=True)
+                print(f"WhatsApp message language for user {self.user_id} could not be kept: {exc}", flush=True)
+            # And how each grown-up is addressed, read from what is written
+            # here (person_address). Read before the turn while the writer
+            # has none kept, so the first reply already uses one form; once
+            # one is kept the turn uses it, and the reading - a correction,
+            # stronger evidence, someone else in the family - goes on beside
+            # the turn rather than in front of it.
+            self._learn_address_forms(text, member_id)
 
         # A tap on the button under a ride word - one more word five minutes
         # before - is settled by code, like a tap on the calendar picker: the
@@ -2866,7 +3030,8 @@ class WhatsAppAgentChat:
                     # A trial that ran out is a fact to state, not a snag to
                     # recover from, and recovering would spend on a model.
                     reply = normalize_text(turn.get("message")) or computed_recovery_sentence(
-                        build_situation("not_supported", what_happened="Your trial has ended.")
+                        build_situation("not_supported", what_happened="Your trial has ended."),
+                        language=self._reply_language(),
                     )
                 else:
                     reply = self._recover(self._situation_for_turn_failure(turn, status, text), conversation)

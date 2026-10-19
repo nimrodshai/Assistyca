@@ -187,6 +187,53 @@ class PortalAuthSessionTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(payload["email"], "owner@example.com")
 
+    def _legacy_cookie(self, **fields: str) -> str:
+        # Written the way the server wrote tokens before page links were
+        # scoped: version 1, and whatever scope or member it named.
+        from packages.infrastructure.portal_auth.server import encode_token_segment, sign_token_segment
+
+        now = time.time()
+        session = PortalSession(token="", email="owner@example.com", issued_at=now - DAY, expires_at=now + 29 * DAY)
+        token = create_session_token(session, b"test-session-secret")
+        payload = json.loads(base64.urlsafe_b64decode(token.split(".", 1)[0] + "==").decode("utf-8"))
+        payload["v"] = 1
+        payload.update(fields)
+        payload_segment = encode_token_segment(json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8"))
+        return f"{SESSION_COOKIE_NAME}={payload_segment}.{sign_token_segment(payload_segment, b'test-session-secret')}"
+
+    def test_a_whole_account_session_from_before_link_scopes_asks_for_a_sign_in_again(self) -> None:
+        # It may have been opened from a forwarded week link; nothing in it
+        # says otherwise, so it reaches nothing until its holder signs in.
+        status, _, _ = self._session_status(self._legacy_cookie())
+        self.assertEqual(status, 401)
+
+        status, payload, _ = self._session_status(self._verify_otp_and_get_cookie())
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["email"], "owner@example.com")
+
+    def test_a_scoped_session_from_before_the_version_change_still_opens_its_page(self) -> None:
+        status, payload, _ = self._session_status(self._legacy_cookie(s="family"))
+
+        self.assertEqual(status, 200)
+        self.assertTrue(payload["signedIn"])
+
+    def test_a_session_opened_from_a_page_link_is_not_told_the_holders_details(self) -> None:
+        # A week or receipts link may have been forwarded; whoever opened it
+        # learns it is signed in, and nothing about whose account it is.
+        for scope in ("family", "receipts"):
+            with self.subTest(scope=scope):
+                token = self.server.store.issue_session("owner@example.com", scope=scope)["token"]
+                status, payload, _ = self._session_status(f"{SESSION_COOKIE_NAME}={token}")
+
+                self.assertEqual(status, 200)
+                self.assertTrue(payload["signedIn"])
+                self.assertEqual(payload["scope"], scope)
+                for private in ("email", "displayName", "profile", "isAdmin", "canManageClients"):
+                    self.assertNotIn(private, payload)
+
+        status, payload, _ = self._session_status(self._verify_otp_and_get_cookie())
+        self.assertEqual(payload["email"], "owner@example.com")
+
     def test_logging_out_everywhere_ends_the_other_device_too(self) -> None:
         phone_cookie = self._verify_otp_and_get_cookie()
         laptop_cookie = self._verify_otp_and_get_cookie()
