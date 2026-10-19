@@ -50,6 +50,9 @@ BOOTSTRAP_ACTIVE_SUBSCRIPTION_STATUS = "active"
 # abandoned (crash, redeploy, or killed daemon thread) and returned to the queue.
 STALE_CLAIM_SECONDS = 15 * 60
 MAX_SCHEDULED_ACTION_ATTEMPTS = 3
+# How long a chat message is kept. The assistant reads only the last few turns
+# of a conversation, so anything older is private words stored for nobody.
+WHATSAPP_AGENT_MESSAGE_RETENTION_DAYS = 90
 VALID_CLIENT_TYPES = ("paying", "demo", "qa")
 MONTH_KEY_RE = re.compile(r"^\d{4}-\d{2}$")
 RAW_CENTS_QUANT = Decimal("0.0001")
@@ -5966,6 +5969,38 @@ class PortalDatabase:
             }
             for row in reversed(rows)
         ]
+
+    def delete_old_whatsapp_agent_messages(
+        self, *, now: datetime | None = None, keep_days: int = WHATSAPP_AGENT_MESSAGE_RETENTION_DAYS,
+    ) -> int:
+        """Delete chat messages older than keep_days, in every conversation -
+        the account holder's, family members' and groups'. Only the words of
+        the chat go: what the family told us (the week, its people, lists),
+        waiting questions, scheduled actions and turn records stay.
+
+        Rows are written in time order, so the first message young enough to
+        keep is found walking up from the oldest id - a short walk once the
+        old ones are gone - and everything below it is deleted by id, with no
+        index over the date needed."""
+
+        cutoff = ((now or datetime.now(timezone.utc)) - timedelta(days=max(1, int(keep_days)))).astimezone(timezone.utc)
+        cutoff_iso = cutoff.isoformat()
+        with self._connection() as conn:
+            first_kept = conn.execute(
+                "SELECT id FROM whatsapp_agent_messages WHERE created_at >= ? ORDER BY id LIMIT 1",
+                (cutoff_iso,),
+            ).fetchone()
+            if first_kept is None:
+                cursor = conn.execute("DELETE FROM whatsapp_agent_messages WHERE created_at < ?", (cutoff_iso,))
+            else:
+                # The date is checked as well, so a row out of order (a clock
+                # stepped back) is never taken before its time.
+                cursor = conn.execute(
+                    "DELETE FROM whatsapp_agent_messages WHERE id < ? AND created_at < ?",
+                    (int(first_kept["id"]), cutoff_iso),
+                )
+            conn.commit()
+            return int(cursor.rowcount or 0)
 
     def get_whatsapp_agent_active_proposal(self, *, user_id: int, thread_id: str = "") -> dict[str, Any] | None:
         """The proposal the WhatsApp conversation is currently discussing, if any."""

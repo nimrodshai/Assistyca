@@ -56,6 +56,7 @@ from packages.infrastructure.standing_tasks import next_task_run_at
 
 DEFAULT_SCHEDULED_ACTION_POLL_SECONDS = 10
 DEFAULT_SCHEDULED_ACTION_BATCH_SIZE = 25
+MESSAGE_PRUNE_INTERVAL = timedelta(days=1)
 # The generic template every scheduled message used to ride. It is the
 # last resort now: a message goes first on the template made for its kind,
 # in the person's language (notification_templates), and falls back to
@@ -200,6 +201,9 @@ class ScheduledActionScheduler:
         # wrote. The server wires one in; without it a standing action fails
         # plainly instead of pretending.
         self.task_runner = task_runner
+        # When old chat messages were last cleared. This loop runs in every
+        # deployment, so it carries the daily clean-up.
+        self._messages_pruned_at: datetime | None = None
 
     def run_pending(self, *, now: datetime | None = None) -> dict[str, Any]:
         reference = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
@@ -742,6 +746,16 @@ class ScheduledActionScheduler:
         )
         return f"portal-notification-{int(notification.get('id') or 0)}"
 
+    def prune_old_messages(self, *, now: datetime | None = None) -> int | None:
+        """Delete chat messages past their keeping time, at most once a day.
+        None when it is not yet time; else how many went."""
+
+        reference = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+        if self._messages_pruned_at is not None and reference - self._messages_pruned_at < MESSAGE_PRUNE_INTERVAL:
+            return None
+        self._messages_pruned_at = reference
+        return int(self.database.delete_old_whatsapp_agent_messages(now=reference))
+
     def serve_forever(
         self,
         stop_event: threading.Event,
@@ -750,6 +764,12 @@ class ScheduledActionScheduler:
     ) -> None:
         logger = log or (lambda _message: None)
         while not stop_event.is_set():
+            try:
+                pruned = self.prune_old_messages()
+                if pruned:
+                    logger(f"[scheduled-actions] deleted {pruned} chat messages older than the keeping time")
+            except Exception as exc:  # noqa: BLE001 - a clean-up that fails waits for tomorrow
+                logger(f"[scheduled-actions] message clean-up error: {exc}")
             try:
                 summary = self.run_pending()
                 if int(summary.get("processed") or 0) > 0:
