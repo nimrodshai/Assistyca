@@ -279,10 +279,14 @@ class StandingTaskRunner:
         database: Any,
         base_url: str,
         session_token_factory: Callable[[str], str],
+        viewer_signer: Callable[[str, str], str] | None = None,
     ) -> None:
         self.database = database
         self.base_url = str(base_url or "").rstrip("/")
         self.session_token_factory = session_token_factory
+        # Signs the phone a run is for, so it reads that person's own mail
+        # and calendar and nobody else's (connection_owner).
+        self.viewer_signer = viewer_signer
 
     def _connection_for(self, action: dict[str, Any]) -> dict[str, Any]:
         """The account behind the action, in the shape the chat wants: user
@@ -348,6 +352,7 @@ class StandingTaskRunner:
             connection=connection,
             base_url=self.base_url,
             session_token_factory=self.session_token_factory,
+            viewer_signer=self.viewer_signer,
         )
         timezone_name = normalize_text(action.get("timezone")) or chat.timezone_name
 

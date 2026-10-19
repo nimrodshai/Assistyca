@@ -37,6 +37,8 @@ from zoneinfo import ZoneInfo
 from zoneinfo import ZoneInfoNotFoundError
 
 from packages.infrastructure.account_types import account_feature_allowed
+from packages.infrastructure.connection_owner import CONNECTION_VIEWER_HEADER
+from packages.infrastructure.connection_owner import NOBODY_VIEWER
 from packages.infrastructure.mailbox_findings import FINDINGS_TITLE
 from packages.infrastructure.mailbox_findings import MAX_FINDINGS_PER_MESSAGE
 from packages.infrastructure.mailbox_findings import NOTHING_FOUND_TEXT
@@ -200,11 +202,15 @@ class FindingScanScheduler:
         base_url: str = "",
         session_token_factory: Callable[[str], str] | None = None,
         scan: Callable[[dict[str, Any], dict[str, Any]], dict[str, Any]] | None = None,
+        viewer_signer: Callable[[str, str], str] | None = None,
     ) -> None:
         self.database = database
         self.config = config or load_finding_scan_config()
         self.base_url = str(base_url or "").rstrip("/")
         self.session_token_factory = session_token_factory
+        # Signs the family member's phone a scan is for, so the server reads
+        # their own mailboxes and nobody else's (connection_owner).
+        self.viewer_signer = viewer_signer
         # How a scan is run: over loopback by default, or whatever a test
         # hands in. Takes the scan row and the account, returns the
         # endpoint's answer.
@@ -220,8 +226,13 @@ class FindingScanScheduler:
         email = normalize_text(user.get("email"))
         if not email or not bool(user.get("isActive", True)):
             raise RuntimeError("Mailbox scan does not resolve to an active account.")
-        connection = self.database.get_whatsapp_connection_by_user_id(user_id) or {}
-        owner_wa_id = normalize_text(connection.get("ownerWaId"))
+        # Whose mailboxes the scan reads: a family member's own scan is told
+        # to their phone, the account holder's to theirs.
+        member_wa_id = normalize_text(scan.get("ownerWaId"))
+        owner_wa_id = member_wa_id
+        if not owner_wa_id:
+            connection = self.database.get_whatsapp_connection_by_user_id(user_id) or {}
+            owner_wa_id = normalize_text(connection.get("ownerWaId"))
         if not owner_wa_id:
             linked = self.database.list_user_whatsapp_numbers(user_id=user_id)
             owner_wa_id = normalize_text(linked[0].get("waId")) if linked else ""
@@ -229,6 +240,7 @@ class FindingScanScheduler:
             "userId": user_id,
             "email": email,
             "ownerWaId": owner_wa_id,
+            "memberWaId": member_wa_id,
             "timezone": account_timezone(self.database, user_id, normalize_text(scan.get("timezone"))),
         }
 
@@ -241,14 +253,20 @@ class FindingScanScheduler:
             "kind": normalize_text(scan.get("kind")) or "daily",
             "timezone": account["timezone"],
         }, ensure_ascii=False).encode("utf-8")
+        headers = {
+            "Authorization": f"Bearer {self.session_token_factory(account['email'])}",
+            "Content-Type": "application/json",
+        }
+        if account.get("memberWaId"):
+            # A family member's own scan says whose it is; without a signer
+            # it reads nobody's rather than the account holder's.
+            signed = self.viewer_signer(account["email"], account["memberWaId"]) if self.viewer_signer else ""
+            headers[CONNECTION_VIEWER_HEADER] = signed or NOBODY_VIEWER
         request = urllib_request.Request(
             f"{self.base_url}{SCAN_ENDPOINT}",
             data=body,
             method="POST",
-            headers={
-                "Authorization": f"Bearer {self.session_token_factory(account['email'])}",
-                "Content-Type": "application/json",
-            },
+            headers=headers,
         )
         try:
             with urllib_request.urlopen(request, timeout=SCAN_TIMEOUT_SECONDS) as response:
@@ -280,6 +298,7 @@ class FindingScanScheduler:
         if payload is None:
             return {"told": 0, "waiting": more_count}
         channel = "whatsapp" if account.get("ownerWaId") else "portal"
+        member = normalize_text(account.get("memberWaId"))
         action = self.database.create_scheduled_action(
             user_id=int(account["userId"]),
             action_type=STANDING_TASK_ACTION_TYPE,
@@ -287,11 +306,12 @@ class FindingScanScheduler:
             recipient_ref="owner",
             run_at=datetime.now(timezone.utc),
             timezone_name=account["timezone"],
-            payload={**payload, "scanId": int(scan.get("id") or 0)},
+            payload={**payload, "scanId": int(scan.get("id") or 0), **({"recipientWaId": member} if member else {})},
         )
         told = self.database.mark_account_findings_told(
             user_id=int(account["userId"]),
             keys=[normalize_text(finding.get("key")) for finding in chosen],
+            owner_wa_id=member,
         )
         return {"told": told, "waiting": more_count, "actionId": int(action.get("id") or 0), "channel": channel}
 
@@ -310,6 +330,7 @@ class FindingScanScheduler:
             run_at=run_at,
             timezone_name=account["timezone"],
             after_scan_id=int(scan.get("id") or 0),
+            owner_wa_id=normalize_text(account.get("memberWaId")),
         )
 
     def run_scan(self, scan: dict[str, Any], *, now: datetime | None = None) -> dict[str, Any]:

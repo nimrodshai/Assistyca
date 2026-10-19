@@ -236,6 +236,40 @@ class WhatsAppOAuthLinkTests(unittest.TestCase):
         self.assertNotIn("going through", reply)
         self.assertNotIn("your mail now", reply)
 
+    def test_a_partners_sign_in_is_theirs_and_a_grandparents_connects_nothing(self) -> None:
+        from datetime import datetime, timedelta, timezone
+
+        self.database.register_user("dana@gmail.com")
+        user_id = int((self.database.get_user("dana@gmail.com") or {})["id"])
+        self.database.link_user_whatsapp_number(user_id=user_id, wa_id=PHONE)
+        for name, role, phone, code in (("Yoav", "partner", "447700900222", "YOAV22"), ("Rina", "other", "447700900333", "RINA22")):
+            member = self.database.save_household_member(user_id=user_id, name=name, role=role)
+            self.database.create_household_invite(
+                user_id=user_id, member_id=int(member["id"]), code=code,
+                expires_at=datetime.now(timezone.utc) + timedelta(days=14),
+            )
+            self.assertTrue(self.database.claim_household_invite(code=code, wa_id=phone)["ok"])
+        handler = "packages.infrastructure.portal_auth.server.PortalAuthHandler"
+        filed_under: list[str] = []
+
+        def save(handler_self, session, token_payload, *, scope_ids):
+            filed_under.append(handler_self._connection_owner_to_save(session.email))
+            return [{"accountAddress": "yoav@gmail.com"}]
+
+        with (
+            mock.patch(f"{handler}._exchange_google_calendar_oauth_code", return_value={"access_token": "at", "refresh_token": "rt", "scope": "x"}) as exchange,
+            mock.patch(f"{handler}._save_google_oauth_connections", autospec=True, side_effect=save),
+        ):
+            for phone in (PHONE, "447700900222"):
+                status, _, _ = self._callback("google", self._state(waId=phone, nonce=phone))
+                self.assertEqual(status, 200)
+            self.assertEqual(filed_under, ["", "447700900222"], "the holder's under the holder, the partner's under the partner")
+            exchange.reset_mock()
+            status, _, body = self._callback("google", self._state(waId="447700900333", nonce="rina"))
+        self.assertEqual(filed_under, ["", "447700900222"], "a grandparent's sign-in files nothing")
+        exchange.assert_not_called()
+        self.assertIn("isn't part of what this phone has", self._last_reply())
+
     def test_refreshing_the_page_after_a_sign_in_repeats_nothing(self) -> None:
         self.database.register_user("dana@gmail.com")
         handler = "packages.infrastructure.portal_auth.server.PortalAuthHandler"

@@ -48,6 +48,7 @@ from packages.infrastructure.agent_proposals import connected_sources
 from packages.infrastructure.agent_proposals import describe_agent_photo_context
 from packages.infrastructure.calendar_write import build_event_times
 from packages.infrastructure.chat_flow import chat_flow_rules
+from packages.infrastructure.connection_owner import FAMILY_BUSY_ENDPOINT
 from packages.infrastructure.gmail_send import normalize_addresses
 from packages.infrastructure.mailbox_findings import describe_finding
 from packages.infrastructure.recovery_reply import ALLOWED_LINK_HOSTS
@@ -362,6 +363,11 @@ class LoopContext:
     # Empty for the account holder, on every channel. It decides which tools
     # are theirs: a parent has the week to change, anyone else reads it.
     speaker: dict[str, Any] = field(default_factory=dict)
+    # Whose mail and calendars this turn reads (connection_owner): "" for the
+    # account holder's own, a family member's phone for theirs. Each
+    # connection is its owner's alone; a value that names nobody ("-")
+    # reads none.
+    connection_owner: str = ""
     # Builds the link a parent forwards to bring someone onto the account,
     # from an invitation code. The server knows the public address.
     join_link: Callable[[str], str] | None = None
@@ -1193,7 +1199,8 @@ def _tool_connect_link(context: LoopContext, args: dict[str, Any]) -> dict[str, 
 def _tool_disconnect(context: LoopContext, args: dict[str, Any]) -> dict[str, Any]:
     targets = [str(t).lower() for t in (args.get("targets") or []) if str(t).strip()]
     try:
-        records = context.database.list_platform_connections(context.email)
+        # Only the person's own: nobody takes back someone else's sign-in.
+        records = context.database.list_platform_connections(context.email, owner_wa_id=context.connection_owner)
     except Exception:  # noqa: BLE001 - a store that cannot be read is an internal failure, said as one
         records = []
     chosen = connections_for_disconnect(records, targets)
@@ -1242,7 +1249,7 @@ def describe_disconnect(context: LoopContext, args: dict[str, Any]) -> str:
 
     targets = [str(t).lower() for t in (args.get("targets") or []) if str(t).strip()]
     try:
-        records = context.database.list_platform_connections(context.email)
+        records = context.database.list_platform_connections(context.email, owner_wa_id=context.connection_owner)
     except Exception:  # noqa: BLE001
         records = []
     names = [connection_display_name(r) for r in connections_for_disconnect(records, targets)]
@@ -3030,8 +3037,13 @@ def _tool_show_findings(context: LoopContext, args: dict[str, Any]) -> dict[str,
     """What the mailbox scans found and have not been told to go away."""
 
     try:
-        findings = context.database.list_account_findings(user_id=context.user_id, statuses=("new", "told"))
-        scans = context.database.list_finding_scans_for_user(user_id=context.user_id, limit=1)
+        # What was found in this person's own mailboxes, and nobody else's.
+        findings = context.database.list_account_findings(
+            user_id=context.user_id, statuses=("new", "told"), owner_wa_id=context.connection_owner,
+        )
+        scans = context.database.list_finding_scans_for_user(
+            user_id=context.user_id, limit=1, owner_wa_id=context.connection_owner,
+        )
     except Exception:  # noqa: BLE001
         return _error("internal", "Could not read what the mailbox scans found just now.", can_retry=True)
     last = scans[0] if scans else {}
@@ -3073,10 +3085,14 @@ def _tool_dismiss_finding(context: LoopContext, args: dict[str, Any]) -> dict[st
     if finding_id <= 0:
         return _error("nothing_found", "Which finding to drop was not said: id is its number from show_findings.")
     try:
-        finding = context.database.get_account_finding(user_id=context.user_id, finding_id=finding_id)
+        finding = context.database.get_account_finding(
+            user_id=context.user_id, finding_id=finding_id, owner_wa_id=context.connection_owner,
+        )
         if finding is None:
             return _error("nothing_found", "There is no finding with that number.")
-        context.database.set_account_finding_status(user_id=context.user_id, finding_id=finding_id, status="dismissed")
+        context.database.set_account_finding_status(
+            user_id=context.user_id, finding_id=finding_id, status="dismissed", owner_wa_id=context.connection_owner,
+        )
     except Exception:  # noqa: BLE001
         return _error("internal", "Could not drop that finding just now.", can_retry=True)
     return _ok({"dismissed": finding_id, "summary": describe_finding(finding)})
@@ -3485,6 +3501,47 @@ def _followed_emails(context: LoopContext) -> tuple[list[dict[str, Any]], dict[s
     return [entry for entry in (response.get("follows") or []) if isinstance(entry, dict)], None
 
 
+def _tool_check_family_busy(context: LoopContext, args: dict[str, Any]) -> dict[str, Any]:
+    """When the other parent is busy, from their own calendar - the times
+    and nothing else. Their calendar is theirs; this is all that crosses."""
+
+    first = str(args.get("from") or "").strip()[:10]
+    last = str(args.get("to") or "").strip()[:10] or first
+    if not first:
+        return _error("choice_required", "Which days to look at is needed: from and to as YYYY-MM-DD.")
+    response, status = context.api(
+        "POST", FAMILY_BUSY_ENDPOINT, {"from": first, "to": last, "timezone": context.timezone_name},
+    )
+    if status != 200 or not response.get("ok"):
+        return _error("internal", "The other parent's busy times could not be read just now.", can_retry=True)
+    people = []
+    for person in response.get("people") or []:
+        if not isinstance(person, dict):
+            continue
+        # Start and end are all that is passed on, whatever came back.
+        entry: dict[str, Any] = {"name": str(person.get("name") or ""), "calendarConnected": bool(person.get("calendarConnected"))}
+        if isinstance(person.get("busy"), list):
+            entry["busy"] = [
+                {"start": str(block.get("start") or ""), "end": str(block.get("end") or "")}
+                for block in person["busy"] if isinstance(block, dict)
+            ]
+        if person.get("readable") is False:
+            entry["readable"] = False
+        people.append(entry)
+    if not people:
+        return _error("nothing_found", "There is no other parent on this account whose times could be read.")
+    return _ok({
+        "from": response.get("from"),
+        "to": response.get("to"),
+        "people": people,
+        "note": (
+            "These are only the times each person is busy, from their own calendar; what fills them is theirs "
+            "and is not known here, so never guess at it. Use them to suggest who is free for a drive. A "
+            "person with calendarConnected false has not connected a calendar, so their times are unknown."
+        ),
+    })
+
+
 def _tool_show_followed_emails(context: LoopContext, args: dict[str, Any]) -> dict[str, Any]:
     follows, problem = _followed_emails(context)
     if problem is not None:
@@ -3725,6 +3782,18 @@ TOOLS: list[ToolSpec] = [
         parameters=_params({"time_window": {"type": "string"}}),
         requires=LOOKUP_SOURCE_REQUIREMENTS["calendar-summary"],
         run=_tool_read_calendar,
+    ),
+    ToolSpec(
+        name="check_family_busy",
+        description=(
+            "See when the other parent is busy, from their own connected calendar: busy times only, never what "
+            "the events are. Use it when working out who takes a pickup or a drive, so you can say 'Dana is "
+            "busy Thursday 10-11, so it's best if you take this one'. Their calendar stays theirs - read_calendar "
+            "reads only the person writing. from and to are dates resolved against today, YYYY-MM-DD; at most "
+            "14 days are read."
+        ),
+        parameters=_params({"from": {"type": "string"}, "to": {"type": "string"}}),
+        run=_tool_check_family_busy,
     ),
     ToolSpec(
         name="choose_calendars",
@@ -4632,12 +4701,24 @@ FAMILY_GUEST_TOOLS = frozenset({"show_family_week", "search_web", "search_news",
 # Only the person who opened the account closes it: a partner on the same
 # account would be deleting the other parent's as well.
 OWNER_ONLY_TOOLS = frozenset({"delete_account"})
+# The account holder's own records, kept from their own mail and papers: the
+# receipts page and the insurance policies. A partner has the week, the
+# lists, the scheduled actions and their own mail and calendar - not these.
+HOLDER_RECORD_TOOLS = frozenset({
+    "open_receipts", "save_insurance_policy", "show_insurance_policies", "check_insurance_expense",
+    "archive_insurance_policy",
+})
 
 GUEST_TOOL_WORDS = (
     "not theirs. The person writing joined this family's account to be told about the drives that are "
     "theirs and to see the week; the week is the parents' to change, and nothing else on the account - "
     "mail, receipts, lists, the calendar - is open to them. Say so in one plain, warm line, naming the "
     "parent who can make the change, and offer what you can: what is on, and when."
+)
+HOLDER_RECORD_TOOL_WORDS = (
+    "not theirs. These are the account holder's own records, kept from their own mail and papers; the person "
+    "writing is someone else in the family. Say so in one plain line. Their own mail is theirs to search with "
+    "search_receipts once they have connected it."
 )
 OWNER_ONLY_TOOL_WORDS = (
     "not theirs. Only the person who opened the account can close it; this phone belongs to someone else in "
@@ -4694,6 +4775,8 @@ def tool_availability(
         return Availability("not_here", GROUP_TOOL_WORDS, "not in a group chat - nobody's account is open here.")
     if speaker and not speaker.get("isOwner") and tool.name in OWNER_ONLY_TOOLS:
         return Availability("not_theirs", OWNER_ONLY_TOOL_WORDS, "only the person who opened the account can do this.")
+    if speaker and not speaker.get("isOwner") and tool.name in HOLDER_RECORD_TOOLS:
+        return Availability("not_theirs", HOLDER_RECORD_TOOL_WORDS, "these are the account holder's own records.")
     if speaker and not speaker.get("canChangeWeek") and tool.name not in FAMILY_GUEST_TOOLS:
         return Availability("not_theirs", GUEST_TOOL_WORDS, "the week is the parents' to change, and the rest of the account is not open to them.")
     if tool.name in (blocked or {}):
@@ -5042,11 +5125,14 @@ _SPEAKER_RULES = (
     "the account, and in household.week 'me' is always the account holder, never the person writing: the "
     "drives that are theirs are the ones written under their own name (speaker.drivesAs), so when they say "
     "they will take or collect, put down their name and never 'me'. When speaker.canChangeWeek is true they "
-    "are a parent here, with the whole week to read and change. When it is false, the week is theirs to read "
-    "and to be reminded of - the drives under their name - and not to change: a change they ask for is one "
-    "for the parents, say so in one warm line naming them, and nothing else on the account (mail, receipts, "
-    "lists, the calendar) is open to them, so never read it for them and never offer it. Never offer them a "
-    "page link or a sign-in link. When speaker.firstConversation is true they have just come in through the "
+    "are a parent here, with the whole week to read and change, the lists, and the scheduled actions. Mail "
+    "and calendars belong to whoever connected them: theirs is their own to connect with connect_link and to "
+    "read, and the account holder's mail, calendar and receipts are not open to them - of the other "
+    "parent's calendar they may know only when it is busy (check_family_busy). When it is false, the week is "
+    "theirs to read and to be reminded of - the drives under their name - and not to change: a change they "
+    "ask for is one for the parents, say so in one warm line naming them, and nothing else on the account "
+    "(mail, receipts, lists, the calendar) is open to them, so never read it for them and never offer it; "
+    "never offer them a page link or a sign-in link. When speaker.firstConversation is true they have just come in through the "
     "invitation and their message is the code it carried, nothing more: greet them by their name, say in a "
     "line that they are on speaker.accountHolder's family account - nothing to pay and nothing to set up, the "
     "week is already in - then say in plain words what you will do for them, from speaker.theyGet: 'morning' "

@@ -156,6 +156,14 @@ def can_change_week(role: Any) -> bool:
     return clean(role).lower() in WEEK_EDITOR_ROLES
 
 
+def can_connect_own_sources(role: Any) -> bool:
+    """Whether someone with this role may connect their own mail and
+    calendar, and keep lists: the two parents. A grandparent has the week to
+    read and their own drives, and nothing else on the account."""
+
+    return clean(role).lower() in WEEK_EDITOR_ROLES
+
+
 def member_thread_id(wa_id: Any) -> str:
     """The conversation key for a phone that joined the family."""
 
@@ -954,6 +962,7 @@ __all__ = [
     "INVITE_TTL_DAYS",
     "MEMBER_THREAD_PREFIX",
     "WEEK_EDITOR_ROLES",
+    "can_connect_own_sources",
     "can_change_week",
     "describe_speaker",
     "invite_candidates",

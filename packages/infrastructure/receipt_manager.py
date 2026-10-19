@@ -215,6 +215,7 @@ def store_collected_receipts(
     skipped: Iterable[dict[str, Any]] = (),
     fetch_files: Callable[[dict[str, Any]], list[dict[str, Any]]] | None = None,
     fetch_limit: int = RECEIPT_MANAGER_FETCH_LIMIT,
+    owner_wa_id: str = "",
 ) -> dict[str, Any]:
     """Keep what a search found, and go back for the files it did not save.
 
@@ -227,6 +228,9 @@ def store_collected_receipts(
     A receipt the owner has already ruled on keeps their ruling. The search
     may refresh what it read - the subject, the file - but never what they
     decided or the amount they typed in.
+    
+    ``owner_wa_id`` is whose mailbox was searched: "" for the account
+    holder, else the family member's phone. Their receipts are theirs.
     """
 
     if int(user_id or 0) <= 0:
@@ -240,7 +244,7 @@ def store_collected_receipts(
             kept_as = classify_collected_row(row)
             if not kept_as:
                 continue
-            record = build_receipt_record(row, status=kept_as)
+            record = {**build_receipt_record(row, status=kept_as), "ownerWaId": owner_wa_id}
             names = record.pop("attachmentNames", [])
             try:
                 stored, created = database.upsert_account_receipt(user_id=int(user_id), record=record)

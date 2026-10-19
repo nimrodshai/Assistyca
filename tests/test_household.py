@@ -1055,17 +1055,25 @@ class FamilyOnTheirOwnPhonesTests(unittest.TestCase):
 
         grandparent = household.describe_speaker({"name": "Rina", "role": "other"}, owner_name="Dana")
         partner = household.describe_speaker({"name": "Yoav", "role": "partner"}, owner_name="Dana")
-        for name in WEEK_CHANGE_TOOLS | {"read_inbox", "search_receipts", "show_lists", "delete_account", "connect_link"}:
+        for name in WEEK_CHANGE_TOOLS | {"read_inbox", "search_receipts", "show_lists", "delete_account", "connect_link", "check_family_busy"}:
             self.assertFalse(tool_availability(TOOLS_BY_NAME[name], {}, {}, speaker=grandparent).usable, name)
         for name in FAMILY_GUEST_TOOLS:
             self.assertTrue(tool_availability(TOOLS_BY_NAME[name], {}, {}, speaker=grandparent).usable, name)
         self.assertEqual(tool_availability(TOOLS_BY_NAME["save_week_activity"], {}, {}, speaker=grandparent).code, "not_theirs")
-        # A parent has the week, and everything else on the account, but
-        # closing the account is for the person who opened it.
-        self.assertTrue(tool_availability(TOOLS_BY_NAME["save_week_activity"], {}, {}, speaker=partner).usable)
-        self.assertTrue(tool_availability(TOOLS_BY_NAME["invite_family_member"], {}, {}, speaker=partner).usable)
-        self.assertFalse(tool_availability(TOOLS_BY_NAME["delete_account"], {}, {}, speaker=partner).usable)
+        # A partner has the week, the lists, the scheduled actions and their
+        # own mail and calendar - which the tools read as theirs alone. The
+        # account holder's own records, and closing the account, are not.
+        mine = {"gmail": {"platformConnected": True}, "calendar": {"platformConnected": True}}
+        for name in (
+            "save_week_activity", "invite_family_member", "create_list", "show_lists", "schedule_task",
+            "show_scheduled", "cancel_scheduled", "read_inbox", "read_calendar", "search_receipts",
+            "connect_link", "disconnect", "check_family_busy",
+        ):
+            self.assertTrue(tool_availability(TOOLS_BY_NAME[name], mine, {}, speaker=partner).usable, name)
+        for name in ("delete_account", "open_receipts", "show_insurance_policies"):
+            self.assertFalse(tool_availability(TOOLS_BY_NAME[name], mine, {}, speaker=partner).usable, name)
         self.assertTrue(tool_availability(TOOLS_BY_NAME["delete_account"], {}, {}).usable)
+        self.assertTrue(tool_availability(TOOLS_BY_NAME["open_receipts"], {}, {}).usable)
         shown = {tool["name"]: tool for tool in tool_definitions({}, {}, speaker=grandparent)}
         self.assertIn("UNAVAILABLE RIGHT NOW", shown["save_week_activity"]["description"])
         self.assertNotIn("UNAVAILABLE", shown["show_family_week"]["description"])

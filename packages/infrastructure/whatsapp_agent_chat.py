@@ -45,6 +45,7 @@ from packages.infrastructure.notification_delivery import resolve_whatsapp_sende
 from packages.infrastructure.agent_proposals import AGENT_PHOTO_DEFAULT_TEXT
 from packages.infrastructure.agent_proposals import AGENT_PHOTO_MAX_BYTES
 from packages.infrastructure.assistant_voice import ASSISTANT_VOICE
+from packages.infrastructure.connection_owner import CONNECTION_VIEWER_HEADER
 from packages.infrastructure.agent_proposals import missing_sources_for_lookup
 from packages.infrastructure.agent_proposals import normalize_agent_photo_context
 from packages.infrastructure.group_chat_voice import GROUP_VOICE_INSTRUCTIONS
@@ -1449,6 +1450,7 @@ class WhatsAppAgentChat:
         session_token_factory: Callable[[str], str],
         api_version: str = DEFAULT_WHATSAPP_API_VERSION,
         connect_links: dict[str, str] | None = None,
+        viewer_signer: Callable[[str, str], str] | None = None,
     ) -> None:
         self.connect_links = {
             key: value for key, value in (connect_links or {}).items() if str(value or "").startswith("https://")
@@ -1466,6 +1468,12 @@ class WhatsAppAgentChat:
         # wrote in is one that joined the family. Each thread keeps its own
         # transcript and its own open question.
         self.thread_id = normalize_text(self.connection.get("agentThreadId"))
+        # Whose mail and calendars this conversation reads: a family
+        # member's own on their thread, the account holder's otherwise. The
+        # server reads it from a header it signed for this phone
+        # (connection_owner), so every call says which phone is asking.
+        self.connection_owner = re.sub(r"\D", "", self.owner_wa_id) if self.thread_id else ""
+        self.viewer_signer = viewer_signer
         self.timezone_name = infer_timezone_from_wa_id(self.owner_wa_id)
         # The turn the server is recording for this message. A turn reply
         # carries its id; every later call for the same message - a lookup,
@@ -1490,14 +1498,19 @@ class WhatsAppAgentChat:
             if payload is not None
             else None
         )
+        headers = {
+            "Authorization": f"Bearer {self.session_token_factory(self.email)}",
+            "Content-Type": "application/json",
+        }
+        if self.viewer_signer is not None and self.owner_wa_id:
+            signed = self.viewer_signer(self.email, self.owner_wa_id)
+            if signed:
+                headers[CONNECTION_VIEWER_HEADER] = signed
         request = urllib_request.Request(
             f"{self.base_url}{path}",
             data=body,
             method=method,
-            headers={
-                "Authorization": f"Bearer {self.session_token_factory(self.email)}",
-                "Content-Type": "application/json",
-            },
+            headers=headers,
         )
         try:
             with urllib_request.urlopen(request, timeout=timeout) as response:
@@ -1535,7 +1548,8 @@ class WhatsAppAgentChat:
 
         mailboxes: list[dict[str, str]] = []
         try:
-            platform_connections = self.database.list_platform_connections(self.email)
+            # Only what the person writing connected themselves.
+            platform_connections = self.database.list_platform_connections(self.email, owner_wa_id=self.connection_owner)
         except Exception:  # noqa: BLE001 - context is best-effort, the turn still runs
             platform_connections = []
         for record in platform_connections:
@@ -1885,7 +1899,7 @@ class WhatsAppAgentChat:
         """Name exactly what would go, and hold the disconnect until a yes."""
 
         try:
-            records = self.database.list_platform_connections(self.email)
+            records = self.database.list_platform_connections(self.email, owner_wa_id=self.connection_owner)
         except Exception:  # noqa: BLE001 - a list that cannot be read is an empty one
             records = []
         chosen = connections_for_disconnect(records, targets)

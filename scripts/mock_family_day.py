@@ -58,6 +58,7 @@ import urllib.error as urllib_error  # noqa: E402
 
 from packages.infrastructure import household  # noqa: E402
 from packages.infrastructure.chat_flow import describe_chat_flow  # noqa: E402
+from packages.infrastructure.connection_owner import sign_connection_viewer  # noqa: E402
 from packages.infrastructure.family_week_nudges import FamilyWeekNudger, load_family_week_nudge_config  # noqa: E402
 from packages.infrastructure.openai_api import call_openai_response, load_openai_config  # noqa: E402
 from packages.infrastructure.registration_welcome import registration_welcome_plan  # noqa: E402
@@ -366,6 +367,7 @@ class Run:
         runner = StandingTaskRunner(
             database=self.db, base_url=self.sim.base_url,
             session_token_factory=lambda email: mint_agent_session_token(server.store, email),
+            viewer_signer=lambda email, wa_id: sign_connection_viewer(server.config.session_secret, email, wa_id),
         )
         scheduler = ScheduledActionScheduler(self.db, config=load_scheduled_action_config(), task_runner=runner.run)
         phones = {self.family["owner"]["phone"]: "owner"}

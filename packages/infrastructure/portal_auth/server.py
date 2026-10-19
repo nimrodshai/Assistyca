@@ -160,6 +160,7 @@ from packages.infrastructure.notification_delivery import deliver_portal_notific
 from packages.infrastructure.notification_delivery import resolve_notification_user_id
 from packages.infrastructure.notification_delivery import send_whatsapp_notification
 from packages.infrastructure.portal_db import DAYS_PER_MONTH
+from packages.infrastructure.portal_db import NO_CONNECTION_OWNER
 from packages.infrastructure.portal_db import DEFAULT_CURRENCY
 from packages.infrastructure.portal_db import DEFAULT_DB_PATH
 from packages.infrastructure.portal_db import DEFAULT_INPUT_TOKEN_PRICE_MULTIPLIER
@@ -200,6 +201,13 @@ from packages.infrastructure.answer_composer import normalize_answer_conversatio
 from packages.infrastructure.answer_composer import normalize_answer_question
 from packages.infrastructure.answer_composer import normalize_answer_records
 from packages.infrastructure.answer_composer import normalize_composed_answer
+from packages.infrastructure.connection_owner import CONNECTION_VIEWER_HEADER
+from packages.infrastructure.connection_owner import FAMILY_BUSY_ENDPOINT
+from packages.infrastructure.connection_owner import FAMILY_BUSY_MAX_DAYS
+from packages.infrastructure.connection_owner import busy_blocks
+from packages.infrastructure.connection_owner import NOBODY_VIEWER
+from packages.infrastructure.connection_owner import read_connection_viewer
+from packages.infrastructure.connection_owner import sign_connection_viewer
 from packages.infrastructure.message_language import detect_message_language
 from packages.infrastructure.message_language import resolve_message_language
 from packages.infrastructure.recovery_reply import RECOVERY_INSTRUCTIONS
@@ -4175,6 +4183,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             or path == "/api/inbox-watch/poll"
             or path.startswith(HOMEWORK_API_PREFIX)
             or path == FAMILY_CALENDAR_DAY_ENDPOINT
+            or path == FAMILY_BUSY_ENDPOINT
         ):
             try:
                 self._handle_api_post(parsed)
@@ -4411,7 +4420,9 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 "credentialStorageMessage": ""
                 if credential_storage_available
                 else PLATFORM_CONNECTION_STORAGE_UNAVAILABLE_MESSAGE,
-                "connections": self.database.list_platform_connections(session.email),
+                "connections": self.database.list_platform_connections(
+                    session.email, owner_wa_id=self._connection_owner(session.email),
+                ),
             })
             return
 
@@ -4563,6 +4574,9 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             return
         if path == FAMILY_CALENDAR_DAY_ENDPOINT:
             self._handle_family_week_calendar_day_post()
+            return
+        if path == FAMILY_BUSY_ENDPOINT:
+            self._handle_family_busy_post()
             return
         if path == "/api/scheduled-actions":
             self._handle_scheduled_actions_post()
@@ -4774,11 +4788,13 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             return f"{', '.join(labels[:-1])}, and {labels[-1]} connected with read-only access."
         return "Google connected with the selected read-only access."
 
-    def _calendar_connection_record(self, email: str) -> dict[str, Any] | None:
-        """The calendar connection a run reads, or None when there is none."""
+    def _calendar_connection_record(self, email: str, *, owner_wa_id: str | None = None) -> dict[str, Any] | None:
+        """The calendar connection a run reads, or None when there is none:
+        the asking person's own, or owner_wa_id's when it is given."""
 
         statuses = ("connected", "needs_verification", "needs_attention")
-        for connection in self.database.list_platform_connections(email):
+        owner = self._connection_owner(email) if owner_wa_id is None else owner_wa_id
+        for connection in self.database.list_platform_connections(email, owner_wa_id=owner):
             if (
                 normalize_text(connection.get("platform")).lower() == CALENDAR_PLATFORM
                 and normalize_text(connection.get("connectionStatus")).lower() in statuses
@@ -4811,11 +4827,14 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 session.email,
                 CALENDAR_PLATFORM,
                 include_statuses=statuses,
+                owner_wa_id=self._connection_owner(session.email),
             ) or ""
         )
         records = [
             connection
-            for connection in self.database.list_platform_connections(session.email)
+            for connection in self.database.list_platform_connections(
+                session.email, owner_wa_id=self._connection_owner(session.email),
+            )
             if normalize_text(connection.get("platform")).lower() == CALENDAR_PLATFORM
             and normalize_text(connection.get("connectionStatus")).lower() in statuses
         ]
@@ -4890,7 +4909,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
 
         context = dict(tool_context) if isinstance(tool_context, dict) else {}
         try:
-            records = self.database.list_platform_connections(email)
+            records = self.database.list_platform_connections(email, owner_wa_id=self._connection_owner(email))
         except Exception:  # noqa: BLE001 - a store that cannot be read leaves the writes unavailable
             return context
         statuses = {"connected", "needs_attention"}
@@ -4991,6 +5010,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             record
             for record in self.database.list_platform_connection_secret_records(
                 session.email, EMAIL_PLATFORM, include_statuses=("connected", "needs_attention"),
+                owner_wa_id=self._connection_owner(session.email),
             )
             if (resolved_connection_provider(record) or GOOGLE_GMAIL_OAUTH_PROVIDER) == GOOGLE_GMAIL_OAUTH_PROVIDER
         ]
@@ -5129,11 +5149,14 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 return False
             if not account_feature_allowed(self.database, feature_id="inbox_watch"):
                 return False
-            if not already and len(self.database.list_followed_threads(user_id=user_id)) >= thread_follow.MAX_OPEN_FOLLOWS:
+            owner = normalize_text(record.get("ownerWaId"))
+            if not already and len(self.database.list_followed_threads(user_id=user_id, owner_wa_id=owner)) >= thread_follow.MAX_OPEN_FOLLOWS:
                 return False
             now = datetime.now(timezone.utc)
             expected = expect_answer_by if thread_follow.parse_expected_date(expect_answer_by) else ""
             self.database.follow_thread(user_id=user_id, entry={
+                # The conversation is in this person's mailbox, and theirs.
+                "ownerWaId": owner,
                 "connectionId": connection_id,
                 "mailbox": mailbox_name,
                 "provider": "gmail",
@@ -5155,8 +5178,10 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         authenticated = self._require_authenticated_user()
         if authenticated is None:
             return
-        _session, user = authenticated
-        follows = self.database.list_followed_threads(user_id=int(user.get("id") or 0))
+        session, user = authenticated
+        follows = self.database.list_followed_threads(
+            user_id=int(user.get("id") or 0), owner_wa_id=self._connection_owner(session.email),
+        )
         json_response(self, HTTPStatus.OK, {"ok": True, "follows": [thread_follow.describe_follow(follow) for follow in follows]})
 
     def _handle_email_follow_delete(self, parsed: urllib_parse.ParseResult) -> None:
@@ -5166,14 +5191,16 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         authenticated = self._require_authenticated_user()
         if authenticated is None:
             return
-        _session, user = authenticated
+        session, user = authenticated
         tail = (parsed.path.rstrip("/") or "/")[len("/api/agent/email/follows/"):]
         try:
             follow_id = int(tail)
         except ValueError:
             json_response(self, HTTPStatus.BAD_REQUEST, {"ok": False, "error": "invalid_follow", "message": "The followed email id must be a number."})
             return
-        if not self.database.close_followed_thread(user_id=int(user.get("id") or 0), row_id=follow_id):
+        if not self.database.close_followed_thread(
+            user_id=int(user.get("id") or 0), row_id=follow_id, owner_wa_id=self._connection_owner(session.email),
+        ):
             json_response(self, HTTPStatus.NOT_FOUND, {"ok": False, "error": "follow_not_found", "message": "That email conversation is not being followed."})
             return
         json_response(self, HTTPStatus.OK, {"ok": True, "stopped": follow_id})
@@ -5231,7 +5258,8 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         connection_id = normalize_text(record.get("id"))
         thread_id = normalize_text(item.get("threadId"))
         existing = self.database.get_followed_thread(user_id=user_id, connection_id=connection_id, thread_id=thread_id)
-        if (existing is None or existing.get("status") == "closed") and len(self.database.list_followed_threads(user_id=user_id)) >= thread_follow.MAX_OPEN_FOLLOWS:
+        owner = normalize_text(record.get("ownerWaId"))
+        if (existing is None or existing.get("status") == "closed") and len(self.database.list_followed_threads(user_id=user_id, owner_wa_id=owner)) >= thread_follow.MAX_OPEN_FOLLOWS:
             json_response(self, HTTPStatus.CONFLICT, {"ok": False, "error": "too_many_follows", "message": f"{thread_follow.MAX_OPEN_FOLLOWS} conversations are already followed. Stop following one first."})
             return
         try:
@@ -5245,6 +5273,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         provider = "outlook" if resolved_connection_provider(record) == MICROSOFT_OUTLOOK_OAUTH_PROVIDER else "gmail"
         counterpart = item.get("to") if thread_follow.is_from_owner(item, owner_addresses) else item.get("from")
         follow = self.database.follow_thread(user_id=user_id, entry={
+            "ownerWaId": owner,
             "connectionId": connection_id,
             "mailbox": mailbox_name_for(record),
             "provider": provider,
@@ -5392,6 +5421,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
 
         ciphertext = normalize_text(self.database.get_platform_connection_ciphertext(
             session.email, CALENDAR_PLATFORM, include_statuses=("connected", "needs_verification", "needs_attention"),
+            owner_wa_id=self._connection_owner(session.email),
         ) or "")
 
         def text_or_none(key: str) -> str | None:
@@ -5449,6 +5479,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             self.database.update_platform_connection_status(
                 session.email, platform=CALENDAR_PLATFORM, connection_status="needs_attention",
                 metadata_updates={"validationStatus": "failed", "lastError": str(exc)},
+                owner_wa_id=self._connection_owner(session.email),
             )
             json_response(self, HTTPStatus.CONFLICT, {"ok": False, "error": getattr(exc, "code", "calendar_authorization_failed"), "message": str(exc)})
             return
@@ -5492,7 +5523,9 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         requested_connection_id = normalize_text(payload.get("connectionId"))
         records = [
             connection
-            for connection in self.database.list_platform_connections(session.email)
+            for connection in self.database.list_platform_connections(
+                session.email, owner_wa_id=self._connection_owner(session.email),
+            )
             if normalize_text(connection.get("platform")).lower() == CALENDAR_PLATFORM
             and normalize_text(connection.get("connectionStatus")).lower() in statuses
             and (not requested_connection_id or normalize_text(connection.get("id")) == requested_connection_id)
@@ -5856,6 +5889,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             )
             connection = self.database.save_platform_connection(
                 session.email,
+                owner_wa_id=self._connection_owner_to_save(session.email),
                 platform=platform,
                 provider=provider,
                 auth_type="oauth",
@@ -6108,6 +6142,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         now = datetime.now(timezone.utc).isoformat()
         connection = self.database.save_platform_connection(
             session.email,
+            owner_wa_id=self._connection_owner_to_save(session.email),
             platform=EMAIL_PLATFORM,
             provider=MICROSOFT_OUTLOOK_OAUTH_PROVIDER,
             auth_type="oauth",
@@ -6372,6 +6407,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 })
             connection = self.database.save_platform_connection(
                 session.email,
+                owner_wa_id=self._connection_owner_to_save(session.email),
                 platform=platform,
                 auth_type=auth_type,
                 secret_ciphertext=encrypted_secret,
@@ -6423,6 +6459,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         connection_record = self.database.get_platform_connection_secret_record(
             session.email,
             connection_id,
+            owner_wa_id=self._connection_owner(session.email),
         )
         if connection_record is None:
             json_response(self, HTTPStatus.NOT_FOUND, {
@@ -7413,6 +7450,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 session.email,
                 EMAIL_PLATFORM,
                 include_statuses=("connected", "needs_attention"),
+                owner_wa_id=self._connection_owner(session.email),
             )
             if not mailbox_records or vault is None:
                 json_response(self, HTTPStatus.CONFLICT, {
@@ -8060,6 +8098,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             session.email,
             "calendar",
             include_statuses=("connected", "needs_verification", "needs_attention"),
+            owner_wa_id=self._connection_owner(session.email),
         )
         vault = self.credential_vault
         if not ciphertext or vault is None:
@@ -8084,6 +8123,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             self.database.update_platform_connection_status(
                 session.email,
                 platform="calendar",
+                owner_wa_id=self._connection_owner(session.email),
                 connection_status="needs_attention",
                 metadata_updates={
                     "provider": "google_calendar",
@@ -8160,6 +8200,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                     self.database.update_platform_connection_status(
                         session.email,
                         platform="calendar",
+                        owner_wa_id=self._connection_owner(session.email),
                         connection_status="connected",
                         metadata_updates=metadata_updates,
                     )
@@ -8195,6 +8236,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             self.database.update_platform_connection_status(
                 session.email,
                 platform="calendar",
+                owner_wa_id=self._connection_owner(session.email),
                 connection_status="needs_attention",
                 metadata_updates={
                     "provider": "google_calendar",
@@ -8225,6 +8267,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         self.database.update_platform_connection_status(
             session.email,
             platform="calendar",
+            owner_wa_id=self._connection_owner(session.email),
             connection_status="connected",
             metadata_updates=calendar_metadata_updates,
         )
@@ -9150,6 +9193,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             session.email,
             EMAIL_PLATFORM,
             include_statuses=("connected", "needs_attention"),
+            owner_wa_id=self._connection_owner(session.email),
         )
         if vault is None:
             records = []
@@ -9231,6 +9275,9 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         json_response(self, HTTPStatus.OK if result.get("ok") else HTTPStatus.CONFLICT, result)
 
     def _scan_mailbox_findings(self, session: Any, *, user_id: int, kind: str, today: date) -> dict[str, Any]:
+        # One person's mailboxes, and what is found in them is theirs: the
+        # account holder's, or the family member's this request was signed for.
+        owner = self._connection_owner(session.email)
         records, mailbox_name_for, reader_for = self._mailbox_readers(session)
         if not records or user_id <= 0:
             return {
@@ -9293,14 +9340,14 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 if len(fresh) < mailbox_findings.SCAN_DOWNLOADS_PER_PASS:
                     break
         since = (today - timedelta(days=mailbox_findings.FIRST_SCAN_DAYS)).isoformat()
-        facts = self.database.list_mail_facts(user_id=user_id, since=since, facts_version=version)
+        facts = self.database.list_mail_facts(user_id=user_id, since=since, facts_version=version, mailboxes=owner_addresses)
         findings = mailbox_findings.derive_findings(facts, today=today)
         subscriptions = mailbox_findings.summarize_subscriptions(facts, today=today)
-        new_keys = self.database.upsert_account_findings(user_id=user_id, findings=findings)
+        new_keys = self.database.upsert_account_findings(user_id=user_id, findings=findings, owner_wa_id=owner)
         resolved = self.database.resolve_missing_account_findings(
-            user_id=user_id, active_keys=[str(finding.get("key") or "") for finding in findings],
+            user_id=user_id, active_keys=[str(finding.get("key") or "") for finding in findings], owner_wa_id=owner,
         )
-        stored = self.database.list_account_findings(user_id=user_id, statuses=("new", "told"))
+        stored = self.database.list_account_findings(user_id=user_id, statuses=("new", "told"), owner_wa_id=owner)
         print(json.dumps({
             "event": "mailbox_findings_scan", "kind": kind, "mailboxes": len(records), "read": read,
             "facts": len(facts), "findings": len(findings), "new": len(new_keys), "resolved": resolved,
@@ -9330,12 +9377,16 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 return
             user = self.database.get_user(email) or {}
             user_id = int(user.get("id") or 0)
-            if user_id <= 0:
+            owner = self._connection_owner(email)
+            if user_id <= 0 or owner == NO_CONNECTION_OWNER:
                 return
+            # The mailbox just connected is one person's, and so is the
+            # scan through it: what it finds is told to them.
             scan = self.database.schedule_finding_scan(
                 user_id=user_id,
                 kind="first",
                 run_at=datetime.now(timezone.utc) + timedelta(minutes=config.first_delay_minutes),
+                owner_wa_id=owner,
             )
             print(json.dumps({
                 "event": "mailbox_findings_scan_scheduled", "scanId": int((scan or {}).get("id") or 0),
@@ -9372,6 +9423,9 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         config = load_inbox_watch_config()
         now = datetime.now(timezone.utc)
         local_now = now.astimezone(zone)
+        # One person's mailboxes per poll: what arrives in them, the answers
+        # in the threads they follow, and the alerts, are theirs alone.
+        owner = self._connection_owner(session.email)
         records, mailbox_name_for, reader_for = self._mailbox_readers(session, token_cache=INBOX_WATCH_TOKEN_CACHE)
         if not records or user_id <= 0:
             return {"ok": False, "error": "mailbox_not_connected", "message": "No mailbox is connected, so there is nothing to watch."}
@@ -9395,7 +9449,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         failures: list[dict[str, str]] = []
         readers_by_mailbox: dict[str, tuple[Any, str]] = {}
         readers_by_connection: dict[str, tuple[Any, str]] = {}
-        follows = self.database.list_followed_threads(user_id=user_id) if user_id > 0 else []
+        follows = self.database.list_followed_threads(user_id=user_id, owner_wa_id=owner) if user_id > 0 else []
         thread_replies: dict[int, tuple[dict[str, Any], list[dict[str, Any]]]] = {}
         hold = timedelta(minutes=config.hold_minutes)
         for record in records:
@@ -9511,11 +9565,11 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             self._tell_followed_threads(
                 user_id=user_id, follows=follows, replies=thread_replies, readers=readers_by_connection,
                 owner_addresses=owner_addresses, now=now, local_now=local_now, zone=zone,
-                timezone_name=timezone_name, config=config, counts=counts,
+                timezone_name=timezone_name, config=config, counts=counts, owner_wa_id=owner,
             )
 
         # What has waited long enough. In quiet hours it waits for the morning.
-        due = self.database.list_held_inbox_watch_messages(user_id=user_id, due_by=now)
+        due = self.database.list_held_inbox_watch_messages(user_id=user_id, due_by=now, mailboxes=owner_addresses)
         to_tell: list[dict[str, Any]] = []
         if due and inbox_watch.in_quiet_hours(local_now, start_hour=config.quiet_start_hour, end_hour=config.quiet_end_hour):
             morning = inbox_watch.quiet_hours_end(local_now, start_hour=config.quiet_start_hour, end_hour=config.quiet_end_hour)
@@ -9525,7 +9579,9 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             due = []
         if due:
             day_start = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
-            remaining = max(0, config.daily_cap - self.database.count_inbox_watch_notified_since(user_id=user_id, since=day_start))
+            remaining = max(0, config.daily_cap - self.database.count_inbox_watch_notified_since(
+                user_id=user_id, since=day_start, mailboxes=owner_addresses,
+            ))
             events = self._upcoming_calendar_events(session, zone=zone, days=inbox_watch.ALERT_HORIZON_DAYS)
             for row in due:
                 reader = readers_by_mailbox.get(str(row.get("mailbox") or ""))
@@ -9553,19 +9609,15 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                     continue
                 to_tell.append(row)
         if to_tell:
-            connection = self.database.get_whatsapp_connection_by_user_id(user_id) or {}
-            owner_wa_id = normalize_text(connection.get("ownerWaId"))
-            if not owner_wa_id:
-                linked = self.database.list_user_whatsapp_numbers(user_id=user_id)
-                owner_wa_id = normalize_text(linked[0].get("waId")) if linked else ""
             self.database.create_scheduled_action(
                 user_id=user_id,
                 action_type=STANDING_TASK_ACTION_TYPE,
-                channel="whatsapp" if owner_wa_id else "portal",
+                channel=self._owner_channel(user_id, owner),
                 recipient_ref="owner",
                 run_at=now,
                 timezone_name=timezone_name,
                 payload={
+                    **self._owner_recipient(owner),
                     "title": inbox_watch.ALERT_TITLE,
                     "instruction": inbox_watch.build_alert_instruction(to_tell, hold_minutes=config.hold_minutes),
                     # Used instead when the alert goes to WhatsApp and no other
@@ -9584,7 +9636,10 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             print(json.dumps({"event": "inbox_watch_poll", "mailboxes": len(records), **counts, "failures": len(failures)}, ensure_ascii=True, sort_keys=True), flush=True)
         return {"ok": True, "mailboxes": len(records), **counts, "failures": failures}
 
-    def _owner_channel(self, user_id: int) -> str:
+    def _owner_channel(self, user_id: int, owner_wa_id: str = "") -> str:
+        if owner_wa_id:
+            # A family member's own mailbox: their phone is where they are.
+            return "whatsapp"
         connection = self.database.get_whatsapp_connection_by_user_id(user_id) or {}
         if normalize_text(connection.get("ownerWaId")):
             return "whatsapp"
@@ -9604,8 +9659,10 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         timezone_name: str,
         config: Any,
         counts: dict[str, int],
+        owner_wa_id: str = "",
     ) -> None:
         """Report answers in followed threads, and chase the ones gone quiet.
+        The threads are one person's, and so is the phone that hears.
 
         An answer is told as soon as it is seen, or first thing in the
         morning when it lands in quiet hours. A thread still silent past its
@@ -9616,9 +9673,9 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
 
         quiet = inbox_watch.in_quiet_hours(local_now, start_hour=config.quiet_start_hour, end_hour=config.quiet_end_hour)
         run_at = inbox_watch.quiet_hours_end(local_now, start_hour=config.quiet_start_hour, end_hour=config.quiet_end_hour) if quiet else now
-        channel = self._owner_channel(user_id)
+        channel = self._owner_channel(user_id, owner_wa_id)
         if not quiet:
-            for follow in self.database.list_followed_threads_due_nudge(user_id=user_id, now=now):
+            for follow in self.database.list_followed_threads_due_nudge(user_id=user_id, now=now, owner_wa_id=owner_wa_id):
                 if int(follow["id"]) in replies:
                     continue
                 reader = readers.get(follow["connectionId"])
@@ -9658,6 +9715,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                     run_at=now,
                     timezone_name=timezone_name,
                     payload={
+                        **self._owner_recipient(owner_wa_id),
                         "title": thread_follow.NUDGE_TITLE,
                         "instruction": thread_follow.build_nudge_instruction(follow),
                         "offerInstruction": thread_follow.build_nudge_instruction(follow, offer=True),
@@ -9687,6 +9745,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 run_at=run_at,
                 timezone_name=timezone_name,
                 payload={
+                    **self._owner_recipient(owner_wa_id),
                     "title": thread_follow.REPORT_TITLE,
                     "instruction": thread_follow.build_reply_report_instruction(follow, ordered),
                     "offerInstruction": thread_follow.build_reply_report_instruction(follow, ordered, offer=True),
@@ -9751,20 +9810,24 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             **stored,
         }
 
-    def _calendar_events_between(self, session: Any, *, start: datetime, end: datetime, label: str) -> list[dict[str, Any]]:
+    def _calendar_events_between(
+        self, session: Any, *, start: datetime, end: datetime, label: str, owner_wa_id: str | None = None,
+    ) -> list[dict[str, Any]]:
         """What the person's chosen calendars hold between two moments, as
         the calendar summary reads them: title, start, end, allDay. Nothing
-        connected is an empty list, not an error."""
+        connected is an empty list, not an error. The person is whoever is
+        asking, or owner_wa_id's calendar when it is given."""
 
         vault = self.credential_vault
+        owner = self._connection_owner(session.email) if owner_wa_id is None else owner_wa_id
         records = self.database.list_platform_connection_secret_records(
-            session.email, CALENDAR_PLATFORM, include_statuses=("connected",),
+            session.email, CALENDAR_PLATFORM, include_statuses=("connected",), owner_wa_id=owner,
         )
         if vault is None or not records:
             return []
         secret = vault.decrypt(records[0].get("secretCiphertext") or "")
         access_token, _ = self._resolve_calendar_access_token(secret)
-        selection = connection_calendar_selection(self._calendar_connection_record(session.email))
+        selection = connection_calendar_selection(self._calendar_connection_record(session.email, owner_wa_id=owner))
         calendar_ids = [normalize_text(entry.get("id")) for entry in selection if normalize_text(entry.get("id"))][:5] or ["primary"]
         date_range = CalendarDateRange(label=label, start=start, end=end)
         events, _skipped = CalendarSummaryRunner().fetch_calendar_events(access_token, calendar_ids=calendar_ids, date_range=date_range)
@@ -9790,6 +9853,76 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         except Exception as exc:  # noqa: BLE001 - the calendar is a courtesy check, never a blocker
             print(f"Inbox watch could not read the calendar: {exc}", flush=True)
             return []
+
+    def _handle_family_busy_post(self) -> None:
+        """When the other parent is busy, for planning who takes a drive.
+
+        Each person's calendar is their own; the one thing of it another
+        person on the account may know is when they are busy. So this reads
+        the calendar of every other parent who connected one - the account
+        holder's, a partner's - and gives back start and end only, merged
+        (connection_owner.busy_blocks). Never a title, a place, a guest or
+        a description: those do not leave the person whose calendar it is.
+        """
+
+        authenticated = self._require_authenticated_user()
+        if authenticated is None:
+            return
+        session, user = authenticated
+        if not self._require_active_trial(user):
+            return
+        user_id = int(user.get("id") or 0)
+        viewer = self._connection_owner(session.email)
+        asking = self.database.get_household_member_by_wa_id(viewer, user_id=user_id) if viewer and viewer != NO_CONNECTION_OWNER else None
+        if viewer == NO_CONNECTION_OWNER or (asking and not household.can_connect_own_sources(asking.get("role"))):
+            # Planning drives between the parents is the parents' own: a phone
+            # that cannot be vouched for, or a grandparent's, reads nobody's.
+            json_response(self, HTTPStatus.FORBIDDEN, {"ok": False, "error": "not_theirs", "message": "Only the parents' own busy times are shared, and only with each other."})
+            return
+        try:
+            payload = parse_json_body(self, max_bytes=MAX_JSON_BODY_BYTES)
+        except ValueError as exc:
+            json_response(self, HTTPStatus.BAD_REQUEST, {"ok": False, "error": "invalid_json", "message": str(exc)})
+            return
+        timezone_name = normalize_contact_single_line(payload.get("timezone"), 120) or "UTC"
+        try:
+            zone = ZoneInfo(timezone_name)
+        except (ZoneInfoNotFoundError, ValueError):
+            zone = ZoneInfo("UTC")
+        try:
+            first = date.fromisoformat(normalize_text(payload.get("from"))[:10])
+            last = date.fromisoformat(normalize_text(payload.get("to") or payload.get("from"))[:10])
+        except ValueError:
+            json_response(self, HTTPStatus.BAD_REQUEST, {"ok": False, "error": "invalid_day", "message": "from and to are YYYY-MM-DD."})
+            return
+        if last < first:
+            first, last = last, first
+        last = min(last, first + timedelta(days=FAMILY_BUSY_MAX_DAYS - 1))
+        start = datetime.combine(first, datetime.min.time(), tzinfo=zone)
+        end = datetime.combine(last + timedelta(days=1), datetime.min.time(), tzinfo=zone)
+        # The other parents: the account holder, and every partner who joined
+        # from their own phone - never the person asking, and never anyone
+        # else on the account, whose calendars are not part of it.
+        parents = [("", self._household_owner_name(user_id) or "the account holder")]
+        for member in self.database.list_household_members(user_id=user_id):
+            number = normalize_whatsapp_lookup_id(member.get("waId"))
+            if number and household.normalize_role(member.get("role")) == "partner":
+                parents.append((number, normalize_text(member.get("name"))))
+        with_calendar = set(self.database.list_connection_owners(user_id=user_id, platform=CALENDAR_PLATFORM))
+        people: list[dict[str, Any]] = []
+        for owner, name in parents:
+            if owner == viewer:
+                continue
+            entry: dict[str, Any] = {"name": name, "calendarConnected": owner in with_calendar}
+            if owner in with_calendar:
+                try:
+                    events = self._calendar_events_between(session, start=start, end=end, label="busy times", owner_wa_id=owner)
+                    entry["busy"] = busy_blocks(events, zone)
+                except Exception as exc:  # noqa: BLE001 - one calendar that will not open is said as such
+                    print(f"Busy times could not be read for user {user_id}: {type(exc).__name__}", flush=True)
+                    entry["readable"] = False
+            people.append(entry)
+        json_response(self, HTTPStatus.OK, {"ok": True, "from": first.isoformat(), "to": last.isoformat(), "people": people})
 
     def _handle_family_week_calendar_day_post(self) -> None:
         """One day of the account holder's own calendar, for the family week
@@ -9865,7 +9998,8 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             if isinstance(answer, dict)
             for row in (answer.get("skippedRows") if isinstance(answer.get("skippedRows"), list) else [])
         ]
-        if user_id <= 0 or not (rows or skipped):
+        owner = self._connection_owner(session.email)
+        if user_id <= 0 or not (rows or skipped) or owner == NO_CONNECTION_OWNER:
             return {}
         # A receipt the owner deleted from the page stays deleted.
         dismissed = receipt_ledger.MailReadLedger(self.database, user_id=user_id).dismissed()
@@ -9879,6 +10013,8 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 receipts=rows,
                 skipped=skipped,
                 fetch_files=self._receipt_manager_fetcher(session),
+                # Whose mailbox was read: their receipts are theirs.
+                owner_wa_id=owner,
             )
         except Exception as exc:  # Keeping is a courtesy on top of the answer; the answer still goes out.
             print(f"Receipt manager could not keep this search: {exc}", flush=True)
@@ -11081,14 +11217,21 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         if not isinstance(payload.get("standingTask"), dict):
             self._note_own_week_asked(user_id, chat_flow, resolve_local_today(timezone_name))
         authorization = normalize_text(self.headers.get("Authorization"))
+        # Whose mail and calendar this turn reads: the phone the server
+        # signed for, passed on unchanged to every tool's own request.
+        viewer_header = normalize_text(self.headers.get(CONNECTION_VIEWER_HEADER))
+        connection_owner = self._connection_owner(session.email)
         port = int(self.server.server_address[1])  # type: ignore[attr-defined]
 
         def loopback(method: str, path: str, body: dict[str, Any] | None = None, **_: Any) -> tuple[dict[str, Any], int]:
+            headers = {"Authorization": authorization, "Content-Type": "application/json"}
+            if viewer_header:
+                headers[CONNECTION_VIEWER_HEADER] = viewer_header
             request = urllib_request.Request(
                 f"http://127.0.0.1:{port}{path}",
                 data=json.dumps(body, ensure_ascii=False).encode("utf-8") if body is not None else None,
                 method=method,
-                headers={"Authorization": authorization, "Content-Type": "application/json"},
+                headers=headers,
             )
             try:
                 with urllib_request.urlopen(request, timeout=AGENT_LOOP_TOOL_TIMEOUT_SECONDS) as response:
@@ -11135,6 +11278,12 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         # when they are a parent. Nothing else on the account is theirs.
         speaker = {} if group else self._household_speaker(user_id, sender_wa_id, conversation)
         full_access = not speaker or bool(speaker.get("canChangeWeek"))
+        if speaker and connection_owner != normalize_whatsapp_lookup_id(sender_wa_id):
+            # A family member's turn that does not carry their own signed
+            # phone reads nobody's mail or calendar - never the account
+            # holder's in their place.
+            connection_owner = NO_CONNECTION_OWNER
+            viewer_header = NOBODY_VIEWER
         context = LoopContext(
             api=loopback,
             database=self.database,
@@ -11145,7 +11294,9 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             connect_links={} if group else dict(tool_context.get("connectLinks") or {}),
             channel="whatsapp" if channel == "whatsapp" else "portal",
             list_link=None if group or not full_access else self._lists_link_builder(session.email, channel),
-            receipts_link=None if group or not full_access else self._receipts_link_builder(session.email, channel),
+            # The receipts page is the account holder's own: what their mail
+            # held. Nobody else on the account is handed it.
+            receipts_link=None if group or speaker else self._receipts_link_builder(session.email, channel),
             week_link=(
                 None if group or not household_block or not full_access
                 else self._page_link_builder(session.email, channel, page="/week", prefix=WEEK_HANDOFF_PREFIX)
@@ -11159,6 +11310,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             pay_link=None if group else (lambda pay=self._pay_link_builder(): pay(user_id)),
             billing={} if group else self._loop_billing(trial, paying=self._user_is_paying(session.email)),
             speaker=speaker,
+            connection_owner=connection_owner,
             sender_wa_id="" if group else sender_wa_id,
             attached_photo=photo_context,
             blocked_tools=blocked_tools(self.database.get_feature_switches()),
@@ -12412,6 +12564,69 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         })
         return None
 
+    def _connection_owner(self, email: str) -> str:
+        """Whose mail and calendar this request may read (connection_owner).
+
+        The account holder's, unless the server signed this request for a
+        family member's phone - then that member's own and nobody else's.
+        A header that does not verify reads nobody's connections at all.
+        Set outright for the rest of a request by _connection_owner_override.
+        """
+
+        forced = getattr(self, "_connection_owner_override", None)
+        if forced is not None:
+            return forced
+        header = normalize_text(self.headers.get(CONNECTION_VIEWER_HEADER)) if getattr(self, "headers", None) else ""
+        if not header:
+            return ""
+        # One request asks this many times over; the answer cannot change
+        # while it runs.
+        known = getattr(self, "_connection_owner_known", None)
+        if known is None:
+            known = self._connection_owner_known = {}
+        if email not in known:
+            known[email] = self._resolve_connection_owner(email, header)
+        return known[email]
+
+    def _resolve_connection_owner(self, email: str, header: str) -> str:
+        number = read_connection_viewer(self.config.session_secret, email, header)
+        if number is None:
+            return NO_CONNECTION_OWNER
+        user_id = int((self.database.get_user(email) or {}).get("id") or 0)
+        if self.database.get_household_member_by_wa_id(number, user_id=user_id):
+            return normalize_whatsapp_lookup_id(number)
+        # Not a family member: the account holder's own phone reads theirs,
+        # and any other - someone who has left - reads nobody's.
+        holder_phones = {
+            normalize_whatsapp_lookup_id(entry.get("waId"))
+            for entry in self.database.list_user_whatsapp_numbers(user_id=user_id)
+        }
+        holder_phones.add(normalize_whatsapp_lookup_id((self.database.get_whatsapp_connection_by_user_id(user_id) or {}).get("ownerWaId")))
+        return "" if normalize_whatsapp_lookup_id(number) in holder_phones else NO_CONNECTION_OWNER
+
+    @staticmethod
+    def _owner_recipient(owner_wa_id: str) -> dict[str, str]:
+        """Where news from one person's own mail goes, as a scheduled
+        message's payload says it: a family member's phone, or nothing for
+        the account holder, whose own phone is the default."""
+
+        return {"recipientWaId": owner_wa_id} if owner_wa_id and owner_wa_id != NO_CONNECTION_OWNER else {}
+
+    def _sign_connection_viewer(self, email: str, wa_id: str) -> str:
+        """The header value a loopback call carries for the phone it acts for."""
+
+        return sign_connection_viewer(self.config.session_secret, email, wa_id)
+
+    def _connection_owner_to_save(self, email: str) -> str:
+        """Whose a connection being saved is. A request that names a phone
+        the server did not sign for saves nothing rather than file someone's
+        mailbox under the account holder."""
+
+        owner = self._connection_owner(email)
+        if owner == NO_CONNECTION_OWNER:
+            raise PermissionError("This connection cannot be saved for an unconfirmed phone.")
+        return owner
+
     def _require_authenticated_user(self) -> tuple[PortalSession, dict[str, Any]] | None:
         session = self._require_authenticated_session()
         if session is None:
@@ -13388,7 +13603,9 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             )
             return
         if payload.get("expired"):
-            if self._whatsapp_provider_still_connected(normalize_email(payload.get("email")), provider):
+            if self._whatsapp_provider_still_connected(
+                normalize_email(payload.get("email")), provider, wa_id=normalize_whatsapp_number(payload.get("waId")),
+            ):
                 self._send_whatsapp_oauth_page(
                     ok=True, label=label,
                     message=f"This sign-in link is out of date, and there's nothing to do: {label} is still connected.",
@@ -13491,7 +13708,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             self._send_whatsapp_oauth_page(ok=ok, message=page or ("" if ok else text), label=label)
 
         if state.get("expired"):
-            if self._whatsapp_provider_still_connected(normalize_email(state.get("email")), provider):
+            if self._whatsapp_provider_still_connected(normalize_email(state.get("email")), provider, wa_id=wa_id):
                 text = f"That was an old sign-in link, and there's nothing to do: {label} is still connected."
                 finish(True, text, page=text)
                 return
@@ -13509,6 +13726,21 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             return
         session = PortalSession(token="", email=email, issued_at=time.time(), expires_at=time.time() + 600)
         mailbox_connected = False
+        # The phone that tapped the link is whose this sign-in is: a family
+        # member's own mail and calendar are theirs, never the account
+        # holder's, and the account holder's never theirs. The link was
+        # signed for that phone, so it vouches for it.
+        signed_in_from = normalize_whatsapp_number(state.get("waId"))
+        member = (
+            self.database.get_household_member_by_wa_id(signed_in_from, user_id=int(user.get("id") or 0))
+            if signed_in_from else None
+        )
+        if member and not household.can_connect_own_sources(member.get("role")):
+            # A grandparent on the family account reads the week and hears
+            # about their own drives; mail and calendars are not part of it.
+            finish(False, "Connecting mail or a calendar isn't part of what this phone has on the family account.")
+            return
+        self._connection_owner_override = signed_in_from if member else ""
 
         try:
             if provider == "google":
@@ -13575,6 +13807,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 self.database.update_platform_connection_status(
                     email, platform="calendar", connection_status="connected",
                     metadata_updates={CALENDAR_SELECTION_METADATA_KEY: available},
+                    owner_wa_id=self._connection_owner(email),
                 )
             elif not selected and len(available) > 1:
                 pending: dict[str, Any] = {
@@ -14084,21 +14317,27 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         except Exception as exc:  # noqa: BLE001 - a log line never breaks a sign-in
             print(f"Connection inventory could not be logged: {exc}", flush=True)
 
-    def _whatsapp_provider_still_connected(self, email: str, provider: str) -> bool:
+    def _whatsapp_provider_still_connected(self, email: str, provider: str, *, wa_id: str = "") -> bool:
         """Whether this provider is connected and nothing of it needs a sign-in.
 
         An old sign-in link can be tapped long after the sign-in it was for
         went through. What the person needs then is whether anything needs
-        doing, not a prompt to ask for another link.
+        doing, not a prompt to ask for another link - about their own
+        connections, the phone that tapped it being whose they are.
         """
 
         if not is_valid_email(email):
             return False
+        user_id = int((self.database.get_user(email) or {}).get("id") or 0)
+        owner = (
+            normalize_whatsapp_lookup_id(wa_id)
+            if wa_id and self.database.get_household_member_by_wa_id(wa_id, user_id=user_id) else ""
+        )
         prefix = "google_" if provider == "google" else "microsoft_"
         rows = [
             row
             for row in self.database.list_platform_connection_secret_records(
-                email, "", include_statuses=("connected", "needs_attention"),
+                email, "", include_statuses=("connected", "needs_attention"), owner_wa_id=owner,
             )
             if normalize_text(row.get("provider")).lower().startswith(prefix)
         ]
@@ -15755,7 +15994,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         return [urllib_parse.unquote(part) for part in parsed.path.strip("/").split("/") if part][2:]
 
     def _serialize_receipt_for_owner(self, record: dict[str, Any]) -> dict[str, Any]:
-        return {key: value for key, value in record.items() if key != "userId"}
+        return {key: value for key, value in record.items() if key not in {"userId", "ownerWaId"}}
 
     def _screen_account_receipts_for_owner(
         self,
@@ -16179,6 +16418,14 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         event: dict[str, Any],
     ) -> dict[str, Any]:
         port = int(self.server.server_address[1])  # type: ignore[attr-defined]
+        # Sign-in links only for someone who may connect their own mail and
+        # calendar: the account holder, or a partner. A grandparent has none.
+        member_id = int(connection.get("memberId") or 0)
+        member = (
+            self.database.get_household_member_by_wa_id(normalize_text(connection.get("ownerWaId")), user_id=int(connection.get("userId") or 0))
+            if member_id else None
+        )
+        may_connect = not member or household.can_connect_own_sources(member.get("role"))
         chat = WhatsAppAgentChat(
             database=self.database,
             connection=connection,
@@ -16187,7 +16434,8 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             connect_links=self._whatsapp_oauth_links(
                 email=normalize_email(connection.get("email")),
                 wa_id=normalize_text(connection.get("ownerWaId")),
-            ),
+            ) if may_connect else {},
+            viewer_signer=self._sign_connection_viewer,
         )
         interactive_reply = event.get("interactive_reply") if isinstance(event.get("interactive_reply"), dict) else {}
         try:
@@ -17419,6 +17667,7 @@ def main() -> int:
             database=server.database,  # type: ignore[attr-defined]
             base_url=f"http://127.0.0.1:{int(server.server_address[1])}",
             session_token_factory=lambda email: mint_agent_session_token(server.store, email),  # type: ignore[attr-defined]
+            viewer_signer=lambda email, wa_id: sign_connection_viewer(config.session_secret, email, wa_id),
         )
         scheduled_actions = ScheduledActionScheduler(
             server.database,  # type: ignore[attr-defined]
@@ -17500,6 +17749,7 @@ def main() -> int:
             config=finding_scan_config,
             base_url=f"http://127.0.0.1:{int(server.server_address[1])}",
             session_token_factory=lambda email: mint_agent_session_token(server.store, email),  # type: ignore[attr-defined]
+            viewer_signer=lambda email, wa_id: sign_connection_viewer(config.session_secret, email, wa_id),
         )
         finding_scan_thread = threading.Thread(
             target=finding_scans.serve_forever,
@@ -17528,6 +17778,7 @@ def main() -> int:
             config=inbox_watch_config,
             base_url=f"http://127.0.0.1:{int(server.server_address[1])}",
             session_token_factory=lambda email: mint_agent_session_token(server.store, email),  # type: ignore[attr-defined]
+            viewer_signer=lambda email, wa_id: sign_connection_viewer(config.session_secret, email, wa_id),
         )
         inbox_watch_thread = threading.Thread(
             target=inbox_watcher.serve_forever,
