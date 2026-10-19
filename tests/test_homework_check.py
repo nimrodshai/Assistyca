@@ -346,9 +346,16 @@ class FrozenTests(PageTests):
         self.assertEqual(status, 404)
         self.assertEqual(self.database.get_homework_login_link("page-code-123")["status"], "live", "kept for later")
 
+    def test_the_page_file_is_not_served_by_its_own_address_either(self) -> None:
+        with self.assertRaises(urllib_error.HTTPError) as caught:
+            urllib_request.urlopen(f"{self.base_url}/portal/homework.html", timeout=10)
+        self.assertEqual(caught.exception.code, 404)
+
     def test_the_page_is_open_again_once_switched_back_on(self) -> None:
         with mock.patch.dict("os.environ", {homework_check.HOMEWORK_CHECK_SWITCH: "1"}):
             self.assertEqual(self.request("GET", "/api/public/homework/page-code-123")[0], 200)
+            with urllib_request.urlopen(f"{self.base_url}/portal/homework.html", timeout=10) as response:
+                self.assertEqual(response.status, 200)
 
     def test_the_page_opens_saves_once_and_says_nothing_back(self) -> None:
         self.skipTest("the page is closed while the check is frozen")

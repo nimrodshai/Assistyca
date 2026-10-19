@@ -4355,6 +4355,11 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         parsed = urllib_parse.urlparse(self.path)
         if parsed.path.startswith("/output/agent_receipts/"):
             return self._send_agent_output_file(parsed.path)
+        if parsed.path.rstrip("/") == f"/{HOMEWORK_PAGE.as_posix()}" and not homework_check.check_open():
+            # While the homework check is frozen its page is not there at
+            # all, by any address.
+            self.send_error(HTTPStatus.NOT_FOUND)
+            return None
         static_alias = resolve_static_page_alias(parsed.path)
         if static_alias is not None:
             return self._send_static_page(static_alias)
