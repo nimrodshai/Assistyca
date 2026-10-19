@@ -12677,16 +12677,25 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             self.send_error(HTTPStatus.NOT_FOUND)
             return None
 
-        segments = [segment for segment in relative_path.split("/") if segment]
+        # Every segment must name a real step down: a dot, an empty step or a
+        # backslash is how an address climbs out of its folder into someone
+        # else's, so none of them is followed.
+        segments = relative_path.split("/")
+        if any(segment in ("", ".", "..") or "\\" in segment for segment in segments):
+            self.send_error(HTTPStatus.NOT_FOUND)
+            return None
         expected_owner_key = build_agent_receipt_owner_key(session.email)
-        if not segments or not hmac.compare_digest(segments[0], expected_owner_key):
+        if len(segments) < 2 or not hmac.compare_digest(segments[0], expected_owner_key):
             self.send_error(HTTPStatus.NOT_FOUND)
             return None
 
+        # The file must land inside the caller's own folder, not merely inside
+        # the output root, where every other account's folder also sits.
         output_root = resolve_runtime_path(self.config.agent_output_dir, root=self.root).resolve()
-        file_path = (output_root / relative_path).resolve()
+        owner_root = (output_root / expected_owner_key).resolve()
+        file_path = (owner_root / "/".join(segments[1:])).resolve()
         try:
-            file_path.relative_to(output_root)
+            file_path.relative_to(owner_root)
         except ValueError:
             self.send_error(HTTPStatus.NOT_FOUND)
             return None
