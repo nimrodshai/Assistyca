@@ -4385,9 +4385,12 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         parsed = urllib_parse.urlparse(self.path)
         if parsed.path.startswith("/output/agent_receipts/"):
             return self._send_agent_output_file(parsed.path)
-        if parsed.path.rstrip("/") == f"/{HOMEWORK_PAGE.as_posix()}" and not homework_check.check_open():
+        if (
+            static_request_path(parsed.path).lower() == f"/{HOMEWORK_PAGE.as_posix()}"
+            and not homework_check.check_open()
+        ):
             # While the homework check is frozen its page is not there at
-            # all, by any address.
+            # all, by any address - however the address is spelled.
             self.send_error(HTTPStatus.NOT_FOUND)
             return None
         static_alias = resolve_static_page_alias(parsed.path)
@@ -18006,6 +18009,15 @@ def static_asset_cache_control(path: str, status: int) -> str:
     if asset_path.lower().endswith(LONG_CACHED_ASSET_EXTENSIONS):
         return "public, max-age=31536000, immutable"
     return "public, max-age=3600"
+
+
+def static_request_path(path: str) -> str:
+    """The file a static request reaches, spelled the one way: decoded once,
+    as the file server decodes it, with empty and "." steps dropped, so
+    "/portal//%68omework%2Ehtml" reads as "/portal/homework.html"."""
+
+    decoded = urllib_parse.unquote(str(path or ""))
+    return "/" + "/".join(segment for segment in decoded.split("/") if segment not in ("", "."))
 
 
 def is_public_static_path(path: str) -> bool:

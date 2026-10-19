@@ -351,6 +351,23 @@ class FrozenTests(PageTests):
             urllib_request.urlopen(f"{self.base_url}/portal/homework.html", timeout=10)
         self.assertEqual(caught.exception.code, 404)
 
+    def test_the_page_file_is_not_served_by_another_spelling_of_its_address(self) -> None:
+        import http.client as http_client
+
+        for spelling in (
+            "/portal/%68omework.html", "/portal/homework%2Ehtml", "/portal//homework.html",
+            "/portal/./homework.html", "/portal/HOMEWORK.html", "/portal/homework.html/",
+        ):
+            with self.subTest(spelling=spelling):
+                connection = http_client.HTTPConnection("127.0.0.1", self.server.server_address[1], timeout=10)
+                try:
+                    connection.request("GET", spelling)
+                    response = connection.getresponse()
+                    response.read()
+                finally:
+                    connection.close()
+                self.assertEqual(response.status, 404)
+
     def test_the_page_is_open_again_once_switched_back_on(self) -> None:
         with mock.patch.dict("os.environ", {homework_check.HOMEWORK_CHECK_SWITCH: "1"}):
             self.assertEqual(self.request("GET", "/api/public/homework/page-code-123")[0], 200)
