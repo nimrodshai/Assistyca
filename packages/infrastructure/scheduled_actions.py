@@ -342,18 +342,19 @@ class ScheduledActionScheduler:
     def _recipient_whereabouts(self, action: dict[str, Any]) -> str:
         """Where the phone this action was set up for stands with its
         account: "here" while it still reaches it, "left" once it was taken
-        off the family, "signed_out" when it is unlinked for now. Only a
-        named phone can be away: a group, "the owner" and an action with no
-        phone of its own go where the account says. A phone taken off the
-        family has left; any other unlinked phone, the account holder's or a
-        family member's, is only signed out and is waited for."""
+        off the family, "signed_out" when it is unlinked for now. A group
+        is always here; "the owner" is signed out while no phone of the
+        account holder's is linked. A phone taken off the family has left;
+        any other unlinked phone, the account holder's or a family
+        member's, is only signed out and is waited for."""
 
         payload = action.get("payload") if isinstance(action.get("payload"), dict) else {}
         recipient = normalize_text(payload.get("recipientWaId"))
         user_id = int(action.get("userId") or 0)
-        if recipient.startswith(GROUP_RECIPIENT_PREFIX):
+        sent_to = recipient or normalize_text(action.get("recipientRef"))
+        if sent_to.startswith(GROUP_RECIPIENT_PREFIX):
             return "here"
-        if not recipient or recipient.lower() in OWNER_RECIPIENT_REFS:
+        if sent_to.lower() in OWNER_RECIPIENT_REFS:
             # The account holder's own phone, whichever it is. A WhatsApp
             # message for it while no phone of theirs is linked waits for
             # one, as a reminder set from it does, rather than being marked
@@ -368,6 +369,8 @@ class ScheduledActionScheduler:
                 print(f"[scheduled-actions] action={action.get('id')} could not check the owner's phone: {exc}", flush=True)
                 return "here"
             return "signed_out"
+        if not recipient:
+            return "here"
         number = normalize_whatsapp_lookup_id(recipient)
         if not number or user_id <= 0:
             return "here"
