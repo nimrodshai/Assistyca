@@ -13,11 +13,13 @@ from datetime import datetime
 from datetime import timedelta
 from datetime import timezone
 from pathlib import Path
+from unittest import mock
 from zoneinfo import ZoneInfo
 
 from packages.infrastructure import homework_check
 from packages.infrastructure.agent_loop import LoopContext
 from packages.infrastructure.agent_loop import TOOLS_BY_NAME
+from packages.infrastructure.agent_loop import tool_definitions
 from packages.infrastructure.credential_vault import CredentialVault
 from packages.infrastructure.family_week_nudges import FamilyWeekNudgeConfig
 from packages.infrastructure.family_week_nudges import FamilyWeekNudger
@@ -29,6 +31,14 @@ from packages.infrastructure.scheduled_actions import ScheduledActionScheduler
 
 ISRAEL = ZoneInfo("Asia/Jerusalem")
 TEST_KEY = "11" * 32
+
+
+def _open_the_check(test: unittest.TestCase) -> None:
+    """The check is frozen unless switched on; these tests are of it open."""
+
+    patcher = mock.patch.dict("os.environ", {homework_check.HOMEWORK_CHECK_SWITCH: "1"})
+    patcher.start()
+    test.addCleanup(patcher.stop)
 
 
 class FirstOneOClockTests(unittest.TestCase):
@@ -142,6 +152,7 @@ class OfferTests(unittest.TestCase):
     """The nudger asks once, at the first 13:00, inside the window."""
 
     def setUp(self) -> None:
+        _open_the_check(self)
         self.temp_dir = tempfile.TemporaryDirectory()
         self.database = PortalDatabase(Path(self.temp_dir.name) / "portal.db")
         self.database.register_user("parent@example.com")
@@ -213,6 +224,7 @@ class OfferTests(unittest.TestCase):
 
 class ToolTests(unittest.TestCase):
     def setUp(self) -> None:
+        _open_the_check(self)
         self.temp_dir = tempfile.TemporaryDirectory()
         self.database = PortalDatabase(Path(self.temp_dir.name) / "portal.db")
         self.database.set_credential_vault(CredentialVault(TEST_KEY))
@@ -249,6 +261,7 @@ class ToolTests(unittest.TestCase):
 
 class PageTests(unittest.TestCase):
     def setUp(self) -> None:
+        _open_the_check(self)
         self.temp_dir = tempfile.TemporaryDirectory()
         self.root = Path(__file__).resolve().parents[1]
         self.server = create_server(
@@ -310,6 +323,56 @@ class PageTests(unittest.TestCase):
         self.assertEqual((status, gone["status"]), (200, "used"))
         status, _ = self.request("GET", "/api/public/homework/never-issued")
         self.assertEqual(status, 404)
+
+
+class FrozenTests(PageTests):
+    """Frozen for everyone: no 13:00 question, no tool that hands out the
+    page, and the page closed - with every kept login still there."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        patcher = mock.patch.dict("os.environ", {homework_check.HOMEWORK_CHECK_SWITCH: ""})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_the_page_is_closed(self) -> None:
+        with self.assertRaises(urllib_error.HTTPError) as caught:
+            urllib_request.urlopen(f"{self.base_url}/homework/page-code-123", timeout=10)
+        self.assertEqual(caught.exception.code, 404)
+        self.assertEqual(self.request("GET", "/api/public/homework/page-code-123")[0], 404)
+        status, _ = self.request("POST", "/api/public/homework/page-code-123", {
+            "platform": "mashov", "username": "u", "password": "p",
+        })
+        self.assertEqual(status, 404)
+        self.assertEqual(self.database.get_homework_login_link("page-code-123")["status"], "live", "kept for later")
+
+    def test_the_page_is_open_again_once_switched_back_on(self) -> None:
+        with mock.patch.dict("os.environ", {homework_check.HOMEWORK_CHECK_SWITCH: "1"}):
+            self.assertEqual(self.request("GET", "/api/public/homework/page-code-123")[0], 200)
+
+    def test_the_page_opens_saves_once_and_says_nothing_back(self) -> None:
+        self.skipTest("the page is closed while the check is frozen")
+
+    def test_nothing_offers_it(self) -> None:
+        names = {tool["name"] for tool in tool_definitions({})}
+        self.assertNotIn("homework_login_link", names)
+        self.assertIn("forget_homework_login", names, "a kept login can still be removed")
+        from packages.infrastructure.agent_loop import tool_availability
+
+        self.assertEqual(tool_availability(TOOLS_BY_NAME["homework_login_link"], {}).code, "not_here")
+
+    def test_no_question_at_one_oclock(self) -> None:
+        self.database.save_whatsapp_connection("parent@example.com", owner_wa_id="972500000001", connection_status="connected")
+        self.database.save_household_member(user_id=self.user_id, name="Lahav", role="child", age=8)
+        nudger = FamilyWeekNudger(self.database, config=FamilyWeekNudgeConfig(week_ahead=False))
+        registered = datetime.fromisoformat(self.database.get_user_by_id(self.user_id)["registeredAt"])
+        moment = homework_check.first_offer_moment(registered.astimezone(ISRAEL))
+        self.database.save_whatsapp_agent_message(user_id=self.user_id, role="user", text="hi")
+        with self.database._connection() as conn:
+            conn.execute("UPDATE whatsapp_agent_messages SET created_at = ?", ((moment - timedelta(hours=3)).astimezone(timezone.utc).isoformat(),))
+        self.assertEqual(nudger.run_pending(now=moment + timedelta(minutes=1))["homeworkOffer"], 0)
+        with mock.patch.dict("os.environ", {homework_check.HOMEWORK_CHECK_SWITCH: "1"}):
+            self.assertEqual(nudger.run_pending(now=moment + timedelta(minutes=2))["homeworkOffer"], 1, "asked once open")
 
 
 if __name__ == "__main__":

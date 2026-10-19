@@ -4291,6 +4291,9 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         if parsed.path.startswith(WEEK_SHARE_PAGE_PREFIX) and len(parsed.path) > len(WEEK_SHARE_PAGE_PREFIX):
             return self._send_static_page(WEEK_SHARE_PAGE)
         if parsed.path.startswith(HOMEWORK_PAGE_PREFIX) and len(parsed.path) > len(HOMEWORK_PAGE_PREFIX):
+            if not homework_check.check_open():
+                self.send_error(HTTPStatus.NOT_FOUND)
+                return None
             return self._send_static_page(HOMEWORK_PAGE)
         if not is_public_static_path(parsed.path):
             self.send_error(HTTPStatus.NOT_FOUND)
@@ -15771,6 +15774,9 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         before anyone types a password into it. Says nothing about the
         family beyond whether the code is live."""
 
+        if not homework_check.check_open():
+            json_response(self, HTTPStatus.NOT_FOUND, {"ok": False, "status": "not_found"})
+            return
         if not self._enforce_rate_limit(
             f"homework-ip:{self._client_ip()}", HOMEWORK_LOGIN_PER_IP,
             message="Too many tries. Please wait a little and open the link again.",
@@ -15794,6 +15800,9 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         the link. Nothing of it is written anywhere else, logged or sent
         back."""
 
+        if not homework_check.check_open():
+            json_response(self, HTTPStatus.NOT_FOUND, {"ok": False, "status": "not_found"})
+            return
         if not self._enforce_rate_limit(
             f"homework-ip:{self._client_ip()}", HOMEWORK_LOGIN_PER_IP,
             message="Too many tries. Please wait a little and open the link again.",

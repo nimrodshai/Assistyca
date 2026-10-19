@@ -23,6 +23,7 @@ chat whenever they like.
 
 from __future__ import annotations
 
+import os
 import re
 from datetime import date
 from datetime import datetime
@@ -32,6 +33,14 @@ from typing import Iterable
 
 from packages.infrastructure import household
 
+# The homework check is frozen for every account: nothing offers it, the
+# tool that hands out the login page is not on offer, and the page itself is
+# closed. The code and every kept login stay as they are, so setting this to
+# 1 brings all of it back. A login can still be removed while it is frozen.
+HOMEWORK_CHECK_SWITCH = "PORTAL_HOMEWORK_CHECK_ENABLED"
+# The tools that only make sense while the check is open.
+HOMEWORK_OPEN_TOOLS = frozenset({"homework_login_link"})
+
 HOMEWORK_OFFER_HOUR = 13
 # How late the question may still go: a poll a little after one still asks.
 HOMEWORK_OFFER_WINDOW_HOURS = 2
@@ -39,6 +48,14 @@ HOMEWORK_OFFER_WINDOW_HOURS = 2
 HOMEWORK_OFFER_SKIPPED_WEEKDAY = 5
 HOMEWORK_OFFER_TIMEZONES = frozenset({"Asia/Jerusalem"})
 HOMEWORK_OFFER_NUDGE_KEY = "homework-offer"
+
+
+
+def check_open() -> bool:
+    """Whether the homework check is open at all (HOMEWORK_CHECK_SWITCH)."""
+
+    return str(os.getenv(HOMEWORK_CHECK_SWITCH) or "").strip().lower() in {"1", "true", "yes", "on", "enabled"}
+
 
 # First grade in Israel starts the year a child turns six; the last year of
 # school is twelfth grade, at seventeen or eighteen.

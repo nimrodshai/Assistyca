@@ -1429,7 +1429,7 @@ class FamilyWeekNudger:
 
         from packages.infrastructure.scheduled_actions import service_window_open
 
-        if not self.config.homework_offer or not homework_check.offered_where(timezone_name):
+        if not homework_check.check_open() or not self.config.homework_offer or not homework_check.offered_where(timezone_name):
             return False
         user = self.database.get_user_by_id(user_id) or {}
         try:

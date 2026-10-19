@@ -4802,6 +4802,12 @@ def tool_availability(
     what happens to the call can never drift apart.
     """
 
+    if tool.name in homework_check.HOMEWORK_OPEN_TOOLS and not homework_check.check_open():
+        return Availability(
+            "not_here",
+            "The homework check is not open right now. Say so in one calm line and offer what you can do instead.",
+            "the homework check is not open right now.",
+        )
     if in_group and tool.name not in GROUP_TOOLS:
         return Availability("not_here", GROUP_TOOL_WORDS, "not in a group chat - nobody's account is open here.")
     if speaker and not speaker.get("isOwner") and tool.name in OWNER_ONLY_TOOLS:
@@ -4839,6 +4845,8 @@ def tool_definitions(
     return [
         tool.definition(tool_availability(tool, tool_context, blocked, in_group=in_group, speaker=speaker))
         for tool in TOOLS
+        # A frozen feature is not mentioned at all, so nothing offers it.
+        if homework_check.check_open() or tool.name not in homework_check.HOMEWORK_OPEN_TOOLS
     ]
 
 
