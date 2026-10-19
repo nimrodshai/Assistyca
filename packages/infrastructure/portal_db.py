@@ -538,6 +538,10 @@ CREATE TABLE IF NOT EXISTS household_members (
     -- phone column above is what the parent typed and is never read for it.
     wa_id TEXT NOT NULL DEFAULT '',
     wa_linked_at TEXT NOT NULL DEFAULT '',
+    -- The phone they signed out of the account, while it is signed out:
+    -- what was set for it is held, not ended, and is ended with them if
+    -- they are taken off the family.
+    signed_out_wa_id TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
@@ -1781,6 +1785,8 @@ class PortalDatabase:
             conn.execute("ALTER TABLE household_members ADD COLUMN address_form TEXT NOT NULL DEFAULT ''")
         if "address_basis" not in member_columns:
             conn.execute("ALTER TABLE household_members ADD COLUMN address_basis TEXT NOT NULL DEFAULT ''")
+        if "signed_out_wa_id" not in member_columns:
+            conn.execute("ALTER TABLE household_members ADD COLUMN signed_out_wa_id TEXT NOT NULL DEFAULT ''")
         if "language" not in member_columns:
             conn.execute("ALTER TABLE household_members ADD COLUMN language TEXT NOT NULL DEFAULT ''")
         activity_columns = {row["name"] for row in conn.execute("PRAGMA table_info(household_activities)").fetchall()}
@@ -5452,29 +5458,21 @@ class PortalDatabase:
                 (number, resolved_user_id),
             )
             if int(cursor.rowcount or 0) > 0:
-                was_member = conn.execute(
-                    "SELECT 1 FROM household_members WHERE user_id = ? AND wa_id = ? LIMIT 1",
-                    (resolved_user_id, number),
-                ).fetchone() is not None
                 # A family member who joined from this phone stays in the
                 # family; only the phone stops being theirs to write from.
                 conn.execute(
-                    "UPDATE household_members SET wa_id = '', wa_linked_at = '', updated_at = ? WHERE user_id = ? AND wa_id = ?",
+                    "UPDATE household_members SET wa_id = '', wa_linked_at = '', signed_out_wa_id = wa_id, updated_at = ? "
+                    "WHERE user_id = ? AND wa_id = ?",
                     (now_iso(), resolved_user_id, number),
                 )
                 conn.execute(
                     "DELETE FROM whatsapp_agent_thread_state WHERE user_id = ? AND thread_id = ?",
                     (resolved_user_id, household.member_thread_id(number)),
                 )
-                if was_member:
-                    # A member's reminders went to the phone they joined
-                    # from. The account holder's own phone keeps everything
-                    # it set: the account is theirs, and a sign-out promises
-                    # what is saved stays.
-                    self._cancel_scheduled_actions_for_phone(
-                        conn, user_id=resolved_user_id, wa_id=number,
-                        reason="The phone this was for was signed out of the account.",
-                    )
+                # Nothing set for this phone is called off, whoever's it is:
+                # a sign-out keeps what is saved, and the scheduler holds it
+                # until the phone is linked again. Only taking someone off
+                # the family or deleting the account ends it.
             conn.commit()
             return int(cursor.rowcount or 0) > 0
 
@@ -8792,18 +8790,22 @@ class PortalDatabase:
         stamp = now_iso()
         with self._connection() as conn:
             existing = conn.execute(
-                "SELECT id, name, wa_id FROM household_members WHERE user_id = ? AND group_id = ? AND name_key = ?",
+                "SELECT id, name, wa_id, signed_out_wa_id FROM household_members "
+                "WHERE user_id = ? AND group_id = ? AND name_key = ?",
                 (int(user_id), scope, key),
             ).fetchone()
             if existing is None:
                 return None
             member_name = str(existing["name"] or "")
-            number = str(existing["wa_id"] or "")
-            if number:
+            linked = str(existing["wa_id"] or "")
+            if linked:
                 conn.execute(
                     "DELETE FROM user_whatsapp_numbers WHERE wa_id = ? AND user_id = ?",
-                    (number, int(user_id)),
+                    (linked, int(user_id)),
                 )
+            # A phone they signed out still has what was set for it held,
+            # and that ends with them as a linked phone's does.
+            for number in dict.fromkeys(filter(None, (linked, str(existing["signed_out_wa_id"] or "")))):
                 conn.execute(
                     "DELETE FROM whatsapp_agent_thread_state WHERE user_id = ? AND thread_id = ?",
                     (int(user_id), household.member_thread_id(number)),
@@ -8831,7 +8833,7 @@ class PortalDatabase:
             )
             conn.execute("DELETE FROM household_members WHERE id = ?", (int(existing["id"]),))
             conn.commit()
-        return {"name": member_name, "phoneUnlinked": bool(number), "drivesNowOpen": opened}
+        return {"name": member_name, "phoneUnlinked": bool(linked), "drivesNowOpen": opened}
 
     def household_member_drives(self, *, user_id: int, name: str, group_id: str = "") -> list[dict[str, Any]]:
         """The drives written under one person's name: each weekly leg, and
@@ -9217,6 +9219,11 @@ class PortalDatabase:
             conn.execute(
                 "UPDATE household_members SET wa_id = ?, wa_linked_at = ?, updated_at = ? WHERE id = ?",
                 (number, stamp, stamp, int(row["member_id"])),
+            )
+            # Back on the phone it signed out: what was held for it goes on.
+            conn.execute(
+                "UPDATE household_members SET signed_out_wa_id = '' WHERE user_id = ? AND signed_out_wa_id = ?",
+                (user_id, number),
             )
             conn.execute(
                 "UPDATE household_invites SET claimed_at = ?, claimed_wa_id = ? WHERE code = ?",

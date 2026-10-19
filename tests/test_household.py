@@ -1084,9 +1084,11 @@ class FamilyOnTheirOwnPhonesTests(unittest.TestCase):
 
 
 class LeavingTheFamilyTests(unittest.TestCase):
-    """Someone taken off the family, or signing their phone out, leaves
-    nothing behind that still acts for them: no reminder, no standing
-    action, and no drive still written under their name."""
+    """Someone taken off the family leaves nothing behind that still acts
+    for them: no reminder, no standing action, and no drive still written
+    under their name. Signing a phone out ends nothing, for anyone: what
+    was set for it waits until the phone is back, and only being taken off
+    the family or the account being deleted ends it."""
 
     YOAV_PHONE = "972500000002"
 
@@ -1137,10 +1139,69 @@ class LeavingTheFamilyTests(unittest.TestCase):
         self.assertEqual((self._status(reminder), self._status(standing)), ("cancelled", "cancelled"))
         self.assertEqual(self._status(owners), "pending", "the account holder's own reminders stay")
 
-    def test_a_member_signing_their_phone_out_calls_off_what_was_set_for_it(self) -> None:
-        reminder = self._action(self.YOAV_PHONE, action_type="run_task")
+    def test_a_member_signing_their_phone_out_holds_what_was_set_for_it_until_they_are_back(self) -> None:
+        from datetime import datetime, timedelta, timezone
+        from unittest import mock
+
+        from packages.infrastructure.scheduled_actions import ScheduledActionConfig
+        from packages.infrastructure.scheduled_actions import ScheduledActionScheduler
+
+        now = datetime.now(timezone.utc)
+        reminder = self.database.create_scheduled_action(
+            user_id=self.user_id, action_type="send_message", channel="whatsapp", recipient_ref="owner",
+            run_at=now - timedelta(seconds=5), timezone_name="Asia/Jerusalem",
+            payload={"messageText": "Take the bins out", "recipientWaId": self.YOAV_PHONE, "oneOff": True},
+        )
+        standing = self._action(self.YOAV_PHONE, action_type="run_task")
+
         self.assertTrue(self.database.delete_user_whatsapp_number(user_id=self.user_id, wa_id=self.YOAV_PHONE))
-        self.assertEqual(self._status(reminder), "cancelled")
+        self.assertEqual((self._status(reminder), self._status(standing)), ("pending", "pending"))
+
+        ran: list[dict] = []
+        scheduler = ScheduledActionScheduler(
+            self.database,
+            config=ScheduledActionConfig(enabled=True, poll_seconds=1, batch_size=10),
+            task_runner=lambda action: ran.append(action) or "done",
+        )
+        with mock.patch("packages.infrastructure.whatsapp_messaging.send_whatsapp_message", return_value="wamid.1") as send:
+            scheduler.run_pending(now=now)
+            # Signed out: nothing goes to the phone, and nothing is called off.
+            send.assert_not_called()
+            self.assertEqual(ran, [])
+            self.assertEqual((self._status(reminder), self._status(standing)), ("pending", "pending"))
+
+            # Back through a fresh invitation from the same phone: it goes.
+            yoav = next(m for m in self.database.list_household_members(user_id=self.user_id) if m["name"] == "Yoav")
+            self.database.create_household_invite(
+                user_id=self.user_id, member_id=int(yoav["id"]), code="DEF567", expires_at=now + timedelta(days=14),
+            )
+            self.database.claim_household_invite(code="DEF567", wa_id=self.YOAV_PHONE, label="Yoav")
+            scheduler.run_pending(now=now + timedelta(hours=2))
+        self.assertEqual(self._status(reminder), "sent")
+
+    def test_taking_off_a_member_who_signed_out_still_ends_what_was_set_for_their_phone(self) -> None:
+        reminder = self._action(self.YOAV_PHONE)
+        standing = self._action(self.YOAV_PHONE, action_type="run_task")
+        self.database.delete_user_whatsapp_number(user_id=self.user_id, wa_id=self.YOAV_PHONE)
+
+        removed = self.database.remove_household_member(user_id=self.user_id, name="Yoav")
+
+        self.assertFalse(removed["phoneUnlinked"], "the phone was already signed out")
+        self.assertEqual((self._status(reminder), self._status(standing)), ("cancelled", "cancelled"))
+        self.assertTrue(self.database.phone_left_family(user_id=self.user_id, wa_id=self.YOAV_PHONE))
+
+    def test_deleting_the_account_ends_every_scheduled_action_it_had(self) -> None:
+        actions = [
+            self._action("972500000001"),
+            self._action("972500000001", action_type="run_task"),
+            self._action(self.YOAV_PHONE),
+            self._action(self.YOAV_PHONE, action_type="run_task"),
+        ]
+        self.database.delete_user_whatsapp_number(user_id=self.user_id, wa_id=self.YOAV_PHONE)
+
+        self.database.delete_user("parent@example.com")
+
+        self.assertEqual([self.database.get_scheduled_action(int(action["id"])) for action in actions], [None] * 4)
 
     def test_the_scheduler_never_acts_for_a_phone_that_left_the_account(self) -> None:
         from datetime import datetime, timedelta, timezone
@@ -1292,7 +1353,7 @@ class LeavingTheFamilyTests(unittest.TestCase):
         self.assertIn("Writing to this number again", note)
         self.assertNotIn("email", note)
 
-    def test_the_sign_out_yes_says_whose_reminders_stay(self) -> None:
+    def test_the_sign_out_yes_says_reminders_wait_for_the_phone_whoever_it_is(self) -> None:
         from packages.infrastructure.agent_loop import _describe_call
 
         member = LoopContext(
@@ -1304,8 +1365,11 @@ class LeavingTheFamilyTests(unittest.TestCase):
             api=lambda *a, **k: ({"ok": True}, 200), database=self.database, email="parent@example.com",
             user_id=self.user_id, timezone_name="Asia/Jerusalem", channel="whatsapp", sender_wa_id="972500000001",
         )
-        self.assertIn("reminders set from this phone, which stop", _describe_call(member, TOOLS_BY_NAME["sign_out"], {}))
-        self.assertIn("reminders included", _describe_call(owner, TOOLS_BY_NAME["sign_out"], {}))
+        for context in (member, owner):
+            said = _describe_call(context, TOOLS_BY_NAME["sign_out"], {})
+            self.assertIn("reminders included", said)
+            self.assertIn("go on once it is linked again", said)
+            self.assertNotIn("which stop", said)
 
     def test_an_account_that_is_only_a_conversation_holds_nothing(self) -> None:
         self.database.register_user("wa-447700900123@whatsapp.assistyca.com")

@@ -275,7 +275,7 @@ class ScheduledActionScheduler:
                 )
                 continue
             if whereabouts == "signed_out":
-                # The account's own phone, signed out for now. Signing out
+                # A phone signed out for now, the holder's or a member's. Signing out
                 # keeps what is saved, so nothing is called off: a standing
                 # action skips this run and comes back on its own, and a
                 # reminder waits and goes once the phone is linked again.
@@ -344,9 +344,9 @@ class ScheduledActionScheduler:
         account: "here" while it still reaches it, "left" once it was taken
         off the family, "signed_out" when it is unlinked for now. Only a
         named phone can be away: a group, "the owner" and an action with no
-        phone of its own go where the account says. A member's own actions
-        are called off when their phone is signed out or removed, so an
-        unlinked phone still owed something is the account holder's."""
+        phone of its own go where the account says. A phone taken off the
+        family has left; any other unlinked phone, the account holder's or a
+        family member's, is only signed out and is waited for."""
 
         payload = action.get("payload") if isinstance(action.get("payload"), dict) else {}
         recipient = normalize_text(payload.get("recipientWaId"))
