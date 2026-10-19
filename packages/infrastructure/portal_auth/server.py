@@ -14739,10 +14739,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             return None
 
         if outcome.get("ok"):
-            reply = (
-                "You're connected. This is Assistyca — ask me anything, and I can set things up "
-                "for you here the same way I do in the portal."
-            )
+            reply = "You're connected. This is Assistyca — ask me anything, and I can set things up for you right here."
         elif reason == "expired":
             reply = "That code has expired. Open Assistyca in your browser for a fresh one and send it again."
         elif reason == "already_claimed":

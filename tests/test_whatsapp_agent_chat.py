@@ -627,6 +627,11 @@ class WhatsAppAgentChatApiTests(unittest.TestCase):
             self.database.get_user_id_for_whatsapp_number(new_phone),
             int(self.user["id"]),
         )
+        # The welcome says where they are now - here - and nothing of a
+        # portal they have no reason to know.
+        welcome = self.sent.call_args.kwargs["message_text"]
+        self.assertIn("You're connected.", welcome)
+        self.assertNotIn("portal", welcome.lower())
 
         with mock.patch(
             "packages.infrastructure.portal_auth.server.call_openai_response",
