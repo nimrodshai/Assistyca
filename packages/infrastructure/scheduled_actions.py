@@ -621,6 +621,19 @@ class ScheduledActionScheduler:
             raise RuntimeError("WhatsApp recipient is missing.")
         return recipient_ref
 
+    def _recipient_language(self, user_id: int, recipient_wa_id: str) -> str:
+        """The language of whoever this phone belongs to: a family member
+        who joined from it gets their own, anyone else the account
+        holder's."""
+
+        member_id = 0
+        try:
+            member = self.database.get_household_member_by_wa_id(recipient_wa_id, user_id=user_id) if user_id > 0 else None
+            member_id = int((member or {}).get("id") or 0)
+        except Exception as exc:  # noqa: BLE001 - the account's language is the fallback
+            print(f"[scheduled-actions] could not tell whose phone {recipient_wa_id[-4:]} is: {exc}", flush=True)
+        return resolve_message_language(self.database, user_id=user_id, member_id=member_id)
+
     def _message_shape(self, action: dict[str, Any]) -> str:
         """Lines when the message will go as plain text (a group, or a phone
         still inside the window), a single line when only the template can
@@ -668,7 +681,7 @@ class ScheduledActionScheduler:
 
         refusals: list[str] = []
         image_url = normalize_text(payload.get("imageUrl"))
-        language = resolve_message_language(self.database, user_id=user_id)
+        language = self._recipient_language(user_id, recipient_ref)
         # A word that offers one more word five minutes before ends with
         # that question and a button to say yes: under the plain text
         # inside the window, in the template made for it outside.

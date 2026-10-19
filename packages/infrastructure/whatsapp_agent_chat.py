@@ -1751,7 +1751,9 @@ class WhatsAppAgentChat:
         return self._reply_and_log(reply, outcome=f"remind_again_{outcome or 'unknown'}")
 
     def _tap_reply(self, outcome: str, result: dict[str, Any]) -> str:
-        language = resolve_message_language(self.database, user_id=self.user_id)
+        language = resolve_message_language(
+            self.database, user_id=self.user_id, member_id=int(self.connection.get("memberId") or 0),
+        )
         due = result.get("dueAt")
         drive_at = due.strftime("%H:%M") if isinstance(due, datetime) else ""
         when = result.get("runAt")
@@ -2803,18 +2805,23 @@ class WhatsAppAgentChat:
         # come in. Words only: a photo with no caption and a button tap say
         # nothing about it, and a language that could not be kept never
         # stops the turn.
+        # Each is the writer's own: the family member's when this is their
+        # phone, else the account holder's. A join link's own words are the
+        # link's, not theirs, and say nothing about either.
         if text and (kind == "text" or voice_note):
+            member_id = int(self.connection.get("memberId") or 0)
             try:
-                remember_message_language(self.database, user_id=self.user_id, text=text)
+                remember_message_language(
+                    self.database, user_id=self.user_id, member_id=member_id,
+                    text=words_beyond_family_join(text) if read_family_join(text)[1] else text,
+                )
             except Exception as exc:  # noqa: BLE001
                 print(f"WhatsApp message language for user {self.user_id} could not be kept: {exc}", flush=True)
             # And the gender they speak of themselves in, which is how they
-            # are addressed from now on: the family member's own when this
-            # is their phone, else the account holder's.
+            # are addressed from now on.
             try:
                 remember_address_form(
-                    self.database, user_id=self.user_id, text=text,
-                    member_id=int(self.connection.get("memberId") or 0),
+                    self.database, user_id=self.user_id, text=text, member_id=member_id,
                 )
             except Exception as exc:  # noqa: BLE001
                 print(f"WhatsApp address form for user {self.user_id} could not be kept: {exc}", flush=True)

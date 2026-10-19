@@ -522,6 +522,10 @@ CREATE TABLE IF NOT EXISTS household_members (
     -- it, kept from what they write about themselves from their own phone;
     -- empty until they have said it (person_address).
     address_form TEXT NOT NULL DEFAULT '',
+    -- The language this person writes in from their own phone ('he' or
+    -- 'en'); empty until they have. What goes to their phone comes in it,
+    -- and it never changes the account holder's (message_language).
+    language TEXT NOT NULL DEFAULT '',
     -- The WhatsApp number this person joined the account from, once they
     -- have: it is how a message from that phone is known to be theirs. The
     -- phone column above is what the parent typed and is never read for it.
@@ -1768,6 +1772,8 @@ class PortalDatabase:
             conn.execute("ALTER TABLE household_members ADD COLUMN wa_linked_at TEXT NOT NULL DEFAULT ''")
         if "address_form" not in member_columns:
             conn.execute("ALTER TABLE household_members ADD COLUMN address_form TEXT NOT NULL DEFAULT ''")
+        if "language" not in member_columns:
+            conn.execute("ALTER TABLE household_members ADD COLUMN language TEXT NOT NULL DEFAULT ''")
         activity_columns = {row["name"] for row in conn.execute("PRAGMA table_info(household_activities)").fetchall()}
         if "group_id" not in activity_columns:
             conn.execute("ALTER TABLE household_activities ADD COLUMN group_id TEXT NOT NULL DEFAULT ''")
@@ -8555,6 +8561,7 @@ class PortalDatabase:
             "phone": str(row["phone"] or ""),
             "notes": str(row["notes"] or ""),
             "addressForm": str(row["address_form"] or "") if "address_form" in row.keys() else "",
+            "language": str(row["language"] or "") if "language" in row.keys() else "",
             "waId": str(row["wa_id"] or "") if "wa_id" in row.keys() else "",
             "waLinkedAt": str(row["wa_linked_at"] or "") if "wa_linked_at" in row.keys() else "",
             "createdAt": str(row["created_at"] or ""),
@@ -8584,6 +8591,22 @@ class PortalDatabase:
             conn.execute(
                 "UPDATE household_members SET address_form = ?, updated_at = ? WHERE user_id = ? AND id = ?",
                 (form, now_iso(), int(user_id), int(member_id)),
+            )
+        return self.get_household_member(user_id=user_id, member_id=member_id) or {}
+
+    def save_household_member_language(self, *, user_id: int, member_id: int, language: str) -> dict[str, Any]:
+        """Keep the language a family member writes in from their own phone
+        (message_language)."""
+
+        value = normalize_text(language).lower()
+        if value not in {"", "he", "en"}:
+            raise ValueError("language must be 'he', 'en' or empty.")
+        if int(user_id or 0) <= 0 or int(member_id or 0) <= 0:
+            raise ValueError("User id and member id are required.")
+        with self._connection() as conn:
+            conn.execute(
+                "UPDATE household_members SET language = ?, updated_at = ? WHERE user_id = ? AND id = ?",
+                (value, now_iso(), int(user_id), int(member_id)),
             )
         return self.get_household_member(user_id=user_id, member_id=member_id) or {}
 

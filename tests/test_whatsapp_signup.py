@@ -236,6 +236,26 @@ class WhatsAppSignupTests(unittest.TestCase):
         )
         return owner_id
 
+    def test_a_partner_joining_in_english_leaves_a_hebrew_family_in_hebrew(self) -> None:
+        owner_id = self._family_with_an_invitation()
+        self.database.save_household_profile(user_id=owner_id, language="he")
+        turn = mock.patch(
+            "packages.infrastructure.portal_auth.server.call_openai_response",
+            return_value=SimpleNamespace(output_text=json.dumps({"outcome": "message", "reply": "Hi Yoav, you're in."})),
+        )
+        with turn:
+            self.post("Assistyca family ABC234", message_id="wamid.lang1", name="Yoav")
+            member = self.database.get_household_member_by_wa_id(NEW_PHONE, user_id=owner_id) or {}
+            # The link's own words are nobody's language.
+            self.assertEqual(member.get("language"), "")
+            self.post("Thanks, see you on Sunday", message_id="wamid.lang2", name="Yoav")
+        member = self.database.get_household_member_by_wa_id(NEW_PHONE, user_id=owner_id) or {}
+        self.assertEqual(member.get("language"), "en", "what Yoav writes is Yoav's")
+        self.assertEqual(
+            (self.database.get_household_profile(user_id=owner_id) or {}).get("language"), "he",
+            "and never the account holder's",
+        )
+
     def test_an_invited_phone_joins_the_family_and_talks_in_its_own_thread(self) -> None:
         owner_id = self._family_with_an_invitation()
         turn = mock.patch(
