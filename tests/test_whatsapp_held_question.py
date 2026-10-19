@@ -24,6 +24,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
+from packages.infrastructure import household
 from packages.infrastructure.portal_auth.server import PortalConfig, create_server, sign_oauth_state_payload
 from packages.infrastructure.whatsapp_agent_chat import (
     _pending_is_fresh,
@@ -183,9 +184,9 @@ class HeldQuestionOverWhatsAppTests(unittest.TestCase):
         with urllib_request.urlopen(request, timeout=60) as response:
             return json.loads(response.read().decode("utf-8"))
 
-    def _callback(self, *, composed: str | None = COMPOSED_ASK) -> int:
+    def _callback(self, *, composed: str | None = COMPOSED_ASK, wa_id: str = PHONE) -> int:
         state = sign_oauth_state_payload(SESSION_SECRET, {
-            "version": 1, "channel": "whatsapp", "provider": "google", "email": EMAIL, "waId": PHONE,
+            "version": 1, "channel": "whatsapp", "provider": "google", "email": EMAIL, "waId": wa_id,
             "purpose": "connect", "issuedAt": int(time.time()), "nonce": "n", "scopeIds": ["gmail", "calendar"]})
         query = urllib_parse.urlencode({"code": "auth-code", "state": state})
         if composed is not None:
@@ -245,6 +246,34 @@ class HeldQuestionOverWhatsAppTests(unittest.TestCase):
         history = self.database.list_recent_whatsapp_agent_messages(user_id=int(self.user["id"]), limit=5)
         self.assertEqual(history[-1]["role"], "assistant")
         self.assertEqual(history[-1]["text"], COMPOSED_ASK)
+
+    def test_a_family_member_s_question_comes_back_in_their_own_conversation(self) -> None:
+        # The partner signed in from his own phone: the question his phone
+        # held, and the offer that answers it, are in his thread, not the
+        # account holder's.
+        user_id = int(self.user["id"])
+        partner_phone = "447700900456"
+        partner = self.database.save_household_member(user_id=user_id, name="Daniel", role="partner")
+        self.database.create_household_invite(
+            user_id=user_id, member_id=int(partner["id"]), code="DAN222",
+            expires_at=datetime.now(timezone.utc) + timedelta(days=14),
+        )
+        self.assertTrue(self.database.claim_household_invite(code="DAN222", wa_id=partner_phone)["ok"])
+        thread = household.member_thread_id(partner_phone)
+        self.database.save_whatsapp_agent_pending(user_id=user_id, thread_id=thread, pending={
+            "kind": "held_question", "text": QUESTION, "source": "mailbox",
+            "askedAt": datetime.now(timezone.utc).isoformat(),
+        })
+
+        self.assertEqual(self._callback(wa_id=partner_phone), 200)
+
+        self.assertEqual(self._pending(), {}, "nothing lands in the account holder's conversation")
+        held = self.database.get_whatsapp_agent_pending(user_id=user_id, thread_id=thread) or {}
+        self.assertEqual(held.get("kind"), "resume_question")
+        self.assertEqual(held.get("text"), QUESTION)
+        history = self.database.list_recent_whatsapp_agent_messages(user_id=user_id, thread_id=thread)
+        self.assertEqual(history[-1]["text"], COMPOSED_ASK)
+        self.assertEqual(self.database.list_recent_whatsapp_agent_messages(user_id=user_id), [])
 
     def test_yes_answers_the_question_they_never_retyped(self) -> None:
         self._ask_something_that_needs_gmail()

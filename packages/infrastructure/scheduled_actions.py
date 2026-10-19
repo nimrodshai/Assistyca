@@ -516,14 +516,7 @@ class ScheduledActionScheduler:
         thread when the phone joined the family, the owner's otherwise. The
         plain-text window is the phone's, so it is read from that thread."""
 
-        finder = getattr(self.database, "get_household_member_by_wa_id", None)
-        if not callable(finder):
-            return ""
-        try:
-            member = finder(wa_id, user_id=user_id)
-        except Exception:  # noqa: BLE001 - a store that cannot say treats the phone as the owner's
-            return ""
-        return household.member_thread_id(wa_id) if member else ""
+        return str(household.phone_conversation(self.database, user_id=user_id, wa_id=wa_id).get("agentThreadId") or "")
 
     def _service_window_open(self, user_id: int, *, now: datetime | None = None, thread_id: str = "") -> bool:
         return service_window_open(self.database, user_id, now=now, thread_id=thread_id)

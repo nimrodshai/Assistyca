@@ -163,6 +163,26 @@ def member_thread_id(wa_id: Any) -> str:
     return f"{MEMBER_THREAD_PREFIX}{number}" if number else ""
 
 
+def phone_conversation(database: Any, *, user_id: int, wa_id: Any) -> dict[str, Any]:
+    """Whose conversation a phone has on this account, in the keys a chat
+    connection carries: a family member's own thread and member id when the
+    phone joined the family, and nothing for the account holder's own phone.
+    The message that came in and the message that goes out both read it
+    here, so the two can never file the same phone in different places."""
+
+    resolved_user_id = int(user_id or 0)
+    finder = getattr(database, "get_household_member_by_wa_id", None)
+    if resolved_user_id <= 0 or not str(wa_id or "").strip() or not callable(finder):
+        return {}
+    try:
+        member = finder(str(wa_id), user_id=resolved_user_id)
+    except Exception:  # noqa: BLE001 - a store that cannot say treats the phone as the owner's
+        return {}
+    if not member:
+        return {}
+    return {"agentThreadId": member_thread_id(wa_id), "memberId": int(member.get("id") or 0)}
+
+
 def describe_speaker(member: dict[str, Any] | None, *, owner_name: str = "") -> dict[str, Any]:
     """Who is writing, as the assistant reads it when it is not the account
     holder: their name and role, whether the week is theirs to change, and
@@ -937,6 +957,7 @@ __all__ = [
     "is_named",
     "member_nudges",
     "member_thread_id",
+    "phone_conversation",
     "MAX_ACTIVITIES",
     "MAX_MEMBERS",
     "MEMBER_ROLES",

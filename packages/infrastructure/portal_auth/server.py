@@ -13551,7 +13551,11 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         # It is read now, before the calendar picker writes over the slot it
         # sits in, so it comes back to them either way.
         user_id = int(user.get("id") or 0)
-        held_text, held_at = self._held_whatsapp_question(user_id)
+        # The phone that signed in has its own conversation when it is a
+        # family member's: the question it held, the picker and the note
+        # that follow all belong there, where its next message is read.
+        thread_id = str(household.phone_conversation(self.database, user_id=user_id, wa_id=wa_id).get("agentThreadId") or "")
+        held_text, held_at = self._held_whatsapp_question(user_id, thread_id=thread_id)
 
         # The question about which calendars to read is asked now, at the
         # moment of connecting, not after the person's first real question.
@@ -13577,7 +13581,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                     # them now.
                     pending["resumeQuestion"] = held_text
                     pending["heldAt"] = held_at
-                self.database.save_whatsapp_agent_pending(user_id=user_id, pending=pending)
+                self.database.save_whatsapp_agent_pending(user_id=user_id, thread_id=thread_id, pending=pending)
                 picker = build_calendar_choice_interactive(available)
 
         if picker is not None:
@@ -13610,7 +13614,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             # is all known here - what connected, what they asked, how long it
             # waited - and the model writes it, so it sounds like the rest of
             # the chat rather than like a form that was filled in.
-            history = self.database.list_recent_whatsapp_agent_messages(user_id=user_id, limit=6)
+            history = self.database.list_recent_whatsapp_agent_messages(user_id=user_id, limit=6, thread_id=thread_id)
             ask, _composed = self._compose_resume_ask(
                 question=held_text,
                 connected=f"{linked or 'Your '}{connected}".strip(),
@@ -13623,13 +13627,14 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             )
             self.database.save_whatsapp_agent_pending(
                 user_id=user_id,
+                thread_id=thread_id,
                 pending={"kind": "resume_question", "text": held_text, "question": ask, "heldAt": held_at,
                          "askedAt": datetime.now(timezone.utc).isoformat()},
             )
             if wa_id:
                 try:
                     send_assistyca_text(recipient_wa_id=wa_id, text=ask)
-                    self.database.save_whatsapp_agent_message(user_id=user_id, role="assistant", text=ask)
+                    self.database.save_whatsapp_agent_message(user_id=user_id, role="assistant", text=ask, thread_id=thread_id)
                 except Exception as exc:  # noqa: BLE001 - the page still says what happened
                     print(f"WhatsApp sign-in note could not be sent: {exc}", flush=True)
             self._send_whatsapp_oauth_page(
@@ -13640,7 +13645,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
 
         finish(True, f"{linked or 'Your '}{connected} connected — ask me anything about your inbox or your schedule.{looking}")
 
-    def _held_whatsapp_question(self, user_id: int) -> tuple[str, str]:
+    def _held_whatsapp_question(self, user_id: int, *, thread_id: str = "") -> tuple[str, str]:
         """The question waiting on a sign-in for this account, and when it was asked.
 
         Empty when nothing is waiting, or when what is waiting is a question
@@ -13651,7 +13656,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         if user_id <= 0:
             return "", ""
         try:
-            pending = self.database.get_whatsapp_agent_pending(user_id=user_id)
+            pending = self.database.get_whatsapp_agent_pending(user_id=user_id, thread_id=thread_id)
         except Exception as exc:  # noqa: BLE001 - a slot that cannot be read holds nothing
             print(f"WhatsApp held question could not be read: {exc}", flush=True)
             return "", ""
@@ -15050,11 +15055,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         user = self.database.get_user_by_id(resolved_user_id)
         # A phone that joined the family from the account holder's invitation
         # is a family member's, and has a conversation of its own.
-        member = self.database.get_household_member_by_wa_id(number, user_id=resolved_user_id)
-        thread: dict[str, Any] = (
-            {"agentThreadId": household.member_thread_id(number), "memberId": int(member.get("id") or 0)}
-            if member else {}
-        )
+        thread = household.phone_conversation(self.database, user_id=resolved_user_id, wa_id=number)
         saved = self.database.get_whatsapp_connection_by_user_id(resolved_user_id)
         if saved:
             # A real connection already carries what the service needs. Only
