@@ -4426,13 +4426,17 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 return
 
             user = self.database.get_user(session.email) or {}
-            if session.member_wa_id:
-                # A family member's browser: signed in, and nothing of the
-                # account holder's - not their address, not what they run.
+            if session.member_wa_id or session.scope:
+                # A family member's browser, or one opened from a page link
+                # that may have been forwarded on: signed in, and nothing of
+                # the account holder's - not their address, not what they run.
+                slim: dict[str, Any] = {"ok": True, "signedIn": True}
+                if session.member_wa_id:
+                    slim["member"] = True
+                if session.scope:
+                    slim["scope"] = session.scope
                 json_response(self, HTTPStatus.OK, {
-                    "ok": True,
-                    "signedIn": True,
-                    "member": True,
+                    **slim,
                     "issuedAt": to_millis(session.issued_at),
                     "expiresAt": to_millis(session.expires_at),
                 })

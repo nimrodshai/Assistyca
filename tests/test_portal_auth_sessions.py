@@ -217,6 +217,23 @@ class PortalAuthSessionTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertTrue(payload["signedIn"])
 
+    def test_a_session_opened_from_a_page_link_is_not_told_the_holders_details(self) -> None:
+        # A week or receipts link may have been forwarded; whoever opened it
+        # learns it is signed in, and nothing about whose account it is.
+        for scope in ("family", "receipts"):
+            with self.subTest(scope=scope):
+                token = self.server.store.issue_session("owner@example.com", scope=scope)["token"]
+                status, payload, _ = self._session_status(f"{SESSION_COOKIE_NAME}={token}")
+
+                self.assertEqual(status, 200)
+                self.assertTrue(payload["signedIn"])
+                self.assertEqual(payload["scope"], scope)
+                for private in ("email", "displayName", "profile", "isAdmin", "canManageClients"):
+                    self.assertNotIn(private, payload)
+
+        status, payload, _ = self._session_status(self._verify_otp_and_get_cookie())
+        self.assertEqual(payload["email"], "owner@example.com")
+
     def test_logging_out_everywhere_ends_the_other_device_too(self) -> None:
         phone_cookie = self._verify_otp_and_get_cookie()
         laptop_cookie = self._verify_otp_and_get_cookie()
