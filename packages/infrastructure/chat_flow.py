@@ -158,14 +158,15 @@ def _status(value: Any) -> str:
 
 
 def _flow(goal: str, status: str, ask_again_on: Any, today: str) -> dict[str, Any]:
-    """askNow is the whole point of the postponed status: it is false while a
-    "not now" is still standing, and true again on the day it named."""
+    """askNow is false while a "not now", or an offer already made, is still
+    standing, and true again on the day it named. Only the connect offer
+    keeps a date while in progress; getting to know the family never does."""
 
     ask_again = clean(ask_again_on)[:10]
     flow: dict[str, Any] = {
         "goal": goal,
         "status": status,
-        "askNow": status != "postponed" or not ask_again or ask_again <= str(today or "")[:10],
+        "askNow": status == "done" or not ask_again or ask_again <= str(today or "")[:10],
     }
     if ask_again:
         flow["askAgainOn"] = ask_again
@@ -302,15 +303,18 @@ _CONNECT_OPENING = (
 )
 
 _CONNECT_RULES = (
-    "Answer whatever they wrote first. Then, once in a conversation - never in every message, never twice "
-    "in a row, and never as a list of features - offer to connect what is missing: one line saying the "
-    "thing it would let you do that they would actually want, fitted to them from knownFacts and to what "
-    "they have been asking you for, then call connect_link and put the link on its own line exactly as "
-    "given. Call set_connect_offer with in_progress when you make that offer. When they connect one and "
+    "While chatFlow.askNow is false, do not bring connecting up at all unless they raise it. While it is "
+    "true, the offer still waits for a message it belongs to: one where what they asked about is "
+    "something a calendar or a mailbox would actually do better - a date to put in the diary, mail from "
+    "the school, a bill or receipt to find. A quick change, a correction, a list, a question about the "
+    "week, thanks or small talk is answered and left at that, with nothing added. When it does belong, "
+    "answer what they wrote first, then offer to connect what is missing in one line saying the thing it "
+    "would let you do for that very request - never as a list of features - call connect_link and put "
+    "the link on its own line exactly as given, and call set_connect_offer with in_progress in the same "
+    "turn. When they connect one and "
     "not the other, the next offer is for the other one alone, and says what that one adds. When they say "
     "not now, later, or leave it, call set_connect_offer with postponed, say in a few words that it can "
-    "wait and that they can connect it whenever they like, and stop offering; while chatFlow.askNow is "
-    "false do not bring connecting up at all unless they raise it. When both are connected, call "
+    "wait and that they can connect it whenever they like, and stop offering. When both are connected, call "
     "set_connect_offer with done, and say in one line the first thing you will do with them now - then do "
     "it if they say yes.\n"
 )

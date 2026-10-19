@@ -2680,14 +2680,24 @@ def _tool_forget_homework_login(context: LoopContext, args: dict[str, Any]) -> d
     return _ok({"removed": removed, "stillKept": _kept_homework_logins(context)})
 
 
+# How long an offer to connect, once made and not taken up, stays unsaid.
+CONNECT_OFFER_REST_DAYS = 14
+
+
 def _tool_set_connect_offer(context: LoopContext, args: dict[str, Any]) -> dict[str, Any]:
     """Where the offer to connect the mail and the calendar stands, so a "not
-    now" is not asked again tomorrow morning."""
+    now" is not asked again tomorrow morning.
+
+    An offer made is held back too: on WhatsApp the conversation never ends,
+    so "once in a conversation" has to be a date kept here, or the offer
+    rides along with the next unrelated reply."""
 
     status = str(args.get("status") or "").strip().lower()
     if status not in {"in_progress", "postponed", "done"}:
         return _error("choice_required", "status is in_progress, postponed or done.")
     ask_again_on = ""
+    if status == "in_progress":
+        ask_again_on = (_household_today(context) + timedelta(days=CONNECT_OFFER_REST_DAYS)).isoformat()
     if status == "postponed":
         try:
             days = max(1, min(30, int(args.get("ask_again_in_days") or 3)))
@@ -4235,7 +4245,8 @@ TOOLS: list[ToolSpec] = [
     ToolSpec(
         name="set_connect_offer",
         description=(
-            "Where the offer to connect their mail and calendar stands: in_progress once you have offered, "
+            "Where the offer to connect their mail and calendar stands: in_progress in the same turn you "
+            "make the offer (it is then not made again for two weeks), "
             "postponed when they say not now (ask_again_in_days is when to raise it again, 3 unless they "
             "said), done when both are connected or they have settled it for good."
         ),

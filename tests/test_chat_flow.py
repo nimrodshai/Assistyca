@@ -138,6 +138,19 @@ class WhichOpeningTests(unittest.TestCase):
         settled = self.flow(profile={"gettingToKnow": "done", "connectOffer": "done"})
         self.assertEqual(settled["goal"], "done")
 
+    def test_an_offer_already_made_is_not_made_again_until_its_rest_is_over(self) -> None:
+        # On WhatsApp the conversation never ends, so an offer nobody took up
+        # is held by a date, not by the model remembering it said so.
+        offered = self.flow(profile={"gettingToKnow": "done", "connectOffer": "in_progress", "connectAskAgainOn": "2026-09-30"})
+        self.assertEqual((offered["status"], offered["askNow"]), ("in_progress", False))
+        rested = self.flow(profile={"gettingToKnow": "done", "connectOffer": "in_progress", "connectAskAgainOn": TODAY})
+        self.assertTrue(rested["askNow"])
+
+    def test_the_offer_waits_for_a_message_it_belongs_to(self) -> None:
+        rules = chat_flow.chat_flow_rules({"goal": "connect", "askNow": True})
+        self.assertIn("A quick change, a correction, a list", rules)
+        self.assertIn("in the same turn", rules)
+
     def test_a_family_putting_it_off_is_not_pushed_on_to_connecting(self) -> None:
         # Postponed is not done: the opening is still getting to know them,
         # it is only on hold.
@@ -283,6 +296,7 @@ class TurnTests(unittest.TestCase):
     def test_a_not_now_about_connecting_is_written_down_and_read_back(self) -> None:
         offered = TOOLS_BY_NAME["set_connect_offer"].run(self.context, {"status": "in_progress"})
         self.assertEqual(offered["status"], "in_progress")
+        self.assertRegex(offered["askAgainOn"], r"^\d{4}-\d{2}-\d{2}$", "an offer made is held back for a while")
         held = TOOLS_BY_NAME["set_connect_offer"].run(self.context, {"status": "postponed", "ask_again_in_days": None})
         self.assertRegex(held["askAgainOn"], r"^\d{4}-\d{2}-\d{2}$")
 
