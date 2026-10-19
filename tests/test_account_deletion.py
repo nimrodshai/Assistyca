@@ -96,6 +96,25 @@ class AccountDeletionTests(unittest.TestCase):
         self.assertEqual(self.server.database.list_platform_connections("owner@example.com"), [])
         self.assertFalse(owner_folder.parent.exists())
 
+    def test_account_delete_takes_each_family_members_saved_files_too(self) -> None:
+        from datetime import datetime, timedelta, timezone
+
+        database = self.server.database
+        database.register_user("owner@example.com")
+        user_id = int(database.get_user("owner@example.com")["id"])
+        member = database.save_household_member(user_id=user_id, name="Yoav", role="partner")
+        database.create_household_invite(
+            user_id=user_id, member_id=int(member["id"]), code="YOAV55",
+            expires_at=datetime.now(timezone.utc) + timedelta(days=14),
+        )
+        self.assertTrue(database.claim_household_invite(code="YOAV55", wa_id="972500000002")["ok"])
+        partner_folder = self.receipt_root / build_agent_receipt_owner_key("owner@example.com", "972500000002") / "Receipts"
+        partner_folder.mkdir(parents=True)
+        (partner_folder / "yoav.pdf").write_bytes(b"%PDF")
+
+        self.assertTrue(self._delete_account(self._cookie())["ok"])
+        self.assertFalse(partner_folder.parent.exists())
+
     def test_account_delete_takes_the_whatsapp_signup_conversation_with_it(self) -> None:
         # The signup row is keyed on the phone, not the account: it holds the
         # name, the business and the first messages, and no cascade reaches it.

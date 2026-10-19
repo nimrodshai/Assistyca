@@ -3477,11 +3477,31 @@ def describe_saved_receipt_result(
     return "Those emails carried no file, so there was nothing to keep."
 
 
-def build_agent_receipt_owner_key(email: str) -> str:
+def build_agent_receipt_owner_key(email: str, owner_wa_id: str = "") -> str:
+    """The folder a person's saved receipt files live in: the account
+    holder's for the account's email, and a family member's own beside it
+    for their phone (owner_wa_id, as connection_owner says it), so what one
+    person's mail held is never filed where the other can reach it."""
+
     normalized_email = normalize_email(email)
     if not normalized_email:
         return "workspace"
-    return hashlib.sha256(normalized_email.encode("utf-8")).hexdigest()[:16]
+    owner = normalize_text(owner_wa_id)
+    seed = f"{normalized_email}\n{owner}" if owner else normalized_email
+    return hashlib.sha256(seed.encode("utf-8")).hexdigest()[:16]
+
+
+def household_receipt_owner_keys(database: Any, email: str) -> list[str]:
+    """The receipt folders of the family members on an account, by phone."""
+
+    user_id = int((database.get_user(email) or {}).get("id") or 0)
+    if user_id <= 0:
+        return []
+    phones = {
+        normalize_whatsapp_lookup_id(member.get("waId"))
+        for member in database.list_household_members(user_id=user_id)
+    }
+    return [build_agent_receipt_owner_key(email, phone) for phone in sorted(phones) if phone]
 
 
 def read_saved_query_text(fields: dict[str, Any], payload: dict[str, Any]) -> str:
@@ -6954,6 +6974,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 root=self.root,
                 receipt_output_root=resolve_runtime_path(self.config.agent_output_dir, root=self.root),
                 receipt_owner_key=build_agent_receipt_owner_key(email),
+                member_receipt_owner_keys=household_receipt_owner_keys(self.database, email),
                 revoke_grant=self._revoke_connection_grant,
                 db_path=self.config.db_path,
             )
@@ -7427,7 +7448,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         pretending to know what they cost would not be.
         """
 
-        owner_key = build_agent_receipt_owner_key(session.email)
+        owner_key = self._agent_receipt_owner_key(session.email)
         output_root = resolve_runtime_path(self.server.config.agent_output_dir, root=self.server.root)  # type: ignore[attr-defined]
         names = normalize_saved_folder_names(
             fields.get("savedFolder")
@@ -7676,7 +7697,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 receipt_month = resolve_agent_batch_run_month(fields, payload)
                 receipt_output_folder = build_agent_receipt_output_folder(fields, payload, receipt_month)
                 receipt_output_root = resolve_runtime_path(self.server.config.agent_output_dir, root=self.server.root)  # type: ignore[attr-defined]
-                receipt_owner_key = build_agent_receipt_owner_key(session.email)
+                receipt_owner_key = self._agent_receipt_owner_key(session.email)
                 receipt_folder_path = resolve_receipt_bundle_folder(
                     receipt_output_root,
                     owner_key=receipt_owner_key,
@@ -8025,7 +8046,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                         receipt_bundle = create_receipt_bundle(
                             receipt_items,
                             output_root=receipt_output_root or resolve_runtime_path(self.server.config.agent_output_dir, root=self.server.root),  # type: ignore[attr-defined]
-                            owner_key=receipt_owner_key or build_agent_receipt_owner_key(session.email),
+                            owner_key=receipt_owner_key or self._agent_receipt_owner_key(session.email),
                             output_folder=receipt_output_folder,
                             month_value=receipt_month,
                             query=mail_query.describe(),
@@ -8469,7 +8490,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         # The owner key comes from the session rather than the request, so a
         # caller can only ever list their own bundles.
         logical_folder = normalize_receipt_output_folder(requested_folder)
-        owner_key = build_agent_receipt_owner_key(session.email)
+        owner_key = self._agent_receipt_owner_key(session.email)
         output_root = resolve_runtime_path(self.config.agent_output_dir, root=self.root).resolve()
         folder_path = resolve_receipt_bundle_folder(
             output_root,
@@ -8562,7 +8583,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             })
             return
 
-        owner_key = build_agent_receipt_owner_key(session.email)
+        owner_key = self._agent_receipt_owner_key(session.email)
         output_root = resolve_runtime_path(self.config.agent_output_dir, root=self.root).resolve()
         owner_root = (output_root / owner_key).resolve()
 
@@ -8660,7 +8681,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             return
 
         logical_folder = normalize_receipt_output_folder(requested_folder)
-        owner_key = build_agent_receipt_owner_key(session.email)
+        owner_key = self._agent_receipt_owner_key(session.email)
         output_root = resolve_runtime_path(self.config.agent_output_dir, root=self.root).resolve()
         folder_path = resolve_receipt_bundle_folder(
             output_root,
@@ -8792,7 +8813,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             })
             return
 
-        owner_key = build_agent_receipt_owner_key(session.email)
+        owner_key = self._agent_receipt_owner_key(session.email)
         output_root = resolve_runtime_path(self.config.agent_output_dir, root=self.root).resolve()
         folder_path = resolve_receipt_bundle_folder(
             output_root,
@@ -8949,7 +8970,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             })
             return
 
-        owner_key = build_agent_receipt_owner_key(session.email)
+        owner_key = self._agent_receipt_owner_key(session.email)
         output_root = resolve_runtime_path(self.config.agent_output_dir, root=self.root).resolve()
         owner_root = (output_root / owner_key).resolve()
         source_path = resolve_receipt_bundle_folder(
@@ -9048,7 +9069,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             return
 
         logical_folder = normalize_receipt_output_folder(requested_folder)
-        owner_key = build_agent_receipt_owner_key(session.email)
+        owner_key = self._agent_receipt_owner_key(session.email)
         output_root = resolve_runtime_path(self.config.agent_output_dir, root=self.root).resolve()
         folder_path = resolve_receipt_bundle_folder(
             output_root,
@@ -9158,7 +9179,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
 
         # The owner key comes from the session rather than the request, so a
         # caller can only ever write inside their own output folder.
-        owner_key = build_agent_receipt_owner_key(session.email)
+        owner_key = self._agent_receipt_owner_key(session.email)
         output_root = resolve_runtime_path(self.config.agent_output_dir, root=self.root).resolve()
         result = self._save_answer_receipt_files(
             session,
@@ -10176,7 +10197,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         thirty receipts opens the mailbox one time, not thirty.
         """
 
-        owner_key = build_agent_receipt_owner_key(session.email)
+        owner_key = self._agent_receipt_owner_key(session.email)
         output_root = resolve_runtime_path(self.config.agent_output_dir, root=self.root).resolve()
         opened: dict[str, Any] = {}
 
@@ -12650,7 +12671,9 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         # path is derived from the account email, so it must be matched against the
         # caller's session rather than treated as a bearer capability.
         session = self._get_authenticated_session()
-        if session is None:
+        if session is None or session.member_wa_id:
+            # A family member's browser reaches nothing of the account
+            # holder's files, whatever key the address names.
             self.send_error(HTTPStatus.NOT_FOUND)
             return None
 
@@ -12748,6 +12771,13 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                     self._renew_session_cookie(session)
                 return session
         return None
+
+    def _agent_receipt_owner_key(self, email: str) -> str:
+        """Where this request's saved receipt files go: under the person
+        the request is for (connection_owner) - the account holder's folder,
+        or a family member's own - never under someone else's."""
+
+        return build_agent_receipt_owner_key(email, self._connection_owner(email))
 
     def _session_scope_reaches_request(self, session: PortalSession) -> bool:
         if not session.scope:
@@ -13480,6 +13510,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 root=self.root,
                 receipt_output_root=resolve_runtime_path(self.config.agent_output_dir, root=self.root),
                 receipt_owner_key=build_agent_receipt_owner_key(email),
+                member_receipt_owner_keys=household_receipt_owner_keys(self.database, email),
                 revoke_grant=self._revoke_connection_grant,
                 db_path=self.config.db_path,
             )

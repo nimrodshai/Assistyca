@@ -514,7 +514,10 @@ class MemberBrowserTests(unittest.TestCase):
         self.temp_dir = tempfile.TemporaryDirectory()
         root = Path(__file__).resolve().parents[1]
         self.server = create_server(
-            "127.0.0.1", 0, root, PortalConfig(db_path=Path(self.temp_dir.name) / "portal.db", session_secret=SECRET),
+            "127.0.0.1", 0, root, PortalConfig(
+                db_path=Path(self.temp_dir.name) / "portal.db", session_secret=SECRET,
+                agent_output_dir=Path(self.temp_dir.name) / "agent_receipts",
+            ),
         )
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
@@ -700,6 +703,58 @@ class MemberBrowserTests(unittest.TestCase):
         cookie, _ = self.tap(f"/lists/open/{old}")
         self.assertEqual(self.request("GET", "/api/lists", cookie)[0], 401)
         self.assertEqual(self.request("GET", "/api/household", cookie)[0], 401)
+
+    def test_a_partners_browser_cannot_download_the_holders_receipt_files(self) -> None:
+        from packages.infrastructure.portal_auth.server import build_agent_receipt_owner_key
+
+        holder_key = build_agent_receipt_owner_key("dana@example.com")
+        folder = Path(self.temp_dir.name) / "agent_receipts" / holder_key / "Receipts"
+        folder.mkdir(parents=True)
+        (folder / "pharmacy.pdf").write_bytes(b"%PDF-1.4 dana")
+        path = f"/output/agent_receipts/{holder_key}/Receipts/pharmacy.pdf"
+
+        partner, _ = self.open_link(phone=PARTNER_PHONE)
+        self.assertEqual(self.request("GET", path, partner)[0], 404)
+        week, _ = self.open_link(prefix="/week/open/")
+        self.assertEqual(self.request("GET", path, week)[0], 404, "a week link opens no files")
+        receipts, _ = self.open_link(prefix="/receipts/open/")
+        request = urllib_request.Request(f"{self.base_url}{path}", headers={"Cookie": receipts})
+        with urllib_request.urlopen(request, timeout=10) as response:
+            self.assertEqual(response.read(), b"%PDF-1.4 dana")
+
+    def test_a_members_saved_receipt_files_are_filed_under_their_own_phone(self) -> None:
+        # A receipt search run from the partner's phone files what it saves
+        # under the partner, and reads back only from there: the holder's
+        # folder is not theirs, and theirs is not the holder's.
+        from packages.infrastructure.portal_auth.server import build_agent_receipt_owner_key
+        from packages.infrastructure.receipt_collector import resolve_receipt_bundle_folder
+
+        root = Path(self.temp_dir.name) / "agent_receipts"
+        for owner, name in (("", "dana.pdf"), (PARTNER_PHONE, "yoav.pdf")):
+            folder = resolve_receipt_bundle_folder(
+                root, owner_key=build_agent_receipt_owner_key("dana@example.com", owner), output_folder="Receipts",
+            )
+            folder.mkdir(parents=True, exist_ok=True)
+            (folder / name).write_bytes(b"%PDF-1.4")
+        code, _ = self.server.store.issue_challenge("dana@example.com")
+        ok, error, result = self.server.store.verify_code("dana@example.com", code)
+        self.assertTrue(ok, error)
+
+        def listed(viewer: str) -> str:
+            headers = {
+                "Authorization": f"Bearer {result['token']}",
+                CONNECTION_VIEWER_HEADER: sign_connection_viewer(SECRET, "dana@example.com", viewer),
+            }
+            request = urllib_request.Request(f"{self.base_url}/api/agent/folder-contents?folder=Receipts", headers=headers)
+            with urllib_request.urlopen(request, timeout=20) as response:
+                return response.read().decode()
+
+        partners = listed(PARTNER_PHONE)
+        self.assertIn("yoav.pdf", partners)
+        self.assertNotIn("dana.pdf", partners)
+        holders = listed(HOLDER_PHONE)
+        self.assertIn("dana.pdf", holders)
+        self.assertNotIn("yoav.pdf", holders)
 
     def test_the_receipts_handlers_read_only_the_phone_the_server_signed_for(self) -> None:
         code, _ = self.server.store.issue_challenge("dana@example.com")
