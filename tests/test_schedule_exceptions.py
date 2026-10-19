@@ -201,7 +201,8 @@ class ExceptionToolTests(unittest.TestCase):
         _, model = self._turn(_call("add_exception", **_hold(people=["Gil"])), _reply())
         output = self._output(model)
         self.assertEqual(output["error"]["code"], "not_found")
-        self.assertEqual(output["error"]["family"], ["Tom"])
+        # The account holder can be away too, so she is one of the names.
+        self.assertEqual(output["error"]["family"], ["Dana", "Tom"])
 
     def test_a_parent_on_hold_is_told_back_as_the_runs_it_leaves_open(self) -> None:
         self.database.save_household_member(user_id=self.user_id, name="Stav", role="partner")
@@ -265,6 +266,128 @@ class ExceptionToolTests(unittest.TestCase):
 
 
 # -- the week's nudges -----------------------------------------------------------
+
+
+class AwayOwnerTests(unittest.TestCase):
+    """The account holder puts herself on hold. Her reply is worked out from
+    code-checked facts: with her partner on his own phone she is asked once
+    whether to hand him the days and be left in peace; without one she is
+    asked who takes her runs, and is never silenced."""
+
+    MONDAY = "2099-09-21"
+
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.database = PortalDatabase(Path(self.temp_dir.name) / "portal.db")
+        self.database.register_user("dana@example.com", display_name="Dana Levi")
+        self.user_id = int((self.database.get_user("dana@example.com") or {})["id"])
+        self.yoni = self.database.save_household_member(user_id=self.user_id, name="Yoni", role="partner")
+        self.database.save_household_member(user_id=self.user_id, name="Noa", role="child")
+        self.gan = self.database.save_household_activity(
+            user_id=self.user_id, title="Gan", who=["Noa"], days=["mon"],
+            start_time="08:00", end_time="16:00", drop_off_by="me", pick_up_by="Dana",
+        )
+
+    def tearDown(self) -> None:
+        self.temp_dir.cleanup()
+
+    def join_yoni(self, address_form: str = "m") -> None:
+        self.database.create_household_invite(
+            user_id=self.user_id, member_id=int(self.yoni["id"]), code="YON111", expires_at=datetime.now(UTC) + timedelta(days=14),
+        )
+        self.assertTrue(self.database.claim_household_invite(code="YON111", wa_id="972500000009")["ok"])
+        if address_form:
+            with self.database._connection() as conn:
+                conn.execute("UPDATE household_members SET address_form = ? WHERE id = ?", (address_form, int(self.yoni["id"])))
+
+    def turn(self, *rounds: SimpleNamespace, message: str = "I'm in Eilat on Monday") -> tuple[object, _Model]:
+        context = LoopContext(
+            api=lambda *args, **kwargs: ({"ok": True}, 200), database=_Store(self.database), email="dana@example.com",
+            user_id=self.user_id, timezone_name=JERUSALEM, channel="whatsapp", join_link=lambda code: f"https://example.test/join/{code}",
+        )
+        model = _Model(list(rounds))
+        result = run_agent_loop(context=context, call_model=model, user_message=message, conversation=[], today="2099-09-20")
+        return result, model
+
+    def away(self, who: str = "me", message: str = "I'm in Eilat on Monday") -> tuple[dict, str]:
+        result, model = self.turn(
+            _call("add_exception", **_hold(**{"from": self.MONDAY, "until": self.MONDAY, "people": [who], "reason": "Eilat"})),
+            _reply(""), message=message,
+        )
+        return json.loads(model.inputs[1][-1]["output"]), result.reply
+
+    def nudges_on_monday(self) -> list[dict]:
+        nudger = FamilyWeekNudger(self.database, config=FamilyWeekNudgeConfig(morning_hour=7, evening_hour=20, ride_lead_minutes=30))
+        monday = datetime(2099, 9, 21, tzinfo=UTC)
+        for hour, minute in ((7, 5), (7, 35), (15, 35)):
+            nudger.run_pending(now=monday.replace(hour=hour, minute=minute))
+        return [a for a in self.database.list_scheduled_actions_for_user(self.user_id, limit=50) if a["payload"].get("source") == "family_week"]
+
+    def test_with_no_partner_phone_she_is_asked_who_takes_them_and_never_silenced(self) -> None:
+        output, reply = self.away()
+        self.assertTrue(output["ok"], output)
+        away = output["awayOwner"]
+        self.assertEqual(away["state"], "open_nobody_to_ask")
+        self.assertEqual((away["holdFrom"], away["holdTo"], away["backOn"], away["reason"]), (self.MONDAY, self.MONDAY, "2099-09-22", "Eilat"))
+        self.assertEqual([(r["leg"], r["at"], r["coveredBy"]) for r in away["runs"]], [("take", "08:00", None), ("collect", "16:00", None)])
+        self.assertEqual(away["partner"], {"name": "Yoni", "gender": None, "word": {"en": "your partner", "he": "ההורה השני"}, "onOwnPhone": False})
+        self.assertTrue(away["canSendJoinLink"])
+        self.assertIn("awayOwner.state", output["note"])
+        self.assertEqual(reply, (
+            "2 of your runs while you're away have nobody yet, and while you're away there's no one I can ask. Who's "
+            "taking them? If it's Yoni, I can send a link to join from their own phone, so they get the word themselves."
+        ))
+        owners = [a["payload"]["title"] for a in self.nudges_on_monday() if a["recipientRef"] == "owner"]
+        self.assertIn("Today in your family's week", owners)
+        self.assertNotIn("While you're away", owners)
+
+    def test_ask_then_yes_hands_the_runs_to_him_and_she_hears_one_calm_word(self) -> None:
+        self.join_yoni()
+        output, reply = self.away(who="Dana", message="אני באילת ביום שני")
+        away = output["awayOwner"]
+        self.assertEqual(away["state"], "ask_hand_over")
+        self.assertEqual(away["partner"]["word"], {"en": "your partner", "he": "בן הזוג שלך"})
+        self.assertEqual(away["partnerAskedOn"], [{"run": self.MONDAY, "askedOn": "2099-09-20"}] * 2)
+        self.assertEqual(reply, "להעביר את יום שני ל־Yoni ולא לכתוב לך עד יום שלישי?")
+        hold_id = output["saved"]["id"]
+        _, model = self.turn(_call("hand_over_away_days", id=hold_id), _reply("Done."), message="yes")
+        handed = json.loads(model.inputs[1][-1]["output"])
+        self.assertTrue(handed["ok"], handed)
+        self.assertEqual(handed["handedTo"], "Yoni")
+        drives = self.database.list_household_day_drives(user_id=self.user_id, group_id="", from_day=self.MONDAY, to_day=self.MONDAY)
+        self.assertEqual(sorted((d["leg"], d["who"]) for d in drives), [("drop_off", "Yoni"), ("pick_up", "Yoni")])
+        sent = self.nudges_on_monday()
+        self.assertEqual([a["payload"]["title"] for a in sent if a["recipientRef"] == "owner"], ["While you're away"])
+        [yonis_morning] = [a["payload"] for a in sent if a["recipientRef"] == "972500000009" and a["payload"]["title"] == "Today in your family's week"]
+        self.assertIn("takes: you (today only), collects: you (today only)", yonis_morning["instruction"])
+
+    def test_ask_then_no_leaves_her_messages_as_they_are(self) -> None:
+        self.join_yoni()
+        output, _reply_text = self.away()
+        self.assertEqual(output["awayOwner"]["state"], "ask_hand_over")
+        owners = [a["payload"]["title"] for a in self.nudges_on_monday() if a["recipientRef"] == "owner"]
+        self.assertIn("Today in your family's week", owners)
+        self.assertNotIn("While you're away", owners)
+
+    def test_all_covered_and_no_runs(self) -> None:
+        self.database.save_household_member(user_id=self.user_id, name="Rina", role="other")
+        for leg in ("drop_off", "pick_up"):
+            self.database.save_household_day_drive(user_id=self.user_id, activity_id=int(self.gan["id"]), day=self.MONDAY, leg=leg, who="Rina")
+        output, reply = self.away()
+        self.assertEqual(output["awayOwner"]["state"], "all_covered")
+        self.assertEqual({r["coveredBy"] for r in output["awayOwner"]["runs"]}, {"Rina"})
+        self.assertEqual(reply, "Everything while you're away has someone on it. You'll hear from me again on Tuesday ☺️")
+        self.database.save_household_activity(user_id=self.user_id, activity_id=int(self.gan["id"]), days=["tue"])
+        output, reply = self.away()
+        self.assertEqual((output["awayOwner"]["state"], output["awayOwner"]["runs"]), ("no_runs", []))
+        self.assertEqual(reply, "Have a good time. You'll hear from me again on Tuesday.")
+
+    def test_the_hebrew_partner_word_follows_the_partners_gender_not_hers(self) -> None:
+        self.database.save_household_profile(user_id=self.user_id, address_form="m")
+        self.join_yoni(address_form="f")
+        output, _reply_text = self.away()
+        self.assertEqual(output["awayOwner"]["partner"]["word"]["he"], "בת הזוג שלך")
+        self.assertEqual(output["awayOwner"]["partner"]["gender"], "a woman")
 
 
 class NudgesTests(unittest.TestCase):

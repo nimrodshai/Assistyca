@@ -112,6 +112,10 @@ These were made by the owner; hold replies to them.
   drives and before a pickup nobody has taken, an evening question about
   tomorrow's open pickups - nothing else. No second word for the same drive;
   the school bus is nobody's drive.
+- **An account holder going away** is asked once whether to hand her days to
+  her partner and go quiet; if yes, her runs become his and she gets one calm
+  message on the first morning. Without a partner on his own phone she is
+  never silenced.
 - **Outside WhatsApp's 24-hour window** a message rides a Meta template and is
   one line of prose by design - not a formatting bug. Inside the window,
   bullets are fine.

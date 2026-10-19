@@ -661,6 +661,7 @@ CREATE TABLE IF NOT EXISTS schedule_exceptions (
     ends_on TEXT NOT NULL,
     reason TEXT NOT NULL DEFAULT '',
     targets_json TEXT NOT NULL DEFAULT '[]',
+    handed_to TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL,
     FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
 );
@@ -1712,6 +1713,7 @@ class PortalDatabase:
                 self._ensure_insurance_tables(conn)
                 self._ensure_household_tables(conn)
                 conn.executescript(SCHEDULE_EXCEPTIONS_TABLE_SQL)
+                self._migrate_schedule_exceptions_table(conn)
                 conn.executescript(SCHEDULE_EXCEPTIONS_INDEXES_SQL)
                 conn.executescript(HOMEWORK_TABLES_SQL)
                 self._seed_default_model_prices(conn)
@@ -2023,6 +2025,13 @@ class PortalDatabase:
             conn.execute("ALTER TABLE whatsapp_connections ADD COLUMN access_token_key_version TEXT NOT NULL DEFAULT '1'")
         if "access_token_fingerprint" not in columns:
             conn.execute("ALTER TABLE whatsapp_connections ADD COLUMN access_token_fingerprint TEXT NOT NULL DEFAULT ''")
+
+    def _migrate_schedule_exceptions_table(self, conn: sqlite3.Connection) -> None:
+        columns = {str(row["name"]) for row in conn.execute("PRAGMA table_info(schedule_exceptions)").fetchall()}
+        if "handed_to" not in columns:
+            # Who the account holder handed her days to when she went away;
+            # empty for every hold kept before it could be asked.
+            conn.execute("ALTER TABLE schedule_exceptions ADD COLUMN handed_to TEXT NOT NULL DEFAULT ''")
 
     def _migrate_platform_connections_table(self, conn: sqlite3.Connection) -> None:
         columns = {
@@ -9388,6 +9397,7 @@ class PortalDatabase:
             "endsOn": str(row["ends_on"]),
             "reason": str(row["reason"] or ""),
             "targets": targets if isinstance(targets, list) else [],
+            "handedTo": str(row["handed_to"] or "") if "handed_to" in row.keys() else "",
             "createdAt": str(row["created_at"]),
         }
 
@@ -9443,6 +9453,23 @@ class PortalDatabase:
                 (int(user_id), normalize_text(group_id), normalize_text(ending_on_or_after)),
             ).fetchall()
         return [exception for exception in (self._schedule_exception_row(row) for row in rows) if exception]
+
+    def hand_over_schedule_exception(self, *, user_id: int, exception_id: int, handed_to: str) -> dict[str, Any] | None:
+        """Keep who the account holder handed the days of her own hold to,
+        so she is left in peace on them. None when the hold is not hers."""
+
+        if int(user_id or 0) <= 0:
+            return None
+        with self._connection() as conn:
+            conn.execute(
+                "UPDATE schedule_exceptions SET handed_to = ? WHERE id = ? AND user_id = ? AND group_id = ''",
+                (normalize_text(handed_to)[:80], int(exception_id), int(user_id)),
+            )
+            row = conn.execute(
+                "SELECT * FROM schedule_exceptions WHERE id = ? AND user_id = ? AND group_id = ''",
+                (int(exception_id), int(user_id)),
+            ).fetchone()
+        return self._schedule_exception_row(row)
 
     def remove_schedule_exception(self, *, user_id: int, exception_id: int, group_id: str = "") -> bool:
         if int(user_id or 0) <= 0:

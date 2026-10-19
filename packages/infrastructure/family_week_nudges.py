@@ -96,6 +96,7 @@ from packages.infrastructure.schedule_exceptions import activities_not_excepted
 from packages.infrastructure.schedule_exceptions import family_week_paused
 from packages.infrastructure.schedule_exceptions import held_people
 from packages.infrastructure.schedule_exceptions import is_held
+from packages.infrastructure.schedule_exceptions import owner_hold
 from packages.infrastructure.school_days import SchoolCalendar
 from packages.infrastructure.school_days import describe_day
 from packages.infrastructure.standing_tasks import STANDING_TASK_ACTION_TYPE
@@ -286,21 +287,50 @@ def partner_note(address_form: str) -> str:
     )
 
 
-def away_note(activity: dict[str, Any], legs: list[str] | tuple[str, ...], owner_names: list[str] | None = None) -> str:
+def partner_words(partner_form: str) -> dict[str, str]:
+    """The partner as the account holder hears of them, by the partner's
+    own gender - never hers: "your partner", and in Hebrew בן הזוג שלך or
+    בת הזוג שלך, or ההורה השני while it is not known."""
+
+    form = partner_form if partner_form in PARTNER_WORDS_HE else ""
+    return {"en": PARTNER_WORD, "he": PARTNER_WORDS_HE[form]}
+
+
+def _held_from(ride: dict[str, Any], owner_names: list[str]) -> bool:
+    """Whether a run is open because the account holder, who usually does
+    it, is away - a run of hers, not one that never had anybody."""
+
+    held = ride["activity"].get("heldLegs") if isinstance(ride["activity"].get("heldLegs"), dict) else {}
+    record = held.get(ride["leg"])
+    return isinstance(record, dict) and household.is_self(record.get("who"), owner_names)
+
+
+def away_note(
+    activity: dict[str, Any], legs: list[str] | tuple[str, ...], owner_names: list[str] | None = None,
+    viewer_names: list[str] | None = None,
+) -> str:
     """Why a leg is open, when it is open because the one who usually does
     it is on hold: " (Stav, who usually does it, is away: abroad)". Empty
-    for a leg that simply has nobody."""
+    for a leg that simply has nobody. The one away is said as the reader
+    sees them (_ride_word): "you" to themselves, and the account holder by
+    their first name or "your partner" to a family member on their own
+    phone. Without owner_names - a group's week - "me" names nobody the
+    room knows, so the line says only that whoever usually does it is away."""
 
     held = activity.get("heldLegs") if isinstance(activity.get("heldLegs"), dict) else {}
     for leg in legs:
         record = held.get(leg)
         if not isinstance(record, dict) or normalize_text(activity.get({"drop_off": "dropOffBy", "pick_up": "pickUpBy"}[leg])):
             continue
-        who = normalize_text(record.get("who"))
-        if household.is_self(who, owner_names or []):
-            who = _owner_first_name(owner_names or []) or "the account holder"
         reason = normalize_text(record.get("reason"))
-        return f" ({who}, who usually does it, is away" + (f": {reason}" if reason else "") + ")"
+        because = f": {reason}" if reason else ""
+        who = normalize_text(record.get("who"))
+        if owner_names is None and household.is_self(who, []):
+            return f" (whoever usually does it is away{because})"
+        who = _ride_word(who, owner_names or [], viewer_names)
+        if who == "you":
+            return f" (you usually do it, and you are away{because})"
+        return f" ({who}, who usually does it, is away{because})"
     return ""
 
 
@@ -350,13 +380,13 @@ def describe_activity_line(
         (f"takes: {takes}" + (" (today only)" if "drop_off" in decided else "")
          + (f" (inside your own {inside['drop_off']}, not settled yet)" if inside.get("drop_off") else ""))
         if takes else ("nobody takes them today" if "drop_off" in decided else "nobody takes them yet")
-        + away_note(activity, ("drop_off",), owner_names)
+        + away_note(activity, ("drop_off",), owner_names, viewer_names)
     )
     parts.append(
         (f"collects: {collects}" + (" (today only)" if "pick_up" in decided else "")
          + (f" (inside your own {inside['pick_up']}, not settled yet)" if inside.get("pick_up") else ""))
         if collects else ("nobody collects them today" if "pick_up" in decided else "nobody collects them yet")
-        + away_note(activity, ("pick_up",), owner_names)
+        + away_note(activity, ("pick_up",), owner_names, viewer_names)
     )
     return ", ".join(parts)
 
@@ -404,7 +434,11 @@ def gap_lines(
     activities: list[dict[str, Any]],
     members: list[dict[str, Any]] | None = None,
     owner_names: list[str] | None = None,
+    viewer_names: list[str] | None = None,
 ) -> list[str]:
+    """What has nobody, a line per activity; viewer_names is a family
+    member reading on their own phone (away_note)."""
+
     lines = []
     for activity in activities:
         gaps = household.activity_gaps(activity, members, owner_names or [])
@@ -413,7 +447,7 @@ def gap_lines(
         what = f"{activity.get('title')}" + (f" ({_who(activity)})" if _who(activity) else "")
         when = normalize_text(activity.get("startTime") if gaps == ["drop_off"] else activity.get("endTime") or activity.get("startTime"))
         missing = " and ".join({"drop_off": "the drop-off", "pick_up": "the pickup"}[gap] for gap in gaps)
-        lines.append(f"{what}{' at ' + when if when else ''}: nobody is down for {missing}{away_note(activity, gaps, owner_names)}")
+        lines.append(f"{what}{' at ' + when if when else ''}: nobody is down for {missing}{away_note(activity, gaps, owner_names, viewer_names)}")
     return lines
 
 
@@ -642,17 +676,20 @@ def rides_leaving_together(
     return [ride for moment, ride in rides if first <= moment <= first + timedelta(minutes=merge_minutes)]
 
 
-def ride_fact(ride: dict[str, Any], who: str) -> str:
+def ride_fact(
+    ride: dict[str, Any], who: str, owner_names: list[str] | None = None, viewer_names: list[str] | None = None,
+) -> str:
     """One drive as a plain fact for the message: "collect Tom - Swimming at
     18:00, the pool", or, for a leg nobody is down for yet, the same with
     "nobody is down yet to" in front, so the model and the fallback both
-    know which line is a question."""
+    know which line is a question - and, when the one who usually does it
+    is away, why (away_note, said for the reader)."""
 
     verb = "take" if ride["leg"] == "drop_off" else "collect"
     activity = ride["activity"]
     place = normalize_text(activity.get("place"))
     fact = f"{verb} {who} - {activity.get('title')} at {ride['at']}" + (f", {place}" if place else "")
-    return f"nobody is down yet to {fact}{away_note(activity, (ride['leg'],))}" if ride.get("open") else fact
+    return f"nobody is down yet to {fact}{away_note(activity, (ride['leg'],), owner_names, viewer_names)}" if ride.get("open") else fact
 
 
 def ride_slots(
@@ -714,6 +751,7 @@ def schedule_slots(
 
 def leave_words(
     facts: list[str], open_count: int, *, reader: str = "", again_offered: bool = False, reader_address: str = "",
+    partner: str = "", reader_away: bool = False,
 ) -> dict[str, str]:
     """The title, instruction and fallback for the word before a drive -
     or before a pickup nobody has taken, which asks instead of reminding.
@@ -722,10 +760,13 @@ def leave_words(
     is spoken to when it is known ("a woman", "a man"), so the word is
     written to them and not to a crowd. again_offered says the message
     ends, under the words, with the question whether to say so again five
-    minutes before and a button for it, so the words do not ask that."""
+    minutes before and a button for it, so the words do not ask that.
+    partner is partner_note, when the facts say "your partner". reader_away
+    is a reader on hold today: an open run is never offered to them."""
 
     language = "the language the family writes to you in" if reader else "the language they write to you in"
     them = "them"
+    who_does_it = "somebody else - not them, they are away today -" if reader_away else f"{them} or somebody else -"
     if reader and reader_address:
         reader = f"{reader} ({reader_address})"
     if open_count == len(facts):
@@ -740,7 +781,8 @@ def leave_words(
                 + whose
                 + f" In one or two short sentences, in {language}, say what "
                 + ("it is and when" if one else "they are and when")
-                + f", and end by asking who is doing it - {them} or somebody else - easy to answer with a name. "
+                + f", and end by asking who is doing it - {who_does_it} easy to answer with a name. "
+                + partner
                 + ("The fact is exact; add nothing, and use no tool.\nOPEN: " + facts[0] if one else
                    "The facts are exact; add nothing, and use no tool.\nOPEN:\n" + "\n".join(facts))
             ),
@@ -749,8 +791,8 @@ def leave_words(
         }
     whose = f"This message is for {reader}, who is in this family and is the one driving shortly. " if reader else "The person is the one driving shortly. "
     open_note = (
-        f" A line that starts 'nobody is down yet' is a run with no one on it: say so, and end by asking who does it - {them} or "
-        "somebody else - easy to answer with a name."
+        f" A line that starts 'nobody is down yet' is a run with no one on it: say so, and end by asking who does it - "
+        f"{who_does_it} easy to answer with a name."
         if open_count else ""
     )
     again_note = (
@@ -758,10 +800,11 @@ def leave_words(
         "button for it: end on the drive, and do not ask or offer that yourself."
         if again_offered else ""
     )
+    partner_aside = (" " + partner.strip()) if partner else ""
     if len(facts) == 1:
         instruction = (
             whose + f"In one short sentence, in {language}, remind them what it is and when. "
-            "The fact is exact; add nothing, and use no tool." + open_note + again_note + "\nDRIVE: " + facts[0]
+            "The fact is exact; add nothing, and use no tool." + open_note + again_note + partner_aside + "\nDRIVE: " + facts[0]
         )
         fallback = f"Soon: {facts[0]}."
     else:
@@ -769,7 +812,7 @@ def leave_words(
             whose + "These runs of theirs fall close together, so they are one trip. In one or two short sentences, "
             f"in {language}, remind them of all of them in time order as one plan"
             + (" - at the same time means taking everyone together and dropping one, then the other" if not reader else "")
-            + ". Say each once. The facts are exact; add nothing, and use no tool." + open_note + again_note + "\nDRIVES:\n" + "\n".join(facts)
+            + ". Say each once. The facts are exact; add nothing, and use no tool." + open_note + again_note + partner_aside + "\nDRIVES:\n" + "\n".join(facts)
         )
         fallback = "Soon, one trip:\n" + "\n".join(f"• {fact}" for fact in facts)
     if open_count:
@@ -1125,6 +1168,14 @@ class FamilyWeekNudger:
             # when it ends, while there is still time.
             week_paused = family_week_paused(exceptions, today)
             owner_names = self._owner_names(user_id)
+            # The account holder away is never asked to do her own runs. When
+            # she handed those days to her partner she is also left in peace:
+            # one calm word on the first morning, and after that only a run
+            # of hers that still has nobody on the day. It follows the day a
+            # message goes out, so the evening before she is asked as usual.
+            away_today = owner_hold(exceptions, today, owner_names)
+            quiet = owner_hold(exceptions, today, owner_names, handed_only=True)
+            owner_away = quiet is not None
             claim = lambda key: self.database.claim_household_nudge(user_id=user_id, nudge_key=key)  # noqa: E731
             tomorrow = today + timedelta(days=1)
             day_drives = self._day_drives(user_id, "", today, tomorrow)
@@ -1135,7 +1186,11 @@ class FamilyWeekNudger:
                 user_id=user_id, timezone_name=timezone_name, day=today, activities=activities, exceptions=exceptions,
                 day_drives=day_drives,
             )
-            if todays and self.config.morning_hour <= local_now.hour < self.config.morning_hour + MORNING_WINDOW_HOURS:
+            in_morning = self.config.morning_hour <= local_now.hour < self.config.morning_hour + MORNING_WINDOW_HOURS
+            if quiet is not None and in_morning and claim(f"away-morning:{quiet['id']}"):
+                self._queue_handed_over(user_id=user_id, hold=quiet, reference=reference, timezone_name=timezone_name)
+                counts["morning"] += 1
+            if todays and not owner_away and in_morning:
                 if claim(f"morning:{today.isoformat()}"):
                     inside_work = during_work_by_activity(todays, members, owner_names, today)
                     lines = [
@@ -1158,7 +1213,7 @@ class FamilyWeekNudger:
                     )
                     counts["morning"] += 1
 
-            in_evening = self.config.evening_hour <= local_now.hour < self.config.evening_hour + EVENING_WINDOW_HOURS
+            in_evening = not owner_away and self.config.evening_hour <= local_now.hour < self.config.evening_hour + EVENING_WINDOW_HOURS
             tomorrow_gaps: list[str] = []
             tomorrow_clashes: list[str] = []
             tomorrow_work: list[str] = []
@@ -1228,7 +1283,7 @@ class FamilyWeekNudger:
                                 "This is a question, not a report: end by asking them to decide now who does each "
                                 "drop-off or pickup still open - " + who_could_do_it(
                                     "them", "their partner",
-                                    reader_away=any(household.is_self(name, owner_names) for name in away_tomorrow),
+                                    reader_away=owner_hold(exceptions, tomorrow, owner_names) is not None,
                                     other_away=any(
                                         household.normalize_role(member.get("role")) == "partner"
                                         and is_held(member.get("name"), away_tomorrow) for member in members
@@ -1249,21 +1304,26 @@ class FamilyWeekNudger:
             together = rides_leaving_together(
                 todays, owner_names=owner_names, local_now=local_now, members=members, open_legs=True,
                 lead_minutes=self.config.ride_lead_minutes, merge_minutes=self.config.ride_merge_minutes,
-                digest_at=self._morning_moment(local_now), digest_gap_minutes=self.config.ride_digest_gap_minutes,
+                digest_at=None if owner_away else self._morning_moment(local_now),
+                digest_gap_minutes=self.config.ride_digest_gap_minutes,
             )
+            if owner_away:
+                # Handed over and quiet: only a run of hers that reached its
+                # day with nobody on it breaks the silence.
+                together = [ride for ride in together if ride.get("open") and _held_from(ride, owner_names)]
             facts, open_count, said = [], 0, []
             for ride in together:
                 activity = ride["activity"]
                 if not claim(f"ride:{today.isoformat()}:{activity['id']}:{ride['leg']}"):
                     continue
-                facts.append(ride_fact(ride, _who(activity) or "them"))
+                facts.append(ride_fact(ride, _who(activity) or "them", owner_names))
                 open_count += 1 if ride.get("open") else 0
                 said.append(ride)
             if facts:
                 # Their own drives end with the offer of one more word five
                 # minutes before; a word that asks who does a drive does not.
                 again = remind_again_offer(said, local_now=local_now, facts=facts, owner_names=owner_names) if not open_count else {}
-                words = leave_words(facts, open_count, again_offered=bool(again))
+                words = leave_words(facts, open_count, again_offered=bool(again), reader_away=away_today is not None)
                 self._queue(
                     user_id=user_id, now=reference, timezone_name=timezone_name,
                     title=words["title"], instruction=words["instruction"], fallback=words["fallback"],
@@ -1278,7 +1338,7 @@ class FamilyWeekNudger:
                 claim=claim, counts=counts,
             )
 
-            if 10 <= local_now.hour < 19 and not week_paused:
+            if 10 <= local_now.hour < 19 and not week_paused and not owner_away:
                 for member in self.database.list_household_members(user_id=user_id):
                     upcoming = household.next_birthday(member.get("birthday"), today)
                     if upcoming is None:
@@ -1322,6 +1382,7 @@ class FamilyWeekNudger:
                 and ask_on <= today.isoformat()
                 and 10 <= local_now.hour < 19
                 and not week_paused
+                and not owner_away
                 and claim(f"ask_again:{ask_on}")
             ):
                 self._queue(
@@ -1339,7 +1400,7 @@ class FamilyWeekNudger:
                 self.database.save_household_profile(user_id=user_id, ask_again_on="")
                 counts["askedAgain"] += 1
 
-            if not week_paused and self._offer_homework_check(
+            if not week_paused and not owner_away and self._offer_homework_check(
                 user_id=user_id, members=members, local_now=local_now, reference=reference,
                 timezone_name=timezone_name, claim=claim,
             ):
@@ -1350,7 +1411,7 @@ class FamilyWeekNudger:
                     counts["weekAhead"] += self._send_week_ahead(
                         user_id=user_id, members=members, activities=activities, exceptions=exceptions,
                         local_now=local_now, reference=reference, timezone_name=timezone_name,
-                        owner_names=owner_names, claim=claim,
+                        owner_names=owner_names, claim=claim, owner_away=owner_away,
                     )
                 except Exception as exc:  # noqa: BLE001 - the picture is a courtesy; the week's other nudges go on
                     print(f"[family-week] week ahead failed user={user_id} error={exc!r}", flush=True)
@@ -1541,10 +1602,11 @@ class FamilyWeekNudger:
     def _send_week_ahead(
         self, *, user_id: int, members: list[dict[str, Any]], activities: list[dict[str, Any]],
         exceptions: list[dict[str, Any]], local_now: datetime, reference: datetime, timezone_name: str,
-        owner_names: list[str], claim: Callable[[str], bool],
+        owner_names: list[str], claim: Callable[[str], bool], owner_away: bool = False,
     ) -> int:
         """The coming week as one picture, to the account holder and to a
-        partner on their own phone. Drawn once per week per family: the
+        partner on their own phone - not to the account holder on a day she
+        handed to her partner while away. Drawn once per week per family: the
         drawing is claimed first so the polls inside the window do not all
         draw it, and the claim is given back when the drawing fails, so the
         next poll tries again instead of losing the week."""
@@ -1559,6 +1621,7 @@ class FamilyWeekNudger:
             return self._draw_and_queue_week_ahead(
                 user_id=user_id, members=members, activities=activities, exceptions=exceptions, week_start=week_start,
                 key=key, reference=reference, timezone_name=timezone_name, owner_names=owner_names, claim=claim,
+                owner_away=owner_away,
             )
         except Exception:
             self.database.release_household_nudge(user_id=user_id, nudge_key=drawing_key)
@@ -1567,7 +1630,7 @@ class FamilyWeekNudger:
     def _draw_and_queue_week_ahead(
         self, *, user_id: int, members: list[dict[str, Any]], activities: list[dict[str, Any]],
         exceptions: list[dict[str, Any]], week_start: date, key: str, reference: datetime, timezone_name: str,
-        owner_names: list[str], claim: Callable[[str], bool],
+        owner_names: list[str], claim: Callable[[str], bool], owner_away: bool = False,
     ) -> int:
         week_end = week_start + timedelta(days=6)
         day_drives = self._day_drives(user_id, "", week_start, week_end)
@@ -1621,7 +1684,7 @@ class FamilyWeekNudger:
         if not image_url:
             fallback = "Your family's week ahead:\n" + "\n".join(summary.facts[:7])
         sent = 0
-        if claim(key):
+        if not owner_away and claim(key):
             self._queue(
                 user_id=user_id, now=reference, timezone_name=timezone_name, title="Your family's week ahead",
                 instruction=instruction, fallback=fallback, image_url=image_url, kind=TEMPLATE_KIND_WEEK_AHEAD,
@@ -1678,9 +1741,7 @@ class FamilyWeekNudger:
                 continue
             if "morning" in wants and todays and in_morning and claim(f"morning:{today.isoformat()}{suffix}"):
                 lines = [describe_activity_line(activity, owner_names, members, viewer_names=names) for activity in todays]
-                partner = ""
-                if not _owner_first_name(owner_names) and any(PARTNER_WORD in line for line in lines):
-                    partner = partner_note(resolve_address_form(self.database, user_id=user_id))
+                partner = self._partner_note(user_id, owner_names, lines)
                 image_url = self._draw_day(
                     user_id=user_id, day=today, plans=todays, status=None, members=members, owner_names=owner_names,
                     title="today",
@@ -1702,7 +1763,7 @@ class FamilyWeekNudger:
                     user_id=user_id, timezone_name=timezone_name, day=tomorrow, activities=activities, exceptions=exceptions,
                     day_drives=day_drives,
                 )
-                gaps = gap_lines(tomorrow_on, members, owner_names)
+                gaps = gap_lines(tomorrow_on, members, owner_names, viewer_names=names)
                 if gaps and claim(f"evening:{tomorrow.isoformat()}{suffix}"):
                     image_url = self._draw_day(
                         user_id=user_id, day=tomorrow, plans=tomorrow_on, status=None, members=members,
@@ -1721,10 +1782,11 @@ class FamilyWeekNudger:
                             + who_could_do_it(
                                 "them", "the other parent",
                                 reader_away=is_held(names[0], held_people(exceptions, tomorrow)),
-                                other_away=any(household.is_self(name, owner_names) for name in held_people(exceptions, tomorrow)),
+                                other_away=owner_hold(exceptions, tomorrow, owner_names) is not None,
                             )
                             + f" - and leave it easy to answer with a name. 'you' is "
-                            f"{first}. The facts are exact; add none, and use no tool.\nTOMORROW:\n" + "\n".join(gaps)
+                            f"{first}. " + self._partner_note(user_id, owner_names, gaps)
+                            + "The facts are exact; add none, and use no tool.\nTOMORROW:\n" + "\n".join(gaps)
                         ),
                         fallback="Tomorrow still needs someone - who will do it?\n" + "\n".join(f"• {line}" for line in gaps),
                     )
@@ -1749,7 +1811,7 @@ class FamilyWeekNudger:
                 activity = ride["activity"]
                 if not claim(f"ride:{today.isoformat()}:{activity['id']}:{ride['leg']}{suffix}"):
                     continue
-                facts.append(ride_fact(ride, _who(activity, owner_names, names) or "them"))
+                facts.append(ride_fact(ride, _who(activity, owner_names, names) or "them", owner_names, names))
                 open_count += 1 if ride.get("open") else 0
                 said.append(ride)
             if not facts:
@@ -1760,6 +1822,7 @@ class FamilyWeekNudger:
             words = leave_words(
                 facts, open_count, reader=first, again_offered=bool(again),
                 reader_address=address_word(member.get("addressForm")),
+                partner=self._partner_note(user_id, owner_names, facts),
             )
             self._queue(
                 user_id=user_id, now=reference, timezone_name=timezone_name, recipient_wa_id=wa_id,
@@ -1767,6 +1830,45 @@ class FamilyWeekNudger:
                 remind_again=again or None, ride=ride_slots(said, owner_names, names) if again else None,
             )
             counts["rides"] += 1
+
+    def _queue_handed_over(self, *, user_id: int, hold: dict[str, Any], reference: datetime, timezone_name: str) -> None:
+        """The one word the account holder gets while she is away with her
+        days handed over, on the first morning of it, in place of the day's
+        plan: her partner has it all, so she can stay calm, and when she
+        will hear from us again. Never what is open - that is his to
+        settle, and a run of hers left with nobody on the day still reaches
+        her before it. One line of prose: it usually goes as the morning
+        template, which takes one line."""
+
+        partner = normalize_text(hold.get("handedTo"))
+        reason = normalize_text(hold.get("reason"))
+        ends = date.fromisoformat(normalize_text(hold.get("endsOn"))[:10])
+        back = ends + timedelta(days=1)
+        form = address_word(resolve_address_form(self.database, user_id=user_id))
+        self._queue(
+            user_id=user_id, now=reference, timezone_name=timezone_name, title="While you're away",
+            kind=TEMPLATE_KIND_MORNING_DIGEST,
+            instruction=(
+                "It is the first morning the person is away, and before going they handed those days to "
+                f"{partner}, who now has their runs. Write them one calm line, in the language they write to you "
+                + (f"in, written to {form}" if form else "in")
+                + f": while they are away {partner} has everything, so there is nothing for them to keep track of"
+                + (", with the place or reason from REASON in a few words" if reason else "")
+                + ", and that they will hear from you again on BACK. One small emoji is welcome. One line of "
+                "prose: no list, no dates, nothing about what is open, and no greeting. Use no tool."
+                + f"\nPARTNER: {partner}" + (f"\nREASON: {reason}" if reason else "")
+                + f"\nBACK: {back.strftime('%A')} ({back.isoformat()})"
+            ),
+            fallback=f"While you're away, {partner} has everything. You'll hear from me again on {back.strftime('%A')} ☺️",
+        )
+
+    def _partner_note(self, user_id: int, owner_names: list[str], lines: list[str]) -> str:
+        """partner_note for a family member's message whose facts say "your
+        partner" for an account holder with no name kept; empty otherwise."""
+
+        if _owner_first_name(owner_names) or not any(PARTNER_WORD in line for line in lines):
+            return ""
+        return partner_note(resolve_address_form(self.database, user_id=user_id))
 
     def _morning_moment(self, local_now: datetime) -> datetime:
         """When today's morning message goes out on this person's clock."""

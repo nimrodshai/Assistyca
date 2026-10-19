@@ -55,6 +55,8 @@ from packages.infrastructure.recovery_reply import build_situation
 from packages.infrastructure.recovery_reply import computed_recovery_sentence
 from packages.infrastructure.recovery_reply import make_option
 from packages.infrastructure import schedule_exceptions
+from packages.infrastructure.person_address import address_word
+from packages.infrastructure.person_address import normalize_address_form
 from packages.infrastructure.standing_tasks import STANDING_TASK_ACTION_TYPE
 from packages.infrastructure.standing_tasks import WEEKDAY_NAMES
 from packages.infrastructure.standing_tasks import describe_task_schedule
@@ -374,6 +376,10 @@ class LoopContext:
     # button: a link meant to be forwarded to somebody else is no use as a
     # button the person taps themselves.
     links_in_text: list[str] = field(default_factory=list)
+    # The reply a tool worked out from its own facts, by language ("en",
+    # "he"), for when the model writes none: what was done still reaches the
+    # person in place of the plain "I lost the thread".
+    reply_floor: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -2327,6 +2333,17 @@ def _exception_names(context: LoopContext, activities: list[dict[str, Any]]) -> 
     for activity in activities:
         for who in activity.get("who") or []:
             names.setdefault(household.name_key(who), str(who))
+    if not week_scope(context):
+        # The account holder can be away too - by her name, or as "me" when
+        # it is she who is writing; a partner's "me" is the partner.
+        owners = _owner_names(context)
+        ref = next((name.split(" ")[0] for name in owners), "") or "me"
+        keys = [household.name_key(name) for name in owners] + [household.name_key(name).split(" ")[0] for name in owners]
+        if not context.speaker:
+            keys += ["me", "myself", "i", "אני"]
+        for key in keys:
+            if key:
+                names.setdefault(key, ref)
     return names
 
 
@@ -2450,7 +2467,7 @@ def _tool_add_exception(context: LoopContext, args: dict[str, Any]) -> dict[str,
     for raw in args.get("people") or []:
         name = names.get(household.name_key(raw))
         if not name:
-            return _error("not_found", f"Nobody called {raw!r} is in the family's week.", family=sorted(names.values()))
+            return _error("not_found", f"Nobody called {raw!r} is in the family's week.", family=sorted(set(names.values())))
         targets.append({"kind": "person", "ref": name})
 
     if args.get("wholeWeek"):
@@ -2487,15 +2504,252 @@ def _tool_add_exception(context: LoopContext, args: dict[str, Any]) -> dict[str,
     if wants_actions:
         note += f" A reminder due in those days is not lost: it goes at the same time on {back_on}."
     leaves_open = _runs_left_open(context, activities, saved, starts, ends)
-    if any(target["kind"] == "person" for target in targets):
+    away = _away_owner(context, activities, saved, starts, ends)
+    if away:
+        note += " " + AWAY_OWNER_NOTE
+        context.reply_floor = _away_owner_floor(away)
+    elif any(target["kind"] == "person" for target in targets):
         note += (
             " A person on hold leaves their drop-offs and pickups open on those days. If leavesOpen is not empty, "
             "name those runs in one line and ask once who takes them; a name or 'me' is assign_day_drive for each date."
         )
-    return _ok({
+    result = {
         "saved": schedule_exceptions.describe_exception(saved, activities=by_id, actions=actions),
         "note": note,
         "leavesOpen": leaves_open,
+    }
+    if away:
+        result["awayOwner"] = away
+    return _ok(result)
+
+
+# What the model is told when the account holder puts herself on hold. The
+# state is worked out in code (_away_owner); the words are the model's.
+AWAY_OWNER_NOTE = (
+    "This hold is the account holder herself going away (awayOwner): leave leavesOpen aside and answer from "
+    "awayOwner.state, in a line or two, in her address form, without repeating her dates or saying what was "
+    "saved. ask_hand_over: her partner is on his own phone - ask her once whether to hand those days to the "
+    "partner and keep quiet until she is back (backOn), e.g. 'Want me to hand Monday to Yoni and keep quiet "
+    "until you're back?'. On a yes, call hand_over_away_days with this hold's id; on a no, nothing more - she "
+    "keeps her usual messages and is never asked to do those runs herself. open_nobody_to_ask: say which of "
+    "her runs have nobody yet and that while she is away there is no one you can ask, and ask who takes them "
+    "before she goes - a name is assign_day_drive for each date; if canSendJoinLink, offer to send the partner "
+    "a link to join from his own phone (invite_family_member) so he gets the word himself. all_covered: every "
+    "run has someone - a calm word, and the one small emoji is for this case. no_runs: a short word. Name the "
+    "place only if reason gives one. The partner in her language is partner.name, or partner.word by the "
+    "partner's own gender."
+)
+
+
+def _away_owner(
+    context: LoopContext, activities: list[dict[str, Any]], saved: dict[str, Any], starts: date, ends: date,
+) -> dict[str, Any]:
+    """The facts for the reply when the account holder puts herself on hold,
+    from her own chat: her runs on those days and who has each, her partner
+    and whether he is on his own phone, and where that leaves her (state).
+    Empty for any other hold."""
+
+    if week_scope(context) or context.speaker:
+        return {}
+    owners = _owner_names(context)
+    if schedule_exceptions.owner_hold([saved], starts, owners) is None:
+        return {}
+    from packages.infrastructure.family_week_nudges import partner_words
+
+    members = context.database.list_household_members(user_id=context.user_id)
+    partner = next((member for member in members if household.normalize_role(member.get("role")) == "partner"), None)
+    runs = _owner_runs_in_hold(context, activities, saved, starts, ends, owners, members)
+    back_on = ends + timedelta(days=1)
+    on_phone = bool(partner and str(partner.get("waId") or "").strip())
+    open_runs = [run for run in runs if not run["coveredBy"]]
+    if not runs:
+        state = "no_runs"
+    elif on_phone:
+        state = "ask_hand_over"
+    elif open_runs:
+        state = "open_nobody_to_ask"
+    else:
+        state = "all_covered"
+    facts: dict[str, Any] = {
+        "holdFrom": starts.isoformat(), "holdTo": ends.isoformat(),
+        "backOn": back_on.isoformat(), "backOnDay": back_on.strftime("%A"),
+        "runs": runs,
+        "partner": {
+            "name": str(partner.get("name") or ""),
+            "gender": address_word(partner.get("addressForm")) or None,
+            "word": partner_words(normalize_address_form(partner.get("addressForm"))),
+            "onOwnPhone": on_phone,
+        } if partner else None,
+        "state": state,
+        "canSendJoinLink": bool(partner and not on_phone and context.join_link is not None),
+    }
+    if str(saved.get("reason") or "").strip():
+        facts["reason"] = str(saved.get("reason")).strip()
+    if on_phone and open_runs:
+        # Asked the evening before each, on his own phone, if she keeps the days.
+        facts["partnerAskedOn"] = [
+            {"run": run["date"], "askedOn": (date.fromisoformat(run["date"]) - timedelta(days=1)).isoformat()}
+            for run in open_runs
+        ]
+    return facts
+
+
+def _owner_runs_in_hold(
+    context: LoopContext, activities: list[dict[str, Any]], saved: dict[str, Any], starts: date, ends: date,
+    owners: list[str], members: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """The account holder's drop-offs and pickups on the days of her hold,
+    from today on: each with the day, the child, the leg and the time, and
+    who has it that day (coveredBy, from the day's own answers) - or None."""
+
+    try:
+        others = [
+            exception for exception in context.database.list_schedule_exceptions(
+                user_id=context.user_id, ending_on_or_after=starts.isoformat(),
+            ) if int(exception.get("id") or 0) != int(saved.get("id") or 0)
+        ]
+    except Exception:  # noqa: BLE001 - the hold is saved; this is the reply's facts
+        others = []
+    first = max(starts, _household_today(context))
+    drives = _day_drives(context, first=first, last=ends)
+    runs: list[dict[str, Any]] = []
+    day = first
+    while day <= ends and len(runs) < MAX_LEFT_OPEN_RUNS:
+        usual = [activity for activity in activities if household.weekday_code(day) in (activity.get("days") or [])]
+        for activity in schedule_exceptions.activities_not_excepted(usual, others, day, owner_names=owners):
+            answered = household.apply_day_drives([activity], drives, day)[0]
+            for leg, who_key, time_key in (("take", "dropOffBy", "startTime"), ("collect", "pickUpBy", "endTime")):
+                if not household.is_self(activity.get(who_key), owners):
+                    continue
+                decided = who_key in {household._LEG_KEYS[name][0] for name in (answered.get("dayDriveLegs") or ())}
+                who = str(answered.get(who_key) or "").strip() if decided else ""
+                covered = who if who and not household.is_self(who, owners) else None
+                runs.append({
+                    "date": day.isoformat(), "day": day.strftime("%A"), "leg": leg,
+                    "child": ", ".join(activity.get("who") or []), "activity": activity.get("title"),
+                    "activityId": int(activity["id"]), "at": household.normalize_time(activity.get(time_key)),
+                    "coveredBy": covered,
+                    "coveredByOnOwnPhone": bool(covered and any(
+                        household.is_named(covered, [str(member.get("name") or "")]) and str(member.get("waId") or "").strip()
+                        for member in members
+                    )),
+                })
+        day += timedelta(days=1)
+    return runs[:MAX_LEFT_OPEN_RUNS]
+
+
+_HEBREW_RE = re.compile(r"[\u0590-\u05FF]")
+_HEBREW_WEEKDAYS = ("שני", "שלישי", "רביעי", "חמישי", "שישי", "שבת", "ראשון")
+
+
+def _away_owner_floor(away: dict[str, Any]) -> dict[str, str]:
+    """The reply for the account holder going away when the model writes
+    none, in English and in Hebrew, from the same facts (AWAY_OWNER_NOTE)."""
+
+    back = date.fromisoformat(away["backOn"])
+    back_en, back_he = back.strftime("%A"), f"יום {_HEBREW_WEEKDAYS[back.weekday()]}"
+    held = date.fromisoformat(away["holdFrom"])
+    one_day = away["holdFrom"] == away["holdTo"]
+    days_en = held.strftime("%A") if one_day else "those days"
+    days_he = f"יום {_HEBREW_WEEKDAYS[held.weekday()]}" if one_day else "הימים האלה"
+    partner = away.get("partner") or {}
+    name = partner.get("name") or ""
+    state = away["state"]
+    if state == "ask_hand_over":
+        return {
+            "en": f"Want me to hand {days_en} to {name} and keep quiet until you're back on {back_en}?",
+            "he": f"להעביר את {days_he} ל{'' if _HEBREW_RE.match(name) else '־'}{name} ולא לכתוב לך עד {back_he}?",
+        }
+    if state == "open_nobody_to_ask":
+        open_runs = [run for run in away["runs"] if not run["coveredBy"]]
+        if len(open_runs) == 1:
+            run = open_runs[0]
+            run_day = date.fromisoformat(run["date"])
+            what_en = f"{run['child']}'s {run['at']} {'pickup' if run['leg'] == 'collect' else 'drop-off'} on {run['day']} has"
+            what_he = (
+                f"{'לאיסוף' if run['leg'] == 'collect' else 'להבאה'} של {run['child']} ב־{run['at']} "
+                f"ביום {_HEBREW_WEEKDAYS[run_day.weekday()]} עוד אין"
+            )
+        else:
+            what_en = f"{len(open_runs)} of your runs while you're away have"
+            what_he = f"ל־{len(open_runs)} מההסעות בזמן שאין אותך עוד אין"
+        en = f"{what_en} nobody yet, and while you're away there's no one I can ask. Who's taking {'it' if len(open_runs) == 1 else 'them'}?"
+        he = f"{what_he} אף אחד, וכשאין אותך אין לי את מי לשאול. מי לוקח את זה?"
+        if away.get("canSendJoinLink") and name:
+            en += f" If it's {name}, I can send a link to join from their own phone, so they get the word themselves."
+            he += f" אם זה {name}, אפשר לשלוח קישור להצטרף מהטלפון, וככה התזכורת תגיע ישר."
+        return {"en": en, "he": he}
+    if state == "all_covered":
+        return {
+            "en": f"Everything while you're away has someone on it. You'll hear from me again on {back_en} ☺️",
+            "he": f"לכל ההסעות בזמן הזה יש מישהו. נדבר שוב ב{back_he} ☺️",
+        }
+    return {"en": f"Have a good time. You'll hear from me again on {back_en}.", "he": f"שיהיה בכיף. נדבר שוב ב{back_he}."}
+
+
+def _tool_hand_over_away_days(context: LoopContext, args: dict[str, Any]) -> dict[str, Any]:
+    """The account holder's yes to handing the days she is away to her
+    partner: each of her runs on those days that nobody has yet becomes
+    his for that date (a day drive, as assign_day_drive keeps it), and the
+    hold remembers who has them, which is what leaves her in peace."""
+
+    if week_scope(context) or context.speaker:
+        return _error("not_supported", "Only the account holder hands over the days she is away, from her own chat.")
+    try:
+        exception_id = int(args.get("id"))
+    except (TypeError, ValueError):
+        return _error("choice_required", "id is the number of her hold, from add_exception or CONTEXT.exceptions.")
+    today = _household_today(context)
+    owners = _owner_names(context)
+    hold = next((
+        exception for exception in context.database.list_schedule_exceptions(
+            user_id=context.user_id, ending_on_or_after=today.isoformat(),
+        ) if int(exception.get("id") or 0) == exception_id
+    ), None)
+    starts = schedule_exceptions.parse_day((hold or {}).get("startsOn"))
+    ends = schedule_exceptions.parse_day((hold or {}).get("endsOn"))
+    if hold is None or starts is None or ends is None or not any(
+        schedule_exceptions.owner_hold([hold], starts + timedelta(days=offset), owners) is not None
+        for offset in range((ends - starts).days + 1)
+    ):
+        return _error("not_found", f"Hold {exception_id} is not one of her being away.", exceptions=exceptions_payload(context))
+    members = context.database.list_household_members(user_id=context.user_id)
+    partner = next((
+        member for member in members
+        if household.normalize_role(member.get("role")) == "partner" and str(member.get("waId") or "").strip()
+    ), None)
+    if partner is None:
+        return _error(
+            "not_supported",
+            "There is no partner on his own phone to hand the days to; ask who takes her runs instead, or offer "
+            "invite_family_member.",
+        )
+    activities = context.database.list_household_activities(user_id=context.user_id)
+    name = str(partner.get("name") or "")
+    given = []
+    try:
+        for run in _owner_runs_in_hold(context, activities, hold, starts, ends, owners, members):
+            if run["coveredBy"]:
+                continue
+            context.database.save_household_day_drive(
+                user_id=context.user_id, activity_id=run["activityId"], day=run["date"],
+                leg="drop_off" if run["leg"] == "take" else "pick_up", who=name,
+            )
+            given.append({**run, "coveredBy": name})
+        context.database.hand_over_schedule_exception(user_id=context.user_id, exception_id=exception_id, handed_to=name)
+    except Exception as exc:  # noqa: BLE001
+        return _error("internal", f"That could not be saved: {exc}", can_retry=True)
+    back_on = (ends + timedelta(days=1)).isoformat()
+    return _ok({
+        "handedTo": name,
+        "runs": given,
+        "backOn": back_on,
+        "note": (
+            f"Her runs on those days are {name}'s now; he hears of them on his own phone as his. She hears one "
+            f"calm word on the first morning and nothing else until {back_on}, unless a run of hers still has "
+            "nobody on the day. Say so in a few words - that it is in his hands and she can stay calm - with no "
+            "list and no dates."
+        ),
     })
 
 
@@ -4204,6 +4458,18 @@ TOOLS: list[ToolSpec] = [
         run=_tool_add_exception,
     ),
     ToolSpec(
+        name="hand_over_away_days",
+        description=(
+            "The account holder said yes to handing the days she is away to her partner and being left in peace "
+            "- the question add_exception's awayOwner asks. Each of her runs on those days that nobody has yet "
+            "becomes the partner's for that date, and she gets nothing on those days but one calm word on the "
+            "first morning. id is her hold, from add_exception or CONTEXT.exceptions. Never without her yes."
+        ),
+        parameters=_params({"id": {"type": "integer"}}),
+        side_effect=True,
+        run=_tool_hand_over_away_days,
+    ),
+    ToolSpec(
         name="remove_exception",
         description=(
             "Take something off hold because it is on after all, or was put on hold by mistake: 'football is "
@@ -4295,7 +4561,7 @@ WEEK_CHANGE_TOOLS = frozenset({
     "save_family_member", "remove_family_member", "save_week_activity", "remove_week_activity",
     "accept_drive_during_work",
     "add_exception", "remove_exception", "set_getting_to_know", "start_birthday_list",
-    "invite_family_member",
+    "invite_family_member", "hand_over_away_days",
 })
 # Everything someone who is not a parent can do on the account: read the
 # week, look things up on the public web, and take their own phone off.
@@ -5065,7 +5331,8 @@ def run_agent_loop(
     if not quiet_run and (reply_payload is None or not str(reply_payload.get("reply") or "").strip()):
         fallback_used = True
         fallback_reason = "no_reply" if reply_payload is None else "empty_reply"
-        reply_text = computed_recovery_sentence(build_situation(
+        floor = context.reply_floor.get("he" if _HEBREW_RE.search(user_message or "") else "en", "")
+        reply_text = floor or computed_recovery_sentence(build_situation(
             "assistant_unclear",
             request=user_message,
             what_happened="I lost the thread of that for a moment.",

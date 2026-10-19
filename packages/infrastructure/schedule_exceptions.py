@@ -135,6 +135,22 @@ def is_held(who: Any, people: list[str], owner_names: Iterable[str] = ()) -> boo
     return is_named(who, people) or any(is_named(person, [clean(who)]) for person in people)
 
 
+def owner_hold(
+    exceptions: Iterable[dict[str, Any]], day: date, owner_names: Iterable[str] = (), *, handed_only: bool = False,
+) -> dict[str, Any] | None:
+    """The hold that has the account holder herself away that day - "me",
+    or her own name - or None. handed_only asks only for one whose days she
+    handed to someone (handedTo), which is what leaves her in peace."""
+
+    owners = list(owner_names)
+    for exception in exceptions:
+        if not covers_day(exception, day) or (handed_only and not clean(exception.get("handedTo"))):
+            continue
+        if any(target["kind"] == "person" and is_self(target["ref"], owners) for target in _targets(exception)):
+            return exception
+    return None
+
+
 def activities_not_excepted(
     activities: list[dict[str, Any]],
     exceptions: Iterable[dict[str, Any]],
@@ -222,7 +238,7 @@ def describe_exception(
         elif kind == "all_actions":
             covers.append("every standing action and reminder")
         elif kind == "person":
-            covers.append(f"everything {ref} does")
+            covers.append("everything the account holder does" if is_self(ref) else f"everything {ref} does")
         elif kind == "activity":
             activity = (activities or {}).get(ref) or {}
             title = clean(activity.get("title")) or "an activity no longer in the week"
@@ -241,6 +257,8 @@ def describe_exception(
     }
     if clean(exception.get("reason")):
         described["reason"] = clean(exception.get("reason"), MAX_REASON_LENGTH)
+    if clean(exception.get("handedTo")):
+        described["handedTo"] = clean(exception.get("handedTo"))
     return described
 
 
@@ -261,5 +279,6 @@ __all__ = [
     "held_until",
     "is_held",
     "normalize_targets",
+    "owner_hold",
     "parse_day",
 ]
