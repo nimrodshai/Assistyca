@@ -1207,6 +1207,7 @@ class FamilyWeekNudger:
                         instruction=self._morning_instruction(
                             lines=lines, inside_work=bool(inside_work), today=today, today_calendar=today_calendar,
                             with_picture=bool(image_url),
+                            address=address_word(resolve_address_form(self.database, user_id=user_id)),
                         ),
                         schedule=schedule_slots(todays, today, members, owner_names),
                         fallback="Today:\n" + "\n".join(f"• {line}" for line in lines),
@@ -1539,12 +1540,15 @@ class FamilyWeekNudger:
     def _morning_instruction(
         *, lines: list[str], reader: str = "", inside_work: bool = False, today: date | None = None,
         today_calendar: dict[str, Any] | None = None, with_picture: bool = False, partner: str = "",
+        address: str = "",
     ) -> str:
         """What the morning message is asked to be. With the day's picture
         attached it is a line or two under it - what still has nobody, and
         nothing the picture already shows; without one it is the day as
         bullets. reader names a parent on their own phone; partner is the
-        note on how to say the account holder when their name is not kept."""
+        note on how to say the account holder when their name is not kept;
+        address is how the account holder is addressed ("a woman", "a man")
+        when the message is theirs, as a reader's form rides in reader."""
 
         who = f"{reader}" if reader else "the person"
         opening = (
@@ -1552,7 +1556,11 @@ class FamilyWeekNudger:
             "their own phone. " if reader else "It is the morning. "
         )
         language = "in the language the family writes to you in" if reader else "in the language they write to you in"
-        you = (f"'you' is {reader}; a name is somebody else. " if reader else "'you' is the person. ") + partner
+        you = (
+            f"'you' is {reader}; a name is somebody else. " if reader
+            else f"'you' is the person ({address}), written to in that form. " if address
+            else "'you' is the person. "
+        ) + partner
         work = (
             "Where a drive of theirs is marked as falling inside their own work hours and not settled yet, "
             + ("say so in a few words and " if with_picture else "say so in that bullet in a few words and, at the end, ")

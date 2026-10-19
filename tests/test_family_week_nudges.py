@@ -291,6 +291,14 @@ class NudgerTests(unittest.TestCase):
             payload["scheduleSlots"], {"date": "20.9", "activities": 2, "drives": 2, "open": 0, "openPickups": 0},
         )
 
+    def test_the_account_holders_morning_is_written_to_her_in_her_own_form(self) -> None:
+        from packages.infrastructure.person_address import keep_address_form
+
+        self.assertTrue(keep_address_form(self.database, user_id=self.user_id, form="f", basis="self"))
+        self.nudger.run_pending(now=at(SUNDAY, 7, 5))
+        [action] = [a for a in self.queued() if a["payload"]["title"] == "Today in your family's week"]
+        self.assertIn("'you' is the person (a woman), written to in that form.", action["payload"]["instruction"])
+
     def test_a_morning_missed_by_hours_is_not_sent_late(self) -> None:
         self.nudger.run_pending(now=at(SUNDAY, 13, 0))
         self.assertEqual(self.queued(), [])
