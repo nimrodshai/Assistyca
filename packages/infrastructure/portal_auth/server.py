@@ -13867,9 +13867,11 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             return
         self._connection_owner_override = signed_in_from if member else ""
 
+        calendar_connected = False
         try:
             if provider == "google":
                 scope_ids = self._normalize_google_oauth_scope_ids(state.get("scopeIds"), default=("calendar",))
+                calendar_connected = "calendar" in scope_ids
                 token_payload = self._exchange_google_calendar_oauth_code(code)
                 if purpose == "link_account":
                     validation = GmailAccessValidator().validate(normalize_text(token_payload.get("access_token")))
@@ -13971,6 +13973,12 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             if mailbox_connected and load_finding_scan_config().enabled
             else ""
         )
+        # A calendar connected while the other parent is on the account from
+        # their own phone: what of it reaches them is only when this person
+        # is busy, for working out the drives - never what it is.
+        seen_by = self._busy_times_seen_by(user_id, signed_in_from if member else "") if calendar_connected else []
+        if seen_by:
+            looking += f" {' and '.join(seen_by)} will see only when you're busy, never what."
         if held_text:
             # They asked something, it needed this sign-in, and now the
             # sign-in is done: their own question is the last word, offered
@@ -14008,6 +14016,23 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             return
 
         finish(True, f"{linked or 'Your '}{connected} connected — ask me anything about your inbox or your schedule.{looking}")
+
+    def _busy_times_seen_by(self, user_id: int, owner_wa_id: str) -> list[str]:
+        """The other parents who see when this person is busy once their
+        calendar is connected (connection_owner.busy_blocks): the account
+        holder and every partner on their own phone, but never the person
+        themself. First names."""
+
+        names: list[str] = []
+        if owner_wa_id:
+            holder = self._household_owner_name(user_id).split(" ")[0]
+            if holder:
+                names.append(holder)
+        for member in self.database.list_household_members(user_id=user_id):
+            number = normalize_whatsapp_lookup_id(member.get("waId"))
+            if number and number != owner_wa_id and household.normalize_role(member.get("role")) == "partner":
+                names.append(normalize_text(member.get("name")).split(" ")[0])
+        return [name for name in names if name]
 
     def _held_whatsapp_question(self, user_id: int, *, thread_id: str = "") -> tuple[str, str]:
         """The question waiting on a sign-in for this account, and when it was asked.

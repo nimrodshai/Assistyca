@@ -245,6 +245,25 @@ def member_nudges(role: Any) -> tuple[str, ...]:
     return ("rides",)
 
 
+def what_joining_shares(role: Any) -> dict[str, Any]:
+    """What someone joining from their own phone shares with the account
+    holder, and what stays the account holder's, so an invitation can say
+    it exactly. A partner shares the family's running of things; each
+    person's mail, calendar and receipts stay their own, and of a calendar
+    only when its owner is busy crosses, to work out the drives."""
+
+    if normalize_role(role) == "partner":
+        return {
+            "shared": ["the family's week", "the lists", "the scheduled tasks"],
+            "staysTheAccountHolders": ["their mail", "their calendar", "their receipts"],
+            "calendarsCross": "only when each parent is busy, never what it is - for working out the drives",
+        }
+    return {
+        "shared": ["the family's week, to read", "a word before the drives that are theirs"],
+        "staysTheAccountHolders": ["their mail", "their calendar", "their receipts", "the lists"],
+    }
+
+
 def nobody_drives(who: Any) -> bool:
     """Whether "who drives" says the child gets there with nobody driving:
     the bus, the shuttle, on foot, on their own.

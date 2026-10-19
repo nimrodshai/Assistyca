@@ -239,7 +239,7 @@ class WhatsAppOAuthLinkTests(unittest.TestCase):
     def test_a_partners_sign_in_is_theirs_and_a_grandparents_connects_nothing(self) -> None:
         from datetime import datetime, timedelta, timezone
 
-        self.database.register_user("dana@gmail.com")
+        self.database.register_user("dana@gmail.com", display_name="Dana Levi")
         user_id = int((self.database.get_user("dana@gmail.com") or {})["id"])
         self.database.link_user_whatsapp_number(user_id=user_id, wa_id=PHONE)
         for name, role, phone, code in (("Yoav", "partner", "447700900222", "YOAV22"), ("Rina", "other", "447700900333", "RINA22")):
@@ -260,10 +260,17 @@ class WhatsAppOAuthLinkTests(unittest.TestCase):
             mock.patch(f"{handler}._exchange_google_calendar_oauth_code", return_value={"access_token": "at", "refresh_token": "rt", "scope": "x"}) as exchange,
             mock.patch(f"{handler}._save_google_oauth_connections", autospec=True, side_effect=save),
         ):
+            told: list[str] = []
             for phone in (PHONE, "447700900222"):
                 status, _, _ = self._callback("google", self._state(waId=phone, nonce=phone))
                 self.assertEqual(status, 200)
+                told.append(self._last_reply())
             self.assertEqual(filed_under, ["", "447700900222"], "the holder's under the holder, the partner's under the partner")
+            # Each hears what the other parent sees of the calendar just
+            # connected: when they are busy, never what.
+            self.assertIn("Yoav will see only when you're busy, never what.", told[0])
+            self.assertIn("Dana will see only when you're busy, never what.", told[1])
+            self.assertNotIn("Yoav will see", told[1])
             exchange.reset_mock()
             status, _, body = self._callback("google", self._state(waId="447700900333", nonce="rina"))
         self.assertEqual(filed_under, ["", "447700900222"], "a grandparent's sign-in files nothing")

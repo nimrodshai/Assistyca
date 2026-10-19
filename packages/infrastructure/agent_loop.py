@@ -2940,6 +2940,9 @@ def _tool_invite_family_member(context: LoopContext, args: dict[str, Any]) -> di
         "forwardIt": "The link is for the person to forward; it opens WhatsApp on their side and they join by sending what it fills in.",
         "theyGet": household.member_nudges(role),
         "canChangeWeek": household.can_change_week(role),
+        # What joining shares and what stays the person's own, so the
+        # invitation can be honest about it before the link goes out.
+        "sharing": household.what_joining_shares(role),
         "cost": "none - the same account",
     })
 

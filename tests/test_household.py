@@ -1027,6 +1027,10 @@ class FamilyOnTheirOwnPhonesTests(unittest.TestCase):
         invited = TOOLS_BY_NAME["invite_family_member"].run(context, {"name": "yoav"})
         self.assertTrue(invited["ok"], invited)
         self.assertEqual((invited["forName"], invited["role"], invited["canChangeWeek"]), ("Yoav", "partner", True))
+        # What a partner shares and what stays the holder's, said before the link goes out.
+        self.assertEqual(invited["sharing"]["shared"], ["the family's week", "the lists", "the scheduled tasks"])
+        self.assertEqual(invited["sharing"]["staysTheAccountHolders"], ["their mail", "their calendar", "their receipts"])
+        self.assertIn("only when each parent is busy, never what", invited["sharing"]["calendarsCross"])
         self.assertRegex(invited["link"], r"^https://assistyca\.com/join/[A-Z2-9]{6}$")
         code = invited["link"].rsplit("/", 1)[1]
         self.assertEqual(self.database.get_household_invite(code)["memberName"], "Yoav")
