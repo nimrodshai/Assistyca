@@ -200,6 +200,8 @@ from packages.infrastructure.answer_composer import normalize_answer_conversatio
 from packages.infrastructure.answer_composer import normalize_answer_question
 from packages.infrastructure.answer_composer import normalize_answer_records
 from packages.infrastructure.answer_composer import normalize_composed_answer
+from packages.infrastructure.message_language import detect_message_language
+from packages.infrastructure.message_language import resolve_message_language
 from packages.infrastructure.recovery_reply import RECOVERY_INSTRUCTIONS
 from packages.infrastructure.recovery_reply import RECOVERY_MAX_OUTPUT_TOKENS
 from packages.infrastructure.recovery_reply import build_recovery_prompt
@@ -310,6 +312,8 @@ from packages.infrastructure.whatsapp_agent_chat import build_whatsapp_join_link
 from packages.infrastructure import homework_check
 from packages.infrastructure.whatsapp_agent_chat import infer_timezone_from_wa_id
 from packages.infrastructure.whatsapp_agent_chat import extract_whatsapp_claim_code
+from packages.infrastructure.whatsapp_agent_chat import read_family_join
+from packages.infrastructure.whatsapp_agent_chat import words_beyond_family_join
 from packages.infrastructure.whatsapp_agent_chat import is_whatsapp_account_email
 from packages.infrastructure.whatsapp_agent_chat import whatsapp_account_email
 from packages.infrastructure.whatsapp_agent_chat import generate_whatsapp_claim_code
@@ -10666,6 +10670,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         channel: str,
         timezone_name: str,
         email: str,
+        language: str = "",
     ) -> tuple[str, bool]:
         """The reply for a situation report: the model's words, or assembled ones.
 
@@ -10685,6 +10690,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             conversation=conversation,
             channel=channel,
             today=resolve_local_today(timezone_name),
+            language=language,
         )
         try:
             result = call_openai_response(
@@ -14232,13 +14238,17 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         """Join a family's account from a phone nobody knows yet, by the
         invitation code the parent's link put in the message.
 
-        Returns None when the message carries no invitation code, so the
-        caller goes on to signup. The phone becomes the member's the
-        invitation was made for, on the same account, and the message is then
-        answered by the assistant itself as the first thing they said - that
-        is how the welcome is written, in the assistant's own voice and with
-        the family's week in front of it. The account holder is told in a
-        line that the person is in.
+        Returns None when the message is not a join, so the caller goes on to
+        signup. The phone becomes the member's the invitation was made for,
+        on the same account, and the message is then answered by the
+        assistant itself as the first thing they said - that is how the
+        welcome is written, in the assistant's own voice and with the
+        family's week in front of it. The account holder is told in a line
+        that the person is in.
+
+        A message in the words of a join link is a join whatever its code
+        says: one no invitation carries - mistyped, or replaced by a newer
+        link - is told so, and never opens an account of its own.
         """
 
         if normalize_text(phone_number_id) != resolve_whatsapp_sender_phone_number_id():
@@ -14246,25 +14256,28 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         if not whatsapp_agent_chat_enabled():
             return None
         sender_wa_id = normalize_whatsapp_number(event.get("sender_wa_id"))
-        code = extract_whatsapp_claim_code(event.get("message_text"))
-        if not sender_wa_id or not code:
+        message_text = normalize_text(event.get("message_text"))
+        code, is_join = read_family_join(message_text)
+        if not sender_wa_id or not (code or is_join):
             return None
-        invite = self.database.get_household_invite(code)
-        if invite is None:
+        invite = self.database.get_household_invite(code) if code else None
+        if invite is None and not is_join:
             return None
 
-        outcome = self.database.claim_household_invite(
-            code=code, wa_id=sender_wa_id, label=normalize_text(event.get("sender_name")),
-        )
+        if invite is None:
+            outcome: dict[str, Any] = {"ok": False, "reason": "unknown_code"}
+        else:
+            outcome = self._claim_household_invite(code, sender_wa_id, event)
         reason = normalize_text(outcome.get("reason"))
         print(
             json.dumps(
                 {
                     "event": "household_invite_claim",
                     "senderWaId": self._mask_whatsapp_log_identifier(sender_wa_id),
-                    "userId": int(invite.get("userId") or 0),
+                    "userId": int((invite or {}).get("userId") or 0),
                     "ok": bool(outcome.get("ok")),
                     "reason": reason,
+                    "foldedOwnAccount": bool(outcome.get("foldedOwnAccount")),
                 },
                 ensure_ascii=True,
                 sort_keys=True,
@@ -14272,30 +14285,14 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             flush=True,
         )
         if outcome.get("ok"):
-            member = outcome.get("member") if isinstance(outcome.get("member"), dict) else {}
-            self._tell_owner_someone_joined(int(outcome.get("userId") or 0), member)
-            return {
-                "type": "family_join",
-                "action": "member_joined",
-                "member_id": int(member.get("id") or 0),
-                "role": household.normalize_role(member.get("role")),
-                "phone_number_id": normalize_text(phone_number_id),
-                "open_conversation": True,
-            }
+            return self._member_joined(outcome, phone_number_id)
 
-        if reason == "expired":
-            reply = "That invitation has run out. Ask whoever sent it for a fresh link and I'll bring you in."
-        elif reason == "already_claimed":
-            reply = "That invitation has already been used. Ask whoever sent it for a fresh link."
-        elif reason == "number_taken":
-            reply = "This phone already has its own Assistyca account, so I can't add it to another family from here."
-        else:
-            reply = "I couldn't bring you in with that invitation. Ask whoever sent it for a fresh link."
-        message_id = ""
-        try:
-            message_id = send_assistyca_text(recipient_wa_id=sender_wa_id, text=reply)
-        except Exception as exc:  # noqa: BLE001 - the refusal stands whether or not the note went
-            print(f"Family invitation reply could not be sent: {exc}", flush=True)
+        message_id = self._send_join_situation(
+            sender_wa_id,
+            self._join_refusal_situation(outcome, invite, request=message_text),
+            message_text=message_text,
+            user_ids=(int(outcome.get("takenByUserId") or 0), int((invite or {}).get("userId") or 0)),
+        )
         return {
             "type": "family_join",
             "action": "join_rejected",
@@ -14309,29 +14306,246 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
     ) -> dict[str, Any] | None:
         """An invitation code sent from a phone that is already on an account.
 
-        The parent who tapped their own link, or someone with an account of
-        their own: neither joins anything, and the words are not for the
-        assistant to puzzle over. Returns None for any ordinary message.
+        The parent who tapped their own link is told it is for the other
+        person to open. Someone whose own account is only a conversation so
+        far - they texted the number before tapping the link - joins, and
+        that account gives way. Anyone else is told why they cannot, in
+        their terms: their own account, or another family they are in.
+        Returns None for an ordinary message, and for a link of their own
+        family's that is already theirs.
         """
 
-        code = extract_whatsapp_claim_code(event.get("message_text"))
+        message_text = normalize_text(event.get("message_text"))
+        code, is_join = read_family_join(message_text)
         if not code:
             return None
         invite = self.database.get_household_invite(code)
-        if invite is None or invite.get("status") != "live":
+        live = bool(invite and invite.get("status") == "live")
+        if not live and not is_join:
             return None
         sender_wa_id = normalize_whatsapp_number(event.get("sender_wa_id"))
-        name = normalize_text(invite.get("memberName")) or "them"
-        if int(invite.get("userId") or 0) == int(connection.get("userId") or 0):
-            reply = f"That link is for {name} to open on their own phone - forward it to them and they're in."
+        own_user_id = int(connection.get("userId") or 0)
+        if invite is not None and int(invite.get("userId") or 0) == own_user_id:
+            member = self.database.get_household_member_by_wa_id(sender_wa_id, user_id=own_user_id) or {}
+            if not live or int(member.get("id") or 0) == int(invite.get("memberId") or 0):
+                return None
+            name = normalize_text(invite.get("memberName")) or "them"
+            situation = build_situation(
+                "not_supported",
+                request=message_text,
+                what_happened=f"That invitation is for {name} to open on their own phone, not on this one.",
+                options=[make_option("step", label=f"forward the link to {name}; once they open it they are in")],
+            )
+            message_id = self._send_join_situation(
+                sender_wa_id, situation, message_text=message_text, user_ids=(own_user_id,),
+            )
+            return {"type": "family_join", "action": "join_link_not_for_this_phone", "message_id": message_id}
+
+        if live:
+            outcome = self._claim_household_invite(code, sender_wa_id, event)
         else:
-            reply = "This phone already has its own Assistyca account, so I can't add it to another family from here."
-        message_id = ""
+            outcome = {"ok": False, "reason": {"expired": "expired", "claimed": "already_claimed"}.get(
+                normalize_text((invite or {}).get("status")), "unknown_code",
+            )}
+        print(
+            json.dumps(
+                {
+                    "event": "household_invite_claim",
+                    "senderWaId": self._mask_whatsapp_log_identifier(sender_wa_id),
+                    "userId": int((invite or {}).get("userId") or 0),
+                    "ok": bool(outcome.get("ok")),
+                    "reason": normalize_text(outcome.get("reason")),
+                    "foldedOwnAccount": bool(outcome.get("foldedOwnAccount")),
+                    "knownPhone": True,
+                },
+                ensure_ascii=True,
+                sort_keys=True,
+            ),
+            flush=True,
+        )
+        if outcome.get("ok"):
+            # The webhook writes the phone number id on, as for every reply.
+            return self._member_joined(outcome, "")
+        message_id = self._send_join_situation(
+            sender_wa_id,
+            self._join_refusal_situation(outcome, invite, request=message_text),
+            message_text=message_text,
+            user_ids=(own_user_id, int((invite or {}).get("userId") or 0)),
+        )
+        return {
+            "type": "family_join",
+            "action": "join_link_not_for_this_phone",
+            "reason": normalize_text(outcome.get("reason")),
+            "message_id": message_id,
+        }
+
+    def _claim_household_invite(self, code: str, sender_wa_id: str, event: dict[str, Any]) -> dict[str, Any]:
+        """Claim the invitation for this phone. A phone whose own account it
+        opened by texting in, and which holds nothing yet, gives that account
+        up to join: nothing is lost, and the alternative is a dead end."""
+
+        label = normalize_text(event.get("sender_name"))
+        outcome = self.database.claim_household_invite(code=code, wa_id=sender_wa_id, label=label)
+        if (
+            normalize_text(outcome.get("reason")) == "number_taken"
+            and outcome.get("takenAs") == "own_account"
+            and self._fold_empty_phone_account(sender_wa_id, int(outcome.get("takenByUserId") or 0))
+        ):
+            outcome = self.database.claim_household_invite(code=code, wa_id=sender_wa_id, label=label)
+            outcome["foldedOwnAccount"] = True
+        return outcome
+
+    def _fold_empty_phone_account(self, wa_id: str, user_id: int) -> bool:
+        """Close the account this phone opened by texting in, when there is
+        nothing in it to lose. Only that account: one opened any other way
+        has an address and a way in of its own, and is never closed here."""
+
+        user = self.database.get_user_by_id(user_id) if user_id > 0 else None
+        email = normalize_email((user or {}).get("email"))
+        if not email or email != whatsapp_account_email(wa_id):
+            return False
         try:
-            message_id = send_assistyca_text(recipient_wa_id=sender_wa_id, text=reply)
-        except Exception as exc:  # noqa: BLE001
+            if not self.database.account_holds_nothing(user_id=user_id, wa_id=wa_id):
+                return False
+            self.database.delete_whatsapp_signups(user_id=user_id, wa_ids=[wa_id])
+            self.database.delete_user(email)
+        except (KeyError, ValueError, sqlite3.Error) as exc:
+            print(f"Could not fold an empty account into a family: {exc}", flush=True)
+            return False
+        return True
+
+    def _member_joined(self, outcome: dict[str, Any], phone_number_id: str) -> dict[str, Any]:
+        member = outcome.get("member") if isinstance(outcome.get("member"), dict) else {}
+        self._tell_owner_someone_joined(int(outcome.get("userId") or 0), member)
+        return {
+            "type": "family_join",
+            "action": "member_joined",
+            "member_id": int(member.get("id") or 0),
+            "role": household.normalize_role(member.get("role")),
+            "phone_number_id": normalize_text(phone_number_id),
+            "folded_own_account": bool(outcome.get("foldedOwnAccount")),
+            "open_conversation": True,
+        }
+
+    def _account_holder_name(self, user_id: int) -> str:
+        user = self.database.get_user_by_id(user_id) if int(user_id or 0) > 0 else None
+        return normalize_text((user or {}).get("displayName") or (user or {}).get("name"))
+
+    def _join_refusal_situation(
+        self, outcome: dict[str, Any], invite: dict[str, Any] | None, *, request: str,
+    ) -> dict[str, Any]:
+        """Why this phone cannot join with this invitation, as the facts the
+        reply is written from, and the one thing that would get them in."""
+
+        reason = normalize_text(outcome.get("reason"))
+        holder = self._account_holder_name(int((invite or {}).get("userId") or outcome.get("inviterUserId") or 0))
+        family = f"{holder}'s family" if holder else "the family"
+        sender = holder or "whoever sent it"
+        fresh_link = make_option("step", label=f"ask {sender} to send a fresh invitation link")
+        if reason == "expired":
+            happened = f"That invitation to join {family} on Assistyca has run out, or a newer link has replaced it."
+            options = [make_option("step", label=f"open the newest link {sender} sent, or ask {sender} for a fresh one")]
+        elif reason == "already_claimed":
+            happened, options = f"That invitation to join {family} has already been used.", [fresh_link]
+        elif reason == "inactive_account":
+            happened, options = "The account that invitation is for is no longer open on Assistyca, so it cannot bring anyone in.", []
+        elif reason == "number_taken" and outcome.get("takenAs") == "member":
+            happened = f"This phone is already part of another family's account on Assistyca, so it cannot join {family} as well."
+            options = [make_option(
+                "say", say="sign out",
+                label="signs this phone out of the other family; after that, opening the invitation again brings them in",
+            )]
+        elif reason == "number_taken":
+            happened = f"This phone has its own Assistyca account with things kept in it, so it cannot join {family} as well."
+            options = [make_option(
+                "step",
+                label=(
+                    "keep their own account as it is, or - to be on the family's instead - delete their own "
+                    "account first (everything kept in it goes) and then open the invitation again"
+                ),
+            )]
+        else:
+            happened = "That invitation link is not a valid one: the code in the message does not match any invitation."
+            options = [fresh_link]
+        return build_situation("not_supported", request=request, what_happened=happened, options=options)
+
+    def _send_join_situation(
+        self,
+        sender_wa_id: str,
+        situation: dict[str, Any],
+        *,
+        message_text: str,
+        user_ids: tuple[int, ...] = (),
+    ) -> str:
+        """Write and send the one reply a phone gets about joining a family.
+
+        The words are the composer's, in the person's language: what they
+        wrote beyond the link's own words says it, else the language of the
+        account they are on, else the family's that invited them."""
+
+        accounts = [user_id for user_id in user_ids if int(user_id or 0) > 0]
+        language = detect_message_language(words_beyond_family_join(message_text))
+        if not language and accounts:
+            language = resolve_message_language(self.database, user_id=accounts[0])
+        email = ""
+        if accounts:
+            email = normalize_email((self.database.get_user_by_id(accounts[0]) or {}).get("email"))
+        reply, _composed = self._compose_recovery_reply(
+            situation,
+            conversation=[{"role": "user", "text": message_text}] if message_text else [],
+            channel="whatsapp",
+            timezone_name=infer_timezone_from_wa_id(sender_wa_id) or "UTC",
+            email=email,
+            language=language,
+        )
+        try:
+            return send_assistyca_text(recipient_wa_id=sender_wa_id, text=reply)
+        except Exception as exc:  # noqa: BLE001 - the refusal stands whether or not the note went
             print(f"Family invitation reply could not be sent: {exc}", flush=True)
-        return {"type": "family_join", "action": "join_link_not_for_this_phone", "message_id": message_id}
+            return ""
+
+    def _tell_departed_phone(self, phone_number_id: str, event: dict[str, Any]) -> dict[str, Any] | None:
+        """The first message from a phone the account holder took off the
+        family. It would otherwise open an account of its own without a
+        word; it is told once that it was taken off, and what would bring
+        it back. The message after that is a stranger's like any other."""
+
+        if normalize_text(phone_number_id) != resolve_whatsapp_sender_phone_number_id():
+            return None
+        if not whatsapp_agent_chat_enabled():
+            return None
+        sender_wa_id = normalize_whatsapp_number(event.get("sender_wa_id"))
+        departure = self.database.get_household_departure(sender_wa_id) if sender_wa_id else None
+        if not departure:
+            return None
+        self.database.mark_household_departure_told(sender_wa_id)
+        family_user_id = int(departure.get("userId") or 0)
+        holder = self._account_holder_name(family_user_id) or "The account holder"
+        message_text = normalize_text(event.get("message_text"))
+        situation = build_situation(
+            "not_supported",
+            request=message_text,
+            what_happened=(
+                f"{holder} took {normalize_text(departure.get('memberName')) or 'them'} off the family's account "
+                "on Assistyca, so this phone no longer reaches the family's week."
+            ),
+            options=[make_option(
+                "step",
+                label=(
+                    f"if that was a mistake, ask {holder} to send a fresh invitation link; to have an assistant "
+                    "of their own instead, just write again"
+                ),
+            )],
+        )
+        message_id = self._send_join_situation(
+            sender_wa_id, situation, message_text=message_text, user_ids=(family_user_id,),
+        )
+        return {
+            "type": "family_join",
+            "action": "told_taken_off_family",
+            "message_id": message_id,
+            "phone_number_id": normalize_text(phone_number_id),
+        }
 
     def _tell_owner_someone_joined(self, user_id: int, member: dict[str, Any]) -> None:
         """One line to the account holder that the person they invited is in,
@@ -16661,6 +16875,10 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 # read the code as the first thing a stranger said.
                 signup_result = self._handle_household_invite(phone_number_id, event)
                 if signup_result is None:
+                    # Someone just taken off a family hears that first,
+                    # rather than having an account of their own opened.
+                    signup_result = self._tell_departed_phone(phone_number_id, event)
+                if signup_result is None:
                     signup_result = self._handle_whatsapp_signup(phone_number_id, event)
                 if signup_result is not None:
                     results.append(signup_result)
@@ -16720,7 +16938,19 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                     invite_reply["route"] = route_source
                     invite_reply["phone_number_id"] = phone_number_id
                     results.append(invite_reply)
-                    continue
+                    if not invite_reply.get("open_conversation"):
+                        continue
+                    # The phone joined a family just now: this message is
+                    # the first thing said there, answered by the assistant.
+                    connection, route_source = self._resolve_whatsapp_connection_for_webhook(
+                        phone_number_id,
+                        owner_wa_id=normalize_text(event.get("sender_wa_id")),
+                        group_id=normalize_text(event.get("group_id")),
+                    )
+                    if not connection:
+                        continue
+                    routed_user_ids.add(int(connection.get("userId") or 0))
+                    self._record_whatsapp_agent_chat_activity(connection, event, phone_number_id=phone_number_id)
                 agent_result = self._handle_whatsapp_agent_chat_message(connection, event)
                 agent_result["route"] = route_source
                 agent_result["phone_number_id"] = phone_number_id

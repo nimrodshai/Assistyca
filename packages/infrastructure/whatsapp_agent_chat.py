@@ -221,6 +221,32 @@ def build_whatsapp_claim_link(code: str) -> str:
 # What a phone sends to join a family's account: the words a join link puts
 # in the message, with the invitation code after them.
 FAMILY_JOIN_WORDS = "Assistyca family"
+_FAMILY_JOIN_RE = re.compile(r"\bassistyca\s+family\b", re.IGNORECASE)
+
+
+def read_family_join(text: Any) -> tuple[str, bool]:
+    """The invitation code in a message, and whether the message is a join.
+
+    A join link writes "Assistyca family CODE", and the code is the one
+    after those words - not the first word of the right shape, which in
+    "THANKS Assistyca family YE7MJU" is THANKS. A message with the words is
+    someone joining whatever the code says, so a code nobody issued is
+    still answered; without them, the code is looked for anywhere and an
+    unknown one means nothing.
+    """
+
+    value = str(text or "")
+    match = _FAMILY_JOIN_RE.search(value)
+    if match is None:
+        return extract_whatsapp_claim_code(value), False
+    return extract_whatsapp_claim_code(value[match.end():]), True
+
+
+def words_beyond_family_join(text: Any) -> str:
+    """What someone wrote around a join link's own words and code: the only
+    part of such a message that says which language they write in."""
+
+    return " ".join(_CLAIM_CODE_RE.sub(" ", _FAMILY_JOIN_RE.sub(" ", str(text or ""))).split())
 
 
 def build_whatsapp_join_link(code: str) -> str:

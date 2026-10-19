@@ -40,6 +40,7 @@ from packages.infrastructure.notification_delivery import deliver_portal_notific
 from packages.infrastructure.notification_delivery import send_whatsapp_notification
 from packages.infrastructure.portal_db import PortalDatabase
 from packages.infrastructure.portal_db import normalize_text
+from packages.infrastructure.portal_db import normalize_whatsapp_lookup_id
 from packages.infrastructure.schedule_exceptions import action_exception
 from packages.infrastructure.schedule_exceptions import held_until
 from packages.infrastructure.standing_tasks import STANDING_TASK_ACTION_TYPE
@@ -258,6 +259,18 @@ class ScheduledActionScheduler:
                     payload=claimed.get("payload") if isinstance(claimed.get("payload"), dict) else {},
                 )
                 continue
+            if self._recipient_left(claimed):
+                # Set up from a phone that has since been signed out or taken
+                # off the family: it is owed nothing, and a standing action
+                # would otherwise go on acting with the account's own reach.
+                print(f"[scheduled-actions] action={claimed.get('id')} its phone left the account, not sent", flush=True)
+                self.database.finish_scheduled_action(
+                    action_id=int(claimed.get("id") or 0),
+                    status="cancelled",
+                    last_error="The phone this was for no longer reaches the account.",
+                    payload=claimed.get("payload") if isinstance(claimed.get("payload"), dict) else {},
+                )
+                continue
             try:
                 provider_message_id = self._dispatch(claimed)
             except NothingNewToSend:
@@ -311,6 +324,30 @@ class ScheduledActionScheduler:
             "fallback": fallback,
             "recovered": recovered,
         }
+
+    def _recipient_left(self, action: dict[str, Any]) -> bool:
+        """Whether the phone this action was set up for no longer reaches its
+        account. Only a named phone can leave: a group, "the owner" and an
+        action with no phone of its own go where the account says."""
+
+        payload = action.get("payload") if isinstance(action.get("payload"), dict) else {}
+        recipient = normalize_text(payload.get("recipientWaId"))
+        if not recipient or recipient.startswith(GROUP_RECIPIENT_PREFIX) or recipient.lower() in OWNER_RECIPIENT_REFS:
+            return False
+        number = normalize_whatsapp_lookup_id(recipient)
+        user_id = int(action.get("userId") or 0)
+        if not number or user_id <= 0:
+            return False
+        try:
+            if self.database.get_user_id_for_whatsapp_number(number) == user_id:
+                return False
+            connection = self.database.get_whatsapp_connection_by_user_id(user_id) or {}
+        except Exception as exc:  # noqa: BLE001 - a store that cannot say leaves the action to run
+            print(f"[scheduled-actions] action={action.get('id')} could not check its phone: {exc}", flush=True)
+            return False
+        # The older setup keeps the owner's own number on the connection
+        # rather than as a linked phone; that number is the account's.
+        return normalize_whatsapp_lookup_id(connection.get("ownerWaId")) != number
 
     def _pause_for(self, action: dict[str, Any]) -> dict[str, Any] | None:
         """The exception holding this action today, on the person's clock,

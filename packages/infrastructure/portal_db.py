@@ -548,6 +548,18 @@ CREATE TABLE IF NOT EXISTS household_invites (
     FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
+-- A phone taken off a family by the account holder. Its next message would
+-- otherwise read as a stranger's hello and quietly open an account of its
+-- own; it is told once that it was taken off instead. told_at is when.
+CREATE TABLE IF NOT EXISTS household_departures (
+    wa_id TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    member_name TEXT NOT NULL DEFAULT '',
+    left_at TEXT NOT NULL,
+    told_at TEXT NOT NULL DEFAULT '',
+    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
 -- One row per thing that happens every week: kindergarten Sunday to
 -- Thursday, football on Tuesdays. who is the names it is for; days are
 -- weekday codes; drop_off_by and pick_up_by are who drives, "me" for the
@@ -5433,6 +5445,10 @@ class PortalDatabase:
                     "DELETE FROM whatsapp_agent_thread_state WHERE user_id = ? AND thread_id = ?",
                     (resolved_user_id, household.member_thread_id(number)),
                 )
+                self._cancel_scheduled_actions_for_phone(
+                    conn, user_id=resolved_user_id, wa_id=number,
+                    reason="The phone this was for was signed out of the account.",
+                )
             conn.commit()
             return int(cursor.rowcount or 0) > 0
 
@@ -8702,22 +8718,30 @@ class PortalDatabase:
             ).fetchone()
         return self._household_member_row(row) or {}
 
-    def remove_household_member(self, *, user_id: int, name: str, group_id: str = "") -> bool:
+    def remove_household_member(self, *, user_id: int, name: str, group_id: str = "") -> dict[str, Any] | None:
         """Take someone out of the family. A phone they joined from goes with
-        them: it no longer reaches the account, and an invitation still
-        standing for them is withdrawn."""
+        them: it no longer reaches the account, what was set to go to it is
+        called off, and an invitation still standing for them is withdrawn.
+        The drives that were theirs are left with nobody down for them, so
+        the week asks who takes them instead of reminding someone who is no
+        longer there.
+
+        Returns what changed - the name, whether a phone went, and the drives
+        now open - or None when nobody by that name is in the family."""
 
         key = household.name_key(name)
         if int(user_id or 0) <= 0 or not key:
-            return False
+            return None
         scope = normalize_text(group_id)
+        stamp = now_iso()
         with self._connection() as conn:
             existing = conn.execute(
-                "SELECT id, wa_id FROM household_members WHERE user_id = ? AND group_id = ? AND name_key = ?",
+                "SELECT id, name, wa_id FROM household_members WHERE user_id = ? AND group_id = ? AND name_key = ?",
                 (int(user_id), scope, key),
             ).fetchone()
             if existing is None:
-                return False
+                return None
+            member_name = str(existing["name"] or "")
             number = str(existing["wa_id"] or "")
             if number:
                 conn.execute(
@@ -8728,12 +8752,197 @@ class PortalDatabase:
                     "DELETE FROM whatsapp_agent_thread_state WHERE user_id = ? AND thread_id = ?",
                     (int(user_id), household.member_thread_id(number)),
                 )
+                self._cancel_scheduled_actions_for_phone(
+                    conn, user_id=int(user_id), wa_id=number,
+                    reason=f"{member_name} was taken off the family, and this phone with them.",
+                )
+                conn.execute(
+                    """
+                    INSERT INTO household_departures (wa_id, user_id, member_name, left_at, told_at)
+                    VALUES (?, ?, ?, ?, '')
+                    ON CONFLICT(wa_id) DO UPDATE SET
+                        user_id = excluded.user_id,
+                        member_name = excluded.member_name,
+                        left_at = excluded.left_at,
+                        told_at = ''
+                    """,
+                    (number, int(user_id), member_name, stamp),
+                )
+            opened = self._open_drives_of(conn, user_id=int(user_id), group_id=scope, name=member_name, stamp=stamp)
             conn.execute(
                 "DELETE FROM household_invites WHERE user_id = ? AND member_id = ?",
                 (int(user_id), int(existing["id"])),
             )
             conn.execute("DELETE FROM household_members WHERE id = ?", (int(existing["id"]),))
             conn.commit()
+        return {"name": member_name, "phoneUnlinked": bool(number), "drivesNowOpen": opened}
+
+    def household_member_drives(self, *, user_id: int, name: str, group_id: str = "") -> list[dict[str, Any]]:
+        """The drives written under one person's name: each weekly leg, and
+        each dated one from today on, as {activityId, title, leg, day?}."""
+
+        if int(user_id or 0) <= 0 or not household.name_key(name):
+            return []
+        with self._connection() as conn:
+            return self._drives_of(conn, user_id=int(user_id), group_id=normalize_text(group_id), name=name)
+
+    def _drives_of(self, conn: sqlite3.Connection, *, user_id: int, group_id: str, name: str) -> list[dict[str, Any]]:
+        found: list[dict[str, Any]] = []
+        titles: dict[int, str] = {}
+        for row in conn.execute(
+            "SELECT id, title, drop_off_by, pick_up_by FROM household_activities WHERE user_id = ? AND group_id = ? ORDER BY id",
+            (user_id, group_id),
+        ).fetchall():
+            titles[int(row["id"])] = str(row["title"] or "")
+            for leg, column in (("drop_off", "drop_off_by"), ("pick_up", "pick_up_by")):
+                if household.is_named(row[column], [name]):
+                    found.append({"activityId": int(row["id"]), "title": str(row["title"] or ""), "leg": leg})
+        # From yesterday on UTC's clock, so today on the family's own clock
+        # is never missed; a dated drive already gone by says nothing.
+        today = (datetime.now(timezone.utc) - timedelta(days=1)).date().isoformat()
+        for row in conn.execute(
+            "SELECT activity_id, day, leg, who FROM household_day_drives WHERE user_id = ? AND group_id = ? AND day >= ? ORDER BY day, id",
+            (user_id, group_id, today),
+        ).fetchall():
+            if household.is_named(row["who"], [name]):
+                found.append({
+                    "activityId": int(row["activity_id"]),
+                    "title": titles.get(int(row["activity_id"]), ""),
+                    "leg": str(row["leg"] or ""),
+                    "day": str(row["day"] or ""),
+                })
+        return found
+
+    def _open_drives_of(
+        self, conn: sqlite3.Connection, *, user_id: int, group_id: str, name: str, stamp: str,
+    ) -> list[dict[str, Any]]:
+        """Leave every drive written under this name with nobody down for it.
+        A dated one stays as an empty answer for its day rather than going,
+        so that day is asked about instead of falling back to the usual
+        driver, who may be the reason it was somebody else's that day."""
+
+        opened = self._drives_of(conn, user_id=user_id, group_id=group_id, name=name)
+        for drive in opened:
+            if drive.get("day"):
+                conn.execute(
+                    "UPDATE household_day_drives SET who = '', updated_at = ? "
+                    "WHERE user_id = ? AND group_id = ? AND activity_id = ? AND day = ? AND leg = ?",
+                    (stamp, user_id, group_id, drive["activityId"], drive["day"], drive["leg"]),
+                )
+            else:
+                column = "drop_off_by" if drive["leg"] == "drop_off" else "pick_up_by"
+                conn.execute(
+                    f"UPDATE household_activities SET {column} = '', updated_at = ? WHERE id = ?",
+                    (stamp, drive["activityId"]),
+                )
+        return opened
+
+    def _cancel_scheduled_actions_for_phone(
+        self, conn: sqlite3.Connection, *, user_id: int, wa_id: str, reason: str,
+    ) -> int:
+        """Call off everything still waiting to go to one phone on this
+        account: its reminders and its standing actions. A phone that has
+        left the account is owed nothing from it, and a standing action
+        left running would go on acting with the account's own reach."""
+
+        number = normalize_whatsapp_lookup_id(wa_id)
+        if not number:
+            return 0
+        stamp = now_iso()
+        cancelled = 0
+        for row in conn.execute(
+            "SELECT id, payload_json FROM scheduled_actions WHERE user_id = ? AND status = 'pending'",
+            (int(user_id),),
+        ).fetchall():
+            try:
+                payload = json.loads(row["payload_json"] or "{}")
+            except (TypeError, ValueError):
+                continue
+            if not isinstance(payload, dict) or normalize_whatsapp_lookup_id(payload.get("recipientWaId")) != number:
+                continue
+            conn.execute(
+                "UPDATE scheduled_actions SET status = 'cancelled', last_error = ?, completed_at = ?, updated_at = ? "
+                "WHERE id = ? AND status = 'pending'",
+                (normalize_text(reason)[:2000], stamp, stamp, int(row["id"])),
+            )
+            cancelled += 1
+        return cancelled
+
+    def get_household_departure(self, wa_id: str, *, max_age_days: int = 30) -> dict[str, Any] | None:
+        """The family this phone was taken off lately, while it has not yet
+        been told: {userId, memberName, leftAt}. None otherwise."""
+
+        number = normalize_whatsapp_lookup_id(wa_id)
+        if not number:
+            return None
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=max(1, int(max_age_days)))).isoformat()
+        with self._connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM household_departures WHERE wa_id = ? AND told_at = '' AND left_at >= ?",
+                (number, cutoff),
+            ).fetchone()
+        if row is None:
+            return None
+        return {"userId": int(row["user_id"]), "memberName": str(row["member_name"] or ""), "leftAt": str(row["left_at"])}
+
+    def mark_household_departure_told(self, wa_id: str) -> None:
+        number = normalize_whatsapp_lookup_id(wa_id)
+        if not number:
+            return
+        with self._connection() as conn:
+            conn.execute("UPDATE household_departures SET told_at = ? WHERE wa_id = ?", (now_iso(), number))
+            conn.commit()
+
+    # What an account a phone opened by texting may hold and still have
+    # nothing in it to lose: the conversation so far and the bookkeeping
+    # around it. Anything else - a family, a list, a reminder, a mailbox, a
+    # payment, and any table added later - is something the person made.
+    _NOTHING_TO_LOSE_TABLES = frozenset({
+        "agent_turns", "agent_action_approvals", "household_profiles", "household_nudges",
+        "notifications", "usage_events", "user_billing", "whatsapp_signups",
+        "whatsapp_agent_messages", "whatsapp_agent_state", "whatsapp_agent_thread_state",
+        "feature_assignments", "feature_entitlements", "feature_activations", "feature_activation_events",
+        "feature_monitor_runs", "feature_monitor_notifications", "household_departures", "list_open_codes",
+    })
+
+    def account_holds_nothing(self, *, user_id: int, wa_id: str) -> bool:
+        """Whether an account is only a conversation: reached by this one
+        phone and nobody else, no admin, and nothing saved in it beyond the
+        name it was opened under. Such an account can give way to a family
+        invitation without anyone losing anything."""
+
+        resolved_user_id = int(user_id or 0)
+        number = normalize_whatsapp_lookup_id(wa_id)
+        if resolved_user_id <= 0 or not number:
+            return False
+        with self._connection() as conn:
+            user = conn.execute("SELECT is_admin FROM users WHERE id = ?", (resolved_user_id,)).fetchone()
+            if user is None or bool(user["is_admin"]):
+                return False
+            tables = [
+                str(row["name"])
+                for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
+            ]
+            for table in tables:
+                if table == "users" or table in self._NOTHING_TO_LOSE_TABLES:
+                    continue
+                columns = {str(row["name"]) for row in conn.execute(f'PRAGMA table_info("{table}")').fetchall()}
+                if "user_id" not in columns:
+                    continue
+                if table == "user_whatsapp_numbers":
+                    clause, params = "wa_id <> ?", (number,)
+                elif table == "account_facts":
+                    clause, params = "fact_key <> 'name'", ()
+                elif table == "scheduled_actions":
+                    clause, params = "status IN ('pending', 'running')", ()
+                else:
+                    clause, params = "1 = 1", ()
+                found = conn.execute(
+                    f'SELECT 1 FROM "{table}" WHERE user_id = ? AND {clause} LIMIT 1',
+                    (resolved_user_id, *params),
+                ).fetchone()
+                if found is not None:
+                    return False
         return True
 
     # -- joining the account from another phone ------------------------------
@@ -8756,9 +8965,13 @@ class PortalDatabase:
         created_at = now_iso()
         expiry = expires_at.astimezone(timezone.utc).isoformat()
         with self._connection() as conn:
+            # The older link is retired by running it out now rather than
+            # forgotten: opened later, it is still known as this family's,
+            # so the person is told in the family's language to use the
+            # newer one instead of being taken for a stranger.
             conn.execute(
-                "DELETE FROM household_invites WHERE user_id = ? AND member_id = ? AND claimed_at IS NULL",
-                (int(user_id), int(member_id)),
+                "UPDATE household_invites SET expires_at = ? WHERE user_id = ? AND member_id = ? AND claimed_at IS NULL AND expires_at > ?",
+                (created_at, int(user_id), int(member_id), created_at),
             )
             conn.execute(
                 """
@@ -8883,8 +9096,21 @@ class PortalDatabase:
             if existing is not None and int(existing["user_id"]) != user_id:
                 # The phone already answers for another account. Joining a
                 # family must never take someone's own conversation from them.
+                # Whose it is - their own account, or another family they
+                # joined - is said, because each is answered differently.
+                elsewhere = conn.execute(
+                    "SELECT 1 FROM household_members WHERE user_id = ? AND wa_id = ? LIMIT 1",
+                    (int(existing["user_id"]), number),
+                ).fetchone()
                 conn.rollback()
-                return {"ok": False, "reason": "number_taken"}
+                return {
+                    "ok": False,
+                    "reason": "number_taken",
+                    "takenAs": "member" if elsewhere is not None else "own_account",
+                    "takenByUserId": int(existing["user_id"]),
+                    "inviterUserId": user_id,
+                    "memberName": str(row["member_name"] or ""),
+                }
             stamp = moment.isoformat()
             conn.execute(
                 """
@@ -8911,6 +9137,7 @@ class PortalDatabase:
                 "UPDATE household_invites SET claimed_at = ?, claimed_wa_id = ? WHERE code = ?",
                 (stamp, number, normalized_code),
             )
+            conn.execute("DELETE FROM household_departures WHERE wa_id = ?", (number,))
             conn.commit()
         member = self.get_household_member(user_id=user_id, member_id=int(row["member_id"])) or {}
         return {"ok": True, "userId": user_id, "waId": number, "member": member, "claimedAt": stamp}

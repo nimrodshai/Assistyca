@@ -960,16 +960,18 @@ class FamilyOnTheirOwnPhonesTests(unittest.TestCase):
         self.database.link_user_whatsapp_number(user_id=other_id, wa_id="972500000009")
         self.invite(self.rina, "RINA22")
         self.assertEqual(self.database.claim_household_invite(code="RINA22", wa_id="972500000009")["reason"], "number_taken")
-        # One live invitation per person: a fresh one retires the last.
+        # One live invitation per person: a fresh one retires the last. The
+        # retired one is still known, so whoever opens it later is told to
+        # use the newer link rather than taken for a stranger.
         stale = self.database.create_household_invite(
             user_id=self.user_id, member_id=int(self.rina["id"]), code="RINA44",
             expires_at=datetime.now(timezone.utc) - timedelta(minutes=1),
         )
-        self.assertIsNone(self.database.get_household_invite("RINA22"))
+        self.assertEqual(self.database.get_household_invite("RINA22")["status"], "expired")
         self.assertEqual(self.database.get_household_invite(stale["code"])["status"], "expired")
         self.assertEqual(self.database.claim_household_invite(code="RINA44", wa_id="972500000005")["reason"], "expired")
         self.invite(self.rina, "RINA33")
-        self.assertIsNone(self.database.get_household_invite("RINA44"))
+        self.assertEqual(self.database.get_household_invite("RINA44")["status"], "expired")
         self.assertEqual(self.database.get_household_invite("RINA33")["status"], "live")
         # The account holder's own phone is the one "the owner" means, however
         # many family phones joined after it.
@@ -1079,6 +1081,161 @@ class FamilyOnTheirOwnPhonesTests(unittest.TestCase):
         self.assertNotIn("CONTEXT.speaker", build_loop_context_text(
             user_message="hi", conversation=[], timezone_name="UTC", today="2026-09-20", tool_context={}, facts=[], channel="whatsapp",
         ))
+
+
+class LeavingTheFamilyTests(unittest.TestCase):
+    """Someone taken off the family, or signing their phone out, leaves
+    nothing behind that still acts for them: no reminder, no standing
+    action, and no drive still written under their name."""
+
+    YOAV_PHONE = "972500000002"
+
+    def setUp(self) -> None:
+        from datetime import datetime, timedelta, timezone
+
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.database = PortalDatabase(Path(self.temp_dir.name) / "portal.db")
+        self.database.register_user("parent@example.com", display_name="Dana Levi")
+        self.user_id = int((self.database.get_user("parent@example.com") or {})["id"])
+        self.database.link_user_whatsapp_number(user_id=self.user_id, wa_id="972500000001")
+        yoav = self.database.save_household_member(user_id=self.user_id, name="Yoav", role="partner")
+        self.database.save_household_member(user_id=self.user_id, name="Tom", role="child", age=4)
+        self.activity = self.database.save_household_activity(
+            user_id=self.user_id, title="Kindergarten", who=["Tom"], days=["sun", "tue"],
+            start_time="07:30", end_time="16:00", drop_off_by="me", pick_up_by="Yoav",
+        )
+        self.database.create_household_invite(
+            user_id=self.user_id, member_id=int(yoav["id"]), code="ABC234",
+            expires_at=datetime.now(timezone.utc) + timedelta(days=14),
+        )
+        self.database.claim_household_invite(code="ABC234", wa_id=self.YOAV_PHONE, label="Yoav")
+        self.tomorrow = (datetime.now(timezone.utc) + timedelta(days=1)).date().isoformat()
+
+    def tearDown(self) -> None:
+        self.temp_dir.cleanup()
+
+    def _action(self, recipient: str, *, action_type: str = "send_message") -> dict:
+        from datetime import datetime, timedelta, timezone
+
+        payload = {"messageText": "Take the bins out", "instruction": "Summarise the news", "recipientWaId": recipient}
+        return self.database.create_scheduled_action(
+            user_id=self.user_id, action_type=action_type, channel="whatsapp", recipient_ref="owner",
+            run_at=datetime.now(timezone.utc) + timedelta(hours=1), timezone_name="Asia/Jerusalem", payload=payload,
+        )
+
+    def _status(self, action: dict) -> str:
+        return str((self.database.get_scheduled_action(int(action["id"])) or {}).get("status"))
+
+    def test_taking_someone_off_calls_off_what_was_set_for_their_phone(self) -> None:
+        reminder = self._action(self.YOAV_PHONE)
+        standing = self._action(self.YOAV_PHONE, action_type="run_task")
+        owners = self._action("972500000001")
+
+        removed = self.database.remove_household_member(user_id=self.user_id, name="yoav")
+
+        self.assertTrue(removed["phoneUnlinked"])
+        self.assertEqual((self._status(reminder), self._status(standing)), ("cancelled", "cancelled"))
+        self.assertEqual(self._status(owners), "pending", "the account holder's own reminders stay")
+
+    def test_signing_a_phone_out_calls_off_what_was_set_for_it(self) -> None:
+        reminder = self._action(self.YOAV_PHONE, action_type="run_task")
+        self.assertTrue(self.database.delete_user_whatsapp_number(user_id=self.user_id, wa_id=self.YOAV_PHONE))
+        self.assertEqual(self._status(reminder), "cancelled")
+
+    def test_the_scheduler_never_acts_for_a_phone_that_left_the_account(self) -> None:
+        from datetime import datetime, timedelta, timezone
+        from unittest import mock
+
+        from packages.infrastructure.scheduled_actions import ScheduledActionConfig
+        from packages.infrastructure.scheduled_actions import ScheduledActionScheduler
+
+        # Written straight to the store after the phone went, the way a
+        # standing action already running when it was removed comes back.
+        self.database.remove_household_member(user_id=self.user_id, name="Yoav")
+        orphan = self.database.create_scheduled_action(
+            user_id=self.user_id, action_type="run_task", channel="whatsapp", recipient_ref="owner",
+            run_at=datetime.now(timezone.utc) - timedelta(seconds=5), timezone_name="Asia/Jerusalem",
+            payload={"instruction": "Read my inbox", "recipientWaId": self.YOAV_PHONE},
+        )
+        ran: list[dict] = []
+        scheduler = ScheduledActionScheduler(
+            self.database,
+            config=ScheduledActionConfig(enabled=True, poll_seconds=1, batch_size=10),
+            task_runner=lambda action: ran.append(action) or "done",
+        )
+        with mock.patch("packages.infrastructure.whatsapp_messaging.send_whatsapp_message", return_value="wamid.1") as send:
+            scheduler.run_pending(now=datetime.now(timezone.utc))
+        self.assertEqual(ran, [], "the standing action never ran with the account's reach")
+        send.assert_not_called()
+        self.assertEqual(self._status(orphan), "cancelled")
+
+    def test_their_drives_are_left_open_so_the_week_asks_about_them(self) -> None:
+        self.database.save_household_day_drive(
+            user_id=self.user_id, activity_id=int(self.activity["id"]), day=self.tomorrow, leg="drop_off", who="Yoav",
+        )
+        removed = self.database.remove_household_member(user_id=self.user_id, name="Yoav")
+
+        self.assertEqual(removed["drivesNowOpen"], [
+            {"activityId": self.activity["id"], "title": "Kindergarten", "leg": "pick_up"},
+            {"activityId": self.activity["id"], "title": "Kindergarten", "leg": "drop_off", "day": self.tomorrow},
+        ])
+        [kindergarten] = self.database.list_household_activities(user_id=self.user_id)
+        self.assertEqual((kindergarten["dropOffBy"], kindergarten["pickUpBy"]), ("me", ""))
+        self.assertEqual(household.activity_gaps(kindergarten), ["pick_up"])
+        [day] = self.database.list_household_day_drives(user_id=self.user_id)
+        self.assertEqual((day["day"], day["leg"], day["who"]), (self.tomorrow, "drop_off", ""))
+
+    def test_taking_someone_off_needs_a_yes_that_names_what_goes_with_them(self) -> None:
+        tool = TOOLS_BY_NAME["remove_family_member"]
+        self.assertTrue(tool.confirm)
+        context = LoopContext(
+            api=lambda *a, **k: ({}, 200), database=self.database, email="parent@example.com",
+            user_id=self.user_id, timezone_name="Asia/Jerusalem", channel="whatsapp", sender_wa_id="972500000001",
+        )
+        from packages.infrastructure.agent_loop import _describe_call
+
+        described = _describe_call(context, tool, {"name": "Yoav"})
+        self.assertIn("take Yoav out of the family", described)
+        self.assertIn("phone stops reaching the account", described)
+        self.assertIn("1 drive(s)", described)
+        self.assertEqual(tool.preflight(context, {"name": "Noa"})["error"]["code"], "not_found")
+
+        done = tool.run(context, {"name": "Yoav"})
+        self.assertTrue(done["ok"], done)
+        self.assertEqual(done["drivesNowOpen"][0]["leg"], "pick_up")
+        self.assertIn("Nobody is down for these drives", done["note"])
+
+    def test_a_member_signing_out_is_told_how_to_come_back_without_an_email(self) -> None:
+        context = LoopContext(
+            api=lambda *a, **k: ({"ok": True}, 200), database=self.database, email="parent@example.com",
+            user_id=self.user_id, timezone_name="Asia/Jerusalem", channel="whatsapp", sender_wa_id=self.YOAV_PHONE,
+            speaker=household.describe_speaker({"name": "Yoav", "role": "partner"}, owner_name="Dana Levi"),
+        )
+        note = TOOLS_BY_NAME["sign_out"].run(context, {})["note"]
+        self.assertIn("Dana Levi sends them a fresh invitation link", note)
+        self.assertNotIn("email", note)
+        # The account holder whose account this phone opened comes back by
+        # writing in; nobody is asked for an email.
+        from packages.infrastructure.whatsapp_agent_chat import whatsapp_account_email
+
+        owner = LoopContext(
+            api=lambda *a, **k: ({"ok": True}, 200), database=self.database, email=whatsapp_account_email("972500000001"),
+            user_id=self.user_id, timezone_name="Asia/Jerusalem", channel="whatsapp", sender_wa_id="972500000001",
+        )
+        note = TOOLS_BY_NAME["sign_out"].run(owner, {})["note"]
+        self.assertIn("Writing to this number again", note)
+        self.assertNotIn("email", note)
+
+    def test_an_account_that_is_only_a_conversation_holds_nothing(self) -> None:
+        self.database.register_user("wa-447700900123@whatsapp.assistyca.com")
+        own = int(self.database.get_user("wa-447700900123@whatsapp.assistyca.com")["id"])
+        self.database.link_user_whatsapp_number(user_id=own, wa_id="447700900123")
+        self.database.save_whatsapp_agent_message(user_id=own, role="user", text="hi")
+        self.database.save_account_fact(user_id=own, key="name", fact="Their name is Yoav.", pinned=True)
+        self.assertTrue(self.database.account_holds_nothing(user_id=own, wa_id="447700900123"))
+        self.assertFalse(self.database.account_holds_nothing(user_id=own, wa_id="447700900999"), "another phone reaches it")
+        self.database.create_account_list(user_id=own, name="Groceries", kind="shopping", items=[])
+        self.assertFalse(self.database.account_holds_nothing(user_id=own, wa_id="447700900123"))
 
 
 class JoinPageTests(unittest.TestCase):

@@ -65,6 +65,7 @@ from packages.infrastructure.whatsapp_agent_chat import connection_display_name
 from packages.infrastructure.whatsapp_agent_chat import connections_for_disconnect
 from packages.infrastructure.whatsapp_agent_chat import describe_local_time
 from packages.infrastructure.whatsapp_agent_chat import generate_whatsapp_claim_code
+from packages.infrastructure.whatsapp_agent_chat import whatsapp_account_email
 from packages.infrastructure.whatsapp_agent_chat import resolve_scheduled_message_run_at
 from packages.infrastructure.standing_news import describe_window
 from packages.infrastructure.standing_news import item_fingerprints
@@ -1293,14 +1294,23 @@ def _tool_sign_out(context: LoopContext, args: dict[str, Any]) -> dict[str, Any]
     response, status = context.api("DELETE", f"/api/whatsapp/my-numbers/{number}")
     if status != 200 or not response.get("ok"):
         return _error("internal", "Could not sign this phone out just now.", can_retry=True)
-    return _ok({
-        "signedOut": True,
-        "note": (
-            "This phone is unlinked and messages from it no longer reach the account. The account and "
-            "everything in it stay. To use this phone again: sign in at assistyca.com and get a link code "
-            "from Settings, or text here and sign in with the account's email when asked."
-        ),
-    })
+    return _ok({"signedOut": True, "note": _signed_out_note(context, number)})
+
+
+def _signed_out_note(context: LoopContext, number: str) -> str:
+    """How this phone gets back, for whoever signed it out. A family member
+    comes back through a fresh invitation from the account holder. An
+    account this phone opened by texting in takes it back when it writes
+    again. Nobody is asked for an email: a family account has none."""
+
+    gone = "This phone is unlinked and messages from it no longer reach the account. The account and everything in it stay."
+    speaker = context.speaker or {}
+    if speaker and not speaker.get("isOwner"):
+        holder = str(speaker.get("accountHolder") or "").strip() or "the account holder"
+        return f"{gone} To come back on this phone, {holder} sends them a fresh invitation link to open on it."
+    if str(context.email or "").strip().lower() == whatsapp_account_email(number):
+        return f"{gone} Writing to this number again from this phone brings it straight back to the account."
+    return f"{gone} To use this phone again: sign in at assistyca.com and get a link code from Settings."
 
 
 def describe_delete_account(context: LoopContext) -> str:
@@ -2063,7 +2073,44 @@ def _tool_start_birthday_list(context: LoopContext, args: dict[str, Any]) -> dic
     ))
 
 
+def _family_member_named(context: LoopContext, name: str) -> dict[str, Any] | None:
+    key = household.name_key(name)
+    members = context.database.list_household_members(user_id=context.user_id, group_id=week_scope(context))
+    return next((member for member in members if household.name_key(member.get("name")) == key), None) if key else None
+
+
+def _preflight_remove_family_member(context: LoopContext, args: dict[str, Any]) -> dict[str, Any] | None:
+    name = str(args.get("name") or "").strip()
+    if _family_member_named(context, name) is None:
+        names = [
+            member["name"]
+            for member in context.database.list_household_members(user_id=context.user_id, group_id=week_scope(context))
+        ]
+        return _error("not_found", f"Nobody called {name!r} is in the family.", family=names)
+    return None
+
+
+def describe_remove_family_member(context: LoopContext, args: dict[str, Any]) -> str:
+    """Everything taking someone out changes, so the yes is to all of it."""
+
+    member = _family_member_named(context, str(args.get("name") or "")) or {}
+    name = str(member.get("name") or args.get("name") or "").strip()
+    parts = [f"take {name} out of the family for good"]
+    if member.get("waId"):
+        parts.append(
+            f"{name}'s phone stops reaching the account, their conversation here and what was set to go to "
+            "their phone are deleted, and coming back takes a fresh invitation"
+        )
+    drives = context.database.household_member_drives(user_id=context.user_id, name=name, group_id=week_scope(context))
+    if drives:
+        parts.append(f"the {len(drives)} drive(s) that are {name}'s are left with nobody down for them")
+    return "; ".join(parts)
+
+
 def _tool_remove_family_member(context: LoopContext, args: dict[str, Any]) -> dict[str, Any]:
+    problem = _preflight_remove_family_member(context, args)
+    if problem is not None:
+        return problem
     name = str(args.get("name") or "").strip()
     try:
         removed = context.database.remove_household_member(
@@ -2072,12 +2119,20 @@ def _tool_remove_family_member(context: LoopContext, args: dict[str, Any]) -> di
     except Exception as exc:  # noqa: BLE001
         return _error("internal", f"That could not be removed: {exc}", can_retry=True)
     if not removed:
-        names = [
-            member["name"]
-            for member in context.database.list_household_members(user_id=context.user_id, group_id=week_scope(context))
-        ]
-        return _error("not_found", f"Nobody called {name!r} is in the family.", family=names)
-    return _ok({"removed": name})
+        return _error("not_found", f"Nobody called {name!r} is in the family.")
+    result: dict[str, Any] = {"removed": removed.get("name") or name}
+    if removed.get("phoneUnlinked"):
+        result["phoneUnlinked"] = True
+    opened = removed.get("drivesNowOpen") or []
+    if opened:
+        # Their drives are open now, and the week will ask about them; the
+        # person should hear it from this reply first, not from tomorrow's ask.
+        result["drivesNowOpen"] = opened
+        result["note"] = (
+            "Nobody is down for these drives any more. Say so in a line and ask who takes them - or leave the "
+            "question to the evening ask if they would rather."
+        )
+    return _ok(result)
 
 
 def _tool_save_week_activity(context: LoopContext, args: dict[str, Any]) -> dict[str, Any]:
@@ -4291,10 +4346,16 @@ TOOLS: list[ToolSpec] = [
     ),
     ToolSpec(
         name="remove_family_member",
-        description="Take someone out of the family because the person asks to. name is as in household.members.",
+        description=(
+            "Take someone out of the family because the person asks to. name is as in household.members. "
+            "If they joined from their own phone, that phone is taken off the account with them; the drives "
+            "that were theirs are left with nobody down for them."
+        ),
         parameters=_params({"name": {"type": "string"}}),
         side_effect=True,
+        confirm=True,
         run=_tool_remove_family_member,
+        preflight=_preflight_remove_family_member,
     ),
     ToolSpec(
         name="invite_family_member",
@@ -4847,8 +4908,8 @@ _SCHEDULING = (
 )
 
 _CONFIRMATION = (
-    "Actions that need a yes: disconnect, sign_out, delete_account, send_email, create_calendar_event and "
-    "update_calendar_event return confirmation_required the first time. Then ask for a plain yes in the same "
+    "Actions that need a yes: disconnect, sign_out, delete_account, remove_family_member, send_email, "
+    "create_calendar_event and update_calendar_event return confirmation_required the first time. Then ask for a plain yes in the same "
     "message, naming exactly what will happen - which accounts, what is signed out or erased, what will go "
     "out - and nothing else. For sign_out say in one line that only this phone is signed out and the account "
     "and its data stay. For delete_account the person must understand what they are agreeing to before they "
@@ -5492,6 +5553,8 @@ def _describe_call(context: LoopContext, tool: ToolSpec, args: dict[str, Any]) -
         return f"sign this phone out of Assistyca - {SIGN_OUT_MEANING}"
     if tool.name == "delete_account":
         return describe_delete_account(context)
+    if tool.name == "remove_family_member":
+        return describe_remove_family_member(context, args)
     if tool.name == "send_email":
         return _describe_send_email(context, args)
     if tool.name == "create_calendar_event":

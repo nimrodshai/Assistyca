@@ -276,19 +276,37 @@ class WhatsAppSignupTests(unittest.TestCase):
         self.assertIn('\\"drivesAs\\":\\"Yoav\\"', context_text)
         self.assertNotIn('\\"firstConversation\\":true', context_text)
 
+    def composed(self, reply: str = "COMPOSED REPLY"):
+        """The model as two voices: the recovery composer writes the words a
+        refusal goes out in, the assistant answers everything else."""
+
+        prompts: list[dict] = []
+
+        def respond(**kwargs):
+            if kwargs.get("tool_name") == "portal_recovery_composer":
+                prompts.append({"prompt": kwargs.get("prompt") or "", "billing_email": kwargs.get("billing_email")})
+                return SimpleNamespace(output_text=reply)
+            return SimpleNamespace(output_text=json.dumps({"outcome": "message", "reply": "Hi, you're in."}))
+
+        self.model.side_effect = respond
+        return prompts
+
     def test_an_invitation_code_from_the_wrong_phone_joins_nothing(self) -> None:
         owner_id = self._family_with_an_invitation(code="RNA333", role="other", name="Rina")
+        prompts = self.composed()
         # Dana taps her own link: the link is for Rina to open.
         result = self.post("Assistyca family RNA333", sender="972500000001", message_id="wamid.w1", name="Dana")
         self.assertEqual(result["results"][0]["action"], "join_link_not_for_this_phone")
-        self.assertIn("for Rina to open", self.replies()[-1])
+        self.assertEqual(self.replies()[-1], "COMPOSED REPLY")
+        self.assertIn("for Rina to open on their own phone", prompts[-1]["prompt"])
         self.assertEqual(self.database.get_household_invite("RNA333")["status"], "live")
         # Somebody with an account of their own cannot be moved into the family.
         self.database.register_user("else@example.com")
         self.database.link_user_whatsapp_number(user_id=int(self.database.get_user("else@example.com")["id"]), wa_id="972500000077")
         result = self.post("Assistyca family RNA333", sender="972500000077", message_id="wamid.w2", name="Else")
         self.assertEqual(result["results"][0]["action"], "join_link_not_for_this_phone")
-        self.assertIn("already has its own Assistyca account", self.replies()[-1])
+        self.assertIn("its own Assistyca account", prompts[-1]["prompt"])
+        self.assertTrue(self.database.get_user("else@example.com"))
         # Rina joins; the spent code from yet another stranger is refused, and
         # no account is opened for that stranger either.
         joined = self.post("Assistyca family RNA333", message_id="wamid.w3", name="Rina")
@@ -297,10 +315,117 @@ class WhatsAppSignupTests(unittest.TestCase):
         self.assertEqual(self.database.get_household_member_by_wa_id(NEW_PHONE, user_id=owner_id)["name"], "Rina")
         late = self.post("Assistyca family RNA333", sender="447700900999", message_id="wamid.w4", name="Late")
         self.assertEqual((late["results"][0]["action"], late["results"][0]["reason"]), ("join_rejected", "already_claimed"))
-        self.assertIn("already been used", self.replies()[-1])
+        self.assertIn("already been used", prompts[-1]["prompt"])
         self.assertIsNone(self.database.get_whatsapp_signup("447700900999"))
         self.assertIsNone(self.database.get_user("wa-447700900999@whatsapp.assistyca.com"))
 
+    def test_a_phone_that_texted_first_still_joins_with_the_link(self) -> None:
+        # Yoav wrote "hi" before he tapped the link, and that opened an
+        # account of his own. It holds nothing but the conversation, so the
+        # invitation takes it over rather than turning him away.
+        owner_id = self._family_with_an_invitation()
+        self.composed()
+        first = self.post("hi", message_id="wamid.t1", name="Yoav")
+        self.assertEqual(first["results"][0]["action"], "signup_completed_without_email")
+        self.assertTrue(self.database.get_user(NEW_HANDLE))
+
+        joined = self.post("Assistyca family ABC234", message_id="wamid.t2", name="Yoav")
+        actions = [entry["action"] for entry in joined["results"]]
+        self.assertEqual(actions, ["member_joined", "agent_chat_reply"], joined)
+        self.assertTrue(joined["results"][0]["folded_own_account"])
+        self.assertIsNone(self.database.get_user(NEW_HANDLE), "the empty account gave way")
+        self.assertEqual(self.database.get_user_id_for_whatsapp_number(NEW_PHONE), owner_id)
+        self.assertEqual(self.database.get_household_member_by_wa_id(NEW_PHONE, user_id=owner_id)["name"], "Yoav")
+        self.assertEqual(self.replies()[-1], "Hi, you're in.")
+
+    def test_an_own_account_with_something_in_it_is_never_taken_over(self) -> None:
+        self._family_with_an_invitation()
+        prompts = self.composed()
+        self.post("hi", message_id="wamid.o1", name="Yoav")
+        own = self.database.get_user(NEW_HANDLE) or {}
+        self.database.save_household_member(user_id=int(own["id"]), name="Maya", role="child", age=6)
+
+        refused = self.post("Assistyca family ABC234", message_id="wamid.o2", name="Yoav")
+        self.assertEqual(refused["results"][0]["action"], "join_link_not_for_this_phone")
+        self.assertEqual(refused["results"][0]["reason"], "number_taken")
+        self.assertTrue(self.database.get_user(NEW_HANDLE), "an account with a family in it stays")
+        self.assertEqual(self.database.get_user_id_for_whatsapp_number(NEW_PHONE), int(own["id"]))
+        self.assertIn("its own Assistyca account with things kept in it", prompts[-1]["prompt"])
+        self.assertEqual(self.replies()[-1], "COMPOSED REPLY")
+
+    def test_a_member_of_another_family_is_told_that_not_about_an_account_of_their_own(self) -> None:
+        self._family_with_an_invitation()
+        prompts = self.composed()
+        self.database.register_user("other@example.com", display_name="Other Parent")
+        other_id = int(self.database.get_user("other@example.com")["id"])
+        member = self.database.save_household_member(user_id=other_id, name="Yoav", role="other")
+        self.database.create_household_invite(
+            user_id=other_id, member_id=int(member["id"]), code="PTH234",
+            expires_at=datetime.now(timezone.utc) + timedelta(days=14),
+        )
+        self.post("Assistyca family PTH234", message_id="wamid.m1", name="Yoav")
+        self.assertEqual(self.database.get_user_id_for_whatsapp_number(NEW_PHONE), other_id)
+
+        refused = self.post("Assistyca family ABC234", message_id="wamid.m2", name="Yoav")
+        self.assertEqual(refused["results"][0]["reason"], "number_taken")
+        self.assertIn("already part of another family", prompts[-1]["prompt"])
+        self.assertNotIn("its own Assistyca account", prompts[-1]["prompt"])
+        self.assertIn('"say":"sign out"', prompts[-1]["prompt"])
+
+    def test_words_before_the_join_phrase_do_not_hide_the_code(self) -> None:
+        # THANKS has the shape of a code; the code is the one after "family".
+        owner_id = self._family_with_an_invitation(code="YE7MJU")
+        self.composed()
+        joined = self.post("THANKS Assistyca family YE7MJU", message_id="wamid.p1", name="Yoav")
+        self.assertEqual(joined["results"][0]["action"], "member_joined", joined)
+        self.assertEqual(self.database.get_user_id_for_whatsapp_number(NEW_PHONE), owner_id)
+
+    def test_a_replaced_link_is_told_so_in_the_familys_language_and_opens_nothing(self) -> None:
+        owner_id = self._family_with_an_invitation(code="PLD234")
+        self.database.save_household_profile(user_id=owner_id, language="he")
+        yoav = next(m for m in self.database.list_household_members(user_id=owner_id) if m["name"] == "Yoav")
+        self.database.create_household_invite(
+            user_id=owner_id, member_id=int(yoav["id"]), code="NEW234",
+            expires_at=datetime.now(timezone.utc) + timedelta(days=14),
+        )
+        prompts = self.composed("הקישור הזה כבר לא בתוקף")
+        refused = self.post("Assistyca family PLD234", message_id="wamid.r1", name="Yoav")
+        self.assertEqual((refused["results"][0]["action"], refused["results"][0]["reason"]), ("join_rejected", "expired"))
+        self.assertEqual(len(refused["results"]), 1, "nothing else ran: no signup, no turn")
+        self.assertIsNone(self.database.get_whatsapp_signup(NEW_PHONE))
+        self.assertIsNone(self.database.get_user(NEW_HANDLE))
+        self.assertEqual(self.replies()[-1], "הקישור הזה כבר לא בתוקף")
+        self.assertIn('"language":"he"', prompts[-1]["prompt"])
+        self.assertIn("a newer link has replaced it", prompts[-1]["prompt"])
+        self.assertIn("Dana Levi", prompts[-1]["prompt"])
+        self.assertEqual(prompts[-1]["billing_email"], "dana@example.com")
+
+        # A mistyped code with nobody behind it is refused the same way, in
+        # the language of what they wrote around it.
+        mistyped = self.post("שלום Assistyca family ZZZ234", message_id="wamid.r2", name="Yoav")
+        self.assertEqual(mistyped["results"][0]["reason"], "unknown_code")
+        self.assertIn('"language":"he"', prompts[-1]["prompt"])
+        self.assertIsNone(self.database.get_user(NEW_HANDLE))
+
+        # The newer link still works.
+        joined = self.post("Assistyca family NEW234", message_id="wamid.r3", name="Yoav")
+        self.assertEqual(joined["results"][0]["action"], "member_joined")
+
+    def test_someone_taken_off_the_family_is_told_once_then_starts_over(self) -> None:
+        owner_id = self._family_with_an_invitation()
+        prompts = self.composed()
+        self.post("Assistyca family ABC234", message_id="wamid.x1", name="Yoav")
+        self.assertTrue(self.database.remove_household_member(user_id=owner_id, name="Yoav"))
+        self.assertEqual(self.database.get_user_id_for_whatsapp_number(NEW_PHONE), 0)
+
+        told = self.post("what's on today?", message_id="wamid.x2", name="Yoav")
+        self.assertEqual(told["results"][0]["action"], "told_taken_off_family")
+        self.assertIsNone(self.database.get_user(NEW_HANDLE), "no account of their own opened")
+        self.assertIn("Dana Levi took Yoav off the family", prompts[-1]["prompt"])
+        self.assertIn("fresh invitation link", prompts[-1]["prompt"])
+
+        fresh = self.post("ok, then I want my own", message_id="wamid.x3", name="Yoav")
+        self.assertEqual(fresh["results"][0]["action"], "signup_completed_without_email")
 
 if __name__ == "__main__":
     unittest.main()
