@@ -1098,6 +1098,14 @@ HOMEWORK_API_PREFIX = "/api/public/homework/"
 WEEK_SHARE_PAGE_PREFIX = "/w/"
 WEEK_SHARE_PAGE = Path("portal/week-share.html")
 LISTS_HANDOFF_TTL_SECONDS = 48 * 3600
+# What a family member's browser - signed in from a link sent to their own
+# phone - may reach. Anything that needs no session at all stays open; of
+# what does, only what the family shares (member_session_reaches).
+MEMBER_SESSION_OPEN_PATHS = frozenset({
+    "/api/auth/session", "/api/auth/logout", "/api/auth/otp/request", "/api/auth/otp/verify",
+    "/api/register", "/api/contact", "/api/pricing", "/webhooks/whatsapp", "/webhooks/lemon-squeezy",
+})
+MEMBER_SESSION_OPEN_PREFIXES = ("/api/public/",)
 
 # Every response carries these. The portal serves no inline scripts -- the theme
 # bootstrap and the about-page behaviour live in their own .js files -- so the
@@ -1253,6 +1261,10 @@ class PortalSession:
     # it replaces, which is what lets "sign out everywhere" and the ninety-day
     # cap reach a session however many times it has been renewed since.
     authenticated_at: float = 0.0
+    # The family member's phone a session was opened for, from a link sent
+    # to that phone; empty for the account holder's own. Signed into the
+    # token, so a member's browser can never pass for the account holder's.
+    member_wa_id: str = ""
 
     def __post_init__(self) -> None:
         if self.authenticated_at <= 0:
@@ -1363,15 +1375,19 @@ class PortalAuthStore:
             self._challenges.pop(normalized_email, None)
             return True, "ok", self._issue_session_locked(normalized_email, now)
 
-    def issue_session(self, email: str) -> dict[str, Any]:
+    def issue_session(self, email: str, *, member_wa_id: str = "") -> dict[str, Any]:
         """A signed-in session for an account that proved itself another way
-        than the emailed code: a signed link tapped from its own WhatsApp."""
+        than the emailed code: a signed link tapped from its own WhatsApp.
+        member_wa_id is the family member's phone the link was sent to, when
+        it was not the account holder's own."""
 
         normalized_email = normalize_email(email)
         if not self.is_registered_email(normalized_email):
             raise ValueError("Unknown account.")
         with self._lock:
-            return self._issue_session_locked(normalized_email, time.time())
+            return self._issue_session_locked(
+                normalized_email, time.time(), member_wa_id=normalize_whatsapp_lookup_id(member_wa_id),
+            )
 
     def _issue_session_locked(
         self,
@@ -1379,6 +1395,7 @@ class PortalAuthStore:
         now: float,
         *,
         authenticated_at: float | None = None,
+        member_wa_id: str = "",
     ) -> dict[str, Any]:
         authenticated_at = float(authenticated_at) if authenticated_at and authenticated_at > 0 else now
         session = PortalSession(
@@ -1387,6 +1404,7 @@ class PortalAuthStore:
             issued_at=now,
             expires_at=min(now + self.session_ttl_seconds, authenticated_at + self.session_max_lifetime_seconds),
             authenticated_at=authenticated_at,
+            member_wa_id=member_wa_id,
         )
         token = create_session_token(session, self.session_secret) if self.session_secret else secrets.token_urlsafe(32)
         session.token = token
@@ -1478,7 +1496,10 @@ class PortalAuthStore:
         with self._lock:
             if self._is_below_floor_locked(session):
                 return None
-            return self._issue_session_locked(normalize_email(session.email), now, authenticated_at=session.authenticated_at)
+            return self._issue_session_locked(
+                normalize_email(session.email), now,
+                authenticated_at=session.authenticated_at, member_wa_id=session.member_wa_id,
+            )
 
     def revoke_all_sessions(self, email: str) -> None:
         """Draw the line: every session of this account signed in until now is out."""
@@ -2022,6 +2043,8 @@ def create_session_token(session: PortalSession, secret: bytes) -> str:
         # twice: signing out on the phone must not sign out the laptop.
         "n": secrets.token_urlsafe(9),
     }
+    if session.member_wa_id:
+        payload["m"] = session.member_wa_id
     payload_segment = encode_token_segment(json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8"))
     signature_segment = sign_token_segment(payload_segment, secret)
     return f"{payload_segment}.{signature_segment}"
@@ -2082,7 +2105,29 @@ def parse_session_token(token: str, secret: bytes, *, validate_expiry: bool = Tr
         issued_at=issued_at,
         expires_at=expires_at,
         authenticated_at=authenticated_at,
+        member_wa_id=normalize_whatsapp_lookup_id(payload.get("m") or ""),
     )
+
+
+def member_session_reaches(method: str, path: str, role: Any) -> bool:
+    """Whether a family member's browser may make this request: the family's
+    lists, the week, and their own mail and calendar connections - the lists
+    and connections for a parent only, and the week to change only for
+    someone who may change it. Nothing else on the account is theirs."""
+
+    method = normalize_text(method).upper()
+    parent = household.can_connect_own_sources(role)
+    if path == "/api/lists" or path.startswith("/api/lists/"):
+        return parent
+    if path == "/api/household":
+        return method == "GET"
+    if path.startswith("/api/household/activities"):
+        return method in {"POST", "DELETE"} and household.can_change_week(role)
+    if path in {"/api/platform-connections", "/api/platform-connections/calendars"}:
+        return method in {"GET", "POST"} and parent
+    if path.startswith("/api/platform-connections/"):
+        return method == "DELETE" and parent
+    return False
 
 
 def to_millis(value: float) -> int:
@@ -4094,6 +4139,8 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             or path.startswith("/api/public/week/")
             or path.startswith(HOMEWORK_API_PREFIX)
         ):
+            if self._refuse_member_session("GET", path):
+                return
             self._handle_api_get(parsed)
             return
         if path.startswith(WEEK_HANDOFF_PREFIX):
@@ -4185,6 +4232,8 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             or path == FAMILY_CALENDAR_DAY_ENDPOINT
             or path == FAMILY_BUSY_ENDPOINT
         ):
+            if self._refuse_member_session("POST", path):
+                return
             try:
                 self._handle_api_post(parsed)
             except RequestBodyTooLarge as exc:
@@ -4216,6 +4265,8 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             or path.startswith("/api/receipts/")
             or path.startswith("/api/household/")
         ):
+            if self._refuse_member_session("DELETE", path):
+                return
             try:
                 self._handle_api_delete(parsed)
             except RequestBodyTooLarge as exc:
@@ -4262,6 +4313,17 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 return
 
             user = self.database.get_user(session.email) or {}
+            if session.member_wa_id:
+                # A family member's browser: signed in, and nothing of the
+                # account holder's - not their address, not what they run.
+                json_response(self, HTTPStatus.OK, {
+                    "ok": True,
+                    "signedIn": True,
+                    "member": True,
+                    "issuedAt": to_millis(session.issued_at),
+                    "expiresAt": to_millis(session.expires_at),
+                })
+                return
             json_response(self, HTTPStatus.OK, {
                 "ok": True,
                 "signedIn": True,
@@ -11278,6 +11340,9 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         # when they are a parent. Nothing else on the account is theirs.
         speaker = {} if group else self._household_speaker(user_id, sender_wa_id, conversation)
         full_access = not speaker or bool(speaker.get("canChangeWeek"))
+        # A page link from a family member's phone signs their browser in as
+        # them, never as the account holder.
+        link_phone = normalize_whatsapp_lookup_id(sender_wa_id) if speaker else ""
         if speaker and connection_owner != normalize_whatsapp_lookup_id(sender_wa_id):
             # A family member's turn that does not carry their own signed
             # phone reads nobody's mail or calendar - never the account
@@ -11293,13 +11358,13 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             tool_context=tool_context,
             connect_links={} if group else dict(tool_context.get("connectLinks") or {}),
             channel="whatsapp" if channel == "whatsapp" else "portal",
-            list_link=None if group or not full_access else self._lists_link_builder(session.email, channel),
+            list_link=None if group or not full_access else self._lists_link_builder(session.email, channel, wa_id=link_phone),
             # The receipts page is the account holder's own: what their mail
             # held. Nobody else on the account is handed it.
             receipts_link=None if group or speaker else self._receipts_link_builder(session.email, channel),
             week_link=(
                 None if group or not household_block or not full_access
-                else self._page_link_builder(session.email, channel, page="/week", prefix=WEEK_HANDOFF_PREFIX)
+                else self._page_link_builder(session.email, channel, page="/week", prefix=WEEK_HANDOFF_PREFIX, wa_id=link_phone)
             ),
             week_picture=(
                 None if group or not household_block or not full_access
@@ -12532,11 +12597,59 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         cookie_token = self._cookie_session_token()
         for token in self._extract_session_tokens():
             session = self.store.get_session(token)
+            if session is not None and session.member_wa_id:
+                # A family member's browser: theirs only while they are still
+                # in the family on that phone, and reading only their own.
+                member = self._live_session_member(session)
+                if member is None:
+                    continue
+                self._session_member = member
+                self._connection_owner_override = session.member_wa_id
             if session is not None:
                 if token == cookie_token:
                     self._renew_session_cookie(session)
                 return session
         return None
+
+    def _live_session_member(self, session: PortalSession) -> dict[str, Any] | None:
+        """The family member a member session was opened for, while it still
+        stands: they are still in the family, on the same phone, and have not
+        signed it out since. Taking them off the family, or signing the phone
+        out, ends every browser it opened; joining again does not bring those
+        back, because the phone is linked anew after them."""
+
+        user_id = int((self.database.get_user(session.email) or {}).get("id") or 0)
+        member = self.database.get_household_member_by_wa_id(session.member_wa_id, user_id=user_id) if user_id > 0 else None
+        if not member:
+            return None
+        try:
+            linked = datetime.fromisoformat(normalize_text(member.get("waLinkedAt")).replace("Z", "+00:00"))
+            linked = linked if linked.tzinfo else linked.replace(tzinfo=timezone.utc)
+        except ValueError:
+            return member
+        return member if linked.timestamp() <= session.authenticated_at else None
+
+    def _refuse_member_session(self, method: str, path: str) -> bool:
+        """Turn a family member's browser away from anything but what the
+        family shares. A link sent to a member's phone signs that browser in
+        as them, not as the account holder: the lists and the week, as far
+        as their role reaches, and their own connections - never the account
+        holder's receipts, mail, threads or assistant."""
+
+        if path in MEMBER_SESSION_OPEN_PATHS or path.startswith(MEMBER_SESSION_OPEN_PREFIXES):
+            return False
+        session = self._get_authenticated_session()
+        if session is None or not session.member_wa_id:
+            return False
+        role = (getattr(self, "_session_member", None) or {}).get("role")
+        if member_session_reaches(method, path, role):
+            return False
+        json_response(self, HTTPStatus.FORBIDDEN, {
+            "ok": False,
+            "error": "not_theirs",
+            "message": "This belongs to the account holder, not to this phone.",
+        })
+        return True
 
     def _renew_session_cookie(self, session: PortalSession) -> None:
         """Swap a cookie that has done a day's work for a fresh one on the way out.
@@ -12593,16 +12706,23 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         if number is None:
             return NO_CONNECTION_OWNER
         user_id = int((self.database.get_user(email) or {}).get("id") or 0)
-        if self.database.get_household_member_by_wa_id(number, user_id=user_id):
-            return normalize_whatsapp_lookup_id(number)
-        # Not a family member: the account holder's own phone reads theirs,
-        # and any other - someone who has left - reads nobody's.
+        return self._phone_on_account(user_id, number)
+
+    def _phone_on_account(self, user_id: int, wa_id: str) -> str:
+        """Whose a phone is on this account, as connection_owner says it: a
+        family member's own number, "" for the account holder's own phone,
+        and NO_CONNECTION_OWNER for any other - someone who has left."""
+
+        number = normalize_whatsapp_lookup_id(wa_id)
+        if number and self.database.get_household_member_by_wa_id(number, user_id=user_id):
+            return number
         holder_phones = {
             normalize_whatsapp_lookup_id(entry.get("waId"))
             for entry in self.database.list_user_whatsapp_numbers(user_id=user_id)
         }
         holder_phones.add(normalize_whatsapp_lookup_id((self.database.get_whatsapp_connection_by_user_id(user_id) or {}).get("ownerWaId")))
-        return "" if normalize_whatsapp_lookup_id(number) in holder_phones else NO_CONNECTION_OWNER
+        holder_phones.discard("")
+        return "" if number in holder_phones else NO_CONNECTION_OWNER
 
     @staticmethod
     def _owner_recipient(owner_wa_id: str) -> dict[str, str]:
@@ -15540,7 +15660,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             "updatedAt": None,
         }
 
-    def _lists_link_builder(self, email: str, channel: str) -> Callable[[int], str]:
+    def _lists_link_builder(self, email: str, channel: str, *, wa_id: str = "") -> Callable[[int], str]:
         """How a list result turns into a link the person can open.
 
         In the browser the portal session is already in the cookie, so the
@@ -15548,7 +15668,8 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         session: the link carries a short one-time code that signs this
         account in and lands on the list. The code is kept in the database
         rather than signed into the link, so the link stays short enough
-        to read in a chat message.
+        to read in a chat message. wa_id is a family member's phone the link
+        goes to; the browser it opens is theirs, not the account holder's.
         """
 
         base = self._public_base_url()
@@ -15564,6 +15685,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 user_id=user_id,
                 list_id=int(list_id or 0),
                 expires_at=time.time() + LISTS_HANDOFF_TTL_SECONDS,
+                wa_id=wa_id,
             )
             return f"{base}{LISTS_HANDOFF_PREFIX}{code}"
 
@@ -15717,9 +15839,10 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             speaker["firstConversation"] = True
         return speaker
 
-    def _page_link_builder(self, email: str, channel: str, *, page: str, prefix: str) -> Callable[[], str]:
+    def _page_link_builder(self, email: str, channel: str, *, page: str, prefix: str, wa_id: str = "") -> Callable[[], str]:
         """A portal page as a link: the page itself in the browser, a short
-        one-time sign-in code from WhatsApp, as for lists and receipts."""
+        one-time sign-in code from WhatsApp, as for lists and receipts, and
+        for a family member's phone (wa_id) a sign-in as them."""
 
         base = self._public_base_url()
         is_whatsapp = normalize_text(channel).lower() == "whatsapp"
@@ -15730,7 +15853,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             if not is_whatsapp or user_id <= 0:
                 return f"{base}{page}"
             code = self.database.create_list_open_code(
-                user_id=user_id, list_id=0, expires_at=time.time() + LISTS_HANDOFF_TTL_SECONDS,
+                user_id=user_id, list_id=0, expires_at=time.time() + LISTS_HANDOFF_TTL_SECONDS, wa_id=wa_id,
             )
             return f"{base}{prefix}{code}"
 
@@ -15958,20 +16081,29 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             list_id = 0
 
         email = ""
+        member_wa_id = ""
         spent = self.database.spend_list_open_code(token) if token else None
         if spent is not None:
             email = normalize_email(spent.get("email"))
             list_id = int(spent.get("listId") or 0)
+            if normalize_text(spent.get("waId")):
+                # Sent to a phone other than the account holder's: the browser
+                # is that family member's, and a phone no longer on the
+                # account opens nothing.
+                member_wa_id = self._phone_on_account(int(spent.get("userId") or 0), normalize_text(spent.get("waId")))
+                if member_wa_id == NO_CONNECTION_OWNER:
+                    email = ""
         elif token:
             session = self.store.get_session(token)
             if session is not None:
                 self.store.revoke_session(token)
                 email = normalize_email(session.email)
+                member_wa_id = session.member_wa_id
 
         issued: dict[str, Any] = {}
         if email:
             try:
-                issued = self.store.issue_session(email)
+                issued = self.store.issue_session(email, member_wa_id=member_wa_id)
             except ValueError:
                 issued = {}
         if not issued.get("token"):
@@ -16053,8 +16185,11 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         authenticated = self._require_authenticated_user()
         if authenticated is None:
             return
-        _session, user = authenticated
+        session, user = authenticated
         user_id = int(user.get("id") or 0)
+        # Whose receipts these are: the account holder's, or the phone the
+        # server signed for - never the holder's in another person's place.
+        owner = self._connection_owner(session.email)
         parts = self._receipts_path_parts(parsed)
         query = urllib_parse.parse_qs(parsed.query)
 
@@ -16062,7 +16197,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             return normalize_text(query.get(name, [""])[0])
 
         if parts == ["export"]:
-            self._handle_receipts_export(user_id, query)
+            self._handle_receipts_export(user_id, query, owner=owner)
             return
         if not parts:
             start, end = receipt_manager.parse_date_range(first("from"), first("to"))
@@ -16072,6 +16207,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 kind=first("kind") or None,
                 date_from=start,
                 date_to=end,
+                owner_wa_id=owner,
             )
             records = self._screen_account_receipts_for_owner(records, user_id=user_id)
             json_response(self, HTTPStatus.OK, {
@@ -16081,7 +16217,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 "range": {"from": start, "to": end},
                 # How many are waiting for a yes or no across every date, so
                 # the page can say so whatever range it is showing.
-                "unsureTotal": len(self.database.list_account_receipts(user_id=user_id, status="unsure")),
+                "unsureTotal": len(self.database.list_account_receipts(user_id=user_id, status="unsure", owner_wa_id=owner)),
                 "insurancePotentialClaimCount": sum(
                     1 for record in records
                     if int((record.get("insuranceCheck") or {}).get("matchCount") or 0) > 0
@@ -16089,14 +16225,14 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             })
             return
         receipt_id = self._parse_list_id(parts[0])
-        record = self.database.get_account_receipt(user_id=user_id, receipt_id=receipt_id) if receipt_id else None
+        record = self.database.get_account_receipt(user_id=user_id, receipt_id=receipt_id, owner_wa_id=owner) if receipt_id else None
         if record is None:
             self._receipt_not_found()
             return
         record = self._screen_account_receipts_for_owner([record], user_id=user_id)[0]
         json_response(self, HTTPStatus.OK, {"ok": True, "receipt": self._serialize_receipt_for_owner(record)})
 
-    def _handle_receipts_export(self, user_id: int, query: dict[str, list[str]]) -> None:
+    def _handle_receipts_export(self, user_id: int, query: dict[str, list[str]], *, owner: str) -> None:
         """The confirmed receipts in a range, as a file for an accountant."""
 
         def first(name: str) -> str:
@@ -16107,7 +16243,9 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         if fmt not in receipt_manager.EXPORT_FORMATS:
             json_response(self, HTTPStatus.BAD_REQUEST, {"ok": False, "error": "invalid_format", "message": "Exports come as xlsx, csv or pdf."})
             return
-        records = self.database.list_account_receipts(user_id=user_id, status="confirmed", date_from=start, date_to=end)
+        records = self.database.list_account_receipts(
+            user_id=user_id, status="confirmed", date_from=start, date_to=end, owner_wa_id=owner,
+        )
         records = self._screen_account_receipts_for_owner(records, user_id=user_id)
         body, content_type = receipt_manager.write_receipt_export(
             records, fmt=fmt, range_label=receipt_manager.describe_date_range(start, end),
@@ -16125,8 +16263,9 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         authenticated = self._require_authenticated_user()
         if authenticated is None:
             return
-        _session, user = authenticated
+        session, user = authenticated
         user_id = int(user.get("id") or 0)
+        owner = self._connection_owner(session.email)
         try:
             payload = parse_json_body(self)
         except ValueError as exc:
@@ -16136,6 +16275,10 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         try:
             if not parts:
                 # A receipt typed in by hand: a cash receipt, a paper invoice.
+                # Only onto the account holder's own page.
+                if owner:
+                    self._receipt_not_found()
+                    return
                 if not (normalize_text(payload.get("vendor")) or normalize_text(payload.get("subject"))):
                     raise ValueError("A receipt needs at least a vendor.")
                 record = self.database.create_account_receipt(user_id=user_id, record={
@@ -16166,6 +16309,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 paid_to=normalize_text(payload.get("paidTo")) if "paidTo" in payload else None,
                 receipt_date=normalize_text(payload.get("receiptDate")) if "receiptDate" in payload else None,
                 notes=normalize_text(payload.get("notes")) if "notes" in payload else None,
+                owner_wa_id=owner,
             )
         except ValueError as exc:
             json_response(self, HTTPStatus.BAD_REQUEST, {"ok": False, "error": "invalid_receipt", "message": str(exc)})
@@ -16180,15 +16324,16 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         authenticated = self._require_authenticated_user()
         if authenticated is None:
             return
-        _session, user = authenticated
+        session, user = authenticated
         user_id = int(user.get("id") or 0)
+        owner = self._connection_owner(session.email)
         parts = self._receipts_path_parts(parsed)
         receipt_id = self._parse_list_id(parts[0]) if len(parts) == 1 else 0
         if receipt_id <= 0:
             self.send_error(HTTPStatus.NOT_FOUND)
             return
-        record = self.database.get_account_receipt(user_id=user_id, receipt_id=receipt_id) or {}
-        deleted = self.database.delete_account_receipt(user_id=user_id, receipt_id=receipt_id)
+        record = self.database.get_account_receipt(user_id=user_id, receipt_id=receipt_id, owner_wa_id=owner) or {}
+        deleted = self.database.delete_account_receipt(user_id=user_id, receipt_id=receipt_id, owner_wa_id=owner)
         if deleted and normalize_text(record.get("messageId")):
             # The email stays in the mailbox and the next search will list
             # it again; this is what keeps the search from putting it back.

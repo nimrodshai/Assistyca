@@ -498,5 +498,189 @@ class ServerTests(unittest.TestCase):
         self.assertIn("could not be read", given[-1])
 
 
+class _NoRedirect(urllib_request.HTTPRedirectHandler):
+    def redirect_request(self, *args, **kwargs):  # noqa: ANN002, ANN003
+        return None
+
+
+class MemberBrowserTests(unittest.TestCase):
+    """A page link sent to a family member's phone signs that browser in as
+    them: the lists and the week, and their own connections. The account
+    holder's receipts, mailbox, threads and assistant stay the holder's,
+    and the browser stops working the moment they leave the family or sign
+    the phone out."""
+
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        root = Path(__file__).resolve().parents[1]
+        self.server = create_server(
+            "127.0.0.1", 0, root, PortalConfig(db_path=Path(self.temp_dir.name) / "portal.db", session_secret=SECRET),
+        )
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+        self.base_url = f"http://127.0.0.1:{self.server.server_address[1]}"
+        self.database = self.server.database
+        self.user_id = _family(self.database)
+        self.receipt = self.database.create_account_receipt(user_id=self.user_id, record={
+            "status": "confirmed", "kind": "receipt", "vendor": "Dana's pharmacy", "amount": "42.00", "currency": "ILS",
+        })
+
+    def tearDown(self) -> None:
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join(timeout=5)
+        self.temp_dir.cleanup()
+
+    def open_link(self, *, phone: str = "", prefix: str = "/lists/open/") -> tuple[str, str]:
+        """Tap a page link as the loop mints it for this phone; the cookie
+        the browser is given, and where it lands."""
+
+        code = self.database.create_list_open_code(
+            user_id=self.user_id, list_id=0, expires_at=datetime.now(timezone.utc).timestamp() + 60, wa_id=phone,
+        )
+        try:
+            urllib_request.build_opener(_NoRedirect).open(f"{self.base_url}{prefix}{code}", timeout=10)
+        except urllib_error.HTTPError as exc:
+            cookie = str(exc.headers.get("Set-Cookie") or "").split(";", 1)[0]
+            return cookie, str(exc.headers.get("Location") or "")
+        self.fail("expected a redirect")
+
+    def request(self, method: str, path: str, cookie: str, body: dict | None = None) -> tuple[int, dict]:
+        headers = {"Content-Type": "application/json", "Origin": self.base_url}
+        if cookie:
+            headers["Cookie"] = cookie
+        request = urllib_request.Request(
+            f"{self.base_url}{path}", data=json.dumps(body).encode() if body is not None else None, method=method, headers=headers,
+        )
+        try:
+            with urllib_request.urlopen(request, timeout=20) as response:
+                return int(response.status), json.loads(response.read().decode() or "{}")
+        except urllib_error.HTTPError as exc:
+            raw = exc.read().decode() or "{}"
+            try:
+                return int(exc.code), json.loads(raw)
+            except ValueError:
+                return int(exc.code), {}
+
+    def holders_records(self, cookie: str) -> dict[str, int]:
+        """What each of the account holder's private endpoints answers."""
+
+        return {
+            "receipts": self.request("GET", "/api/receipts", cookie)[0],
+            "receipt": self.request("GET", f"/api/receipts/{self.receipt['id']}", cookie)[0],
+            "export": self.request("GET", "/api/receipts/export?format=csv", cookie)[0],
+            "delete receipt": self.request("DELETE", f"/api/receipts/{self.receipt['id']}", cookie)[0],
+            "follows": self.request("GET", "/api/agent/email/follows", cookie)[0],
+            "loop": self.request("POST", "/api/agent/loop", cookie, {"message": "what's in my mail?"})[0],
+            "notifications": self.request("GET", "/api/notifications", cookie)[0],
+            "account": self.request("DELETE", "/api/account", cookie)[0],
+            "remove a member": self.request("DELETE", "/api/household/members/Rina", cookie)[0],
+        }
+
+    def test_a_partners_link_opens_the_family_and_nothing_of_the_holders(self) -> None:
+        cookie, landed = self.open_link(phone=PARTNER_PHONE)
+        self.assertEqual(landed, "/lists")
+        self.assertTrue(cookie)
+
+        refused = self.holders_records(cookie)
+        self.assertEqual(set(refused.values()), {403}, refused)
+        self.assertIsNotNone(
+            self.database.get_account_receipt(user_id=self.user_id, receipt_id=int(self.receipt["id"])),
+            "the holder's receipt is still there",
+        )
+        self.assertIsNotNone(self.database.get_user("dana@example.com"))
+
+        status, connections = self.request("GET", "/api/platform-connections", cookie)
+        self.assertEqual(status, 200, connections)
+        self.assertEqual({row["ownerWaId"] for row in connections["connections"]}, {PARTNER_PHONE})
+        self.assertNotIn("dana@gmail.com", json.dumps(connections))
+        self.assertEqual(self.request("GET", "/api/lists", cookie)[0], 200)
+        self.assertEqual(self.request("GET", "/api/household", cookie)[0], 200)
+        status, week = self.request("POST", "/api/household/activities", cookie, {"title": "Swimming", "days": ["mon"]})
+        self.assertEqual(status, 200, week)
+        status, signed_in = self.request("GET", "/api/auth/session", cookie)
+        self.assertEqual((status, signed_in.get("member")), (200, True))
+        self.assertNotIn("dana@example.com", json.dumps(signed_in))
+
+    def test_a_grandparents_link_reads_the_week_and_changes_nothing(self) -> None:
+        cookie, _ = self.open_link(phone=GRANDMA_PHONE, prefix="/week/open/")
+        self.assertEqual(self.request("GET", "/api/household", cookie)[0], 200)
+        self.assertEqual(self.request("POST", "/api/household/activities", cookie, {"title": "Swimming", "days": ["mon"]})[0], 403)
+        self.assertEqual(self.request("GET", "/api/lists", cookie)[0], 403)
+        self.assertEqual(self.request("GET", "/api/platform-connections", cookie)[0], 403)
+
+    def test_taking_the_partner_off_the_family_ends_their_browser(self) -> None:
+        cookie, _ = self.open_link(phone=PARTNER_PHONE)
+        self.assertEqual(self.request("GET", "/api/lists", cookie)[0], 200)
+
+        self.database.remove_household_member(user_id=self.user_id, name="Yoav")
+
+        after = self.holders_records(cookie)
+        after["lists"] = self.request("GET", "/api/lists", cookie)[0]
+        after["week"] = self.request("GET", "/api/household", cookie)[0]
+        after["connections"] = self.request("GET", "/api/platform-connections", cookie)[0]
+        self.assertEqual(set(after.values()), {401}, after)
+        # And a link minted for that phone before they left opens nothing.
+        cookie, landed = self.open_link(phone=PARTNER_PHONE)
+        self.assertEqual((cookie, landed), ("", "/lists?expired=1"))
+
+    def test_signing_the_phone_out_ends_their_browser_and_joining_again_does_not_bring_it_back(self) -> None:
+        cookie, _ = self.open_link(phone=PARTNER_PHONE)
+        self.assertTrue(self.database.delete_user_whatsapp_number(user_id=self.user_id, wa_id=PARTNER_PHONE))
+        self.assertEqual(self.request("GET", "/api/lists", cookie)[0], 401)
+        self.assertEqual(self.request("GET", "/api/receipts", cookie)[0], 401)
+
+        yoav = next(m for m in self.database.list_household_members(user_id=self.user_id) if m["name"] == "Yoav")
+        self.database.create_household_invite(
+            user_id=self.user_id, member_id=int(yoav["id"]), code="YOAV33",
+            expires_at=datetime.now(timezone.utc) + timedelta(days=14),
+        )
+        self.assertTrue(self.database.claim_household_invite(code="YOAV33", wa_id=PARTNER_PHONE)["ok"])
+        self.assertEqual(self.request("GET", "/api/lists", cookie)[0], 401, "an old browser stays signed out")
+        fresh, _ = self.open_link(phone=PARTNER_PHONE)
+        self.assertEqual(self.request("GET", "/api/lists", fresh)[0], 200)
+
+    def test_the_holders_own_link_still_opens_everything(self) -> None:
+        cookie, landed = self.open_link(prefix="/receipts/open/")
+        self.assertEqual(landed, "/receipts")
+        status, listed = self.request("GET", "/api/receipts", cookie)
+        self.assertEqual(status, 200, listed)
+        self.assertEqual([row["vendor"] for row in listed["receipts"]], ["Dana's pharmacy"])
+        self.assertEqual(self.request("GET", "/api/agent/email/follows", cookie)[0], 200)
+        status, connections = self.request("GET", "/api/platform-connections", cookie)
+        self.assertEqual({row["ownerWaId"] for row in connections["connections"]}, {""})
+        self.assertEqual(self.request("DELETE", f"/api/receipts/{self.receipt['id']}", cookie)[0], 200)
+
+    def test_the_receipts_handlers_read_only_the_phone_the_server_signed_for(self) -> None:
+        code, _ = self.server.store.issue_challenge("dana@example.com")
+        ok, error, result = self.server.store.verify_code("dana@example.com", code)
+        self.assertTrue(ok, error)
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {result['token']}",
+            CONNECTION_VIEWER_HEADER: sign_connection_viewer(SECRET, "dana@example.com", PARTNER_PHONE),
+        }
+
+        def call(method: str, path: str, body: dict | None = None) -> tuple[int, dict]:
+            request = urllib_request.Request(
+                f"{self.base_url}{path}", data=json.dumps(body).encode() if body is not None else None,
+                method=method, headers=headers,
+            )
+            try:
+                with urllib_request.urlopen(request, timeout=20) as response:
+                    return int(response.status), json.loads(response.read().decode() or "{}")
+            except urllib_error.HTTPError as exc:
+                return int(exc.code), {}
+
+        status, listed = call("GET", "/api/receipts")
+        self.assertEqual((status, listed["receipts"], listed["unsureTotal"]), (200, [], 0))
+        self.assertEqual(call("GET", f"/api/receipts/{self.receipt['id']}")[0], 404)
+        self.assertEqual(call("POST", f"/api/receipts/{self.receipt['id']}", {"amount": "1"})[0], 404)
+        self.assertEqual(call("POST", "/api/receipts", {"vendor": "Partner's shop"})[0], 404)
+        self.assertEqual(call("DELETE", f"/api/receipts/{self.receipt['id']}")[0], 404)
+        kept = self.database.get_account_receipt(user_id=self.user_id, receipt_id=int(self.receipt["id"]))
+        self.assertEqual(kept["amount"], "42.00")
+
+
 if __name__ == "__main__":
     unittest.main()
