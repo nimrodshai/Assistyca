@@ -1141,6 +1141,23 @@ class WhatsAppLoopTests(_WhatsAppApiCase):
         transcript = self.database.list_recent_whatsapp_agent_messages(user_id=int(self.user["id"]))
         self.assertEqual([m["role"] for m in transcript], ["user", "assistant"])
 
+    def test_how_a_new_writer_is_addressed_is_read_before_their_first_reply(self) -> None:
+        self.database.save_household_member(user_id=int(self.user["id"]), name="משה", role="partner")
+        reading = mock.Mock(output_text='{"people":[{"ref":"holder","form":"f","basis":"name"}]}')
+        with (
+            mock.patch("packages.infrastructure.person_address.call_openai_response", return_value=reading) as reader,
+            mock.patch(
+                "packages.infrastructure.portal_auth.server.call_openai_response",
+                side_effect=[_loop_round(reply={"reply": "בטח, אזכיר לך."})],
+            ) as model,
+        ):
+            self._post_webhook(inbound_text_payload("תזכיר לי לאסוף את להב", message_id="wamid.address-1"))
+
+        reader.assert_called_once()
+        self.assertEqual(reader.call_args.kwargs["tool_name"], "address_form_reader")
+        self.assertIn('"addressAs":"a woman"', str(model.call_args.kwargs["input"]))
+        self.assertEqual((self.database.get_household_profile(user_id=int(self.user["id"])) or {})["addressBasis"], "name")
+
     def test_a_photo_with_a_caption_reaches_the_model_as_an_image(self) -> None:
         with (
             mock.patch(

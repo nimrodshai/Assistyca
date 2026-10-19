@@ -888,6 +888,9 @@ def describe_household(
                     "phone": member.get("phone") or None,
                     "notes": member.get("notes") or None,
                     "onWhatsApp": True if member.get("waId") else None,
+                    # The gender they are spoken of and to in, once kept,
+                    # so the family's partner is the same person every turn.
+                    "addressAs": address_word(member.get("addressForm")) or None,
                 }.items()
                 if value not in (None, "")
             }

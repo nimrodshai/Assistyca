@@ -33,7 +33,7 @@ from packages.infrastructure.account_types import account_feature_allowed
 from packages.infrastructure.message_language import remember_message_language
 from packages.infrastructure.message_language import resolve_message_language
 from packages.infrastructure.person_address import address_word
-from packages.infrastructure.person_address import remember_address_form
+from packages.infrastructure.person_address import learn_address_forms
 from packages.infrastructure.person_address import resolve_address_form
 from packages.infrastructure.notification_delivery import DEFAULT_WHATSAPP_API_VERSION
 from packages.infrastructure.notification_delivery import flatten_template_parameter
@@ -1750,6 +1750,29 @@ class WhatsAppAgentChat:
             )
         return self._reply_and_log(reply, outcome=f"remind_again_{outcome or 'unknown'}")
 
+    def _learn_address_forms(self, text: str, member_id: int) -> None:
+        def learn(conversation: list[dict[str, Any]]) -> None:
+            try:
+                learn_address_forms(
+                    self.database, user_id=self.user_id, member_id=member_id, text=text,
+                    conversation=conversation, billing_email=self.email,
+                )
+            except Exception as exc:  # noqa: BLE001
+                print(f"WhatsApp address form for user {self.user_id} could not be kept: {exc}", flush=True)
+
+        try:
+            history = self.database.list_recent_whatsapp_agent_messages(
+                user_id=self.user_id, limit=AGENT_CHAT_HISTORY_LIMIT, thread_id=self.thread_id)
+            conversation = [{"role": item["role"], "text": item["text"]} for item in history]
+            known = resolve_address_form(self.database, user_id=self.user_id, member_id=member_id)
+        except Exception as exc:  # noqa: BLE001
+            print(f"WhatsApp address form for user {self.user_id} could not be read: {exc}", flush=True)
+            return
+        if known:
+            threading.Thread(target=learn, args=(conversation,), name="whatsapp-address-form", daemon=True).start()
+        else:
+            learn(conversation)
+
     def _tap_reply(self, outcome: str, result: dict[str, Any]) -> str:
         language = resolve_message_language(
             self.database, user_id=self.user_id, member_id=int(self.connection.get("memberId") or 0),
@@ -2817,14 +2840,13 @@ class WhatsAppAgentChat:
                 )
             except Exception as exc:  # noqa: BLE001
                 print(f"WhatsApp message language for user {self.user_id} could not be kept: {exc}", flush=True)
-            # And the gender they speak of themselves in, which is how they
-            # are addressed from now on.
-            try:
-                remember_address_form(
-                    self.database, user_id=self.user_id, text=text, member_id=member_id,
-                )
-            except Exception as exc:  # noqa: BLE001
-                print(f"WhatsApp address form for user {self.user_id} could not be kept: {exc}", flush=True)
+            # And how each grown-up is addressed, read from what is written
+            # here (person_address). Read before the turn while the writer
+            # has none kept, so the first reply already uses one form; once
+            # one is kept the turn uses it, and the reading - a correction,
+            # stronger evidence, someone else in the family - goes on beside
+            # the turn rather than in front of it.
+            self._learn_address_forms(text, member_id)
 
         # A tap on the button under a ride word - one more word five minutes
         # before - is settled by code, like a tap on the calendar picker: the
