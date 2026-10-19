@@ -57,6 +57,8 @@ from packages.infrastructure.standing_tasks import next_task_run_at
 
 DEFAULT_SCHEDULED_ACTION_POLL_SECONDS = 10
 DEFAULT_SCHEDULED_ACTION_BATCH_SIZE = 25
+# How often a reminder for a signed-out phone is looked at again.
+SIGNED_OUT_RECHECK = timedelta(hours=1)
 MESSAGE_PRUNE_INTERVAL = timedelta(days=1)
 # The generic template every scheduled message used to ride. It is the
 # last resort now: a message goes first on the template made for its kind,
@@ -259,17 +261,29 @@ class ScheduledActionScheduler:
                     payload=claimed.get("payload") if isinstance(claimed.get("payload"), dict) else {},
                 )
                 continue
-            if self._recipient_left(claimed):
-                # Set up from a phone that has since been signed out or taken
-                # off the family: it is owed nothing, and a standing action
-                # would otherwise go on acting with the account's own reach.
-                print(f"[scheduled-actions] action={claimed.get('id')} its phone left the account, not sent", flush=True)
+            whereabouts = self._recipient_whereabouts(claimed)
+            if whereabouts == "left":
+                # Set up from a phone since taken off the family: it is owed
+                # nothing, and a standing action would otherwise go on acting
+                # with the account's own reach.
+                print(f"[scheduled-actions] action={claimed.get('id')} its phone left the family, not sent", flush=True)
                 self.database.finish_scheduled_action(
                     action_id=int(claimed.get("id") or 0),
                     status="cancelled",
-                    last_error="The phone this was for no longer reaches the account.",
+                    last_error="The phone this was for was taken off the family.",
                     payload=claimed.get("payload") if isinstance(claimed.get("payload"), dict) else {},
                 )
+                continue
+            if whereabouts == "signed_out":
+                # The account's own phone, signed out for now. Signing out
+                # keeps what is saved, so nothing is called off: a standing
+                # action skips this run and comes back on its own, and a
+                # reminder waits and goes once the phone is linked again.
+                print(f"[scheduled-actions] action={claimed.get('id')} its phone is signed out, held", flush=True)
+                if standing:
+                    self._reschedule(claimed, now=reference, paused=True)
+                else:
+                    self._wait_for_phone(claimed, now=reference)
                 continue
             try:
                 provider_message_id = self._dispatch(claimed)
@@ -325,29 +339,49 @@ class ScheduledActionScheduler:
             "recovered": recovered,
         }
 
-    def _recipient_left(self, action: dict[str, Any]) -> bool:
-        """Whether the phone this action was set up for no longer reaches its
-        account. Only a named phone can leave: a group, "the owner" and an
-        action with no phone of its own go where the account says."""
+    def _recipient_whereabouts(self, action: dict[str, Any]) -> str:
+        """Where the phone this action was set up for stands with its
+        account: "here" while it still reaches it, "left" once it was taken
+        off the family, "signed_out" when it is unlinked for now. Only a
+        named phone can be away: a group, "the owner" and an action with no
+        phone of its own go where the account says. A member's own actions
+        are called off when their phone is signed out or removed, so an
+        unlinked phone still owed something is the account holder's."""
 
         payload = action.get("payload") if isinstance(action.get("payload"), dict) else {}
         recipient = normalize_text(payload.get("recipientWaId"))
         if not recipient or recipient.startswith(GROUP_RECIPIENT_PREFIX) or recipient.lower() in OWNER_RECIPIENT_REFS:
-            return False
+            return "here"
         number = normalize_whatsapp_lookup_id(recipient)
         user_id = int(action.get("userId") or 0)
         if not number or user_id <= 0:
-            return False
+            return "here"
         try:
             if self.database.get_user_id_for_whatsapp_number(number) == user_id:
-                return False
+                return "here"
             connection = self.database.get_whatsapp_connection_by_user_id(user_id) or {}
+            # The older setup keeps the owner's own number on the connection
+            # rather than as a linked phone; that number is the account's.
+            if normalize_whatsapp_lookup_id(connection.get("ownerWaId")) == number:
+                return "here"
+            if self.database.phone_left_family(user_id=user_id, wa_id=number):
+                return "left"
         except Exception as exc:  # noqa: BLE001 - a store that cannot say leaves the action to run
             print(f"[scheduled-actions] action={action.get('id')} could not check its phone: {exc}", flush=True)
-            return False
-        # The older setup keeps the owner's own number on the connection
-        # rather than as a linked phone; that number is the account's.
-        return normalize_whatsapp_lookup_id(connection.get("ownerWaId")) != number
+            return "here"
+        return "signed_out"
+
+    def _wait_for_phone(self, action: dict[str, Any], *, now: datetime) -> None:
+        """Look at a reminder again in a while: its phone is signed out, and
+        it goes the first time it is due with the phone back."""
+
+        payload = dict(action.get("payload") if isinstance(action.get("payload"), dict) else {})
+        payload["heldBy"] = {"signedOut": True}
+        self.database.reschedule_scheduled_action(
+            action_id=int(action.get("id") or 0),
+            run_at=now + SIGNED_OUT_RECHECK,
+            payload=payload,
+        )
 
     def _pause_for(self, action: dict[str, Any]) -> dict[str, Any] | None:
         """The exception holding this action today, on the person's clock,

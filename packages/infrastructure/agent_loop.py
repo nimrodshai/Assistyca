@@ -5550,7 +5550,12 @@ def _describe_call(context: LoopContext, tool: ToolSpec, args: dict[str, Any]) -
     if tool.name == "disconnect":
         return describe_disconnect(context, args)
     if tool.name == "sign_out":
-        return f"sign this phone out of Assistyca - {SIGN_OUT_MEANING}"
+        speaker = context.speaker or {}
+        if speaker and not speaker.get("isOwner"):
+            # A member's reminders and standing actions went to this phone,
+            # and are called off with it.
+            return f"sign this phone out of Assistyca - {SIGN_OUT_MEANING}, except the reminders set from this phone, which stop"
+        return f"sign this phone out of Assistyca - {SIGN_OUT_MEANING}, reminders included"
     if tool.name == "delete_account":
         return describe_delete_account(context)
     if tool.name == "remove_family_member":

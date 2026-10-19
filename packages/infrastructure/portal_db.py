@@ -5435,6 +5435,10 @@ class PortalDatabase:
                 (number, resolved_user_id),
             )
             if int(cursor.rowcount or 0) > 0:
+                was_member = conn.execute(
+                    "SELECT 1 FROM household_members WHERE user_id = ? AND wa_id = ? LIMIT 1",
+                    (resolved_user_id, number),
+                ).fetchone() is not None
                 # A family member who joined from this phone stays in the
                 # family; only the phone stops being theirs to write from.
                 conn.execute(
@@ -5445,10 +5449,15 @@ class PortalDatabase:
                     "DELETE FROM whatsapp_agent_thread_state WHERE user_id = ? AND thread_id = ?",
                     (resolved_user_id, household.member_thread_id(number)),
                 )
-                self._cancel_scheduled_actions_for_phone(
-                    conn, user_id=resolved_user_id, wa_id=number,
-                    reason="The phone this was for was signed out of the account.",
-                )
+                if was_member:
+                    # A member's reminders went to the phone they joined
+                    # from. The account holder's own phone keeps everything
+                    # it set: the account is theirs, and a sign-out promises
+                    # what is saved stays.
+                    self._cancel_scheduled_actions_for_phone(
+                        conn, user_id=resolved_user_id, wa_id=number,
+                        reason="The phone this was for was signed out of the account.",
+                    )
             conn.commit()
             return int(cursor.rowcount or 0) > 0
 
@@ -8884,6 +8893,19 @@ class PortalDatabase:
         if row is None:
             return None
         return {"userId": int(row["user_id"]), "memberName": str(row["member_name"] or ""), "leftAt": str(row["left_at"])}
+
+    def phone_left_family(self, *, user_id: int, wa_id: str) -> bool:
+        """Whether this phone was taken off this family, told or not."""
+
+        number = normalize_whatsapp_lookup_id(wa_id)
+        if int(user_id or 0) <= 0 or not number:
+            return False
+        with self._connection() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM household_departures WHERE wa_id = ? AND user_id = ? LIMIT 1",
+                (number, int(user_id)),
+            ).fetchone()
+        return row is not None
 
     def mark_household_departure_told(self, wa_id: str) -> None:
         number = normalize_whatsapp_lookup_id(wa_id)
