@@ -3504,16 +3504,14 @@ def build_agent_receipt_owner_key(email: str, owner_wa_id: str = "") -> str:
 
 
 def household_receipt_owner_keys(database: Any, email: str) -> list[str]:
-    """The receipt folders of the family members on an account, by phone."""
+    """The receipt folders of everyone who has been in the family on an
+    account, by phone - those still in it and those who have left."""
 
     user_id = int((database.get_user(email) or {}).get("id") or 0)
     if user_id <= 0:
         return []
-    phones = {
-        normalize_whatsapp_lookup_id(member.get("waId"))
-        for member in database.list_household_members(user_id=user_id)
-    }
-    return [build_agent_receipt_owner_key(email, phone) for phone in sorted(phones) if phone]
+    phones = database.household_receipt_owner_phones(user_id=user_id)
+    return [build_agent_receipt_owner_key(email, phone) for phone in phones]
 
 
 def read_saved_query_text(fields: dict[str, Any], payload: dict[str, Any]) -> str:
@@ -11535,7 +11533,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             ),
             join_link=None if group else self._join_link_builder(),
             release_connections=(
-                None if group else lambda wa_id, email=session.email: self._release_departed_connections(email, wa_id)
+                None if group else lambda wa_id, email=session.email: self._release_departed_phone(email, wa_id)
             ),
             homework_link=None if group else self._homework_link_builder(),
             pay_link=None if group else (lambda pay=self._pay_link_builder(): pay(user_id)),
@@ -14395,6 +14393,23 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             )
         return parsed
 
+    def _release_departed_phone(self, email: str, wa_id: str) -> dict[str, Any]:
+        """Everything a phone that has left the family still had on the
+        account: its connections (_release_departed_connections) and the
+        receipt files saved from its mail. Says what the release says."""
+
+        released = self._release_departed_connections(email, wa_id)
+        number = normalize_whatsapp_lookup_id(wa_id)
+        if number:
+            output_root = resolve_runtime_path(self.config.agent_output_dir, root=self.root).resolve()
+            folder = output_root / build_agent_receipt_owner_key(email, number)
+            if folder.is_dir():
+                try:
+                    shutil.rmtree(folder)
+                except OSError as exc:
+                    print(f"[household] could not remove a departed phone's saved files: {exc}", flush=True)
+        return released
+
     def _release_departed_connections(self, email: str, wa_id: str) -> dict[str, Any]:
         """Disconnect everything a phone that has left the family connected,
         and hand Google's permission for it back. Leaving the family is
@@ -16355,7 +16370,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         elif len(parts) == 2 and parts[0] == "members":
             removed = self.database.remove_household_member(user_id=user_id, name=parts[1])
             for phone in (removed or {}).get("phones") or []:
-                self._release_departed_connections(_session.email, phone)
+                self._release_departed_phone(_session.email, phone)
         else:
             self.send_error(HTTPStatus.NOT_FOUND)
             return

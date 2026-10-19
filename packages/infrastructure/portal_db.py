@@ -9008,6 +9008,10 @@ class PortalDatabase:
         the week asks who takes them instead of reminding someone who is no
         longer there.
 
+        The receipts they kept go too: leaving is leaving, and what their
+        mail held is theirs, not the family's. Their saved files sit on disk,
+        which the caller clears for each phone returned.
+
         Returns what changed - the name, whether a phone went, every phone
         that was theirs (linked or signed out), and the drives now open - or
         None when nobody by that name is in the family."""
@@ -9061,6 +9065,10 @@ class PortalDatabase:
                         str(existing["language"] or ""), str(existing["address_form"] or ""),
                     ),
                 )
+                conn.execute(
+                    "DELETE FROM account_receipts WHERE user_id = ? AND owner_wa_id = ?",
+                    (int(user_id), normalize_whatsapp_lookup_id(number)),
+                )
             opened = self._open_drives_of(conn, user_id=int(user_id), group_id=scope, name=member_name, stamp=stamp)
             conn.execute(
                 "DELETE FROM household_invites WHERE user_id = ? AND member_id = ?",
@@ -9069,6 +9077,27 @@ class PortalDatabase:
             conn.execute("DELETE FROM household_members WHERE id = ?", (int(existing["id"]),))
             conn.commit()
         return {"name": member_name, "phoneUnlinked": bool(linked), "phones": phones, "drivesNowOpen": opened}
+
+    def household_receipt_owner_phones(self, *, user_id: int) -> list[str]:
+        """Every phone that has kept receipts on this account: each member's,
+        linked or signed out, each phone that has left the family, and any
+        phone a receipt is still filed under. What an account deletion has to
+        clear beside the account holder's own."""
+
+        if int(user_id or 0) <= 0:
+            return []
+        with self._connection() as conn:
+            rows = [
+                *conn.execute(
+                    "SELECT wa_id AS phone FROM household_members WHERE user_id = ? "
+                    "UNION SELECT signed_out_wa_id FROM household_members WHERE user_id = ? "
+                    "UNION SELECT wa_id FROM household_departures WHERE user_id = ? "
+                    "UNION SELECT owner_wa_id FROM account_receipts WHERE user_id = ?",
+                    (int(user_id),) * 4,
+                ).fetchall(),
+            ]
+        phones = {normalize_whatsapp_lookup_id(row["phone"]) for row in rows}
+        return sorted(phone for phone in phones if phone)
 
     def household_member_drives(self, *, user_id: int, name: str, group_id: str = "") -> list[dict[str, Any]]:
         """The drives written under one person's name: each weekly leg, and
