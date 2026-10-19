@@ -103,6 +103,7 @@ def build_situation(
     since: str = "",
     reader: dict[str, Any] | None = None,
     names: dict[str, Any] | None = None,
+    floor: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """The report one failure becomes. Every field is something code knows.
 
@@ -111,6 +112,10 @@ def build_situation(
     they are addressed ("a woman", "a man"), and what_happened then says
     "the person writing" for them. names gives anyone else the facts name,
     by their role ("accountHolder"), so the reply can say them by name.
+
+    floor is the whole sentence to send when no model can write one, by
+    language ("en", "he"), for a situation whose facts the general floor
+    cannot say plainly - written for the reader, never shown to the model.
     """
 
     situation: dict[str, Any] = {
@@ -139,6 +144,13 @@ def build_situation(
     }
     if others:
         situation["names"] = dict(list(others.items())[:4])
+    floors = {
+        _clip(language, 8).lower(): _clip(sentence, RECOVERY_MAX_REPLY_LENGTH)
+        for language, sentence in (floor or {}).items()
+        if _clip(language, 8).lower() in {"en", "he"} and _clip(sentence, RECOVERY_MAX_REPLY_LENGTH)
+    }
+    if floors:
+        situation["floor"] = floors
     return situation
 
 
@@ -189,7 +201,9 @@ def build_recovery_prompt(
     context = {
         "channel": normalized_channel,
         "today": _clip(today, 40),
-        "situation": situation,
+        # The floor is the reply for when there is no model; the model
+        # writes from the facts.
+        "situation": {key: value for key, value in situation.items() if key != "floor"},
         "recentConversation": normalize_recovery_conversation(conversation),
     }
     # The language to write in when the conversation cannot say: someone who
@@ -279,8 +293,13 @@ def computed_recovery_sentence(situation: dict[str, Any], *, language: str = "")
 
     In the person's language: the facts of a report are written in English
     for the model, so a Hebrew reply says what kind of thing happened and
-    the way forward in Hebrew rather than the facts in English."""
+    the way forward in Hebrew rather than the facts in English. A
+    situation that brings its own floor sentence is said with that."""
 
+    floors = situation.get("floor") if isinstance(situation.get("floor"), dict) else {}
+    own_floor = str(floors.get("he" if _clip(language, 8).lower() == "he" else "en") or "").strip()
+    if own_floor:
+        return own_floor
     if _clip(language, 8).lower() == "he":
         what_happened = _DEFAULT_WHAT_HAPPENED_HE.get(str(situation.get("code") or ""), _DEFAULT_WHAT_HAPPENED_HE["internal"])
         return f"{what_happened} {_computed_next_step_he(situation)}".strip()

@@ -11193,6 +11193,36 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             print(f"Tap reply composer failed: {exc!r}", flush=True)
         json_response(self, HTTPStatus.OK, {"ok": True, "reply": reply, "composed": composed})
 
+    @staticmethod
+    def _joined_family_situation(user_message: str, speaker: dict[str, Any]) -> dict[str, Any]:
+        """A family member's first message - the join link's own words - when
+        the assistant could not write the welcome. Joining worked; only the
+        reply did not, so what they hear when no model can write it is a
+        plain welcome, not that something went wrong."""
+
+        name = normalize_text(speaker.get("name")).split(" ")[0]
+        holder = normalize_text(speaker.get("accountHolder")).split(" ")[0]
+        return build_situation(
+            "assistant_unavailable",
+            request=user_message,
+            what_happened=(
+                "The person writing has just joined the account holder's family on Assistyca with the invitation "
+                "link, and that worked; only the full welcome could not be written just now."
+            ),
+            reader={"name": name, "addressAs": normalize_text(speaker.get("addressAs"))},
+            names={"accountHolder": holder},
+            floor={
+                "en": (
+                    f"Welcome{', ' + name if name else ''} - you're in {holder + chr(39) + 's' if holder else 'the'} "
+                    "family on Assistyca now. Ask me about the week whenever you like."
+                ),
+                "he": (
+                    f"ברוכים הבאים{', ' + name if name else ''}! הצטרפת {'למשפחה של ' + holder if holder else 'למשפחה'} "
+                    "ב-Assistyca. אפשר לשאול אותי על השבוע מתי שנוח."
+                ),
+            },
+        )
+
     def _respond_recovered(
         self,
         session: PortalSession,
@@ -11548,7 +11578,8 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             rate_limited = normalize_text(diagnostic.get("error")) == "agent_rate_limited"
             self._respond_recovered(
                 session,
-                build_situation(
+                self._joined_family_situation(user_message, speaker) if speaker and read_family_join(user_message)[1]
+                else build_situation(
                     "rate_limited" if rate_limited else "assistant_unavailable",
                     request=user_message,
                     what_happened=(
@@ -15004,6 +15035,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         }
         family = "the account holder's family" if holder else "the family"
         sender = "the account holder" if holder else "whoever sent it"
+        floor: dict[str, str] | None = None
         fresh_link = make_option("step", label=f"ask {sender} to send a fresh invitation link")
         if reason == "expired":
             happened = (
@@ -15044,9 +15076,19 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 "character changed when the link was copied. Nothing went wrong on Assistyca's side."
             )
             options = [make_option("step", label="open the invitation link again exactly as it was sent, or ask whoever sent it for a fresh one")]
+            floor = {
+                "en": (
+                    "That invitation code doesn't match any invitation - usually a character changes when a link "
+                    "is copied. Open the invitation link again exactly as it was sent, or ask whoever sent it for a fresh one."
+                ),
+                "he": (
+                    "קוד ההזמנה הזה לא תואם אף הזמנה - בדרך כלל תו אחד משתנה כשמעתיקים קישור. "
+                    "אפשר לפתוח שוב את קישור ההזמנה בדיוק כמו שנשלח, או לבקש ממי ששלח אותו קישור חדש."
+                ),
+            }
         return build_situation(
             "not_supported", request=request, what_happened=happened, options=options,
-            reader=reader, names={"accountHolder": holder},
+            reader=reader, names={"accountHolder": holder}, floor=floor,
         )
 
     def _send_join_situation(
@@ -15100,7 +15142,6 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         departure = self.database.get_household_departure(sender_wa_id) if sender_wa_id else None
         if not departure:
             return None
-        self.database.mark_household_departure_told(sender_wa_id)
         family_user_id = int(departure.get("userId") or 0)
         holder = self._account_holder_name(family_user_id).split(" ")[0]
         message_text = normalize_text(event.get("message_text"))
@@ -15126,11 +15167,28 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 "addressAs": address_word(departure.get("addressForm")),
             },
             names={"accountHolder": holder},
+            floor={
+                "en": (
+                    f"{holder or 'The account holder'} took you off the family's account on Assistyca, so this "
+                    "phone no longer reaches the family's week. If that was a mistake, ask "
+                    f"{holder or 'them'} for a fresh invitation link; for an assistant of your own, just write again."
+                ),
+                "he": (
+                    "הוסרת מהחשבון המשפחתי ב-Assistyca, ולכן הטלפון הזה כבר לא מחובר לשבוע של המשפחה. "
+                    # The prefix joins a Hebrew name, and takes a hyphen before a Latin one.
+                    f"אם זו טעות, אפשר לבקש {('מ' if 'א' <= holder[:1] <= 'ת' else 'מ-') + holder + ' ' if holder else ''}קישור הזמנה חדש; "
+                    "ובשביל עוזר משלך, פשוט לכתוב לי שוב."
+                ),
+            },
         )
         message_id = self._send_join_situation(
             sender_wa_id, situation, message_text=message_text, user_ids=(family_user_id,),
             language_hint=normalize_text(departure.get("language")),
         )
+        if message_id:
+            # Told once it is sent, not before: a note that never left is
+            # tried again on their next message.
+            self.database.mark_household_departure_told(sender_wa_id)
         return {
             "type": "family_join",
             "action": "told_taken_off_family",

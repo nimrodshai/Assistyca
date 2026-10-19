@@ -111,6 +111,19 @@ class ComputedSentenceProperties(unittest.TestCase):
         ))
         self.assertTrue(sentence.startswith("Dana took you off the family's account on Assistyca."), sentence)
 
+    def test_a_situation_with_its_own_floor_is_said_with_it_and_the_model_never_sees_it(self) -> None:
+        situation = build_situation(
+            "not_supported", what_happened="The code the person writing sent matches nothing.",
+            floor={"en": "That code doesn't match any invitation.", "he": "הקוד הזה לא תואם אף הזמנה.", "fr": "x"},
+        )
+        self.assertEqual(computed_recovery_sentence(situation), "That code doesn't match any invitation.")
+        self.assertEqual(computed_recovery_sentence(situation, language="he"), "הקוד הזה לא תואם אף הזמנה.")
+        self.assertEqual(set(situation["floor"]), {"en", "he"})
+        prompt = build_recovery_prompt(situation, channel="whatsapp")
+        self.assertNotIn("floor", prompt)
+        self.assertNotIn("doesn't match any invitation", prompt)
+        self.assertNotIn("floor", build_situation("internal"))
+
     def test_no_retry_means_no_retry_offered(self) -> None:
         sentence = computed_recovery_sentence(build_situation("not_supported", what_happened="That can't run here."))
         self.assertNotIn("again", sentence)

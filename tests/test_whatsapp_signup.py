@@ -471,5 +471,65 @@ class WhatsAppSignupTests(unittest.TestCase):
         self.assertIn('"reader":{"name":"Yoav","addressAs":"a man"}', prompts[-1]["prompt"])
         self.assertEqual(self.replies()[-1], "הוסרת מהמשפחה")
 
+    def model_down(self) -> None:
+        from packages.infrastructure.openai_api import OpenAIRequestError
+
+        self.model.side_effect = OpenAIRequestError("You exceeded your current quota.")
+
+    def test_with_the_model_down_a_partner_who_joined_is_simply_welcomed(self) -> None:
+        self._family_with_an_invitation()
+        self.model_down()
+        joined = self.post("Assistyca family ABC234", message_id="wamid.d1", name="Yoav")
+        self.assertEqual(joined["results"][0]["action"], "member_joined", joined)
+        reply = self.replies()[-1]
+        self.assertTrue(reply.startswith("Welcome, Yoav - you're in Dana's family on Assistyca now."), reply)
+        self.assertNotIn("went wrong", reply)
+
+    def test_with_the_model_down_a_mistyped_code_is_told_in_plain_words(self) -> None:
+        self._family_with_an_invitation()
+        self.model_down()
+        refused = self.post("Assistyca family ZZZ999", message_id="wamid.d2", name="Yoav")
+        self.assertEqual(refused["results"][0]["reason"], "unknown_code")
+        reply = self.replies()[-1]
+        self.assertTrue(reply.startswith("That invitation code doesn't match any invitation"), reply)
+        self.assertNotIn("person writing", reply)
+        self.assertNotIn("Assistyca's side", reply)
+
+    def test_with_the_model_down_someone_taken_off_is_told_so_and_an_unsent_note_is_tried_again(self) -> None:
+        owner_id = self._family_with_an_invitation()
+        self.composed()
+        self.post("Assistyca family ABC234", message_id="wamid.d3", name="Yoav")
+        self.assertTrue(self.database.remove_household_member(user_id=owner_id, name="Yoav"))
+        self.model_down()
+
+        # The note does not leave: they have not been told, so the next
+        # message tells them.
+        self.sent.side_effect = [RuntimeError("WhatsApp is down")]
+        failed = self.post("what's on today?", message_id="wamid.d4", name="Yoav")
+        self.assertEqual(failed["results"][0]["action"], "told_taken_off_family")
+        self.assertIsNotNone(self.database.get_household_departure(NEW_PHONE))
+
+        self.sent.side_effect = None
+        told = self.post("hello?", message_id="wamid.d5", name="Yoav")
+        self.assertEqual(told["results"][0]["action"], "told_taken_off_family")
+        reply = self.replies()[-1]
+        self.assertTrue(reply.startswith("Dana took you off the family's account on Assistyca"), reply)
+        self.assertIn("ask Dana for a fresh invitation link", reply)
+        self.assertNotIn("of their own", reply)
+        self.assertIsNone(self.database.get_household_departure(NEW_PHONE), "told once, and only once")
+
+    def test_with_the_model_down_someone_taken_off_hears_it_in_hebrew(self) -> None:
+        owner_id = self._family_with_an_invitation()
+        self.composed()
+        self.post("Assistyca family ABC234", message_id="wamid.d6", name="Yoav")
+        yoav = self.database.get_household_member_by_wa_id(NEW_PHONE, user_id=owner_id)
+        self.database.save_household_member_language(user_id=owner_id, member_id=int(yoav["id"]), language="he")
+        self.assertTrue(self.database.remove_household_member(user_id=owner_id, name="Yoav"))
+        self.model_down()
+        self.post("👍", message_id="wamid.d7", name="Yoav")
+        reply = self.replies()[-1]
+        self.assertTrue(reply.startswith("הוסרת מהחשבון המשפחתי"), reply)
+        self.assertIn("לבקש מ-Dana קישור הזמנה חדש", reply)
+
 if __name__ == "__main__":
     unittest.main()
