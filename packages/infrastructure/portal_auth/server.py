@@ -15492,10 +15492,13 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             if manage:
                 self._redirect_to(manage)
             else:
-                # Never a second checkout for an account already paying.
+                # Never a second checkout for an account already paying. The
+                # chat cannot change a subscription either, so this says
+                # where it is managed rather than sending them back there.
                 self._send_words_page(
                     HTTPStatus.OK,
-                    "You're already paying, so there's nothing to do here. Ask Assistyca on WhatsApp if you want to change it.",
+                    "You're already paying, so there's nothing to do here. To change or cancel it, open the email "
+                    "Lemon Squeezy sent when you subscribed and use its link to manage your subscription.",
                 )
             return
         config = load_family_billing_config()

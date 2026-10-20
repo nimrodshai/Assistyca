@@ -293,6 +293,17 @@ class BillingServerTests(unittest.TestCase):
             status, location = self._get(f"/pay/{self._code()}")
         self.assertEqual((status, location), (302, "https://assistyca.lemonsqueezy.com/billing?x=1"))
 
+    def test_a_paying_family_with_no_link_to_manage_it_is_told_where_it_is_managed(self) -> None:
+        # No chat tool changes a subscription, so the page never sends them
+        # back to the chat for it.
+        self.assertEqual(self._webhook(subscription_event("subscription_created", user_id=str(self.user["id"]))), 200)
+        with mock.patch("packages.infrastructure.portal_auth.server.PortalAuthHandler._customer_portal_url", return_value=""):
+            with self.opener.open(f"{self.base_url}/pay/{self._code()}", timeout=15) as response:
+                status, page = int(response.status), response.read().decode("utf-8")
+        self.assertEqual(status, 200)
+        self.assertNotIn("WhatsApp", page)
+        self.assertIn("Lemon Squeezy", page)
+
     def _delete_account(self) -> tuple[int, dict]:
         code, _ = self.server.store.issue_challenge("family@example.com")
         _, _, result = self.server.store.verify_code("family@example.com", code)
