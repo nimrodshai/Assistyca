@@ -529,6 +529,52 @@ class ServerTests(unittest.TestCase):
             )
         return status, body, given
 
+    def context_for(self, phone: str, remember: dict | None = None) -> dict:
+        """The CONTEXT one plain WhatsApp turn from a phone hands the model."""
+
+        given: list[str] = []
+        answer = SimpleNamespace(
+            output_text=json.dumps({"reply": "Noted.", "claimsCompleted": [], "rememberFact": remember, "forgetFact": None, "answersOpenQuestion": None}),
+            input_tokens=1, output_tokens=1, raw_response={"output": []},
+        )
+
+        def model(**kwargs):
+            given.append(json.dumps(kwargs.get("input"), default=str))
+            return answer
+
+        with mock.patch(f"{SERVER}.call_openai_response", side_effect=model):
+            status, body = self.request(
+                "POST", "/api/agent/loop",
+                {"userMessage": "what's on tomorrow?", "timezone": "Asia/Jerusalem", "channel": "whatsapp", "senderWaId": phone},
+                phone=phone,
+            )
+        self.assertEqual(status, 200, body)
+        text = json.loads(given[0])[-1]["content"]
+        text = text if isinstance(text, str) else json.dumps(text)
+        return json.loads(text.split("CONTEXT\n", 1)[1])
+
+    def test_a_grandparent_is_handed_the_week_and_nothing_else_of_the_account(self) -> None:
+        self.database.save_account_fact(user_id=self.user_id, key="name", fact="Their name is Maya Levi", pinned=True)
+        self.database.save_household_member(user_id=self.user_id, name="Tom", role="child", age=7,
+                                             email="tom.private@example.com", notes="allergic to peanuts")
+        self.database.save_household_activity(user_id=self.user_id, title="Football", who=["Tom"], days=["tue"],
+                                              start_time="16:00", end_time="17:00", pick_up_by="Rina")
+        holder = self.context_for(HOLDER_PHONE)
+        self.assertIn("Their name is Maya Levi", json.dumps(holder["knownFacts"]))
+        grandma = self.context_for(GRANDMA_PHONE, remember={"key": "car", "fact": "Rina drives a red Fiat"})
+        said = json.dumps(grandma, ensure_ascii=False)
+        # And nothing she says is written into the parents' remembered facts.
+        self.assertNotIn("Fiat", json.dumps(self.database.list_account_facts(user_id=self.user_id)))
+        self.assertIn("Football", said)
+        self.assertIn("Rina", said)
+        self.assertEqual(grandma["knownFacts"], [])
+        for private in ("Maya Levi", "tom.private@example.com", "allergic to peanuts"):
+            self.assertNotIn(private, said)
+        # Nor the account's own matters, like the trial and the bill.
+        self.assertNotIn("billing", grandma)
+        partner = self.context_for(PARTNER_PHONE)
+        self.assertIn("Their name is Maya Levi", json.dumps(partner["knownFacts"]))
+
     def test_a_turn_hands_the_model_busy_times_only(self) -> None:
         status, body, given = self.turn(phone=PARTNER_PHONE, signed=True, calls=[])
         self.assertEqual(status, 200, body)

@@ -11448,14 +11448,6 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             declined = self.database.decline_agent_approval(approval_id=declined_approval_id, user_id=user_id)
             if declined is not None:
                 declined_call = {"tool": declined["tool"], "arguments": declined["arguments"]}
-        facts = self.database.list_account_facts(user_id=user_id) if user_id > 0 else []
-        household_block = self._household_block(user_id, timezone_name, tool_context)
-        chat_flow = self._chat_flow_block(
-            user_id, tool_context, household_block, resolve_local_today(timezone_name),
-            first_contact=channel == "whatsapp" and self._nothing_said_yet(user_id),
-        )
-        if not isinstance(payload.get("standingTask"), dict):
-            self._note_own_week_asked(user_id, chat_flow, resolve_local_today(timezone_name))
         authorization = normalize_text(self.headers.get("Authorization"))
         # Whose mail and calendar this turn reads: the phone the server
         # signed for, passed on unchanged to every tool's own request.
@@ -11518,6 +11510,20 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         # when they are a parent. Nothing else on the account is theirs.
         speaker = {} if group else self._household_speaker(user_id, sender_wa_id, conversation)
         full_access = not speaker or bool(speaker.get("canChangeWeek"))
+        # A grandparent has the week and their own drives, and nothing else
+        # on the account: not what the parents asked to be remembered, not
+        # their notes on each person, not the account's bill.
+        guest = bool(speaker) and not household.can_connect_own_sources(speaker.get("role"))
+        facts = self.database.list_account_facts(user_id=user_id) if user_id > 0 and not guest else []
+        household_block = self._household_block(user_id, timezone_name, tool_context)
+        if guest:
+            household_block = household.guest_view(household_block)
+        chat_flow = self._chat_flow_block(
+            user_id, tool_context, household_block, resolve_local_today(timezone_name),
+            first_contact=channel == "whatsapp" and self._nothing_said_yet(user_id),
+        )
+        if not isinstance(payload.get("standingTask"), dict):
+            self._note_own_week_asked(user_id, chat_flow, resolve_local_today(timezone_name))
         # A page link from a family member's phone signs their browser in as
         # them, never as the account holder.
         link_phone = normalize_whatsapp_lookup_id(sender_wa_id) if speaker else ""
@@ -11554,8 +11560,8 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 None if group else lambda wa_id, email=session.email: self._release_departed_phone(email, wa_id)
             ),
             homework_link=None if group else self._homework_link_builder(),
-            pay_link=None if group else (lambda pay=self._pay_link_builder(): pay(user_id)),
-            billing={} if group else self._loop_billing(trial, paying=self._user_is_paying(session.email)),
+            pay_link=None if group or guest else (lambda pay=self._pay_link_builder(): pay(user_id)),
+            billing={} if group or guest else self._loop_billing(trial, paying=self._user_is_paying(session.email)),
             speaker=speaker,
             connection_owner=connection_owner,
             sender_wa_id="" if group else sender_wa_id,
@@ -11657,8 +11663,10 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         else:
             # Facts the reply carried, as on the older turn endpoint. The
             # remember_fact tool is the normal way; this covers a model that put
-            # it in the reply instead.
-            self._apply_agent_facts(user_id, {"rememberFact": result.remember_fact, "forgetFact": result.forget_fact})
+            # it in the reply instead. The facts are the parents': a
+            # grandparent's turn neither reads nor writes them.
+            if not guest:
+                self._apply_agent_facts(user_id, {"rememberFact": result.remember_fact, "forgetFact": result.forget_fact})
         # One record per turn, whether it went well or not: the number to
         # alert on is fallbackUsed, and the tool calls say what was tried.
         print(json.dumps({
