@@ -2499,7 +2499,35 @@ def _exception_names(context: LoopContext, activities: list[dict[str, Any]]) -> 
     return names
 
 
+def _visible_exceptions(context: LoopContext, exceptions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The holds as this person may know them. A pause on an action built
+    from someone else's mail is theirs, like the action itself: it is left
+    off, and a hold on nothing else is not there at all - not its days, not
+    its reason, not as an action "no longer set"."""
+
+    getter = getattr(context.database, "get_scheduled_action", None)
+    hidden: dict[str, bool] = {}
+
+    def is_hidden(ref: str) -> bool:
+        if ref not in hidden:
+            action = getter(int(ref)) if callable(getter) and ref.isdigit() else None
+            hidden[ref] = (
+                isinstance(action, dict) and int(action.get("userId") or 0) == int(context.user_id)
+                and not action_visible_to(action, context.connection_owner)
+            )
+        return hidden[ref]
+
+    visible = []
+    for exception in exceptions:
+        targets = schedule_exceptions.normalize_targets(exception.get("targets"))
+        kept = [target for target in targets if not (target["kind"] == "action" and is_hidden(target["ref"]))]
+        if kept:
+            visible.append(exception if len(kept) == len(targets) else {**exception, "targets": kept})
+    return visible
+
+
 def _describe_exceptions(context: LoopContext, exceptions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    exceptions = _visible_exceptions(context, exceptions)
     activities = {
         str(activity["id"]): activity
         for activity in context.database.list_household_activities(user_id=context.user_id, group_id=week_scope(context))
@@ -2909,6 +2937,14 @@ def _tool_remove_exception(context: LoopContext, args: dict[str, Any]) -> dict[s
         exception_id = int(args.get("id"))
     except (TypeError, ValueError):
         return _error("choice_required", "id is the number of an exception from CONTEXT.exceptions.")
+    scope = week_scope(context)
+    held = [
+        exception for exception in context.database.list_schedule_exceptions(user_id=context.user_id, group_id=scope)
+        if int(exception.get("id") or 0) == exception_id
+    ]
+    if held and not _visible_exceptions(context, held):
+        # A pause on someone else's mail alert is theirs to lift.
+        return _error("not_found", f"There is no exception {exception_id}.", exceptions=exceptions_payload(context))
     if not context.database.remove_schedule_exception(
         user_id=context.user_id, exception_id=exception_id, group_id=week_scope(context),
     ):

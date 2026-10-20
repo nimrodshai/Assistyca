@@ -486,6 +486,44 @@ class ServerTests(unittest.TestCase):
         self.assertIsNone(_own_scheduled_action(partner, holders_finding))
         self.assertIsNotNone(_own_scheduled_action(partner, partners_reminder))
 
+    def test_a_pause_on_someones_mail_alert_is_theirs_alone(self) -> None:
+        from packages.infrastructure.agent_loop import TOOLS_BY_NAME
+        from packages.infrastructure.agent_loop import exceptions_payload
+
+        partners_alert = self.scheduled(source="inbox_watch", owner=PARTNER_PHONE, text="Interview at Wix on Sunday")
+        family_task = self.scheduled(text="Every Friday, remind us about the challah")
+        today = datetime.now(timezone.utc).date()
+
+        def context(owner: str) -> LoopContext:
+            return LoopContext(api=None, database=self.database, email="dana@example.com", user_id=self.user_id,
+                               timezone_name="Asia/Jerusalem", connection_owner=owner)
+
+        partner, holder = context(PARTNER_PHONE), context("")
+        held = TOOLS_BY_NAME["add_exception"].run(partner, {
+            "from": today.isoformat(), "until": (today + timedelta(days=3)).isoformat(),
+            "actions": [partners_alert], "reason": "skipping the Wix process for now",
+        })
+        self.assertTrue(held["ok"], held)
+        both = self.database.save_schedule_exception(
+            user_id=self.user_id, starts_on=today.isoformat(), ends_on=(today + timedelta(days=3)).isoformat(),
+            reason="away at the beach", targets=[{"kind": "action", "ref": str(partners_alert)}, {"kind": "action", "ref": str(family_task)}],
+        )
+        self.assertIn("skipping the Wix", json.dumps(exceptions_payload(partner)))
+        self.assertIn(f"scheduled {partners_alert}", json.dumps(exceptions_payload(partner)))
+        # The other parent is told of it in no form: not by name, not as an
+        # action no longer set, not by the reason; a hold that also covers
+        # the family's own task shows that task only.
+        seen = exceptions_payload(holder)
+        said = json.dumps(seen)
+        for private in ("skipping the Wix", "no longer set", f"scheduled {partners_alert}"):
+            self.assertNotIn(private, said)
+        self.assertEqual([entry["id"] for entry in seen], [int(both["id"])])
+        self.assertIn(f"scheduled {family_task}", said)
+        # Nor can they lift it.
+        removed = TOOLS_BY_NAME["remove_exception"].run(holder, {"id": held["saved"]["id"]})
+        self.assertFalse(removed["ok"], removed)
+        self.assertNotIn("skipping the Wix", json.dumps(removed))
+
     def test_busy_times_cross_between_the_parents_and_nothing_else_does(self) -> None:
         read_for: list[str] = []
         with self.fake_calendar(read_for):
