@@ -25,6 +25,7 @@ from packages.infrastructure.family_billing import pay_code
 from packages.infrastructure.family_billing import subscription_is_paying
 from packages.infrastructure.family_billing import subscription_record_from_event
 from packages.infrastructure.family_billing import user_id_from_pay_code
+from packages.infrastructure.lemon_squeezy_api import LemonSqueezyRequestError
 from packages.infrastructure.lemon_squeezy_api import build_webhook_signature
 from packages.infrastructure.lemon_squeezy_api import parse_webhook_event
 from packages.infrastructure.portal_auth.server import PortalConfig, create_server
@@ -159,6 +160,13 @@ class BillingServerTests(unittest.TestCase):
     def setUp(self) -> None:
         self.env = mock.patch.dict(os.environ, BILLING_ENV)
         self.env.start()
+        # Lemon Squeezy is never reached from a test; one that needs an
+        # answer from it patches its own over this.
+        self.offline = mock.patch(
+            "packages.infrastructure.lemon_squeezy_api.LemonSqueezyClient._request",
+            side_effect=LemonSqueezyRequestError("Lemon Squeezy is not reached from tests."),
+        )
+        self.offline.start()
         self.temp_dir = tempfile.TemporaryDirectory()
         self.server = create_server(
             "127.0.0.1", 0, Path(__file__).resolve().parents[1],
@@ -177,6 +185,7 @@ class BillingServerTests(unittest.TestCase):
         self.server.server_close()
         self.thread.join(timeout=5)
         self.temp_dir.cleanup()
+        self.offline.stop()
         self.env.stop()
 
     def _get(self, path: str) -> tuple[int, str]:
@@ -267,6 +276,22 @@ class BillingServerTests(unittest.TestCase):
             status, _ = self._get(f"/pay/{self._code()}")
         self.assertEqual(status, 302)
         checkout.assert_not_called()
+
+    def test_a_paying_family_is_sent_to_a_fresh_page_for_managing_it(self) -> None:
+        # The portal link on a subscription is signed for about a day, so the
+        # one kept from the webhook is only the fallback.
+        self.assertEqual(self._webhook(subscription_event("subscription_created", user_id=str(self.user["id"]))), 200)
+        fresh = {"id": "sub-1", "urls": {"customer_portal": "https://assistyca.lemonsqueezy.com/billing?fresh=1"}}
+        with mock.patch("packages.infrastructure.lemon_squeezy_api.LemonSqueezyClient.retrieve_subscription", return_value=fresh) as asked:
+            status, location = self._get(f"/pay/{self._code()}")
+        self.assertEqual((status, location), (302, "https://assistyca.lemonsqueezy.com/billing?fresh=1"))
+        asked.assert_called_once_with("sub-1")
+        with mock.patch(
+            "packages.infrastructure.lemon_squeezy_api.LemonSqueezyClient.retrieve_subscription",
+            side_effect=LemonSqueezyRequestError("down"),
+        ):
+            status, location = self._get(f"/pay/{self._code()}")
+        self.assertEqual((status, location), (302, "https://assistyca.lemonsqueezy.com/billing?x=1"))
 
     def test_an_admin_sees_each_clients_payment_link(self) -> None:
         # For paying on a family's behalf, or trying the checkout on staging.

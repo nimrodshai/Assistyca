@@ -104,6 +104,7 @@ from packages.infrastructure.family_billing import create_family_checkout_url
 from packages.infrastructure.family_billing import load_family_billing_config
 from packages.infrastructure.family_billing import pay_code
 from packages.infrastructure.family_billing import account_subscription
+from packages.infrastructure.family_billing import fresh_customer_portal_url
 from packages.infrastructure.family_billing import subscription_is_paying
 from packages.infrastructure.family_billing import subscription_record_from_event
 from packages.infrastructure.family_billing import user_id_from_pay_code
@@ -15430,12 +15431,19 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             )
             return
         customer = self.database.get_billing_customer(normalize_email(user.get("email")), include_inactive=True)
-        manage = normalize_text((customer or {}).get("customerPortalUrl"))
-        if subscription_is_paying(customer) and manage:
-            self._redirect_to(manage)
+        lemon = load_lemon_squeezy_config()
+        if subscription_is_paying(customer):
+            manage = self._customer_portal_url(customer or {}, lemon)
+            if manage:
+                self._redirect_to(manage)
+            else:
+                # Never a second checkout for an account already paying.
+                self._send_words_page(
+                    HTTPStatus.OK,
+                    "You're already paying, so there's nothing to do here. Ask Assistyca on WhatsApp if you want to change it.",
+                )
             return
         config = load_family_billing_config()
-        lemon = load_lemon_squeezy_config()
         if not (config.configured and lemon.api_key):
             self._send_words_page(
                 HTTPStatus.SERVICE_UNAVAILABLE,
@@ -15457,6 +15465,22 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             )
             return
         self._redirect_to(url)
+
+    @staticmethod
+    def _customer_portal_url(customer: dict[str, Any], lemon: Any) -> str:
+        """A fresh link to manage the subscription, or the one kept from the
+        last webhook when Lemon Squeezy cannot be asked just now."""
+
+        subscription_id = normalize_text(customer.get("externalSubscriptionId"))
+        if lemon.api_key and subscription_id:
+            try:
+                fresh = fresh_customer_portal_url(LemonSqueezyClient(lemon), subscription_id)
+            except (LemonSqueezyError, ValueError) as exc:
+                print(f"[billing] fresh portal link for subscription {subscription_id} failed: {exc}", flush=True)
+                fresh = ""
+            if fresh:
+                return fresh
+        return normalize_text(customer.get("customerPortalUrl"))
 
     def _handle_lemon_squeezy_webhook(self) -> None:
         """Lemon Squeezy telling us a subscription started, renewed, was

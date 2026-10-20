@@ -146,6 +146,16 @@ def create_family_checkout_url(
     return str(checkout.get("url") or "").strip()
 
 
+def fresh_customer_portal_url(client: LemonSqueezyClient, subscription_id: str) -> str:
+    """Where a paying family manages or cancels their subscription, asked of
+    Lemon Squeezy now: the address it gives is signed for about a day, so
+    the one a webhook brought last month has likely run out."""
+
+    subscription = client.retrieve_subscription(subscription_id)
+    urls = subscription.get("urls") if isinstance(subscription.get("urls"), dict) else {}
+    return str(urls.get("customer_portal") or "").strip()
+
+
 def _parse_moment(value: Any) -> datetime | None:
     text = str(value or "").strip()
     if not text:
@@ -238,6 +248,7 @@ __all__ = [
     "PAYING_STATUSES",
     "SUBSCRIPTION_EVENTS",
     "create_family_checkout_url",
+    "fresh_customer_portal_url",
     "load_family_billing_config",
     "pay_code",
     "subscription_is_paying",
