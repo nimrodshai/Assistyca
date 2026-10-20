@@ -194,16 +194,20 @@ def is_standing_task(action: dict[str, Any] | None) -> bool:
 
 
 # How the message can be laid out where it is going. Plain text keeps line
-# breaks, and a plan with several items reads far better as bullets. The
+# breaks, so three or more things to scan can be bullets - one or two are a
+# sentence, the way a person texts them. The
 # WhatsApp template outside Meta's 24-hour window carries one line and
 # loses every line break, so the same plan has to be short, organised prose
 # - told to the model up front, rather than written as bullets and folded.
 MESSAGE_SHAPE_LINES = "lines"
 MESSAGE_SHAPE_SINGLE_LINE = "single_line"
+# Set on an action by the scheduler when its word carries the remind-again
+# button; the message is then written knowing it (build_task_run_message).
+REMIND_AGAIN_ASKED_KEY = "remindAgainAsked"
 _SHAPE_GUIDANCE = {
     MESSAGE_SHAPE_LINES: (
-        " Their phone shows line breaks: when there is more than one thing to tell - runs, pickups, "
-        "meetings, items - put each on its own line as a bullet, one short line per item."
+        " Their phone shows line breaks. Use a bullet list only for three or more parallel items someone "
+        "needs to scan - meetings, items, news; one or two things are a sentence."
     ),
     MESSAGE_SHAPE_SINGLE_LINE: (
         " This message travels as a single line of text and every line break is lost on the way, so "
@@ -221,6 +225,7 @@ def build_task_run_message(
     standing: bool = True,
     may_offer: bool = False,
     shape: str = MESSAGE_SHAPE_LINES,
+    remind_again: bool = False,
 ) -> str:
     """What the loop is asked when a standing action fires.
 
@@ -232,7 +237,10 @@ def build_task_run_message(
     instruction proposes one action for a yes (an alert offering to put an
     event in the diary): the person may answer, so that question is allowed.
     shape says whether the message keeps its line breaks (bullets) or has
-    to travel as one line (prose).
+    to travel as one line (prose). remind_again is a word before a drive
+    going as plain text with a button for one more word five minutes
+    before: the message itself ends by offering it, in the model's own
+    words. As one line the template asks it, and the message asks nothing.
     """
 
     name = normalize_text(title) or ("standing action" if standing else "action")
@@ -243,6 +251,11 @@ def build_task_run_message(
         else f"The one-off action \"{name}\" is running now."
     )
     layout = _SHAPE_GUIDANCE.get(normalize_text(shape), _SHAPE_GUIDANCE[MESSAGE_SHAPE_LINES])
+    if remind_again:
+        layout += (
+            " One question is allowed: end by offering, briefly and in your own words, to remind them again 5 "
+            "minutes before - a button under the message answers it."
+        )
     if may_offer:
         return (
             f"{opening} The person is not writing; they will read your reply as a message on its own and may "
@@ -371,6 +384,7 @@ class StandingTaskRunner:
                 standing=is_standing_task(action),
                 may_offer=may_offer,
                 shape=normalize_text(action.get("messageShape")) or MESSAGE_SHAPE_LINES,
+                remind_again=bool(action.get(REMIND_AGAIN_ASKED_KEY)),
             ),
             "conversation": conversation,
             "timezone": timezone_name,

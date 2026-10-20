@@ -89,7 +89,8 @@ class RideWordOfferTests(unittest.TestCase):
         self.assertEqual(offer["facts"], ["take Tom - Kindergarten at 08:00, Gan Rimon"])
         self.assertNotIn("reader", offer)
         self.assertEqual(word["payload"]["templateKind"], "reminder_again")
-        self.assertIn("do not ask or offer that yourself", word["payload"]["instruction"])
+        # Whether the words ask it is settled at the send, by the shape.
+        self.assertNotIn("five minutes before", word["payload"]["instruction"])
         # A drop-off rides its own template: the kid, where to and when.
         self.assertEqual(
             word["payload"]["rideSlots"],
@@ -116,12 +117,16 @@ class RideWordOfferTests(unittest.TestCase):
             self.assertNotIn("remindAgain", ask["payload"])
             self.assertEqual(ask["payload"]["templateKind"], "reminder")
 
-    def test_the_words_say_the_offer_is_under_them_only_when_it_is(self) -> None:
-        plain = leave_words(["take Tom - Kindergarten at 08:00"], 0)
-        with_offer = leave_words(["take Tom - Kindergarten at 08:00"], 0, again_offered=True)
-        self.assertNotIn("five minutes before", plain["instruction"])
-        self.assertIn("five minutes before", with_offer["instruction"])
-        self.assertEqual(plain["fallback"], with_offer["fallback"])
+    def test_the_offer_is_asked_in_the_words_only_when_they_go_as_plain_text(self) -> None:
+        # Whether the word ends with the offer is settled at the send, by the
+        # shape it travels in: the words queued for it never mention it.
+        from packages.infrastructure.standing_tasks import build_task_run_message
+
+        self.assertNotIn("five minutes before", leave_words(["take Tom - Kindergarten at 08:00"], 0)["instruction"])
+        plain = build_task_run_message(title="t", instruction="x", schedule_text="", standing=False)
+        asked = build_task_run_message(title="t", instruction="x", schedule_text="", standing=False, remind_again=True)
+        self.assertNotIn("remind them again 5 minutes before", plain)
+        self.assertIn("end by offering, briefly and in your own words, to remind them again 5 minutes before", asked)
 
 
 class ButtonOnTheSendTests(unittest.TestCase):
@@ -157,11 +162,16 @@ class ButtonOnTheSendTests(unittest.TestCase):
             },
         )
 
-    def _scheduler(self) -> ScheduledActionScheduler:
+    def _scheduler(self, task_runner=None) -> ScheduledActionScheduler:
+        def written(action):
+            self.runs.append(dict(action))
+            return "Time to head out soon - Tom to kindergarten at 8. Remind you again 5 minutes before?"
+
+        self.runs = []
         return ScheduledActionScheduler(
             self.database,
             config=ScheduledActionConfig(enabled=True, poll_seconds=1, batch_size=10),
-            task_runner=lambda action: "Soon: take Tom to kindergarten at 08:00.",
+            task_runner=task_runner or written,
         )
 
     def _run(self):
@@ -169,23 +179,44 @@ class ButtonOnTheSendTests(unittest.TestCase):
             self._scheduler().run_pending(now=datetime.now(UTC))
         return send
 
-    def test_inside_the_window_the_question_and_the_button_go_under_the_text(self) -> None:
+    def test_inside_the_window_the_words_ask_it_and_the_button_goes_under_them(self) -> None:
+        # The fixed question appended after a blank line read like a form;
+        # the model ends its own sentence with the offer, knowing the button
+        # is coming, and nothing is appended.
         self.database.save_whatsapp_agent_message(user_id=self.user_id, role="user", text="hi")
         action = self._ride_word()
         send = self._run()
         self.assertEqual(send.call_count, 1)
+        self.assertTrue(self.runs[0]["remindAgainAsked"])
         interactive = send.call_args.kwargs["interactive"]
         self.assertEqual(interactive["type"], "button")
-        self.assertTrue(interactive["body"]["text"].endswith("\n\n" + REMIND_AGAIN_QUESTION["en"]))
+        self.assertEqual(
+            interactive["body"]["text"],
+            "Time to head out soon - Tom to kindergarten at 8. Remind you again 5 minutes before?",
+        )
         [button] = interactive["action"]["buttons"]
         self.assertEqual(button["reply"], {"id": f"remindagain:{action['id']}", "title": REMIND_AGAIN_BUTTON_LABEL["en"]})
         self.assertIsNone(send.call_args.kwargs["message_text"])
         saved = self.database.get_scheduled_action(int(action["id"])) or {}
         self.assertEqual(saved["payload"]["whatsappSendMode"], "buttons")
 
+    def test_the_plain_fallback_sentence_gets_the_fixed_question_under_it(self) -> None:
+        self.database.save_whatsapp_agent_message(user_id=self.user_id, role="user", text="hi")
+        self._ride_word()
+
+        def cannot_write(action):
+            raise RuntimeError("model down")
+
+        with mock.patch("packages.infrastructure.whatsapp_messaging.send_whatsapp_message", return_value="wamid.1") as send:
+            self._scheduler(cannot_write).run_pending(now=datetime.now(UTC))
+        body = send.call_args.kwargs["interactive"]["body"]["text"]
+        self.assertTrue(body.endswith("\n\n" + REMIND_AGAIN_QUESTION["en"]))
+
     def test_outside_the_window_the_template_with_the_button_carries_it(self) -> None:
         action = self._ride_word()
         send = self._run()
+        # As one line the template asks; the words are not told to.
+        self.assertFalse(self.runs[0]["remindAgainAsked"])
         template = send.call_args.kwargs["template"]
         self.assertEqual(template["name"], "assistyca_reminder_set_again")
         self.assertEqual(template["language"], {"code": "en"})
@@ -204,8 +235,8 @@ class ButtonOnTheSendTests(unittest.TestCase):
         self._ride_word()
         send = self._run()
         interactive = send.call_args.kwargs["interactive"]
-        self.assertTrue(interactive["body"]["text"].endswith(REMIND_AGAIN_QUESTION["he"]))
-        self.assertEqual(interactive["action"]["buttons"][0]["reply"]["title"], REMIND_AGAIN_BUTTON_LABEL["he"])
+        self.assertNotIn(REMIND_AGAIN_QUESTION["he"], interactive["body"]["text"])
+        self.assertEqual(interactive["action"]["buttons"][0]["reply"]["title"], "כן, להזכיר")
 
     def test_until_meta_approves_it_the_plain_reminder_carries_the_word_without_the_button(self) -> None:
         action = self._ride_word()
@@ -293,7 +324,11 @@ class ButtonOnTheSendTests(unittest.TestCase):
         )
         send = self._run()
         self.assertIsNone(send.call_args.kwargs["interactive"])
-        self.assertEqual(send.call_args.kwargs["message_text"], "Soon: take Tom to kindergarten at 08:00.")
+        self.assertFalse(self.runs[0]["remindAgainAsked"])
+        self.assertEqual(
+            send.call_args.kwargs["message_text"],
+            "Time to head out soon - Tom to kindergarten at 8. Remind you again 5 minutes before?",
+        )
 
 
 class TheTapTests(unittest.TestCase):

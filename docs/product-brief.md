@@ -117,8 +117,9 @@ These were made by the owner; hold replies to them.
   message on the first morning. Without a partner on his own phone she is
   never silenced.
 - **Outside WhatsApp's 24-hour window** a message rides a Meta template and is
-  one line of prose by design - not a formatting bug. Inside the window,
-  bullets are fine.
+  one line of prose by design - not a formatting bug. Inside the window it
+  is still one or two sentences in time order, the way a friend texts;
+  bullets only for three or more parallel things to scan.
 - **Links** go as a short link on its own line, which WhatsApp shows as a
   button - never a long URL.
 - **"What's on today / this week"** is answered with the calendar picture and

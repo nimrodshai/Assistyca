@@ -99,11 +99,19 @@ class DayDrivesTests(unittest.TestCase):
 
 
 class MorningPictureLineTests(unittest.TestCase):
-    def test_the_morning_picture_opens_with_the_schedule_line(self) -> None:
+    def test_the_morning_picture_is_a_friends_line_not_a_title(self) -> None:
+        # A forced opener ("הנה הלו״ז שלך להיום") and a bullet per open pickup
+        # read like a bot. Under the picture: whether the day is covered, the
+        # open ones together in one sentence, one short question.
         instruction = FamilyWeekNudger._morning_instruction(lines=["08:00 school"], with_picture=True)
 
-        self.assertIn("הנה הלו״ז שלך להיום", instruction)
-        self.assertIn("Here's your schedule for today", instruction)
+        self.assertNotIn("הנה הלו״ז שלך להיום", instruction)
+        self.assertNotIn("word for word", instruction)
+        self.assertIn("the way a friend who knows this family would text it at breakfast", instruction)
+        self.assertIn("Say plainly whether the day is covered", instruction)
+        self.assertIn("put them together in one sentence (whose, what, what time)", instruction)
+        self.assertIn("end with one short question asking who can", instruction)
+        self.assertIn("No title line, no list, nothing the picture already shows", instruction)
         self.assertNotIn("handing them the picture", instruction)
 
 
@@ -278,9 +286,12 @@ class NudgerTests(unittest.TestCase):
         self.assertEqual(action["actionType"], "run_task")
         self.assertIn("07:30-16:00 Kindergarten (Tom), takes: you, collects: Shirly", payload["instruction"])
         self.assertIn("08:00-14:30 Junior high (Lotan), takes: the bus, collects: the bus", payload["instruction"])
-        # The facts go once, as bullets: a second "nobody down for" block
-        # came back as the same pickup said twice.
-        self.assertIn("one bullet per thing", payload["instruction"])
+        # The day in a sentence or two, in time order - not a timetable that
+        # reads her own work hours back every morning. A second "nobody down
+        # for" block came back as the same pickup said twice.
+        self.assertIn("one or two sentences in time order", payload["instruction"])
+        self.assertIn("not a list or a timetable", payload["instruction"])
+        self.assertIn("A grown-up's own work hours only when a drive falls inside them", payload["instruction"])
         self.assertIn("Say each fact once", payload["instruction"])
         self.assertNotIn("NOBODY DOWN FOR", payload["instruction"])
         self.assertTrue(payload["fallbackText"].startswith("Today:\n• "))
@@ -299,6 +310,21 @@ class NudgerTests(unittest.TestCase):
         [action] = [a for a in self.queued() if a["payload"]["title"] == "Today in your family's week"]
         self.assertIn("'you' is the person (a woman), written to in that form.", action["payload"]["instruction"])
 
+    def test_the_account_holders_ride_word_and_evening_are_written_to_her_in_her_own_form(self) -> None:
+        # Her morning said "את לוקחת" and her ride word, half an hour later,
+        # said "אתה לוקח": the form reached the morning and nothing else.
+        from packages.infrastructure.person_address import keep_address_form
+
+        self.assertTrue(keep_address_form(self.database, user_id=self.user_id, form="f", basis="self"))
+        # Sunday evening: Monday's ballet has nobody taking Noa.
+        self.assertEqual(self.nudger.run_pending(now=at(SUNDAY, 20, 15))["evening"], 1)
+        [evening] = [a for a in self.queued() if a["payload"]["title"] == "Tomorrow still needs someone"]
+        self.assertIn("'you' is the person (a woman)", evening["payload"]["instruction"])
+        # Monday, half an hour before she collects Noa.
+        self.assertEqual(self.nudger.run_pending(now=at(SUNDAY + timedelta(days=1), 17, 5))["rides"], 1)
+        [word] = [a for a in self.queued() if a["payload"]["title"] == "Time to leave soon"]
+        self.assertIn("The person (a woman, written to in that form)", word["payload"]["instruction"])
+
     def test_a_morning_missed_by_hours_is_not_sent_late(self) -> None:
         self.nudger.run_pending(now=at(SUNDAY, 13, 0))
         self.assertEqual(self.queued(), [])
@@ -316,7 +342,9 @@ class NudgerTests(unittest.TestCase):
         # the easy answer.
         self.nudger.run_pending(now=at(SUNDAY, 20, 15))
         [action] = self.queued()
-        self.assertIn("asking them to decide now who does each drop-off or pickup still open", action["payload"]["instruction"])
+        self.assertIn("End with one short question, easy to answer with a name, about who does each drop-off or pickup still open", action["payload"]["instruction"])
+        # Asked, not pressed: "decide now" manufactured an urgency there was not.
+        self.assertNotIn("decide now", action["payload"]["instruction"])
         self.assertIn("easy to answer with a name", action["payload"]["instruction"])
         self.assertTrue(action["payload"]["fallbackText"].startswith("Tomorrow still needs someone - who will do it?\n• "))
 
@@ -442,7 +470,9 @@ class NudgerTests(unittest.TestCase):
         for hour, minute in ((7, 40), (7, 55), (8, 4)):
             self.assertEqual(self.nudger.run_pending(now=at(SUNDAY, hour, minute))["rides"], 0, f"{hour}:{minute}")
         [trip] = [a for a in self.queued() if a["payload"]["title"] == "Time to leave soon"]
-        self.assertIn("one trip", trip["payload"]["instruction"])
+        # One sentence in time order; "one trip" is our word and stays ours.
+        self.assertIn("Say them in one sentence", trip["payload"]["instruction"])
+        self.assertIn("never name the grouping", trip["payload"]["instruction"])
         self.assertIn("DRIVES:\ntake Tom - Kindergarten at 07:50\ntake Noa - School at 08:05, Shaked", trip["payload"]["instruction"])
         self.assertNotIn("Physio", trip["payload"]["instruction"])
         self.assertTrue(trip["payload"]["fallbackText"].startswith("Soon, one trip:\n• take Tom"))
@@ -626,8 +656,8 @@ class WeekAheadTests(unittest.TestCase):
         self.assertRegex(payload["imageUrl"], r"^https://assistyca\.example/week/image/[a-z0-9]{20}\.png$")
         self.assertEqual(payload["templateKind"], "morning_digest")
         self.assertIn("Today is attached as a picture", payload["instruction"])
-        self.assertIn("Do not list the day: the picture does", payload["instruction"])
-        self.assertNotIn("one bullet per thing", payload["instruction"])
+        self.assertIn("nothing the picture already shows", payload["instruction"])
+        self.assertNotIn("one or two sentences in time order", payload["instruction"])
         self.assertIn("08:00-12:45 School (Lahav), takes: you, nobody collects them yet", payload["instruction"])
         self.assertTrue(payload["fallbackText"].startswith("Today:\n• "))
         code = payload["imageUrl"].rsplit("/", 1)[-1].removesuffix(".png")
@@ -686,7 +716,7 @@ class WeekAheadTests(unittest.TestCase):
         [morning] = [a for a in self.database.list_scheduled_actions_for_user(self.user_id, limit=50)
                      if (a.get("payload") or {}).get("title") == "Today in your family's week"]
         self.assertNotIn("imageUrl", morning["payload"])
-        self.assertIn("one bullet per thing", morning["payload"]["instruction"])
+        self.assertIn("one or two sentences in time order", morning["payload"]["instruction"])
 
     def test_the_picture_goes_out_on_saturday_evening_once(self) -> None:
         saturday = SUNDAY.replace(day=19)
@@ -1152,7 +1182,7 @@ class OpenPickupTests(unittest.TestCase):
         self.database.save_household_activity(user_id=self.user_id, activity_id=int(gan["id"]), end_time="12:30", pick_up_by="me")
         self.assertEqual(self.nudger.run_pending(now=at(self.tuesday, 12, 5))["rides"], 1)
         [trip] = self.queued("Time to leave soon")
-        self.assertIn("one trip", trip["payload"]["instruction"])
+        self.assertIn("Say them in one sentence", trip["payload"]["instruction"])
         self.assertIn("A line that starts 'nobody is down yet' is a run with no one on it", trip["payload"]["instruction"])
         self.assertTrue(trip["payload"]["instruction"].endswith(
             "DRIVES:\ncollect Laor - Gan at 12:30\nnobody is down yet to collect Lahav - Shaked Elementary at 12:45"

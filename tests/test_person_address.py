@@ -282,9 +282,11 @@ class WordsWrittenForOnePersonTests(unittest.TestCase):
             ["Shirly collects Tom - Kindergarten at 16:00"], 0, reader="Shirly", reader_address=address_word("f"),
         )
         self.assertIn("This message is for Shirly (a woman),", known["instruction"])
-        # The account holder's own word carries nothing here: the context does.
+        # The account holder's own word names her form too: left to the
+        # context alone, a woman was told "אתה לוקח" half an hour after her
+        # morning said "את לוקחת".
         own = leave_words(["You collect Tom - Kindergarten at 16:00"], 0, reader_address=address_word("f"))
-        self.assertNotIn("a woman", own["instruction"])
+        self.assertIn("The person (a woman, written to in that form)", own["instruction"])
 
 
 if __name__ == "__main__":

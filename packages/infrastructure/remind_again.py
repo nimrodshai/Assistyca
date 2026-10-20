@@ -3,9 +3,9 @@
 The word before a drive of their own goes out half an hour ahead, and ends
 by asking whether they want to hear it once more five minutes before -
 with a button to say yes, so it costs one tap. Inside Meta's service window
-the question and the button ride under the message itself; outside it the
-reminder template made for this carries the same question in its own
-closing line and the same button (notification_templates).
+the message asks it in its own words and the button rides under it;
+outside it the reminder template made for this carries the question in
+its own closing line and its own button (notification_templates).
 
 The button carries the queued action's id. The tap comes back as the
 button's payload, and this is where it is read: the drive, its time and the
@@ -14,9 +14,10 @@ is queued for five minutes before the drive, and the tap is answered. The
 second word is claimed like every nudge, so a button tapped twice sends one
 message. It is checked again when it is due: a drive that stopped being
 theirs after the tap - they were put on hold, somebody else said they
-would collect that day, the activity is off - sends nothing. The words of the question and of the button are fixed, like the
-template that holds them, so they are kept here in both languages beside
-the template's name.
+would collect that day, the activity is off - sends nothing. The fixed
+question is the template's wording, kept here in both languages for the
+plain fallback sentence, which cannot ask it itself; the button's label
+inside the window is ours.
 """
 
 from __future__ import annotations
@@ -53,15 +54,17 @@ STILL_THEIRS_PAYLOAD_KEY = "stillTheirs"
 NUDGE_SOURCE = "family_week"
 
 # The closing question, word for word what the template made for it says
-# under the message, and the button under both.
+# under the message: inside the window it goes only under a fallback
+# sentence that could not ask it in its own words.
 REMIND_AGAIN_QUESTION = {
     "en": "Want me to remind you again 5 minutes before?",
     "he": "רוצה שאזכיר שוב 5 דקות לפני?",
 }
-# A reply button's title takes 20 characters on an interactive message.
+# The plain-text button's title, at most 20 characters; the template's
+# own button is Meta's and unchanged.
 REMIND_AGAIN_BUTTON_LABEL = {
-    "en": "Yes, 5 min before",
-    "he": "כן, 5 דקות לפני",
+    "en": "Yes, remind me",
+    "he": "כן, להזכיר",
 }
 
 

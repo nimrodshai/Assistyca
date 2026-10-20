@@ -47,6 +47,7 @@ from packages.infrastructure.standing_tasks import STANDING_TASK_ACTION_TYPE
 from packages.infrastructure.standing_tasks import MESSAGE_SHAPE_LINES
 from packages.infrastructure.standing_tasks import MESSAGE_SHAPE_SINGLE_LINE
 from packages.infrastructure.standing_tasks import NothingNewToSend
+from packages.infrastructure.standing_tasks import REMIND_AGAIN_ASKED_KEY
 from packages.infrastructure import household
 from packages.infrastructure.family_week_nudges import owner_phone
 from packages.infrastructure.remind_again import remind_again_button
@@ -532,6 +533,12 @@ class ScheduledActionScheduler:
             if self.task_runner is None:
                 raise RuntimeError("Standing actions are not enabled on this server.")
             action["messageShape"] = self._message_shape(action) if channel == "whatsapp" else MESSAGE_SHAPE_LINES
+            # A word that carries the remind-again button and goes as plain
+            # text is written knowing it, and ends with the offer in its own
+            # words. As one line it goes in the template, which asks for it.
+            action[REMIND_AGAIN_ASKED_KEY] = (
+                action["messageShape"] == MESSAGE_SHAPE_LINES and bool(remind_again_button(action, ""))
+            )
             try:
                 message_text = normalize_text(self.task_runner(action))
                 if not message_text:
@@ -551,6 +558,8 @@ class ScheduledActionScheduler:
                 )
                 payload["taskRunnerError"] = str(exc)
                 message_text = fallback
+                # The plain sentence does not ask; the fixed question goes under it.
+                action[REMIND_AGAIN_ASKED_KEY] = False
         elif action_type == "send_message":
             message_text = normalize_text(payload.get("messageText") or payload.get("text"))
             if not message_text:
@@ -701,15 +710,21 @@ class ScheduledActionScheduler:
         image_url = normalize_text(payload.get("imageUrl"))
         language = self._recipient_language(user_id, recipient_ref)
         # A word that offers one more word five minutes before ends with
-        # that question and a button to say yes: under the plain text
-        # inside the window, in the template made for it outside.
+        # that question and a button to say yes. Inside the window the
+        # message already asks it in its own words, written knowing the
+        # button was coming, and the fixed question goes under it only when
+        # it did not (the plain fallback sentence); outside, the template
+        # made for it carries its own.
         again = remind_again_button(action, language) if not image_url else {}
         if self._service_window_open(user_id, thread_id=self._thread_for_phone(user_id, recipient_ref)):
             try:
                 if again:
                     provider_message_id = send_whatsapp_notification(
                         recipient_wa_id=recipient_ref,
-                        message_text=f"{message_text}\n\n{again['question']}",
+                        message_text=(
+                            message_text if action.get(REMIND_AGAIN_ASKED_KEY)
+                            else f"{message_text}\n\n{again['question']}"
+                        ),
                         reply_buttons=[(again["id"], again["label"])],
                     )
                     payload["whatsappSendMode"] = "buttons"

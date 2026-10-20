@@ -750,17 +750,18 @@ def schedule_slots(
 
 
 def leave_words(
-    facts: list[str], open_count: int, *, reader: str = "", again_offered: bool = False, reader_address: str = "",
+    facts: list[str], open_count: int, *, reader: str = "", reader_address: str = "",
     partner: str = "", reader_away: bool = False,
 ) -> dict[str, str]:
     """The title, instruction and fallback for the word before a drive -
     or before a pickup nobody has taken, which asks instead of reminding.
     reader is a family member's first name when the message is for their
-    phone; empty for the account holder. reader_address is how that member
-    is spoken to when it is known ("a woman", "a man"), so the word is
-    written to them and not to a crowd. again_offered says the message
-    ends, under the words, with the question whether to say so again five
-    minutes before and a button for it, so the words do not ask that.
+    phone; empty for the account holder. reader_address is how whoever
+    reads it is spoken to when it is known ("a woman", "a man") - the
+    member, or the account holder when there is no reader - so the word is
+    written to them in their own form and not to a crowd. Whether it ends
+    by offering one more word five minutes before is settled when it is
+    sent, by the shape it travels in (standing_tasks.build_task_run_message).
     partner is partner_note, when the facts say "your partner". reader_away
     is a reader on hold today: an open run is never offered to them."""
 
@@ -769,9 +770,10 @@ def leave_words(
     who_does_it = "somebody else - not them, they are away today -" if reader_away else f"{them} or somebody else -"
     if reader and reader_address:
         reader = f"{reader} ({reader_address})"
+    person = f"The person ({reader_address}, written to in that form)" if reader_address and not reader else "The person"
     if open_count == len(facts):
         # Nothing here is anyone's drive yet: a question, not a reminder.
-        whose = f"This message is for {reader}, a parent in this family, who is to settle it." if reader else "The person is the one to settle it."
+        whose = f"This message is for {reader}, a parent in this family, who is to settle it." if reader else f"{person} is the one to settle it."
         one = len(facts) == 1
         return {
             "title": "Still needs someone",
@@ -789,30 +791,26 @@ def leave_words(
             "fallback": (f"Soon: {facts[0]}. Who will do it?" if one else
                          "Soon, still open - who will do it?\n" + "\n".join(f"• {fact}" for fact in facts)),
         }
-    whose = f"This message is for {reader}, who is in this family and is the one driving shortly. " if reader else "The person is the one driving shortly. "
+    whose = f"This message is for {reader}, who is in this family and is the one driving shortly. " if reader else f"{person} is the one driving shortly. "
     open_note = (
         f" A line that starts 'nobody is down yet' is a run with no one on it: say so, and end by asking who does it - "
         f"{who_does_it} easy to answer with a name."
         if open_count else ""
     )
-    again_note = (
-        " Under the message there is already a question whether to say so again five minutes before, with a "
-        "button for it: end on the drive, and do not ask or offer that yourself."
-        if again_offered else ""
-    )
     partner_aside = (" " + partner.strip()) if partner else ""
     if len(facts) == 1:
         instruction = (
             whose + f"In one short sentence, in {language}, remind them what it is and when. "
-            "The fact is exact; add nothing, and use no tool." + open_note + again_note + partner_aside + "\nDRIVE: " + facts[0]
+            "The fact is exact; add nothing, and use no tool." + open_note + partner_aside + "\nDRIVE: " + facts[0]
         )
         fallback = f"Soon: {facts[0]}."
     else:
         instruction = (
-            whose + "These runs of theirs fall close together, so they are one trip. In one or two short sentences, "
-            f"in {language}, remind them of all of them in time order as one plan"
+            whose + "These drives of theirs follow one another. Say them in one sentence, "
+            f"in {language}, in time order, the way a parent would ('Itai from gan at 4, then Noa to judo')"
             + (" - at the same time means taking everyone together and dropping one, then the other" if not reader else "")
-            + ". Say each once. The facts are exact; add nothing, and use no tool." + open_note + again_note + partner_aside + "\nDRIVES:\n" + "\n".join(facts)
+            + ". How we group them is our bookkeeping: never name the grouping. Say each once. The facts are exact; "
+            "add nothing, and use no tool." + open_note + partner_aside + "\nDRIVES:\n" + "\n".join(facts)
         )
         fallback = "Soon, one trip:\n" + "\n".join(f"• {fact}" for fact in facts)
     if open_count:
@@ -1272,6 +1270,7 @@ class FamilyWeekNudger:
                             "Tomorrow, inside your own work hours:\n" + "\n".join(f"• {line}" for line in tomorrow_work) if tomorrow_work else "",
                         ) if part
                     ]
+                    address = address_word(resolve_address_form(self.database, user_id=user_id))
                     self._queue(
                         user_id=user_id, now=reference, timezone_name=timezone_name,
                         title="Tomorrow still needs someone", kind=TEMPLATE_KIND_EVENING_GLANCE, image_url=image_url,
@@ -1281,7 +1280,7 @@ class FamilyWeekNudger:
                             + "In one or two short sentences, in the language the person writes to you "
                             "in, tell them " + ", and ".join(about) + ". "
                             + (
-                                "This is a question, not a report: end by asking them to decide now who does each "
+                                "End with one short question, easy to answer with a name, about who does each "
                                 "drop-off or pickup still open - " + who_could_do_it(
                                     "them", "their partner",
                                     reader_away=owner_hold(exceptions, tomorrow, owner_names) is not None,
@@ -1289,9 +1288,10 @@ class FamilyWeekNudger:
                                         household.normalize_role(member.get("role")) == "partner"
                                         and is_held(member.get("name"), away_tomorrow) for member in members
                                     ),
-                                ) + " - and leave it easy to answer with a name. " if tomorrow_gaps else ""
+                                ) + ". " if tomorrow_gaps else ""
                             )
-                            + "'you' is the person. The facts are exact; add none, and use no tool."
+                            + (f"'you' is the person ({address}), written to in that form. " if address else "'you' is the person. ")
+                            + "The facts are exact; add none, and use no tool."
                             + ("\nTOMORROW:\n" + "\n".join(tomorrow_gaps) if tomorrow_gaps else "")
                             + ("\nCLASHES WITH YOUR CALENDAR:\n" + "\n".join(tomorrow_clashes) if tomorrow_clashes else "")
                             + ("\nINSIDE YOUR OWN WORK HOURS:\n" + "\n".join(tomorrow_work) if tomorrow_work else "")
@@ -1324,7 +1324,10 @@ class FamilyWeekNudger:
                 # Their own drives end with the offer of one more word five
                 # minutes before; a word that asks who does a drive does not.
                 again = remind_again_offer(said, local_now=local_now, facts=facts, owner_names=owner_names) if not open_count else {}
-                words = leave_words(facts, open_count, again_offered=bool(again), reader_away=away_today is not None)
+                words = leave_words(
+                    facts, open_count, reader_away=away_today is not None,
+                    reader_address=address_word(resolve_address_form(self.database, user_id=user_id)),
+                )
                 self._queue(
                     user_id=user_id, now=reference, timezone_name=timezone_name,
                     title=words["title"], instruction=words["instruction"], fallback=words["fallback"],
@@ -1543,9 +1546,10 @@ class FamilyWeekNudger:
         address: str = "",
     ) -> str:
         """What the morning message is asked to be. With the day's picture
-        attached it is a line or two under it - what still has nobody, and
-        nothing the picture already shows; without one it is the day as
-        bullets. reader names a parent on their own phone; partner is the
+        attached it is a line or two under it - whether the day is covered,
+        what still has nobody, and nothing the picture already shows; without
+        one it is the day in a sentence or two, in time order, the way a
+        friend would text it - never a timetable. reader names a parent on their own phone; partner is the
         note on how to say the account holder when their name is not kept;
         address is how the account holder is addressed ("a woman", "a man")
         when the message is theirs, as a reader's form rides in reader."""
@@ -1563,8 +1567,7 @@ class FamilyWeekNudger:
         ) + partner
         work = (
             "Where a drive of theirs is marked as falling inside their own work hours and not settled yet, "
-            + ("say so in a few words and " if with_picture else "say so in that bullet in a few words and, at the end, ")
-            + "ask in one line who could take it or whether it is fine as it is. "
+            + "say so in a few words and ask in one line who could take it or whether it is fine as it is. "
         ) if inside_work else ""
         calendar = (
             "CALENDAR is what the school calendar says about today: mention it in a few words only where it "
@@ -1579,20 +1582,21 @@ class FamilyWeekNudger:
                 + "Today is attached as a picture: the day as a column, each plan a block at its time in its "
                 "person's colour, who takes and who collects on each. Write "
                 + ("them" if reader else "the person")
-                + f" a few words under it, {language}. Open with this line, word for word in their language: "
-                "in Hebrew 'הנה הלו״ז שלך להיום', in English 'Here's your schedule for today'. Then one short "
-                "sentence, the way a parent would text it in that language, in its own everyday words. Where nobody is "
-                "down for a drop-off or pickup yet, say which - a few words each, from the facts - and ask who "
-                "takes it; otherwise say the day is covered. " + work + calendar + you
-                + "Do not list the day: the picture does. " + facts
+                + f" a line or two under it, {language}, the way a friend who knows this family would text it at "
+                "breakfast. A good-morning is natural. Say plainly whether the day is covered; if some drop-offs or "
+                "pickups have nobody yet, put them together in one sentence (whose, what, what time) and end with "
+                "one short question asking who can. No title line, no list, nothing the picture already shows. "
+                + work + calendar + you + facts
             )
         return (
             opening
             + ("Write them" if reader else "Write the person")
-            + f" one short WhatsApp message with what today holds for their family, {language}: one bullet "
-            "per thing, each a few words - its time, who it is for, where, who takes and who collects - and "
-            "where nobody is down for a drop-off or pickup yet, say so in that bullet. Say each fact once: no "
-            "opening line, no sign-off, and no closing line that repeats what the bullets already say. "
+            + f" one short WhatsApp message with what today holds for their family, {language}, the way a friend "
+            "who knows this family would text it at breakfast: one or two sentences in time order - who goes "
+            "where, who takes and who collects - not a list or a timetable. A good-morning is natural. A "
+            "grown-up's own work hours only when a drive falls inside them. If some drop-offs or pickups have "
+            "nobody yet, put them together in one sentence and end with one short question asking who can. "
+            "Say each fact once: no title line and no sign-off. "
             + you + work + calendar + facts
         )
 
@@ -1785,14 +1789,14 @@ class FamilyWeekNudger:
                             f"It is the evening, and this message is for {addressed}, a parent in this family writing from "
                             "their own phone. " + (PICTURE_OF_TOMORROW if image_url else "")
                             + "In one or two short sentences, in the language the family writes to you "
-                            "in, tell them what tomorrow still has nobody down for. This is a question, not a report: "
-                            "end by asking them to decide now who does each drop-off or pickup still open - "
+                            "in, tell them what tomorrow still has nobody down for. End with one short question, easy "
+                            "to answer with a name, about who does each drop-off or pickup still open - "
                             + who_could_do_it(
                                 "them", "the other parent",
                                 reader_away=is_held(names[0], held_people(exceptions, tomorrow)),
                                 other_away=owner_hold(exceptions, tomorrow, owner_names) is not None,
                             )
-                            + f" - and leave it easy to answer with a name. 'you' is "
+                            + f". 'you' is "
                             f"{first}. " + self._partner_note(user_id, owner_names, gaps)
                             + "The facts are exact; add none, and use no tool.\nTOMORROW:\n" + "\n".join(gaps)
                         ),
@@ -1828,7 +1832,7 @@ class FamilyWeekNudger:
                 said, local_now=local_now, facts=facts, reader=first, driver_names=names,
             ) if not open_count else {}
             words = leave_words(
-                facts, open_count, reader=first, again_offered=bool(again),
+                facts, open_count, reader=first,
                 reader_address=address_word(member.get("addressForm")),
                 partner=self._partner_note(user_id, owner_names, facts),
             )

@@ -112,12 +112,14 @@ class ScheduleMathTests(unittest.TestCase):
         self.assertNotIn("nothingToSend", one_off)
 
     def test_the_run_message_says_how_the_message_may_be_laid_out(self) -> None:
-        # Plain text keeps line breaks, so a plan is asked for as bullets; the
-        # template outside the window loses them, so the same plan is asked
-        # for as short prose. The assistant writes for the shape rather than
-        # having its bullets folded afterwards.
+        # Plain text keeps line breaks, so three or more things to scan may be
+        # bullets - one or two are a sentence; the template outside the
+        # window loses them, so the same plan is asked for as short prose.
+        # The assistant writes for the shape rather than having its bullets
+        # folded afterwards.
         lines = build_task_run_message(title="Plan", instruction="write today's plan", schedule_text="every day at 07:00")
-        self.assertIn("put each on its own line as a bullet", lines)
+        self.assertIn("Use a bullet list only for three or more parallel items", lines)
+        self.assertIn("one or two things are a sentence", lines)
         self.assertTrue(lines.endswith("Do this now: write today's plan"))
         one_line = build_task_run_message(
             title="Plan", instruction="write today's plan", schedule_text="every day at 07:00", shape="single_line",
