@@ -699,11 +699,16 @@ class ToolTests(unittest.TestCase):
         week = self.run_tool("show_family_week")
         self.assertEqual(week["weekPage"], "https://assistyca.com/week/open/abc")
         self.assertIn("https://assistyca.com/week/open/abc", self.context.links_offered)
-        done = self.run_tool("set_getting_to_know", status="done", ask_again_in_days=None)
-        self.assertEqual(done["weekPage"], "https://assistyca.com/week/open/abc")
         # The model is told the week link is the family's to share.
-        for result in (week, done):
-            self.assertIn("safe to forward to the family", result["weekPageSharing"])
+        self.assertIn("safe to forward to the family", week["weekPageSharing"])
+
+    def test_the_finished_week_is_shown_as_the_picture_not_the_page(self) -> None:
+        # "Your week is ready" came back as the whole week in words with an
+        # "Open your week" button under it. The page waits until asked about.
+        self.context.week_link = lambda: "https://assistyca.com/week/open/abc"
+        done = self.run_tool("set_getting_to_know", status="done", ask_again_in_days=None)
+        self.assertNotIn("weekPage", done)
+        self.assertIn("show_family_week, picture this_week", done["showWeek"])
 
     def test_asking_to_see_a_day_or_the_week_is_answered_with_the_picture_not_the_page(self) -> None:
         # "What's on today?" / "show me this week" used to get the week page

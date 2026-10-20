@@ -382,6 +382,28 @@ class LoopMechanicsTests(unittest.TestCase):
         self.assertIn("Do not offer to remind them now", told["error"]["whatHappened"])
         self.assertIn("Never offer to remind them now", _SCHEDULING)
 
+    def test_a_reminder_set_is_confirmed_in_a_few_words_not_read_back(self) -> None:
+        # "Set: 16:00 tomorrow, 'collect Omer from gan'" hands the reminder
+        # back to them; a person says "I'll remind you at 16:00".
+        self.assertIn("confirm in a few words with the time, as a person would", _SCHEDULING)
+        self.assertNotIn("repeating scheduledForLocal and the text", _SCHEDULING)
+
+    def test_a_partner_is_welcomed_by_name_and_never_told_about_an_account(self) -> None:
+        from packages.infrastructure.agent_loop import _SPEAKER_RULES
+
+        self.assertIn("Greet them by their first name and say who brought them in, by first name", _SPEAKER_RULES)
+        self.assertIn("in your own words", _SPEAKER_RULES)
+        self.assertIn("named by the children's real activities", _SPEAKER_RULES)
+        self.assertIn("Never say 'account'", _SPEAKER_RULES)
+        self.assertNotIn("nothing to pay and nothing to set up, the week is already in", _SPEAKER_RULES)
+
+    def test_the_picture_of_the_week_is_not_introduced_or_called_covered(self) -> None:
+        from packages.infrastructure.agent_loop import WEEK_PICTURE_NOTE
+
+        self.assertIn("the one thing worth knowing, in plain words", WEEK_PICTURE_NOTE)
+        self.assertIn("Do not introduce the picture, do not spell out that it is covered", WEEK_PICTURE_NOTE)
+        self.assertIn("The week page waits for a moment it is asked about", _LINKS)
+
     def test_a_delay_in_minutes_is_scheduled_by_code_and_the_clock_is_in_context(self) -> None:
         api = FakeApi({"/api/scheduled-actions": ({"ok": True, "action": {"id": 1}}, 200)})
         model = ScriptedModel([

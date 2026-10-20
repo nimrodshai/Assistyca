@@ -188,6 +188,14 @@ class RulesTests(unittest.TestCase):
         self.assertIn("in a voice message", getting_to_know)
         self.assertIn("Name a picture, never", getting_to_know)
         self.assertIn("never says who takes them in or who collects them", getting_to_know)
+        # Once in the whole getting-to-know: it was made for Tamar and again
+        # for Omer, one school question each.
+        self.assertIn("Offer it once in the whole getting-to-know, with the first child's school question, never for a second child", getting_to_know)
+        # The finished week is the picture and one sentence, not a printout
+        # of the week read back with a page button under it.
+        self.assertIn("show the week with show_family_week as a picture, not in words", getting_to_know)
+        self.assertIn("Do not read the week back, and do not offer the week page", getting_to_know)
+        self.assertNotIn("show the week back in a few short lines", getting_to_know)
         self.assertNotIn("{shortcut}", getting_to_know)
         self.assertNotIn("{voice}", getting_to_know)
         self.assertNotIn("set_connect_offer", getting_to_know)

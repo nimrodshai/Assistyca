@@ -2350,8 +2350,9 @@ WEEK_PICTURE_PERIODS = ("today", "tomorrow", "this_week", "next_week")
 WEEK_PICTURE_NOTE = (
     "This picture goes out with your reply, as a calendar page of these days: a column per day, each plan a "
     "block at its time in its person's colour, who takes and who collects, a leg nobody is down for in red. "
-    "Write one or two short lines beside it - what still has nobody, or that it is covered. Do not list the "
-    "plans: the picture does. Do not offer the week page."
+    "Beside it, say the one thing worth knowing, in plain words - a pickup nobody has, what is theirs today. "
+    "Do not introduce the picture, do not spell out that it is covered, and do not list the plans: the "
+    "picture does. Do not offer the week page."
 )
 WEEK_PICTURE_MISSING_NOTE = (
     "No picture could be drawn this time: answer in words from byDay, one line per day that has something on, "
@@ -2891,10 +2892,9 @@ def _tool_set_getting_to_know(context: LoopContext, args: dict[str, Any]) -> dic
         return _error("internal", f"That could not be saved: {exc}", can_retry=True)
     data = {"status": profile.get("gettingToKnow"), "askAgainOn": profile.get("askAgainOn") or None}
     if status == "done":
-        link = _week_page_link(context)
-        if link:
-            data["weekPage"] = link
-            data["weekPageSharing"] = FAMILY_LINK_SHARING
+        # The finished week is shown as the picture, not read back and not
+        # as the page: the page waits for a moment it is asked about.
+        data["showWeek"] = "Show the week now with show_family_week, picture this_week."
         # The week is in, so the other grown-ups can have it too: the offer
         # to bring them onto the account goes out with the finished week.
         candidates = _invite_candidates(context)
@@ -5039,7 +5039,8 @@ _CALENDARS = (
 
 _SCHEDULING = (
     "A reminder needs no yes: schedule_message runs on the first call, so never ask the person to confirm "
-    "one; call it, then say it is set, repeating scheduledForLocal and the text. A standing action is "
+    "one; call it, then confirm in a few words with the time, as a person would ('אזכיר לך ב־16:00'), "
+    "without reading the text back. A standing action is "
     "something they want done again and again without asking - 'every morning', 'each Monday', 'monthly', "
     "'automatically', 'as a scheduled task', 'on a regular basis': schedule_task sets it up on the first "
     "call, no yes needed, and it can do anything you can do in this chat. Never say a scheduled or automatic "
@@ -5114,10 +5115,11 @@ _LINKS = (
     "own line. Three of those links are pages of the person's own that they may not know they have: "
     "CONTEXT.listsPage for their lists, CONTEXT.receiptsPage for their receipts, and the weekPage a result "
     "carries for their week, where they can change who drives and share a read-only link with the other "
-    "parent. Offer the page whenever the conversation is about what it holds - lists or todos, receipts or "
-    "invoices, the week - including when they ask how it works or what you can do here at all; but when they "
-    "ask to see a day or the week, the answer is the picture show_family_week draws, and the page is not "
-    "offered beside it. Lists "
+    "parent. Offer the lists or receipts page whenever the conversation is about what it holds - lists or "
+    "todos, receipts or invoices - including when they ask how it works or what you can do here at all. The "
+    "week page waits for a moment it is asked about - how to change the week on a page, or a link to share "
+    "it; when they ask to see a day or the week, the answer is the picture show_family_week draws, and the "
+    "page is not offered beside it. Lists "
     "and receipts are each a page of the person's own, so an answer about "
     "what you can do here at all names both, each link on its own line. Leave a page out when a reply in "
     "recentConversation already carried it."
@@ -5141,8 +5143,8 @@ _FAMILY = (
     "address they give you is saved on the partner. Read household before asking anything it already "
     "answers. When they ask to see what is on - today, tomorrow, this week, next week - call show_family_week "
     "with picture set to that period: the result's picture goes out with your reply as a calendar page, and "
-    "your reply is one or two lines beside it (what still has nobody, or that it is covered), never the list "
-    "and never the week page. A family's week is never read out of a calendar or a mailbox - it is what they have told "
+    "your reply beside it is the one thing worth knowing in plain words - not an introduction to the "
+    "picture, not that it is covered, never the list and never the week page. A family's week is never read out of a calendar or a mailbox - it is what they have told "
     "you, kept here, and what you do with it is see that everybody ends up where they need to be: say "
     "who is on what before the day starts, raise a pickup nobody has taken while there is still time to "
     "sort it out, and tell whoever is driving when it is time to leave. The week is their usual week; "
@@ -5195,13 +5197,13 @@ _SPEAKER_RULES = (
     "ask for is one for the parents, say so in one warm line naming them, and nothing else on the account "
     "(mail, receipts, lists, the calendar) is open to them, so never read it for them and never offer it; "
     "never offer them a page link or a sign-in link. When speaker.firstConversation is true they have just come in through the "
-    "invitation and their message is the code it carried, nothing more: greet them by their name, say in a "
-    "line that they are on speaker.accountHolder's family account - nothing to pay and nothing to set up, the "
-    "week is already in - then say in plain words what you will do for them, from speaker.theyGet: 'morning' "
-    "is what each day holds, 'evening' is the evening before when tomorrow still has nobody down for a "
-    "pickup, 'rides' is a word before each drive of theirs; and that they can ask what is on any time. Two "
-    "or three short lines, no list of features, and name one or two of the children's things from the week "
-    "so they can see you hold it.\n"
+    "invitation and their message is the code it carried, nothing more. Greet them by their first name and "
+    "say who brought them in, by first name (speaker.accountHolder); that it costs nothing and needs no "
+    "setup, in your own words; then the one or two things they will actually get, from speaker.theyGet - "
+    "'morning' is what each day holds, 'evening' is the evening before when tomorrow still has nobody down "
+    "for a pickup, 'rides' is a word before each drive of theirs - named by the children's real activities "
+    "in the week, and that they can ask what is on any time. Two or three short lines, no list of features. "
+    "Never say 'account'.\n"
 )
 
 _REPLY = (

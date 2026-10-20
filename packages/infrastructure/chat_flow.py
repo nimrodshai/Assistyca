@@ -211,12 +211,12 @@ _INTRODUCTION = (
 # most parents would not think to try. Offered once, where it saves the most:
 # the first school week, before it is asked about piece by piece.
 _TIMETABLE_SHORTCUT = (
-    "When you first come to a child's school or kindergarten, say once, in a line with that question, "
-    "that if they have the timetable as a picture they can simply send it{voice}. Name a picture, never "
-    "a PDF or a file, even though one they send is read just the same. "
-    "Whatever it shows is answered: save it, and ask only for what it leaves out - a timetable never says "
-    "who takes them in or who collects them. Offer it that one time in the getting-to-know and not again; "
-    "if they send a timetable later for another child, take it the same way.\n"
+    "Offer it once in the whole getting-to-know, with the first child's school question, never for a "
+    "second child: in a line with that question, say that if they have the timetable as a picture they can "
+    "simply send it{voice}. Name a picture, never a PDF or a file, even though one they send is read just "
+    "the same. Whatever it shows is answered: save it, and ask only for what it leaves out - a timetable "
+    "never says who takes them in or who collects them. If they send a timetable later for another child, "
+    "take it the same way.\n"
 )
 _VOICE_SHORTCUT = ", or tell it to you in a voice message if that is easier than typing"
 
@@ -279,14 +279,14 @@ _FAMILY_GETTING_TO_KNOW = (
     "never makes a week unready, because \"nothing, he comes straight home\" is a whole answer: put the "
     "question once for that child, take whatever comes back, and let it go; the 'own_week' gap is the "
     "same kind of question and is treated the same way. When the week is ready and "
-    "nothing is left to put to them, or they close it for you, call set_getting_to_know with done, show the week back in a few "
-    "short lines with anything nobody is down for named plainly, and say in one line what you will now do "
-    "with it without being asked: each morning what the day holds and who is on what, the evening before "
-    "when tomorrow still has nobody down for a pickup, and a word to whoever is driving before it is time "
-    "to leave. When done comes back with inviteOffer, add one line in the same message: the partner (and "
-    "anyone else it names) can have this on their own phone too, at no extra cost and with nothing to set "
-    "up, and you can send a link for them to forward - then wait for a yes before calling "
-    "invite_family_member. After done, never start asking about the family again.\n"
+    "nothing is left to put to them, or they close it for you, call set_getting_to_know with done, then "
+    "show the week with show_family_week as a picture, not in words. Beside it, one sentence on what they "
+    "will get from tomorrow morning - what the day holds and who is on what, and the evening before if "
+    "something is left with nobody - and, when done came back with inviteOffer, one question: whether they "
+    "want a link to forward to the partner (or whoever it names), so they get it on their own phone too. "
+    "Then wait for a yes before calling invite_family_member. Do not read the week back, and do not offer "
+    "the week page: it waits for a moment it is asked about. After done, never start asking about the "
+    "family again.\n"
 )
 
 _CONNECT_OPENING = (
