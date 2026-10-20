@@ -15492,6 +15492,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 checkout_url="",
                 customer_portal_url=record["customerPortalUrl"],
                 metadata=record["metadata"],
+                include_inactive=True,
             )
             print(
                 f"[billing] {event.event_name} user={record['userId']} status={record['subscriptionStatus']}",

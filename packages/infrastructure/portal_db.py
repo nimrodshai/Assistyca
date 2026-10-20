@@ -11645,7 +11645,11 @@ class PortalDatabase:
         customer_portal_url: str = "",
         last_checked_at: str | datetime | None = None,
         metadata: dict[str, Any] | None = None,
+        include_inactive: bool = False,
     ) -> dict[str, Any]:
+        """include_inactive keeps a payment for an account an admin switched
+        off: the payment happened whether or not the account is on."""
+
         normalized_email = normalize_email(email)
         if not normalized_email:
             raise ValueError("Email is required.")
@@ -11655,7 +11659,7 @@ class PortalDatabase:
         checked_at_value = parse_datetime(last_checked_at).isoformat() if last_checked_at is not None else now
 
         with self._connection() as conn:
-            user_id = self._resolve_active_user_id(conn, normalized_email)
+            user_id = self._resolve_user_id(conn, normalized_email, include_inactive=include_inactive)
             existing = conn.execute(
                 "SELECT created_at FROM billing_customers WHERE user_id = ?",
                 (user_id,),

@@ -238,6 +238,15 @@ class BillingServerTests(unittest.TestCase):
         self.assertEqual((status, location), (302, "https://assistyca.lemonsqueezy.com/billing?x=1"))
         checkout.assert_not_called()
 
+    def test_a_payment_for_a_switched_off_account_is_kept_and_answered(self) -> None:
+        # An unanswered event is sent again and again; one about an account
+        # an admin switched off is still a payment that happened.
+        with self.database._connection() as conn:  # noqa: SLF001 - fixture setup
+            conn.execute("UPDATE users SET is_active = 0 WHERE id = ?", (int(self.user["id"]),))
+        self.assertEqual(self._webhook(subscription_event("subscription_created", user_id=str(self.user["id"]))), 200)
+        customer = self.database.get_billing_customer("family@example.com", include_inactive=True)
+        self.assertEqual(customer["externalSubscriptionId"], "sub-1")
+
     def test_an_admin_sees_each_clients_payment_link(self) -> None:
         # For paying on a family's behalf, or trying the checkout on staging.
         self.database.register_user("boss@example.com", is_admin=True)
