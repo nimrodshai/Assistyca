@@ -550,6 +550,11 @@ CREATE TABLE IF NOT EXISTS household_members (
     -- what was set for it is held, not ended, and is ended with them if
     -- they are taken off the family.
     signed_out_wa_id TEXT NOT NULL DEFAULT '',
+    -- Where the offer to connect their own mail and calendar stands for a
+    -- parent who joined from their own phone, as household_profiles keeps
+    -- it for the account holder: each answers it for themselves.
+    connect_offer TEXT NOT NULL DEFAULT 'not_started',
+    connect_ask_again_on TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
@@ -1836,6 +1841,9 @@ class PortalDatabase:
             conn.execute("ALTER TABLE household_members ADD COLUMN signed_out_wa_id TEXT NOT NULL DEFAULT ''")
         if "language" not in member_columns:
             conn.execute("ALTER TABLE household_members ADD COLUMN language TEXT NOT NULL DEFAULT ''")
+        if "connect_offer" not in member_columns:
+            conn.execute("ALTER TABLE household_members ADD COLUMN connect_offer TEXT NOT NULL DEFAULT 'not_started'")
+            conn.execute("ALTER TABLE household_members ADD COLUMN connect_ask_again_on TEXT NOT NULL DEFAULT ''")
         departure_columns = {row["name"] for row in conn.execute("PRAGMA table_info(household_departures)").fetchall()}
         if departure_columns and "language" not in departure_columns:
             conn.execute("ALTER TABLE household_departures ADD COLUMN language TEXT NOT NULL DEFAULT ''")
@@ -8809,6 +8817,8 @@ class PortalDatabase:
             "waId": str(row["wa_id"] or "") if "wa_id" in row.keys() else "",
             "waLinkedAt": str(row["wa_linked_at"] or "") if "wa_linked_at" in row.keys() else "",
             "signedOutWaId": str(row["signed_out_wa_id"] or "") if "signed_out_wa_id" in row.keys() else "",
+            "connectOffer": str(row["connect_offer"] or "not_started") if "connect_offer" in row.keys() else "not_started",
+            "connectAskAgainOn": str(row["connect_ask_again_on"] or "") if "connect_ask_again_on" in row.keys() else "",
             "createdAt": str(row["created_at"] or ""),
             "updatedAt": str(row["updated_at"] or ""),
         }
@@ -8857,6 +8867,23 @@ class PortalDatabase:
             conn.execute(
                 "UPDATE household_members SET language = ?, updated_at = ? WHERE user_id = ? AND id = ?",
                 (value, now_iso(), int(user_id), int(member_id)),
+            )
+        return self.get_household_member(user_id=user_id, member_id=member_id) or {}
+
+    def save_household_member_connect_offer(
+        self, *, user_id: int, member_id: int, connect_offer: str, connect_ask_again_on: str = "",
+    ) -> dict[str, Any]:
+        """Where the offer to connect their own mail and calendar stands for a
+        family member, kept apart from the account holder's."""
+
+        if connect_offer not in household.GETTING_TO_KNOW_STATUSES:
+            raise ValueError(f"connect_offer must be one of: {', '.join(household.GETTING_TO_KNOW_STATUSES)}.")
+        if int(user_id or 0) <= 0 or int(member_id or 0) <= 0:
+            raise ValueError("User id and member id are required.")
+        with self._connection() as conn:
+            conn.execute(
+                "UPDATE household_members SET connect_offer = ?, connect_ask_again_on = ?, updated_at = ? WHERE user_id = ? AND id = ?",
+                (connect_offer, normalize_text(connect_ask_again_on)[:10], now_iso(), int(user_id), int(member_id)),
             )
         return self.get_household_member(user_id=user_id, member_id=member_id) or {}
 

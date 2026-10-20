@@ -3072,9 +3072,23 @@ def _tool_set_connect_offer(context: LoopContext, args: dict[str, Any]) -> dict[
             days = 3
         ask_again_on = (_household_today(context) + timedelta(days=days)).isoformat()
     try:
-        profile = context.database.save_household_profile(
-            user_id=context.user_id, connect_offer=status, connect_ask_again_on=ask_again_on,
+        # Each parent connects their own mail, so each answers the offer for
+        # themselves: a partner's "not now" is kept on their own row and
+        # never stops it being put to the account holder.
+        member = (
+            context.database.get_household_member_by_wa_id(context.sender_wa_id, user_id=context.user_id)
+            if context.speaker and not context.speaker.get("isOwner") else None
         )
+        if context.speaker and not context.speaker.get("isOwner") and not member:
+            return _error("not_found", "This phone is not on the family any more, so there is no offer to keep.")
+        if member:
+            profile = context.database.save_household_member_connect_offer(
+                user_id=context.user_id, member_id=int(member["id"]), connect_offer=status, connect_ask_again_on=ask_again_on,
+            )
+        else:
+            profile = context.database.save_household_profile(
+                user_id=context.user_id, connect_offer=status, connect_ask_again_on=ask_again_on,
+            )
     except Exception as exc:  # noqa: BLE001
         return _error("internal", f"That could not be saved: {exc}", can_retry=True)
     return _ok({

@@ -11518,9 +11518,12 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         household_block = self._household_block(user_id, timezone_name, tool_context)
         if guest:
             household_block = household.guest_view(household_block)
-        chat_flow = self._chat_flow_block(
+        # The opening ends on connecting one's own mail and calendar, which a
+        # grandparent cannot; a partner answers that offer for themselves.
+        chat_flow = None if guest else self._chat_flow_block(
             user_id, tool_context, household_block, resolve_local_today(timezone_name),
             first_contact=channel == "whatsapp" and self._nothing_said_yet(user_id),
+            member_wa_id=normalize_whatsapp_lookup_id(sender_wa_id) if speaker else "",
         )
         if not isinstance(payload.get("standingTask"), dict):
             self._note_own_week_asked(user_id, chat_flow, resolve_local_today(timezone_name))
@@ -11805,9 +11808,13 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         today: str,
         *,
         first_contact: bool = False,
+        member_wa_id: str = "",
     ) -> dict[str, Any] | None:
         """What the opening of this conversation is for: getting to know the
         family, then the offer to connect the mail and the calendar.
+
+        member_wa_id names the family member writing, when it is not the
+        account holder: the offer to connect is theirs, kept on their row.
 
         An account with no household block is one the house switched the
         family and week feature off for: there is nothing to get to know, so
@@ -11816,8 +11823,16 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
 
         if user_id <= 0:
             return None
+        profile = self.database.get_household_profile(user_id=user_id) or {}
+        member = self.database.get_household_member_by_wa_id(member_wa_id, user_id=user_id) if member_wa_id else None
+        if member:
+            profile = {
+                **profile,
+                "connectOffer": member.get("connectOffer"),
+                "connectAskAgainOn": member.get("connectAskAgainOn"),
+            }
         return describe_chat_flow(
-            profile=self.database.get_household_profile(user_id=user_id),
+            profile=profile,
             connected=connected_sources(tool_context),
             today=today,
             family_flow_allowed=bool(household_block),

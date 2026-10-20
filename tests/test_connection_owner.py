@@ -575,6 +575,22 @@ class ServerTests(unittest.TestCase):
         partner = self.context_for(PARTNER_PHONE)
         self.assertIn("Their name is Maya Levi", json.dumps(partner["knownFacts"]))
 
+    def test_the_offer_to_connect_is_each_parents_own_and_never_a_grandparents(self) -> None:
+        self.database.save_household_profile(user_id=self.user_id, getting_to_know="done")
+        # Nobody's mail is in as far as these turns know.
+        grandma = self.context_for(GRANDMA_PHONE)
+        self.assertNotIn("chatFlow", grandma)
+        self.assertEqual(self.context_for(PARTNER_PHONE)["chatFlow"]["goal"], "connect")
+        partner = LoopContext(api=None, database=self.database, email="dana@example.com", user_id=self.user_id,
+                              timezone_name="Asia/Jerusalem", sender_wa_id=PARTNER_PHONE,
+                              speaker=household.describe_speaker({"name": "Yoav", "role": "partner"}, owner_name="Dana"))
+        result = TOOLS_BY_NAME["set_connect_offer"].run(partner, {"status": "postponed", "ask_again_in_days": 7})
+        self.assertTrue(result["ok"], result)
+        self.assertFalse(self.context_for(PARTNER_PHONE)["chatFlow"]["askNow"])
+        holder = self.context_for(HOLDER_PHONE)["chatFlow"]
+        self.assertEqual((holder["goal"], holder["askNow"]), ("connect", True), "the partner's not now is not hers")
+        self.assertEqual(self.database.get_household_profile(user_id=self.user_id)["connectOffer"], "not_started")
+
     def test_a_turn_hands_the_model_busy_times_only(self) -> None:
         status, body, given = self.turn(phone=PARTNER_PHONE, signed=True, calls=[])
         self.assertEqual(status, 200, body)
