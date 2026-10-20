@@ -336,8 +336,35 @@ class ScheduledActionTests(unittest.TestCase):
         ) as send:
             self._scheduler().run_pending(now=datetime.now(timezone.utc))
 
-        self.assertEqual(send.call_args.kwargs["template_name"], "assistyca_morning_digest")
+        # The Utility plan template, with the words in its one variable.
+        self.assertEqual(send.call_count, 1)
+        self.assertEqual(send.call_args.kwargs["template_name"], "assistyca_today_plan")
         self.assertEqual(send.call_args.kwargs["template_language"], "en")
+        self.assertIsNone(send.call_args.kwargs["template_parameters"])
+        self.assertEqual(send.call_args.kwargs["message_text"], "Noa has ballet at 16:00.")
+
+    def test_an_evening_glance_rides_the_tomorrow_plan_template(self) -> None:
+        self.database.save_whatsapp_agent_message(user_id=int(self.user["id"]), role="user", text="hi")
+        self._backdate_last_message(hours=30)
+        self.database.save_whatsapp_connection("owner@example.com", owner_wa_id="972507322341", connection_status="connected")
+        self.database.create_scheduled_action(
+            user_id=int(self.user["id"]),
+            action_type="send_message",
+            channel="whatsapp",
+            recipient_ref="owner",
+            run_at=datetime.now(timezone.utc) - timedelta(seconds=1),
+            timezone_name="Asia/Jerusalem",
+            payload={"messageText": "Who collects Yoav from football tomorrow?", "templateKind": "evening_glance"},
+        )
+
+        with mock.patch(
+            "packages.infrastructure.scheduled_actions.send_whatsapp_notification",
+            return_value="wamid.template-evening",
+        ) as send:
+            self._scheduler().run_pending(now=datetime.now(timezone.utc))
+
+        self.assertEqual(send.call_count, 1)
+        self.assertEqual(send.call_args.kwargs["template_name"], "assistyca_tomorrow_plan")
 
     def test_a_morning_digest_with_its_figures_rides_the_utility_template_first(self) -> None:
         self.database.save_whatsapp_agent_message(user_id=int(self.user["id"]), role="user", text="hi")
@@ -359,19 +386,20 @@ class ScheduledActionTests(unittest.TestCase):
 
         def send(**kwargs):
             calls.append(kwargs)
-            if kwargs.get("template_name") == "assistyca_schedule_today":
+            if kwargs.get("template_name") in ("assistyca_today_plan", "assistyca_schedule_today"):
                 raise RuntimeError("(#132001) Template name does not exist in the translation")
             return "wamid.template-morning"
 
         with mock.patch("packages.infrastructure.scheduled_actions.send_whatsapp_notification", side_effect=send):
             self._scheduler().run_pending(now=datetime.now(timezone.utc))
 
-        # The Utility one first with the figures; while Meta reviews it, the
-        # morning's own carries the words.
-        self.assertEqual(calls[0]["template_name"], "assistyca_schedule_today")
-        self.assertEqual(calls[0]["template_parameters"], ["16.10", "3", "4", "1"])
-        self.assertEqual(calls[1]["template_name"], "assistyca_morning_digest")
-        self.assertIsNone(calls[1]["template_parameters"])
+        # The plan one first; refused, the Utility one with the figures; and
+        # while Meta reviews that, the morning's own carries the words.
+        self.assertEqual(calls[0]["template_name"], "assistyca_today_plan")
+        self.assertEqual(calls[1]["template_name"], "assistyca_schedule_today")
+        self.assertEqual(calls[1]["template_parameters"], ["16.10", "3", "4", "1"])
+        self.assertEqual(calls[2]["template_name"], "assistyca_morning_digest")
+        self.assertIsNone(calls[2]["template_parameters"])
 
     def test_until_meta_approves_the_kinds_template_the_generic_one_carries_it(self) -> None:
         self.database.save_whatsapp_agent_message(user_id=int(self.user["id"]), role="user", text="Remind me tomorrow")
@@ -962,27 +990,30 @@ class ScheduledPictureTests(unittest.TestCase):
             },
         )
 
-    def test_an_english_morning_picture_rides_the_utility_status_template_first(self) -> None:
-        # Meta filed the plain English one as Marketing, so it is never tried.
-        action = self._morning_picture(scheduleSlots={"date": "16.10", "activities": 3, "drives": 4, "open": 1, "openPickups": 1})
+    def test_an_english_morning_picture_rides_the_utility_plan_template_first(self) -> None:
+        # Without the figures too: the plan one takes the words, not a count.
+        action = self._morning_picture()
         with mock.patch(
             "packages.infrastructure.scheduled_actions.send_whatsapp_notification", return_value="wamid.pic-m",
         ) as send:
             self.scheduler.run_pending(now=datetime.now(timezone.utc))
         self.assertEqual(send.call_count, 1)
-        self.assertEqual(send.call_args.kwargs["template_name"], "assistyca_routine_today_status")
-        self.assertEqual(send.call_args.kwargs["template_parameters"], ["1 still needs someone"])
+        self.assertEqual(send.call_args.kwargs["template_name"], "assistyca_today_plan_picture")
+        self.assertEqual(send.call_args.kwargs["template_language"], "en")
+        self.assertIsNone(send.call_args.kwargs["template_parameters"])
+        self.assertEqual(send.call_args.kwargs["message_text"], "Here is today.")
         self.assertEqual(send.call_args.kwargs["template_header_image_url"], "https://assistyca.example/week/image/day.png")
         saved = self.database.get_scheduled_action(int(action["id"])) or {}
-        self.assertEqual(saved["payload"]["whatsappTemplate"], "assistyca_routine_today_status:en")
+        self.assertEqual(saved["payload"]["whatsappTemplate"], "assistyca_today_plan_picture:en")
 
-    def test_then_the_mornings_own(self) -> None:
-        self._morning_picture(scheduleSlots={"date": "16.10", "activities": 3, "drives": 4, "open": 1, "openPickups": 0})
+    def test_refused_the_plan_picture_moves_on_to_the_utility_status_template(self) -> None:
+        # Meta filed the plain English routine one as Marketing, so it is never tried.
+        self._morning_picture(scheduleSlots={"date": "16.10", "activities": 3, "drives": 4, "open": 1, "openPickups": 1})
         calls = []
 
         def send(**kwargs):
             calls.append(kwargs)
-            if kwargs.get("template_name") in ("assistyca_routine_today", "assistyca_routine_today_status"):
+            if kwargs.get("template_name") == "assistyca_today_plan_picture":
                 raise RuntimeError("(#132001) Template name does not exist in the translation")
             return "wamid.pic-m"
 
@@ -990,11 +1021,31 @@ class ScheduledPictureTests(unittest.TestCase):
             self.scheduler.run_pending(now=datetime.now(timezone.utc))
         self.assertEqual(
             [c["template_name"] for c in calls],
-            ["assistyca_routine_today_status", "assistyca_morning_digest_picture"],
+            ["assistyca_today_plan_picture", "assistyca_routine_today_status"],
+        )
+        self.assertEqual(calls[1]["template_parameters"], ["1 still needs someone"])
+
+    def test_then_the_mornings_own(self) -> None:
+        self._morning_picture(scheduleSlots={"date": "16.10", "activities": 3, "drives": 4, "open": 1, "openPickups": 0})
+        calls = []
+
+        def send(**kwargs):
+            calls.append(kwargs)
+            if kwargs.get("template_name") in (
+                "assistyca_today_plan_picture", "assistyca_routine_today", "assistyca_routine_today_status",
+            ):
+                raise RuntimeError("(#132001) Template name does not exist in the translation")
+            return "wamid.pic-m"
+
+        with mock.patch("packages.infrastructure.scheduled_actions.send_whatsapp_notification", side_effect=send):
+            self.scheduler.run_pending(now=datetime.now(timezone.utc))
+        self.assertEqual(
+            [c["template_name"] for c in calls],
+            ["assistyca_today_plan_picture", "assistyca_routine_today_status", "assistyca_morning_digest_picture"],
         )
         # A drop-off with nobody is not a pick-up: the line says all sorted.
-        self.assertEqual(calls[0]["template_parameters"], ["all sorted"])
-        self.assertIsNone(calls[1]["template_parameters"])
+        self.assertEqual(calls[1]["template_parameters"], ["all sorted"])
+        self.assertIsNone(calls[2]["template_parameters"])
 
     def test_without_the_figures_the_status_one_is_skipped(self) -> None:
         self._morning_picture()
@@ -1002,13 +1053,15 @@ class ScheduledPictureTests(unittest.TestCase):
 
         def send(**kwargs):
             calls.append(kwargs)
-            if kwargs.get("template_name") == "assistyca_routine_today":
+            if kwargs.get("template_name") in ("assistyca_today_plan_picture", "assistyca_routine_today"):
                 raise RuntimeError("(#132001) Template name does not exist in the translation")
             return "wamid.pic-m"
 
         with mock.patch("packages.infrastructure.scheduled_actions.send_whatsapp_notification", side_effect=send):
             self.scheduler.run_pending(now=datetime.now(timezone.utc))
-        self.assertEqual([c["template_name"] for c in calls], ["assistyca_morning_digest_picture"])
+        self.assertEqual(
+            [c["template_name"] for c in calls], ["assistyca_today_plan_picture", "assistyca_morning_digest_picture"],
+        )
 
     def test_until_meta_approves_that_template_the_picture_goes_as_a_link(self) -> None:
         action = self._picture_message()

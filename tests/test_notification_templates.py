@@ -13,6 +13,7 @@ from packages.infrastructure.notification_templates import image_template_for
 from packages.infrastructure.notification_templates import normalize_template_kind
 from packages.infrastructure.notification_templates import pickup_reminder_parameters
 from packages.infrastructure.notification_templates import pickup_status
+from packages.infrastructure.notification_templates import plan_template_for
 from packages.infrastructure.notification_templates import routine_picture_templates
 from packages.infrastructure.notification_templates import ride_template_name
 from packages.infrastructure.notification_templates import schedule_parameters
@@ -108,6 +109,16 @@ class PickupReminderParameterTests(unittest.TestCase):
 
 
 class UtilityTemplateTests(unittest.TestCase):
+    def test_the_morning_the_evening_and_the_week_have_a_plan_template(self) -> None:
+        self.assertEqual(plan_template_for("morning_digest", "en"), ("assistyca_today_plan", "en"))
+        self.assertEqual(plan_template_for("evening_glance", "he"), ("assistyca_tomorrow_plan", "he"))
+        self.assertEqual(plan_template_for("week_ahead", "en"), ("", ""))
+        self.assertEqual(plan_template_for("reminder", "en"), ("", ""))
+        self.assertEqual(plan_template_for("morning_digest", "en", with_image=True), ("assistyca_today_plan_picture", "en"))
+        self.assertEqual(plan_template_for("evening_glance", "he", with_image=True), ("assistyca_tomorrow_plan_picture", "he"))
+        self.assertEqual(plan_template_for("week_ahead", "he", with_image=True), ("assistyca_week_plan", "he"))
+        self.assertEqual(plan_template_for("reminder", "en", with_image=True), ("", ""))
+
     def test_every_kind_but_the_week_has_a_utility_template(self) -> None:
         self.assertEqual(utility_template_for("morning_digest", "he"), ("assistyca_schedule_today", "he"))
         self.assertEqual(utility_template_for("evening_glance", "en"), ("assistyca_schedule_tomorrow", "en"))

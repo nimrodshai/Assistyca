@@ -31,6 +31,7 @@ from packages.infrastructure.notification_templates import image_template_for
 from packages.infrastructure.notification_templates import normalize_template_kind
 from packages.infrastructure.notification_templates import pickup_reminder_parameters
 from packages.infrastructure.notification_templates import ride_template_name
+from packages.infrastructure.notification_templates import plan_template_for
 from packages.infrastructure.notification_templates import routine_picture_templates
 from packages.infrastructure.notification_templates import schedule_parameters
 from packages.infrastructure.notification_templates import template_for
@@ -752,8 +753,13 @@ class ScheduledActionScheduler:
         kind = normalize_template_kind(payload.get(TEMPLATE_KIND_PAYLOAD_KEY))
         if image_url:
             # The Utility picture templates first, for the same reason as the
-            # words below; then the kind's own, which carries the words.
-            picture_attempts: list[tuple[str, str, list[str] | None]] = list(
+            # words below: the plan one with the words, then the routine ones;
+            # then the kind's own, which carries the words.
+            picture_attempts: list[tuple[str, str, list[str] | None]] = []
+            plan_name, plan_language = plan_template_for(kind, language, with_image=True)
+            if plan_name:
+                picture_attempts.append((plan_name, plan_language, None))
+            picture_attempts.extend(
                 routine_picture_templates(kind, language, payload.get(SCHEDULE_SLOTS_PAYLOAD_KEY))
             )
             picture_attempts.append((*image_template_for(kind, language), None))
@@ -786,6 +792,9 @@ class ScheduledActionScheduler:
         if kind == TEMPLATE_KIND_REMINDER_AGAIN and slots:
             attempts.append((ride_template_name(ride), template_language_for(language), slots))
         if kind in SCHEDULE_TEMPLATE_KINDS:
+            # The plan template takes the words as they are, so it needs no
+            # figures and goes first.
+            attempts.append((*plan_template_for(kind, language), []))
             # The morning and the evening go in theirs only with the day's
             # figures; the words alone cannot fill it.
             figures = schedule_parameters(payload.get(SCHEDULE_SLOTS_PAYLOAD_KEY))
