@@ -2029,10 +2029,16 @@ def _household_payload(context: LoopContext) -> dict[str, Any]:
         owner_names=[] if scope else _owner_names(context),
         day_drives=_day_drives(context),
     )
+    return household.guest_view(described) if _is_guest(context) else described
+
+
+def _is_guest(context: LoopContext) -> bool:
+    """Whether this turn is a grandparent's (or anyone else's who is not a
+    parent), from their own phone: the children's week and their own drives
+    are theirs to read, and nothing else the parents keep."""
+
     speaker = context.speaker or {}
-    if speaker and not household.can_connect_own_sources(speaker.get("role")):
-        return household.guest_view(described)
-    return described
+    return bool(speaker) and not household.can_connect_own_sources(speaker.get("role"))
 
 
 def _checked_driver(context: LoopContext, value: str | None, *, members: list[dict[str, Any]], owners: list[str]) -> tuple[str | None, dict[str, Any] | None]:
@@ -2503,10 +2509,12 @@ def _visible_exceptions(context: LoopContext, exceptions: list[dict[str, Any]]) 
     """The holds as this person may know them. A pause on an action built
     from someone else's mail is theirs, like the action itself: it is left
     off, and a hold on nothing else is not there at all - not its days, not
-    its reason, not as an action "no longer set"."""
+    its reason, not as an action "no longer set". A grandparent is shown
+    the holds on the week alone, without the reasons."""
 
     getter = getattr(context.database, "get_scheduled_action", None)
     hidden: dict[str, bool] = {}
+    guest = _is_guest(context)
 
     def is_hidden(ref: str) -> bool:
         if ref not in hidden:
@@ -2520,9 +2528,16 @@ def _visible_exceptions(context: LoopContext, exceptions: list[dict[str, Any]]) 
     visible = []
     for exception in exceptions:
         targets = schedule_exceptions.normalize_targets(exception.get("targets"))
-        kept = [target for target in targets if not (target["kind"] == "action" and is_hidden(target["ref"]))]
+        # A grandparent reads the holds on the week, never the parents'
+        # scheduled tasks or the reasons they gave.
+        kept = [
+            target for target in targets
+            if not (target["kind"] in schedule_exceptions.ACTION_TARGET_KINDS and guest)
+            and not (target["kind"] == "action" and is_hidden(target["ref"]))
+        ]
         if kept:
-            visible.append(exception if len(kept) == len(targets) else {**exception, "targets": kept})
+            shown = exception if len(kept) == len(targets) else {**exception, "targets": kept}
+            visible.append({**shown, "reason": ""} if guest else shown)
     return visible
 
 

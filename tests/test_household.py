@@ -1129,6 +1129,24 @@ class FamilyOnTheirOwnPhonesTests(unittest.TestCase):
             said = json.dumps(_execute(context, tool, {}, [], []), ensure_ascii=False)
             for private in ("yoav.private@example.com", "123-4567", "prefers calls after nine", "Work at the bank", "17:30"):
                 self.assertNotIn(private, said, tool.name)
+        # The holds on the week she reads too, but not the parents' reasons
+        # for them, nor their scheduled tasks.
+        from packages.infrastructure.agent_loop import exceptions_payload
+
+        task = self.database.create_scheduled_action(
+            user_id=self.user_id, action_type="standing_task", channel="whatsapp", recipient_ref="owner",
+            run_at="2099-01-01T08:00:00+00:00", timezone_name="Asia/Jerusalem",
+            payload={"title": "Pay the gan fee", "instruction": "Pay the gan fee"},
+        )
+        today = _household_today(context)
+        self.database.save_schedule_exception(
+            user_id=self.user_id, starts_on=today.isoformat(), ends_on=(today + timedelta(days=2)).isoformat(),
+            reason="Yoav's knee surgery", targets=[{"kind": "person", "ref": "Yoav"}, {"kind": "action", "ref": str(task["id"])}],
+        )
+        holds = json.dumps(exceptions_payload(context), ensure_ascii=False)
+        self.assertIn("everything Yoav does", holds)
+        for private in ("knee surgery", "gan fee", f"scheduled {task['id']}"):
+            self.assertNotIn(private, holds)
 
 
 class LeavingTheFamilyTests(unittest.TestCase):
