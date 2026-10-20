@@ -503,14 +503,18 @@ class ServerTests(unittest.TestCase):
         for word in PRIVATE_WORDS:
             self.assertNotIn(word, json.dumps(holder_view) + json.dumps(partner_view))
 
-    def turn(self, *, phone: str, signed: bool, calls: list) -> tuple[int, dict, list[str]]:
-        """One WhatsApp turn from a phone, in which the model asks for the
-        other parent's busy times; returns what the model was given."""
+    def turn(
+        self, *, phone: str, signed: bool, calls: list, tool: str = "check_family_busy", arguments: dict | None = None,
+    ) -> tuple[int, dict, list[str]]:
+        """One WhatsApp turn from a phone, in which the model calls one tool -
+        by default the other parent's busy times; returns what the model was
+        given."""
 
         given: list[str] = []
+        arguments = {"from": "2026-10-22", "to": "2026-10-22"} if arguments is None else arguments
         rounds = iter([
             SimpleNamespace(output_text="", input_tokens=1, output_tokens=1, raw_response={"output": [
-                {"type": "function_call", "name": "check_family_busy", "call_id": "c1", "arguments": json.dumps({"from": "2026-10-22", "to": "2026-10-22"})},
+                {"type": "function_call", "name": tool, "call_id": "c1", "arguments": json.dumps(arguments)},
             ]}),
             SimpleNamespace(output_text=json.dumps({"reply": "Noted.", "claimsCompleted": [], "rememberFact": None, "forgetFact": None, "answersOpenQuestion": None}),
                             input_tokens=1, output_tokens=1, raw_response={"output": []}),
@@ -574,6 +578,24 @@ class ServerTests(unittest.TestCase):
         self.assertNotIn("billing", grandma)
         partner = self.context_for(PARTNER_PHONE)
         self.assertIn("Their name is Maya Levi", json.dumps(partner["knownFacts"]))
+
+    def test_the_week_a_grandparent_asks_for_carries_none_of_the_parents_details(self) -> None:
+        self.database.save_household_member(user_id=self.user_id, name="Yoav", role="partner",
+                                             email="yoav.private@example.com", phone="+972 50-123-4567", notes="prefers calls after nine")
+        self.database.save_household_member(user_id=self.user_id, name="Tom", role="child", age=7)
+        self.database.save_household_activity(user_id=self.user_id, title="Football", who=["Tom"], days=["tue"],
+                                              start_time="16:00", end_time="17:00", pick_up_by="Rina")
+        self.database.save_household_activity(user_id=self.user_id, title="Work at the bank", who=["Yoav"],
+                                              days=["sun", "mon", "tue", "wed", "thu"], start_time="08:00", end_time="17:30")
+        status, body, given = self.turn(phone=GRANDMA_PHONE, signed=True, calls=[], tool="show_family_week", arguments={})
+        self.assertEqual(status, 200, body)
+        handed = given[-1]
+        self.assertIn("Football", handed)
+        for private in ("yoav.private@example.com", "123-4567", "prefers calls after nine", "Work at the bank", "17:30"):
+            self.assertNotIn(private, handed)
+        # The partner still reads the whole of it.
+        status, body, given = self.turn(phone=PARTNER_PHONE, signed=True, calls=[], tool="show_family_week", arguments={})
+        self.assertIn("Work at the bank", given[-1])
 
     def test_the_offer_to_connect_is_each_parents_own_and_never_a_grandparents(self) -> None:
         self.database.save_household_profile(user_id=self.user_id, getting_to_know="done")

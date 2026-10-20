@@ -1102,6 +1102,34 @@ class FamilyOnTheirOwnPhonesTests(unittest.TestCase):
             user_message="hi", conversation=[], timezone_name="UTC", today="2026-09-20", tool_context={}, facts=[], channel="whatsapp",
         ))
 
+    def test_nothing_a_grandparent_can_reach_carries_the_parents_details(self) -> None:
+        from packages.infrastructure.agent_loop import TOOLS
+        from packages.infrastructure.agent_loop import _execute
+
+        self.database.save_household_member(
+            user_id=self.user_id, name="Yoav", role="partner", email="yoav.private@example.com",
+            phone="+972 50-123-4567", notes="prefers calls after nine",
+        )
+        self.database.save_household_activity(
+            user_id=self.user_id, title="Work at the bank", who=["Yoav"], days=["sun", "mon", "tue", "wed", "thu"],
+            start_time="08:00", end_time="17:30",
+        )
+        grandparent = household.describe_speaker({"name": "Rina", "role": "other"}, owner_name="Dana Levi")
+        context = LoopContext(
+            api=lambda *a, **k: ({}, 200), database=self.database, email="parent@example.com",
+            user_id=self.user_id, timezone_name="Asia/Jerusalem", channel="whatsapp", speaker=grandparent,
+            sender_wa_id="972500000005",
+        )
+        # Every tool, as the model could call it from her phone: the ones she
+        # may run and the ones refused to her alike.
+        week = _execute(context, TOOLS_BY_NAME["show_family_week"], {}, [], [])
+        self.assertTrue(week["ok"], week)
+        self.assertIn("Kindergarten", json.dumps(week))
+        for tool in TOOLS:
+            said = json.dumps(_execute(context, tool, {}, [], []), ensure_ascii=False)
+            for private in ("yoav.private@example.com", "123-4567", "prefers calls after nine", "Work at the bank", "17:30"):
+                self.assertNotIn(private, said, tool.name)
+
 
 class LeavingTheFamilyTests(unittest.TestCase):
     """Someone taken off the family leaves nothing behind that still acts

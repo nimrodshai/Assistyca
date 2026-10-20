@@ -1996,9 +1996,14 @@ def _day_drives(context: LoopContext, *, first: date | None = None, last: date |
 
 
 def _household_payload(context: LoopContext) -> dict[str, Any]:
+    """The family as a tool reads it for this turn. Every tool reads it here,
+    so a grandparent's turn is handed the guest view - the children's week
+    and who drives it - whichever tool asks, never the parents' notes and
+    contact details on each person or the grown-ups' own hours."""
+
     database = context.database
     scope = week_scope(context)
-    return household.describe_household(
+    described = household.describe_household(
         profile=None if scope else database.get_household_profile(user_id=context.user_id),
         members=database.list_household_members(user_id=context.user_id, group_id=scope),
         activities=database.list_household_activities(user_id=context.user_id, group_id=scope),
@@ -2008,6 +2013,10 @@ def _household_payload(context: LoopContext) -> dict[str, Any]:
         owner_names=[] if scope else _owner_names(context),
         day_drives=_day_drives(context),
     )
+    speaker = context.speaker or {}
+    if speaker and not household.can_connect_own_sources(speaker.get("role")):
+        return household.guest_view(described)
+    return described
 
 
 def _checked_driver(context: LoopContext, value: str | None, *, members: list[dict[str, Any]], owners: list[str]) -> tuple[str | None, dict[str, Any] | None]:
