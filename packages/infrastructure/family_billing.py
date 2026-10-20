@@ -171,6 +171,27 @@ def subscription_is_paying(customer: dict[str, Any] | None, *, now: datetime | N
     return False
 
 
+def account_subscription(subscriptions: list[dict[str, Any]], *, now: datetime | None = None) -> dict[str, Any] | None:
+    """The one subscription that stands for an account when it has several -
+    both parents paid, say. One that is running wins over one cancelled and
+    running out, which wins over one that has ended; the latest change
+    breaks a tie. So the account pays while any of them does, and the pay
+    link manages a subscription that is still being charged."""
+
+    def rank(record: dict[str, Any]) -> int:
+        status = str(record.get("subscriptionStatus") or "").strip().lower()
+        if status in PAYING_STATUSES:
+            return 2
+        return 1 if subscription_is_paying(record, now=now) else 0
+
+    best: dict[str, Any] | None = None
+    for record in subscriptions or ():
+        # Listed latest change first, so the first of a rank is kept.
+        if best is None or rank(record) > rank(best):
+            best = record
+    return best
+
+
 def subscription_record_from_event(event: LemonSqueezyWebhookEvent) -> dict[str, Any] | None:
     """What a subscription event says about the account it was bought for,
     or None when the event is not about a subscription or names no account."""
@@ -211,6 +232,7 @@ def subscription_record_from_event(event: LemonSqueezyWebhookEvent) -> dict[str,
 
 __all__ = [
     "BILLING_PROVIDER",
+    "account_subscription",
     "FamilyBillingConfig",
     "PAY_PAGE_PREFIX",
     "PAYING_STATUSES",

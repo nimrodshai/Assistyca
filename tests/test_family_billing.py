@@ -37,12 +37,14 @@ SIGNING_SECRET = "lemon-signing-secret"
 NOW = datetime(2026, 10, 18, 12, 0, tzinfo=timezone.utc)
 
 
-def subscription_event(event_name: str, *, user_id: str = "7", status: str = "active", ends_at: str = "") -> dict:
+def subscription_event(
+    event_name: str, *, user_id: str = "7", status: str = "active", ends_at: str = "", sub_id: str = "sub-1",
+) -> dict:
     return {
         "meta": {"event_name": event_name, "custom_data": {"user_id": user_id} if user_id else {}},
         "data": {
             "type": "subscriptions",
-            "id": "sub-1",
+            "id": sub_id,
             "attributes": {
                 "customer_id": 55,
                 "status": status,
@@ -246,6 +248,25 @@ class BillingServerTests(unittest.TestCase):
         self.assertEqual(self._webhook(subscription_event("subscription_created", user_id=str(self.user["id"]))), 200)
         customer = self.database.get_billing_customer("family@example.com", include_inactive=True)
         self.assertEqual(customer["externalSubscriptionId"], "sub-1")
+
+    def test_two_parents_paying_are_two_subscriptions_and_one_ending_leaves_the_other(self) -> None:
+        user_id = str(self.user["id"])
+        self.assertEqual(self._webhook(subscription_event("subscription_created", user_id=user_id, sub_id="sub-1")), 200)
+        self.assertEqual(self._webhook(subscription_event("subscription_created", user_id=user_id, sub_id="sub-2")), 200)
+        self.assertEqual(self._webhook(subscription_event("subscription_expired", user_id=user_id, sub_id="sub-1", status="expired")), 200)
+        self.assertEqual(
+            {(row["externalSubscriptionId"], row["subscriptionStatus"]) for row in self.database.list_billing_subscriptions(user_id=int(user_id))},
+            {("sub-1", "expired"), ("sub-2", "active")},
+        )
+        # Still paying through the other parent's subscription, and the pay
+        # link manages that one rather than selling a third.
+        customer = self.database.get_billing_customer("family@example.com", include_inactive=True)
+        self.assertTrue(subscription_is_paying(customer))
+        self.assertEqual(customer["externalSubscriptionId"], "sub-2")
+        with mock.patch("packages.infrastructure.lemon_squeezy_api.LemonSqueezyClient.create_checkout") as checkout:
+            status, _ = self._get(f"/pay/{self._code()}")
+        self.assertEqual(status, 302)
+        checkout.assert_not_called()
 
     def test_an_admin_sees_each_clients_payment_link(self) -> None:
         # For paying on a family's behalf, or trying the checkout on staging.

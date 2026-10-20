@@ -828,6 +828,7 @@ USER_OWNED_TABLES = (
     "source_actions",
     "platform_connections",
     "feature_assignments",
+    "billing_subscriptions",
     "billing_customers",
     "whatsapp_agent_messages",
     "whatsapp_agent_state",
@@ -1151,6 +1152,30 @@ CREATE TABLE IF NOT EXISTS billing_customers (
     updated_at TEXT NOT NULL,
     FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
 );
+
+-- Every subscription bought for an account, one row each. Both parents may
+-- pay for the same family; billing_customers holds the one that stands for
+-- the account (family_billing.account_subscription), and these are all of
+-- them - what is cancelled when the account is deleted.
+CREATE TABLE IF NOT EXISTS billing_subscriptions (
+    provider TEXT NOT NULL,
+    external_subscription_id TEXT NOT NULL,
+    user_id INTEGER NOT NULL,
+    external_customer_id TEXT NOT NULL DEFAULT '',
+    external_subscription_item_id TEXT NOT NULL DEFAULT '',
+    subscription_status TEXT NOT NULL DEFAULT '',
+    product_id TEXT NOT NULL DEFAULT '',
+    variant_id TEXT NOT NULL DEFAULT '',
+    customer_portal_url TEXT NOT NULL DEFAULT '',
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY(provider, external_subscription_id),
+    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_billing_subscriptions_user
+ON billing_subscriptions(user_id);
 
 CREATE TABLE IF NOT EXISTS features (
     feature_id TEXT PRIMARY KEY,
@@ -1766,6 +1791,21 @@ class PortalDatabase:
                 self._migrate_whatsapp_signups_table(conn)
                 self._migrate_whatsapp_processed_messages_table(conn)
                 self._migrate_user_billing_table(conn)
+                # A subscription kept before each one had its own row.
+                conn.execute(
+                    """
+                    INSERT OR IGNORE INTO billing_subscriptions (
+                        provider, external_subscription_id, user_id, external_customer_id,
+                        external_subscription_item_id, subscription_status, product_id, variant_id,
+                        customer_portal_url, metadata_json, created_at, updated_at
+                    )
+                    SELECT provider, external_subscription_id, user_id, external_customer_id,
+                        external_subscription_item_id, subscription_status, product_id, variant_id,
+                        customer_portal_url, metadata_json, created_at, updated_at
+                    FROM billing_customers
+                    WHERE provider = 'lemon_squeezy' AND external_subscription_id != ''
+                    """
+                )
                 self._migrate_usage_events_table(conn)
                 self._migrate_whatsapp_connections_table(conn)
                 self._migrate_platform_connections_table(conn)
@@ -11717,6 +11757,80 @@ class PortalDatabase:
             )
 
             return self._load_billing_customer_row(conn, user_id=user_id) or {}
+
+    def save_billing_subscription(self, *, user_id: int, record: dict[str, Any]) -> list[dict[str, Any]]:
+        """Keep one subscription by its own id, whatever account it is on,
+        and return every subscription that account has."""
+
+        provider = normalize_text(record.get("provider"))
+        subscription_id = normalize_text(record.get("externalSubscriptionId"))
+        if int(user_id or 0) <= 0 or not provider or not subscription_id:
+            raise ValueError("User id, provider and subscription id are required.")
+        now = now_iso()
+        with self._connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO billing_subscriptions (
+                    provider, external_subscription_id, user_id, external_customer_id,
+                    external_subscription_item_id, subscription_status, product_id, variant_id,
+                    customer_portal_url, metadata_json, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(provider, external_subscription_id) DO UPDATE SET
+                    user_id = excluded.user_id,
+                    external_customer_id = excluded.external_customer_id,
+                    external_subscription_item_id = excluded.external_subscription_item_id,
+                    subscription_status = excluded.subscription_status,
+                    product_id = excluded.product_id,
+                    variant_id = excluded.variant_id,
+                    customer_portal_url = excluded.customer_portal_url,
+                    metadata_json = excluded.metadata_json,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    provider, subscription_id, int(user_id),
+                    normalize_text(record.get("externalCustomerId")),
+                    normalize_text(record.get("externalSubscriptionItemId")),
+                    normalize_text(record.get("subscriptionStatus")),
+                    normalize_text(record.get("productId")),
+                    normalize_text(record.get("variantId")),
+                    normalize_text(record.get("customerPortalUrl")),
+                    json.dumps(record.get("metadata") if isinstance(record.get("metadata"), dict) else {}, ensure_ascii=True, sort_keys=True),
+                    now, now,
+                ),
+            )
+        return self.list_billing_subscriptions(user_id=user_id)
+
+    def list_billing_subscriptions(self, *, user_id: int) -> list[dict[str, Any]]:
+        """Every subscription bought for an account, the latest change first."""
+
+        if int(user_id or 0) <= 0:
+            return []
+        with self._connection() as conn:
+            rows = conn.execute(
+                "SELECT * FROM billing_subscriptions WHERE user_id = ? ORDER BY updated_at DESC, rowid DESC",
+                (int(user_id),),
+            ).fetchall()
+        found = []
+        for row in rows:
+            try:
+                metadata = json.loads(row["metadata_json"] or "{}")
+            except json.JSONDecodeError:
+                metadata = {}
+            found.append({
+                "userId": int(row["user_id"]),
+                "provider": str(row["provider"] or ""),
+                "externalCustomerId": str(row["external_customer_id"] or ""),
+                "externalSubscriptionId": str(row["external_subscription_id"] or ""),
+                "externalSubscriptionItemId": str(row["external_subscription_item_id"] or ""),
+                "subscriptionStatus": str(row["subscription_status"] or ""),
+                "productId": str(row["product_id"] or ""),
+                "variantId": str(row["variant_id"] or ""),
+                "customerPortalUrl": str(row["customer_portal_url"] or ""),
+                "metadata": metadata if isinstance(metadata, dict) else {},
+                "createdAt": str(row["created_at"] or ""),
+                "updatedAt": str(row["updated_at"] or ""),
+            })
+        return found
 
     def get_feature_entitlement(self, email: str, feature_id: str) -> dict[str, Any] | None:
         normalized_email = normalize_email(email)

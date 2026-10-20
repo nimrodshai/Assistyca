@@ -103,6 +103,7 @@ from packages.infrastructure.family_billing import PAY_PAGE_PREFIX
 from packages.infrastructure.family_billing import create_family_checkout_url
 from packages.infrastructure.family_billing import load_family_billing_config
 from packages.infrastructure.family_billing import pay_code
+from packages.infrastructure.family_billing import account_subscription
 from packages.infrastructure.family_billing import subscription_is_paying
 from packages.infrastructure.family_billing import subscription_record_from_event
 from packages.infrastructure.family_billing import user_id_from_pay_code
@@ -15480,18 +15481,23 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         record = subscription_record_from_event(event)
         user = self.database.get_user_by_id(record["userId"]) if record else None
         if record and user:
+            # Each subscription is kept by its own id, so a second parent
+            # paying never overwrites the first; the account's own row is the
+            # one of them that stands for it.
+            subscriptions = self.database.save_billing_subscription(user_id=record["userId"], record=record)
+            standing = account_subscription(subscriptions) or record
             self.database.save_billing_customer(
                 normalize_email(user.get("email")),
-                provider=record["provider"],
-                external_customer_id=record["externalCustomerId"],
-                external_subscription_id=record["externalSubscriptionId"],
-                external_subscription_item_id=record["externalSubscriptionItemId"],
-                subscription_status=record["subscriptionStatus"],
-                product_id=record["productId"],
-                variant_id=record["variantId"],
+                provider=standing["provider"],
+                external_customer_id=standing["externalCustomerId"],
+                external_subscription_id=standing["externalSubscriptionId"],
+                external_subscription_item_id=standing["externalSubscriptionItemId"],
+                subscription_status=standing["subscriptionStatus"],
+                product_id=standing["productId"],
+                variant_id=standing["variantId"],
                 checkout_url="",
-                customer_portal_url=record["customerPortalUrl"],
-                metadata=record["metadata"],
+                customer_portal_url=standing["customerPortalUrl"],
+                metadata=standing["metadata"],
                 include_inactive=True,
             )
             print(
