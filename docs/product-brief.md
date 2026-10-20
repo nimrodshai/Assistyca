@@ -120,6 +120,27 @@ These were made by the owner; hold replies to them.
   one line of prose by design - not a formatting bug. Inside the window it
   is still one or two sentences in time order, the way a friend texts;
   bullets only for three or more parallel things to scan.
+- **Meta templates must stay Utility.** A template Meta files as Marketing
+  is dropped for people who have not written to us lately (error 131049), so
+  the family simply gets nothing. Utility means plain and about their own
+  schedule or account: no warmth claims ("really glad you're here"), nothing
+  that sells, and specific enough that a reviewer sees it is about their own
+  request. History: every warmer English welcome was moved to Marketing,
+  while the same words in Hebrew stayed Utility; the plain
+  `assistyca_welcome_family_hey` ("your Assistyca account is up and
+  running") is Utility. Read a template's approved wording and category with
+  the WhatsApp Business Tools connection (`whatsapp_biz_list_templates` /
+  `whatsapp_biz_get_template`, Assistyca business) - reading only, never
+  creating or editing - and say for every proposal whether it would keep
+  Utility.
+- **Template calls the owner made on 2026-10-20:** the reminder line
+  ("Here's the reminder you asked for: …") stays - "Coming up: …" is too vague
+  to stay Utility. The remind-again question ("רוצה שאזכיר שוב 5 דקות לפני?")
+  and the Hebrew welcome are fine as they are; don't reopen them. The English
+  welcome rewrite ("Hi {{1}}, it's Assistyca 👋 I'll keep track of your
+  family's week…") was approved for submission. The morning and evening
+  picture templates ("ככה נראה הלו״ז המשפחתי היום/מחר. אם משהו משתנה, אפשר
+  לעדכן אותי.") are Utility and fine.
 - **Links** go as a short link on its own line, which WhatsApp shows as a
   button - never a long URL.
 - **"What's on today / this week"** is answered with the calendar picture and
