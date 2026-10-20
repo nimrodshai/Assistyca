@@ -439,6 +439,53 @@ class ServerTests(unittest.TestCase):
             ]
         return mock.patch(f"{SERVER}.PortalAuthHandler._calendar_events_between", new=events_between)
 
+    def scheduled(self, *, source: str = "", owner: str = "", text: str) -> int:
+        payload = {"title": "Reply in a followed thread", "instruction": text, "oneOff": True}
+        if source:
+            payload["source"] = source
+        if owner:
+            payload["recipientWaId"] = owner
+        action = self.database.create_scheduled_action(
+            user_id=self.user_id, action_type="standing_task", channel="whatsapp", recipient_ref="owner",
+            run_at=datetime.now(timezone.utc) + timedelta(hours=8), timezone_name="Asia/Jerusalem", payload=payload,
+        )
+        return int(action["id"])
+
+    def test_what_someones_mail_said_is_listed_and_cancelled_by_them_alone(self) -> None:
+        holders_report = self.scheduled(source="thread_follow", text="Dr. Katz wrote: the biopsy results are back")
+        partners_alert = self.scheduled(source="inbox_watch", owner=PARTNER_PHONE, text="Interview at Wix on Sunday")
+        holders_finding = self.scheduled(source="mailbox_findings", text="The car insurance renews on the 3rd")
+        family_task = self.scheduled(text="Every Friday, remind us about the challah")
+        partners_reminder = self.scheduled(owner=PARTNER_PHONE, source="portal_agent", text="Call the plumber")
+
+        def listed(**kwargs) -> set[int]:
+            status, body = self.request("GET", "/api/scheduled-actions", **kwargs)
+            self.assertEqual(status, 200, body)
+            return {int(action["id"]) for action in body["actions"]}
+
+        self.assertEqual(listed(), {holders_report, holders_finding, family_task, partners_reminder})
+        self.assertEqual(listed(phone=PARTNER_PHONE), {partners_alert, family_task, partners_reminder})
+        self.assertEqual(listed(header=f"{PARTNER_PHONE}.forged"), {family_task, partners_reminder})
+
+        status, body = self.request("DELETE", f"/api/scheduled-actions/{holders_report}", phone=PARTNER_PHONE)
+        self.assertEqual(status, 404, body)
+        status, body = self.request("DELETE", f"/api/scheduled-actions/{partners_alert}")
+        self.assertEqual(status, 404, body)
+        self.assertEqual(self.database.get_scheduled_action(holders_report)["status"], "pending")
+        self.assertEqual(self.database.get_scheduled_action(partners_alert)["status"], "pending")
+        # The family's own tasks stay the partner's to stop, as before.
+        status, body = self.request("DELETE", f"/api/scheduled-actions/{family_task}", phone=PARTNER_PHONE)
+        self.assertEqual(status, 200, body)
+        status, body = self.request("DELETE", f"/api/scheduled-actions/{partners_alert}", phone=PARTNER_PHONE)
+        self.assertEqual(status, 200, body)
+        # Putting one on hold by its number reaches the same line.
+        from packages.infrastructure.agent_loop import _own_scheduled_action
+
+        partner = LoopContext(api=None, database=self.database, email="dana@example.com", user_id=self.user_id,
+                              timezone_name="Asia/Jerusalem", connection_owner=PARTNER_PHONE)
+        self.assertIsNone(_own_scheduled_action(partner, holders_finding))
+        self.assertIsNotNone(_own_scheduled_action(partner, partners_reminder))
+
     def test_busy_times_cross_between_the_parents_and_nothing_else_does(self) -> None:
         read_for: list[str] = []
         with self.fake_calendar(read_for):

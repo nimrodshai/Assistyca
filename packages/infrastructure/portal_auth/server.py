@@ -202,6 +202,7 @@ from packages.infrastructure.answer_composer import normalize_answer_question
 from packages.infrastructure.answer_composer import normalize_answer_records
 from packages.infrastructure.answer_composer import normalize_composed_answer
 from packages.infrastructure.connection_owner import CONNECTION_VIEWER_HEADER
+from packages.infrastructure.connection_owner import action_visible_to
 from packages.infrastructure.connection_owner import FAMILY_BUSY_ENDPOINT
 from packages.infrastructure.connection_owner import FAMILY_BUSY_MAX_DAYS
 from packages.infrastructure.connection_owner import busy_blocks
@@ -12319,7 +12320,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         if authenticated is None:
             return
 
-        _session, user = authenticated
+        session, user = authenticated
         query = urllib_parse.parse_qs(parsed.query)
         try:
             limit = int(normalize_text(query.get("limit", ["100"])[0]) or 100)
@@ -12329,7 +12330,13 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             int(user.get("id") or 0),
             limit=max(1, min(250, limit)),
         )
-        client_actions = [self._serialize_scheduled_action_for_client(action) for action in actions]
+        # A message built from someone's mail is theirs alone to see.
+        viewer = self._connection_owner(session.email)
+        client_actions = [
+            self._serialize_scheduled_action_for_client(action)
+            for action in actions
+            if action_visible_to(action, viewer)
+        ]
 
         json_response(self, HTTPStatus.OK, {
             "ok": True,
@@ -12612,7 +12619,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         if authenticated is None:
             return
 
-        _session, user = authenticated
+        session, user = authenticated
         parts = [urllib_parse.unquote(part) for part in parsed.path.strip("/").split("/") if part]
         if len(parts) != 3 or parts[0] != "api" or parts[1] != "scheduled-actions":
             self.send_error(HTTPStatus.NOT_FOUND)
@@ -12629,7 +12636,11 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             return
 
         action = self.database.get_scheduled_action(action_id)
-        if action is None or int(action.get("userId") or 0) != int(user.get("id") or 0):
+        if (
+            action is None
+            or int(action.get("userId") or 0) != int(user.get("id") or 0)
+            or not action_visible_to(action, self._connection_owner(session.email))
+        ):
             json_response(self, HTTPStatus.NOT_FOUND, {
                 "ok": False,
                 "error": "scheduled_action_not_found",

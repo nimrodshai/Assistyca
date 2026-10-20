@@ -49,6 +49,7 @@ from packages.infrastructure.agent_proposals import describe_agent_photo_context
 from packages.infrastructure.calendar_write import build_event_times
 from packages.infrastructure.chat_flow import chat_flow_rules
 from packages.infrastructure.connection_owner import FAMILY_BUSY_ENDPOINT
+from packages.infrastructure.connection_owner import action_visible_to
 from packages.infrastructure.gmail_send import normalize_addresses
 from packages.infrastructure.link_labels import link_label
 from packages.infrastructure.mailbox_findings import describe_finding
@@ -2426,6 +2427,8 @@ def _own_scheduled_action(context: LoopContext, action_id: int) -> dict[str, Any
     getter = getattr(context.database, "get_scheduled_action", None)
     action = getter(int(action_id)) if callable(getter) and int(action_id or 0) > 0 else None
     if not isinstance(action, dict) or int(action.get("userId") or 0) != int(context.user_id):
+        return None
+    if not action_visible_to(action, context.connection_owner):
         return None
     return action if str(action.get("status") or "").lower() in {"pending", "running"} else None
 
