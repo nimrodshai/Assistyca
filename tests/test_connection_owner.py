@@ -293,7 +293,7 @@ class StandingRunTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.temp_dir.cleanup()
 
-    def run_for(self, phone: str) -> tuple[str | None, dict]:
+    def run_for(self, phone: str | None) -> tuple[str | None, dict]:
         from packages.infrastructure.standing_tasks import StandingTaskRunner
 
         sent: list[tuple[dict, dict]] = []
@@ -306,8 +306,10 @@ class StandingRunTests(unittest.TestCase):
             database=self.database, base_url="http://127.0.0.1:1", session_token_factory=lambda email: "token",
             viewer_signer=lambda email, wa_id: sign_connection_viewer(SECRET, email, wa_id),
         )
-        action = {"id": 7, "userId": self.user_id, "channel": "whatsapp",
-                  "payload": {"title": "Morning", "instruction": "Say what today holds.", "recipientWaId": phone}}
+        payload = {"title": "Morning", "instruction": "Say what today holds."}
+        if phone:
+            payload["recipientWaId"] = phone
+        action = {"id": 7, "userId": self.user_id, "channel": "whatsapp", "payload": payload}
         with mock.patch("packages.infrastructure.whatsapp_agent_chat.urllib_request.urlopen", side_effect=urlopen):
             runner.run(action)
         headers, body = sent[0]
@@ -321,6 +323,12 @@ class StandingRunTests(unittest.TestCase):
         self.assertEqual(body["toolContext"].get("mailboxes"), [{"name": "", "provider": "Gmail"}])
         viewer, _ = self.run_for(HOLDER_PHONE)
         self.assertEqual(viewer, HOLDER_PHONE, "the holder's phone, which the server reads as the holder's own")
+
+    def test_a_message_for_the_account_holder_is_written_as_her_own(self) -> None:
+        # Her morning names no phone: it is hers, written in her own
+        # conversation - never as whichever family phone joined last.
+        viewer, body = self.run_for(None)
+        self.assertEqual((viewer, body["senderWaId"]), (HOLDER_PHONE, HOLDER_PHONE))
 
 
 class BackgroundJobTests(unittest.TestCase):
