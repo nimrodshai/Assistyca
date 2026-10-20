@@ -21,6 +21,13 @@ facts in small slots, because a body that is one open line is what Meta files
 as Marketing. Where the slots are not there, the kind's own template carries
 the message as before.
 
+The plan templates (PLAN_TEMPLATE_NAMES, PLAN_PICTURE_TEMPLATE_NAMES) came
+after, approved as Utility in both languages on 2026-10-18: one line of the
+assistant's words, like the kind's own, but framed as their family schedule
+in Assistyca with a footer saying they turned updates on. They go before
+everything else for the morning, the evening and the week, so the words
+arrive whole and no Utility send hangs on a figure being there.
+
 A queued action names its kind in the payload under TEMPLATE_KIND_PAYLOAD_KEY;
 one that names nothing is a reminder. The week-ahead template carries the
 week as its picture header and nothing else, so a message with no picture
@@ -107,6 +114,17 @@ PICKUP_STATUS_WORDS = {
     "en": {"none": "all sorted", "one": "1 still needs someone", "many": "{count} still need someone"},
     "he": {"none": "הכול מסודר", "one": "אחד עוד בלי מי שאוסף", "many": "{count} עוד בלי מי שאוסף"},
 }
+# The Utility plan templates, tried before every other one of the kind: the
+# assistant's line fills their one variable, as it does the kind's own.
+PLAN_TEMPLATE_NAMES = {
+    TEMPLATE_KIND_MORNING_DIGEST: "assistyca_today_plan",
+    TEMPLATE_KIND_EVENING_GLANCE: "assistyca_tomorrow_plan",
+}
+PLAN_PICTURE_TEMPLATE_NAMES = {
+    TEMPLATE_KIND_MORNING_DIGEST: "assistyca_today_plan_picture",
+    TEMPLATE_KIND_EVENING_GLANCE: "assistyca_tomorrow_plan_picture",
+    TEMPLATE_KIND_WEEK_AHEAD: "assistyca_week_plan",
+}
 # Kinds whose only template opens with a picture: sent only with one.
 IMAGE_TEMPLATE_KINDS = frozenset({TEMPLATE_KIND_WEEK_AHEAD})
 
@@ -160,6 +178,15 @@ def utility_template_for(kind: Any, language: Any) -> tuple[str, str]:
     has none (the week ahead, which only goes as a picture)."""
 
     name = UTILITY_TEMPLATE_NAMES.get(normalize_template_kind(kind), "")
+    return (name, template_language(language)) if name else ("", "")
+
+
+def plan_template_for(kind: Any, language: Any, *, with_image: bool = False) -> tuple[str, str]:
+    """The Utility plan template of this kind, with a picture or without, or
+    an empty name for a kind that has none (the reminders)."""
+
+    names = PLAN_PICTURE_TEMPLATE_NAMES if with_image else PLAN_TEMPLATE_NAMES
+    name = names.get(normalize_template_kind(kind), "")
     return (name, template_language(language)) if name else ("", "")
 
 
@@ -244,6 +271,8 @@ __all__ = [
     "OPEN_PICKUPS_SLOT",
     "PICKUP_REMINDER_TEMPLATE_NAME",
     "PICKUP_SLOTS_PAYLOAD_KEY",
+    "PLAN_PICTURE_TEMPLATE_NAMES",
+    "PLAN_TEMPLATE_NAMES",
     "PICTURE_TEMPLATE_NAMES",
     "RIDE_SLOTS_PAYLOAD_KEY",
     "ROUTINE_PICTURE_TEMPLATE_NAMES",
@@ -263,6 +292,7 @@ __all__ = [
     "normalize_template_kind",
     "pickup_reminder_parameters",
     "pickup_status",
+    "plan_template_for",
     "ride_template_name",
     "routine_picture_templates",
     "schedule_parameters",
