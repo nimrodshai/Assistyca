@@ -532,6 +532,38 @@ class ServerTests(unittest.TestCase):
         self.assertFalse(removed["ok"], removed)
         self.assertNotIn("skipping the Wix", json.dumps(removed))
 
+    def test_lifting_a_shared_hold_leaves_the_pause_on_the_other_parents_mail_alert(self) -> None:
+        from packages.infrastructure.agent_loop import TOOLS_BY_NAME
+        from packages.infrastructure.agent_loop import exceptions_payload
+
+        holders_alert = self.scheduled(source="inbox_watch", text="Interview at Wix on Sunday")
+        today = datetime.now(timezone.utc).date()
+
+        def context(owner: str) -> LoopContext:
+            return LoopContext(api=None, database=self.database, email="dana@example.com", user_id=self.user_id,
+                               timezone_name="Asia/Jerusalem", connection_owner=owner)
+
+        partner, holder = context(PARTNER_PHONE), context("")
+        # She is away for two days, and her mail alert is paused with it.
+        hold = self.database.save_schedule_exception(
+            user_id=self.user_id, starts_on=today.isoformat(), ends_on=(today + timedelta(days=1)).isoformat(),
+            reason="Wix second round",
+            targets=[{"kind": "person", "ref": "Dana"}, {"kind": "action", "ref": str(holders_alert)}],
+        )
+        removed = TOOLS_BY_NAME["remove_exception"].run(partner, {"id": hold["id"]})
+        self.assertTrue(removed["ok"], removed)
+        for private in ("Wix", f"scheduled {holders_alert}"):
+            self.assertNotIn(private, json.dumps(removed))
+        # Her being away is lifted; the pause on her alert is still hers.
+        self.assertEqual(exceptions_payload(partner), [])
+        kept = self.database.list_schedule_exceptions(user_id=self.user_id)
+        self.assertEqual([entry["targets"] for entry in kept], [[{"kind": "action", "ref": str(holders_alert)}]])
+        self.assertEqual(kept[0]["reason"], "Wix second round")
+        # And she lifts what is left of it whole.
+        removed = TOOLS_BY_NAME["remove_exception"].run(holder, {"id": hold["id"]})
+        self.assertTrue(removed["ok"], removed)
+        self.assertEqual(self.database.list_schedule_exceptions(user_id=self.user_id), [])
+
     def test_busy_times_cross_between_the_parents_and_nothing_else_does(self) -> None:
         read_for: list[str] = []
         with self.fake_calendar(read_for):

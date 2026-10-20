@@ -10127,6 +10127,21 @@ class PortalDatabase:
             ).fetchone()
         return self._schedule_exception_row(row)
 
+    def narrow_schedule_exception(
+        self, *, user_id: int, exception_id: int, targets: list[dict[str, str]], group_id: str = "",
+    ) -> bool:
+        """Keep only these targets on one exception - what is left when part
+        of it was lifted by someone who could not see the rest."""
+
+        if int(user_id or 0) <= 0:
+            return False
+        with self._connection() as conn:
+            cursor = conn.execute(
+                "UPDATE schedule_exceptions SET targets_json = ? WHERE id = ? AND user_id = ? AND group_id = ?",
+                (json.dumps(targets, ensure_ascii=False), int(exception_id), int(user_id), normalize_text(group_id)),
+            )
+        return cursor.rowcount > 0
+
     def remove_schedule_exception(self, *, user_id: int, exception_id: int, group_id: str = "") -> bool:
         if int(user_id or 0) <= 0:
             return False
