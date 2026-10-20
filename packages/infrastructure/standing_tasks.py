@@ -251,11 +251,13 @@ def build_task_run_message(
         else f"The one-off action \"{name}\" is running now."
     )
     layout = _SHAPE_GUIDANCE.get(normalize_text(shape), _SHAPE_GUIDANCE[MESSAGE_SHAPE_LINES])
-    if remind_again:
-        layout += (
-            " One question is allowed: end by offering, briefly and in your own words, to remind them again 5 "
-            "minutes before - a button under the message answers it."
-        )
+    # Said last, after the instruction: a sentence-count in the instruction
+    # read after it otherwise won, and the offer was dropped.
+    closing = (
+        " After that, end the message with one short question offering, in your own words, to remind them "
+        "again 5 minutes before - a button under the message answers it. This one question is required."
+        if remind_again else ""
+    )
     if may_offer:
         return (
             f"{opening} The person is not writing; they will read your reply as a message on its own and may "
@@ -273,7 +275,7 @@ def build_task_run_message(
         f"{opening} The person is not writing; "
         "they will read your reply as a message on its own, so write it as the finished result and "
         f"nothing else: no questions, no offers, nothing set up or scheduled.{quiet}{layout} Do this now: "
-        f"{normalize_text(instruction)}"
+        f"{normalize_text(instruction)}{closing}"
     )
 
 

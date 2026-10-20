@@ -126,7 +126,9 @@ class RideWordOfferTests(unittest.TestCase):
         plain = build_task_run_message(title="t", instruction="x", schedule_text="", standing=False)
         asked = build_task_run_message(title="t", instruction="x", schedule_text="", standing=False, remind_again=True)
         self.assertNotIn("remind them again 5 minutes before", plain)
-        self.assertIn("end by offering, briefly and in your own words, to remind them again 5 minutes before", asked)
+        # Said last, so a sentence-count in the instruction does not drop it.
+        self.assertTrue(asked.endswith("This one question is required."))
+        self.assertIn("offering, in your own words, to remind them again 5 minutes before", asked)
 
 
 class ButtonOnTheSendTests(unittest.TestCase):
