@@ -293,7 +293,7 @@ class StandingRunTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.temp_dir.cleanup()
 
-    def run_for(self, phone: str) -> tuple[str | None, dict]:
+    def run_for(self, phone: str | None) -> tuple[str | None, dict]:
         from packages.infrastructure.standing_tasks import StandingTaskRunner
 
         sent: list[tuple[dict, dict]] = []
@@ -306,8 +306,10 @@ class StandingRunTests(unittest.TestCase):
             database=self.database, base_url="http://127.0.0.1:1", session_token_factory=lambda email: "token",
             viewer_signer=lambda email, wa_id: sign_connection_viewer(SECRET, email, wa_id),
         )
-        action = {"id": 7, "userId": self.user_id, "channel": "whatsapp",
-                  "payload": {"title": "Morning", "instruction": "Say what today holds.", "recipientWaId": phone}}
+        payload = {"title": "Morning", "instruction": "Say what today holds."}
+        if phone:
+            payload["recipientWaId"] = phone
+        action = {"id": 7, "userId": self.user_id, "channel": "whatsapp", "payload": payload}
         with mock.patch("packages.infrastructure.whatsapp_agent_chat.urllib_request.urlopen", side_effect=urlopen):
             runner.run(action)
         headers, body = sent[0]
@@ -321,6 +323,12 @@ class StandingRunTests(unittest.TestCase):
         self.assertEqual(body["toolContext"].get("mailboxes"), [{"name": "", "provider": "Gmail"}])
         viewer, _ = self.run_for(HOLDER_PHONE)
         self.assertEqual(viewer, HOLDER_PHONE, "the holder's phone, which the server reads as the holder's own")
+
+    def test_a_message_for_the_account_holder_is_written_as_her_own(self) -> None:
+        # Her morning names no phone: it is hers, written in her own
+        # conversation - never as whichever family phone joined last.
+        viewer, body = self.run_for(None)
+        self.assertEqual((viewer, body["senderWaId"]), (HOLDER_PHONE, HOLDER_PHONE))
 
 
 class BackgroundJobTests(unittest.TestCase):
@@ -439,6 +447,91 @@ class ServerTests(unittest.TestCase):
             ]
         return mock.patch(f"{SERVER}.PortalAuthHandler._calendar_events_between", new=events_between)
 
+    def scheduled(self, *, source: str = "", owner: str = "", text: str) -> int:
+        payload = {"title": "Reply in a followed thread", "instruction": text, "oneOff": True}
+        if source:
+            payload["source"] = source
+        if owner:
+            payload["recipientWaId"] = owner
+        action = self.database.create_scheduled_action(
+            user_id=self.user_id, action_type="standing_task", channel="whatsapp", recipient_ref="owner",
+            run_at=datetime.now(timezone.utc) + timedelta(hours=8), timezone_name="Asia/Jerusalem", payload=payload,
+        )
+        return int(action["id"])
+
+    def test_what_someones_mail_said_is_listed_and_cancelled_by_them_alone(self) -> None:
+        holders_report = self.scheduled(source="thread_follow", text="Dr. Katz wrote: the biopsy results are back")
+        partners_alert = self.scheduled(source="inbox_watch", owner=PARTNER_PHONE, text="Interview at Wix on Sunday")
+        holders_finding = self.scheduled(source="mailbox_findings", text="The car insurance renews on the 3rd")
+        family_task = self.scheduled(text="Every Friday, remind us about the challah")
+        partners_reminder = self.scheduled(owner=PARTNER_PHONE, source="portal_agent", text="Call the plumber")
+
+        def listed(**kwargs) -> set[int]:
+            status, body = self.request("GET", "/api/scheduled-actions", **kwargs)
+            self.assertEqual(status, 200, body)
+            return {int(action["id"]) for action in body["actions"]}
+
+        self.assertEqual(listed(), {holders_report, holders_finding, family_task, partners_reminder})
+        self.assertEqual(listed(phone=PARTNER_PHONE), {partners_alert, family_task, partners_reminder})
+        self.assertEqual(listed(header=f"{PARTNER_PHONE}.forged"), {family_task, partners_reminder})
+
+        status, body = self.request("DELETE", f"/api/scheduled-actions/{holders_report}", phone=PARTNER_PHONE)
+        self.assertEqual(status, 404, body)
+        status, body = self.request("DELETE", f"/api/scheduled-actions/{partners_alert}")
+        self.assertEqual(status, 404, body)
+        self.assertEqual(self.database.get_scheduled_action(holders_report)["status"], "pending")
+        self.assertEqual(self.database.get_scheduled_action(partners_alert)["status"], "pending")
+        # The family's own tasks stay the partner's to stop, as before.
+        status, body = self.request("DELETE", f"/api/scheduled-actions/{family_task}", phone=PARTNER_PHONE)
+        self.assertEqual(status, 200, body)
+        status, body = self.request("DELETE", f"/api/scheduled-actions/{partners_alert}", phone=PARTNER_PHONE)
+        self.assertEqual(status, 200, body)
+        # Putting one on hold by its number reaches the same line.
+        from packages.infrastructure.agent_loop import _own_scheduled_action
+
+        partner = LoopContext(api=None, database=self.database, email="dana@example.com", user_id=self.user_id,
+                              timezone_name="Asia/Jerusalem", connection_owner=PARTNER_PHONE)
+        self.assertIsNone(_own_scheduled_action(partner, holders_finding))
+        self.assertIsNotNone(_own_scheduled_action(partner, partners_reminder))
+
+    def test_a_pause_on_someones_mail_alert_is_theirs_alone(self) -> None:
+        from packages.infrastructure.agent_loop import TOOLS_BY_NAME
+        from packages.infrastructure.agent_loop import exceptions_payload
+
+        partners_alert = self.scheduled(source="inbox_watch", owner=PARTNER_PHONE, text="Interview at Wix on Sunday")
+        family_task = self.scheduled(text="Every Friday, remind us about the challah")
+        today = datetime.now(timezone.utc).date()
+
+        def context(owner: str) -> LoopContext:
+            return LoopContext(api=None, database=self.database, email="dana@example.com", user_id=self.user_id,
+                               timezone_name="Asia/Jerusalem", connection_owner=owner)
+
+        partner, holder = context(PARTNER_PHONE), context("")
+        held = TOOLS_BY_NAME["add_exception"].run(partner, {
+            "from": today.isoformat(), "until": (today + timedelta(days=3)).isoformat(),
+            "actions": [partners_alert], "reason": "skipping the Wix process for now",
+        })
+        self.assertTrue(held["ok"], held)
+        both = self.database.save_schedule_exception(
+            user_id=self.user_id, starts_on=today.isoformat(), ends_on=(today + timedelta(days=3)).isoformat(),
+            reason="away at the beach", targets=[{"kind": "action", "ref": str(partners_alert)}, {"kind": "action", "ref": str(family_task)}],
+        )
+        self.assertIn("skipping the Wix", json.dumps(exceptions_payload(partner)))
+        self.assertIn(f"scheduled {partners_alert}", json.dumps(exceptions_payload(partner)))
+        # The other parent is told of it in no form: not by name, not as an
+        # action no longer set, not by the reason; a hold that also covers
+        # the family's own task shows that task only.
+        seen = exceptions_payload(holder)
+        said = json.dumps(seen)
+        for private in ("skipping the Wix", "no longer set", f"scheduled {partners_alert}"):
+            self.assertNotIn(private, said)
+        self.assertEqual([entry["id"] for entry in seen], [int(both["id"])])
+        self.assertIn(f"scheduled {family_task}", said)
+        # Nor can they lift it.
+        removed = TOOLS_BY_NAME["remove_exception"].run(holder, {"id": held["saved"]["id"]})
+        self.assertFalse(removed["ok"], removed)
+        self.assertNotIn("skipping the Wix", json.dumps(removed))
+
     def test_busy_times_cross_between_the_parents_and_nothing_else_does(self) -> None:
         read_for: list[str] = []
         with self.fake_calendar(read_for):
@@ -456,14 +549,18 @@ class ServerTests(unittest.TestCase):
         for word in PRIVATE_WORDS:
             self.assertNotIn(word, json.dumps(holder_view) + json.dumps(partner_view))
 
-    def turn(self, *, phone: str, signed: bool, calls: list) -> tuple[int, dict, list[str]]:
-        """One WhatsApp turn from a phone, in which the model asks for the
-        other parent's busy times; returns what the model was given."""
+    def turn(
+        self, *, phone: str, signed: bool, calls: list, tool: str = "check_family_busy", arguments: dict | None = None,
+    ) -> tuple[int, dict, list[str]]:
+        """One WhatsApp turn from a phone, in which the model calls one tool -
+        by default the other parent's busy times; returns what the model was
+        given."""
 
         given: list[str] = []
+        arguments = {"from": "2026-10-22", "to": "2026-10-22"} if arguments is None else arguments
         rounds = iter([
             SimpleNamespace(output_text="", input_tokens=1, output_tokens=1, raw_response={"output": [
-                {"type": "function_call", "name": "check_family_busy", "call_id": "c1", "arguments": json.dumps({"from": "2026-10-22", "to": "2026-10-22"})},
+                {"type": "function_call", "name": tool, "call_id": "c1", "arguments": json.dumps(arguments)},
             ]}),
             SimpleNamespace(output_text=json.dumps({"reply": "Noted.", "claimsCompleted": [], "rememberFact": None, "forgetFact": None, "answersOpenQuestion": None}),
                             input_tokens=1, output_tokens=1, raw_response={"output": []}),
@@ -481,6 +578,86 @@ class ServerTests(unittest.TestCase):
                 phone=phone if signed else None,
             )
         return status, body, given
+
+    def context_for(self, phone: str, remember: dict | None = None) -> dict:
+        """The CONTEXT one plain WhatsApp turn from a phone hands the model."""
+
+        given: list[str] = []
+        answer = SimpleNamespace(
+            output_text=json.dumps({"reply": "Noted.", "claimsCompleted": [], "rememberFact": remember, "forgetFact": None, "answersOpenQuestion": None}),
+            input_tokens=1, output_tokens=1, raw_response={"output": []},
+        )
+
+        def model(**kwargs):
+            given.append(json.dumps(kwargs.get("input"), default=str))
+            return answer
+
+        with mock.patch(f"{SERVER}.call_openai_response", side_effect=model):
+            status, body = self.request(
+                "POST", "/api/agent/loop",
+                {"userMessage": "what's on tomorrow?", "timezone": "Asia/Jerusalem", "channel": "whatsapp", "senderWaId": phone},
+                phone=phone,
+            )
+        self.assertEqual(status, 200, body)
+        text = json.loads(given[0])[-1]["content"]
+        text = text if isinstance(text, str) else json.dumps(text)
+        return json.loads(text.split("CONTEXT\n", 1)[1])
+
+    def test_a_grandparent_is_handed_the_week_and_nothing_else_of_the_account(self) -> None:
+        self.database.save_account_fact(user_id=self.user_id, key="name", fact="Their name is Maya Levi", pinned=True)
+        self.database.save_household_member(user_id=self.user_id, name="Tom", role="child", age=7,
+                                             email="tom.private@example.com", notes="allergic to peanuts")
+        self.database.save_household_activity(user_id=self.user_id, title="Football", who=["Tom"], days=["tue"],
+                                              start_time="16:00", end_time="17:00", pick_up_by="Rina")
+        holder = self.context_for(HOLDER_PHONE)
+        self.assertIn("Their name is Maya Levi", json.dumps(holder["knownFacts"]))
+        grandma = self.context_for(GRANDMA_PHONE, remember={"key": "car", "fact": "Rina drives a red Fiat"})
+        said = json.dumps(grandma, ensure_ascii=False)
+        # And nothing she says is written into the parents' remembered facts.
+        self.assertNotIn("Fiat", json.dumps(self.database.list_account_facts(user_id=self.user_id)))
+        self.assertIn("Football", said)
+        self.assertIn("Rina", said)
+        self.assertEqual(grandma["knownFacts"], [])
+        for private in ("Maya Levi", "tom.private@example.com", "allergic to peanuts"):
+            self.assertNotIn(private, said)
+        # Nor the account's own matters, like the trial and the bill.
+        self.assertNotIn("billing", grandma)
+        partner = self.context_for(PARTNER_PHONE)
+        self.assertIn("Their name is Maya Levi", json.dumps(partner["knownFacts"]))
+
+    def test_the_week_a_grandparent_asks_for_carries_none_of_the_parents_details(self) -> None:
+        self.database.save_household_member(user_id=self.user_id, name="Yoav", role="partner",
+                                             email="yoav.private@example.com", phone="+972 50-123-4567", notes="prefers calls after nine")
+        self.database.save_household_member(user_id=self.user_id, name="Tom", role="child", age=7)
+        self.database.save_household_activity(user_id=self.user_id, title="Football", who=["Tom"], days=["tue"],
+                                              start_time="16:00", end_time="17:00", pick_up_by="Rina")
+        self.database.save_household_activity(user_id=self.user_id, title="Work at the bank", who=["Yoav"],
+                                              days=["sun", "mon", "tue", "wed", "thu"], start_time="08:00", end_time="17:30")
+        status, body, given = self.turn(phone=GRANDMA_PHONE, signed=True, calls=[], tool="show_family_week", arguments={})
+        self.assertEqual(status, 200, body)
+        handed = given[-1]
+        self.assertIn("Football", handed)
+        for private in ("yoav.private@example.com", "123-4567", "prefers calls after nine", "Work at the bank", "17:30"):
+            self.assertNotIn(private, handed)
+        # The partner still reads the whole of it.
+        status, body, given = self.turn(phone=PARTNER_PHONE, signed=True, calls=[], tool="show_family_week", arguments={})
+        self.assertIn("Work at the bank", given[-1])
+
+    def test_the_offer_to_connect_is_each_parents_own_and_never_a_grandparents(self) -> None:
+        self.database.save_household_profile(user_id=self.user_id, getting_to_know="done")
+        # Nobody's mail is in as far as these turns know.
+        grandma = self.context_for(GRANDMA_PHONE)
+        self.assertNotIn("chatFlow", grandma)
+        self.assertEqual(self.context_for(PARTNER_PHONE)["chatFlow"]["goal"], "connect")
+        partner = LoopContext(api=None, database=self.database, email="dana@example.com", user_id=self.user_id,
+                              timezone_name="Asia/Jerusalem", sender_wa_id=PARTNER_PHONE,
+                              speaker=household.describe_speaker({"name": "Yoav", "role": "partner"}, owner_name="Dana"))
+        result = TOOLS_BY_NAME["set_connect_offer"].run(partner, {"status": "postponed", "ask_again_in_days": 7})
+        self.assertTrue(result["ok"], result)
+        self.assertFalse(self.context_for(PARTNER_PHONE)["chatFlow"]["askNow"])
+        holder = self.context_for(HOLDER_PHONE)["chatFlow"]
+        self.assertEqual((holder["goal"], holder["askNow"]), ("connect", True), "the partner's not now is not hers")
+        self.assertEqual(self.database.get_household_profile(user_id=self.user_id)["connectOffer"], "not_started")
 
     def test_a_turn_hands_the_model_busy_times_only(self) -> None:
         status, body, given = self.turn(phone=PARTNER_PHONE, signed=True, calls=[])

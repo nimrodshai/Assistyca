@@ -41,6 +41,9 @@ PAY_PAGE_PREFIX = "/pay/"
 PAYING_STATUSES = frozenset({"active", "on_trial", "past_due"})
 # Cancelled, but paid until ends_at.
 PAID_UNTIL_END_STATUSES = frozenset({"cancelled"})
+# Nothing more is ever charged on these. Anything else - running, paused,
+# a card being retried or given up on - can still take money.
+NO_MORE_CHARGES_STATUSES = frozenset({"cancelled", "expired"})
 
 # The events that describe a subscription. Payment events describe an
 # invoice instead, and each one is followed by a subscription_updated, so
@@ -146,6 +149,16 @@ def create_family_checkout_url(
     return str(checkout.get("url") or "").strip()
 
 
+def fresh_customer_portal_url(client: LemonSqueezyClient, subscription_id: str) -> str:
+    """Where a paying family manages or cancels their subscription, asked of
+    Lemon Squeezy now: the address it gives is signed for about a day, so
+    the one a webhook brought last month has likely run out."""
+
+    subscription = client.retrieve_subscription(subscription_id)
+    urls = subscription.get("urls") if isinstance(subscription.get("urls"), dict) else {}
+    return str(urls.get("customer_portal") or "").strip()
+
+
 def _parse_moment(value: Any) -> datetime | None:
     text = str(value or "").strip()
     if not text:
@@ -169,6 +182,35 @@ def subscription_is_paying(customer: dict[str, Any] | None, *, now: datetime | N
         ends_at = _parse_moment(metadata.get("endsAt"))
         return bool(ends_at and ends_at > (now or datetime.now(timezone.utc)))
     return False
+
+
+def subscription_still_charges(record: dict[str, Any] | None) -> bool:
+    """Whether a subscription could still take money, and so has to be
+    cancelled before the account it pays for is deleted."""
+
+    status = str((record or {}).get("subscriptionStatus") or "").strip().lower()
+    return bool(str((record or {}).get("externalSubscriptionId") or "").strip()) and status not in NO_MORE_CHARGES_STATUSES
+
+
+def account_subscription(subscriptions: list[dict[str, Any]], *, now: datetime | None = None) -> dict[str, Any] | None:
+    """The one subscription that stands for an account when it has several -
+    both parents paid, say. One that is running wins over one cancelled and
+    running out, which wins over one that has ended; the latest change
+    breaks a tie. So the account pays while any of them does, and the pay
+    link manages a subscription that is still being charged."""
+
+    def rank(record: dict[str, Any]) -> int:
+        status = str(record.get("subscriptionStatus") or "").strip().lower()
+        if status in PAYING_STATUSES:
+            return 2
+        return 1 if subscription_is_paying(record, now=now) else 0
+
+    best: dict[str, Any] | None = None
+    for record in subscriptions or ():
+        # Listed latest change first, so the first of a rank is kept.
+        if best is None or rank(record) > rank(best):
+            best = record
+    return best
 
 
 def subscription_record_from_event(event: LemonSqueezyWebhookEvent) -> dict[str, Any] | None:
@@ -211,14 +253,17 @@ def subscription_record_from_event(event: LemonSqueezyWebhookEvent) -> dict[str,
 
 __all__ = [
     "BILLING_PROVIDER",
+    "account_subscription",
     "FamilyBillingConfig",
     "PAY_PAGE_PREFIX",
     "PAYING_STATUSES",
     "SUBSCRIPTION_EVENTS",
     "create_family_checkout_url",
+    "fresh_customer_portal_url",
     "load_family_billing_config",
     "pay_code",
     "subscription_is_paying",
+    "subscription_still_charges",
     "subscription_record_from_event",
     "user_id_from_pay_code",
 ]

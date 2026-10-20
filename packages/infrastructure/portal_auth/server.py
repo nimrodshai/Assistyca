@@ -77,6 +77,7 @@ from packages.infrastructure.agent_proposals import normalize_agent_proposal_for
 from packages.infrastructure.agent_proposals import normalize_agent_proposal_for_turn
 from packages.infrastructure.agent_proposals import normalize_agent_proposal_revision_conversation
 from packages.infrastructure.agent_proposals import normalize_agent_proposal_revision_response
+from packages.infrastructure.account_erasure import SubscriptionNotCancelled
 from packages.infrastructure.account_erasure import erase_account
 from packages.infrastructure.agent_proposals import normalize_agent_photo_context
 from packages.infrastructure.agent_proposals import normalize_agent_source_context
@@ -103,11 +104,16 @@ from packages.infrastructure.family_billing import PAY_PAGE_PREFIX
 from packages.infrastructure.family_billing import create_family_checkout_url
 from packages.infrastructure.family_billing import load_family_billing_config
 from packages.infrastructure.family_billing import pay_code
+from packages.infrastructure.family_billing import BILLING_PROVIDER
+from packages.infrastructure.family_billing import account_subscription
+from packages.infrastructure.family_billing import fresh_customer_portal_url
 from packages.infrastructure.family_billing import subscription_is_paying
+from packages.infrastructure.family_billing import subscription_still_charges
 from packages.infrastructure.family_billing import subscription_record_from_event
 from packages.infrastructure.family_billing import user_id_from_pay_code
 from packages.infrastructure.lemon_squeezy_api import LemonSqueezyClient
 from packages.infrastructure.lemon_squeezy_api import LemonSqueezyError
+from packages.infrastructure.lemon_squeezy_api import LemonSqueezyRequestError
 from packages.infrastructure.lemon_squeezy_api import LemonSqueezySignatureError
 from packages.infrastructure.lemon_squeezy_api import load_lemon_squeezy_config
 from packages.infrastructure.lemon_squeezy_api import parse_webhook_event
@@ -202,6 +208,7 @@ from packages.infrastructure.answer_composer import normalize_answer_question
 from packages.infrastructure.answer_composer import normalize_answer_records
 from packages.infrastructure.answer_composer import normalize_composed_answer
 from packages.infrastructure.connection_owner import CONNECTION_VIEWER_HEADER
+from packages.infrastructure.connection_owner import action_visible_to
 from packages.infrastructure.connection_owner import FAMILY_BUSY_ENDPOINT
 from packages.infrastructure.connection_owner import FAMILY_BUSY_MAX_DAYS
 from packages.infrastructure.connection_owner import busy_blocks
@@ -6995,8 +7002,20 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 receipt_owner_key=build_agent_receipt_owner_key(email),
                 member_receipt_owner_keys=household_receipt_owner_keys(self.database, email),
                 revoke_grant=self._revoke_connection_grant,
+                cancel_subscription=self._cancel_billing_subscription,
+                still_charges=subscription_still_charges,
                 db_path=self.config.db_path,
             )
+        except SubscriptionNotCancelled as exc:
+            print(f"[billing] account erase held for {email}: a subscription was not cancelled ({exc})", flush=True)
+            json_response(self, HTTPStatus.SERVICE_UNAVAILABLE, {
+                "ok": False,
+                "error": "billing_not_cancelled",
+                "message": "The subscription could not be cancelled just now, so nothing was deleted. Try again in a few minutes.",
+                "subscriptionsCancelled": exc.cancelled,
+                "subscriptionsNotCancelled": len(exc.reasons),
+            })
+            return
         except KeyError as exc:
             json_response(self, HTTPStatus.NOT_FOUND, {
                 "ok": False,
@@ -10703,15 +10722,15 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         The words come back to the browser and go into the composer, where
         the person sees them before they send: a misheard word is fixed
         with a tap instead of sent to the model. The call is billed to the
-        account like a turn, and gated like one.
+        account like a turn. It is not held behind the trial: "delete my
+        account" said aloud has to become words before the turn - which
+        alone decides what a finished trial may still do - can hear it.
         """
 
         authenticated = self._require_authenticated_user()
         if authenticated is None:
             return
-        session, authenticated_user = authenticated
-        if not self._require_active_trial(authenticated_user):
-            return
+        session, _ = authenticated
         if not account_feature_allowed(self.database, feature_id="voice_notes"):
             json_response(self, HTTPStatus.FORBIDDEN, {
                 "ok": False,
@@ -11447,14 +11466,6 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             declined = self.database.decline_agent_approval(approval_id=declined_approval_id, user_id=user_id)
             if declined is not None:
                 declined_call = {"tool": declined["tool"], "arguments": declined["arguments"]}
-        facts = self.database.list_account_facts(user_id=user_id) if user_id > 0 else []
-        household_block = self._household_block(user_id, timezone_name, tool_context)
-        chat_flow = self._chat_flow_block(
-            user_id, tool_context, household_block, resolve_local_today(timezone_name),
-            first_contact=channel == "whatsapp" and self._nothing_said_yet(user_id),
-        )
-        if not isinstance(payload.get("standingTask"), dict):
-            self._note_own_week_asked(user_id, chat_flow, resolve_local_today(timezone_name))
         authorization = normalize_text(self.headers.get("Authorization"))
         # Whose mail and calendar this turn reads: the phone the server
         # signed for, passed on unchanged to every tool's own request.
@@ -11517,6 +11528,23 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         # when they are a parent. Nothing else on the account is theirs.
         speaker = {} if group else self._household_speaker(user_id, sender_wa_id, conversation)
         full_access = not speaker or bool(speaker.get("canChangeWeek"))
+        # A grandparent has the week and their own drives, and nothing else
+        # on the account: not what the parents asked to be remembered, not
+        # their notes on each person, not the account's bill.
+        guest = bool(speaker) and not household.can_connect_own_sources(speaker.get("role"))
+        facts = self.database.list_account_facts(user_id=user_id) if user_id > 0 and not guest else []
+        household_block = self._household_block(user_id, timezone_name, tool_context)
+        if guest:
+            household_block = household.guest_view(household_block)
+        # The opening ends on connecting one's own mail and calendar, which a
+        # grandparent cannot; a partner answers that offer for themselves.
+        chat_flow = None if guest else self._chat_flow_block(
+            user_id, tool_context, household_block, resolve_local_today(timezone_name),
+            first_contact=channel == "whatsapp" and self._nothing_said_yet(user_id),
+            member_wa_id=normalize_whatsapp_lookup_id(sender_wa_id) if speaker else "",
+        )
+        if not isinstance(payload.get("standingTask"), dict):
+            self._note_own_week_asked(user_id, chat_flow, resolve_local_today(timezone_name))
         # A page link from a family member's phone signs their browser in as
         # them, never as the account holder.
         link_phone = normalize_whatsapp_lookup_id(sender_wa_id) if speaker else ""
@@ -11553,8 +11581,8 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 None if group else lambda wa_id, email=session.email: self._release_departed_phone(email, wa_id)
             ),
             homework_link=None if group else self._homework_link_builder(),
-            pay_link=None if group else (lambda pay=self._pay_link_builder(): pay(user_id)),
-            billing={} if group else self._loop_billing(trial, paying=self._user_is_paying(session.email)),
+            pay_link=None if group or guest else (lambda pay=self._pay_link_builder(): pay(user_id)),
+            billing={} if group or guest else self._loop_billing(trial, paying=self._user_is_paying(session.email)),
             speaker=speaker,
             connection_owner=connection_owner,
             sender_wa_id="" if group else sender_wa_id,
@@ -11656,8 +11684,10 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         else:
             # Facts the reply carried, as on the older turn endpoint. The
             # remember_fact tool is the normal way; this covers a model that put
-            # it in the reply instead.
-            self._apply_agent_facts(user_id, {"rememberFact": result.remember_fact, "forgetFact": result.forget_fact})
+            # it in the reply instead. The facts are the parents': a
+            # grandparent's turn neither reads nor writes them.
+            if not guest:
+                self._apply_agent_facts(user_id, {"rememberFact": result.remember_fact, "forgetFact": result.forget_fact})
         # One record per turn, whether it went well or not: the number to
         # alert on is fallbackUsed, and the tool calls say what was tried.
         print(json.dumps({
@@ -11796,9 +11826,13 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         today: str,
         *,
         first_contact: bool = False,
+        member_wa_id: str = "",
     ) -> dict[str, Any] | None:
         """What the opening of this conversation is for: getting to know the
         family, then the offer to connect the mail and the calendar.
+
+        member_wa_id names the family member writing, when it is not the
+        account holder: the offer to connect is theirs, kept on their row.
 
         An account with no household block is one the house switched the
         family and week feature off for: there is nothing to get to know, so
@@ -11807,8 +11841,16 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
 
         if user_id <= 0:
             return None
+        profile = self.database.get_household_profile(user_id=user_id) or {}
+        member = self.database.get_household_member_by_wa_id(member_wa_id, user_id=user_id) if member_wa_id else None
+        if member:
+            profile = {
+                **profile,
+                "connectOffer": member.get("connectOffer"),
+                "connectAskAgainOn": member.get("connectAskAgainOn"),
+            }
         return describe_chat_flow(
-            profile=self.database.get_household_profile(user_id=user_id),
+            profile=profile,
             connected=connected_sources(tool_context),
             today=today,
             family_flow_allowed=bool(household_block),
@@ -12319,7 +12361,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         if authenticated is None:
             return
 
-        _session, user = authenticated
+        session, user = authenticated
         query = urllib_parse.parse_qs(parsed.query)
         try:
             limit = int(normalize_text(query.get("limit", ["100"])[0]) or 100)
@@ -12329,7 +12371,13 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             int(user.get("id") or 0),
             limit=max(1, min(250, limit)),
         )
-        client_actions = [self._serialize_scheduled_action_for_client(action) for action in actions]
+        # A message built from someone's mail is theirs alone to see.
+        viewer = self._connection_owner(session.email)
+        client_actions = [
+            self._serialize_scheduled_action_for_client(action)
+            for action in actions
+            if action_visible_to(action, viewer)
+        ]
 
         json_response(self, HTTPStatus.OK, {
             "ok": True,
@@ -12612,7 +12660,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         if authenticated is None:
             return
 
-        _session, user = authenticated
+        session, user = authenticated
         parts = [urllib_parse.unquote(part) for part in parsed.path.strip("/").split("/") if part]
         if len(parts) != 3 or parts[0] != "api" or parts[1] != "scheduled-actions":
             self.send_error(HTTPStatus.NOT_FOUND)
@@ -12629,7 +12677,11 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             return
 
         action = self.database.get_scheduled_action(action_id)
-        if action is None or int(action.get("userId") or 0) != int(user.get("id") or 0):
+        if (
+            action is None
+            or int(action.get("userId") or 0) != int(user.get("id") or 0)
+            or not action_visible_to(action, self._connection_owner(session.email))
+        ):
             json_response(self, HTTPStatus.NOT_FOUND, {
                 "ok": False,
                 "error": "scheduled_action_not_found",
@@ -13548,6 +13600,8 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 receipt_owner_key=build_agent_receipt_owner_key(email),
                 member_receipt_owner_keys=household_receipt_owner_keys(self.database, email),
                 revoke_grant=self._revoke_connection_grant,
+                cancel_subscription=self._cancel_billing_subscription,
+                still_charges=subscription_still_charges,
                 db_path=self.config.db_path,
             )
         except ValueError as exc:
@@ -13555,6 +13609,16 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 "ok": False,
                 "error": "invalid_request",
                 "message": str(exc),
+            })
+            return
+        except SubscriptionNotCancelled as exc:
+            print(f"[billing] account erase held for {email}: a subscription was not cancelled ({exc})", flush=True)
+            json_response(self, HTTPStatus.SERVICE_UNAVAILABLE, {
+                "ok": False,
+                "error": "billing_not_cancelled",
+                "message": "The subscription could not be cancelled just now, so nothing was deleted. Try again in a few minutes.",
+                "subscriptionsCancelled": exc.cancelled,
+                "subscriptionsNotCancelled": len(exc.reasons),
             })
             return
         except KeyError as exc:
@@ -14464,6 +14528,33 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 flush=True,
             )
         return {"disconnected": len(records), "googleRevoked": revoked_all}
+
+    def _cancel_billing_subscription(self, record: dict[str, Any]) -> tuple[bool, str]:
+        """Cancel one subscription at Lemon Squeezy so nothing more is
+        charged, trying once more after a failure. A subscription Lemon
+        Squeezy no longer knows charges nothing and counts as cancelled."""
+
+        subscription_id = normalize_text(record.get("externalSubscriptionId"))
+        if normalize_text(record.get("provider")) != BILLING_PROVIDER:
+            return False, f"subscription {subscription_id} is with {record.get('provider') or 'an unknown provider'}"
+        lemon = load_lemon_squeezy_config()
+        if not lemon.api_key:
+            return False, f"subscription {subscription_id}: Lemon Squeezy is not configured"
+        why = ""
+        for _attempt in range(2):
+            try:
+                LemonSqueezyClient(lemon).cancel_subscription(subscription_id)
+            except LemonSqueezyRequestError as exc:
+                if exc.status_code == 404:
+                    return True, ""
+                why = f"subscription {subscription_id}: {exc.message}"
+                continue
+            except (LemonSqueezyError, ValueError) as exc:
+                why = f"subscription {subscription_id}: {exc}"
+                continue
+            print(f"[billing] subscription {subscription_id} cancelled with its account", flush=True)
+            return True, ""
+        return False, why
 
     def _revoke_connection_grant(self, record: dict[str, str]) -> tuple[bool, str]:
         """Hand one stored connection back to the provider that issued it.
@@ -15395,12 +15486,22 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             )
             return
         customer = self.database.get_billing_customer(normalize_email(user.get("email")), include_inactive=True)
-        manage = normalize_text((customer or {}).get("customerPortalUrl"))
-        if subscription_is_paying(customer) and manage:
-            self._redirect_to(manage)
+        lemon = load_lemon_squeezy_config()
+        if subscription_is_paying(customer):
+            manage = self._customer_portal_url(customer or {}, lemon)
+            if manage:
+                self._redirect_to(manage)
+            else:
+                # Never a second checkout for an account already paying. The
+                # chat cannot change a subscription either, so this says
+                # where it is managed rather than sending them back there.
+                self._send_words_page(
+                    HTTPStatus.OK,
+                    "You're already paying, so there's nothing to do here. To change or cancel it, open the email "
+                    "Lemon Squeezy sent when you subscribed and use its link to manage your subscription.",
+                )
             return
         config = load_family_billing_config()
-        lemon = load_lemon_squeezy_config()
         if not (config.configured and lemon.api_key):
             self._send_words_page(
                 HTTPStatus.SERVICE_UNAVAILABLE,
@@ -15422,6 +15523,22 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             )
             return
         self._redirect_to(url)
+
+    @staticmethod
+    def _customer_portal_url(customer: dict[str, Any], lemon: Any) -> str:
+        """A fresh link to manage the subscription, or the one kept from the
+        last webhook when Lemon Squeezy cannot be asked just now."""
+
+        subscription_id = normalize_text(customer.get("externalSubscriptionId"))
+        if lemon.api_key and subscription_id:
+            try:
+                fresh = fresh_customer_portal_url(LemonSqueezyClient(lemon), subscription_id)
+            except (LemonSqueezyError, ValueError) as exc:
+                print(f"[billing] fresh portal link for subscription {subscription_id} failed: {exc}", flush=True)
+                fresh = ""
+            if fresh:
+                return fresh
+        return normalize_text(customer.get("customerPortalUrl"))
 
     def _handle_lemon_squeezy_webhook(self) -> None:
         """Lemon Squeezy telling us a subscription started, renewed, was
@@ -15446,18 +15563,24 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         record = subscription_record_from_event(event)
         user = self.database.get_user_by_id(record["userId"]) if record else None
         if record and user:
+            # Each subscription is kept by its own id, so a second parent
+            # paying never overwrites the first; the account's own row is the
+            # one of them that stands for it.
+            subscriptions = self.database.save_billing_subscription(user_id=record["userId"], record=record)
+            standing = account_subscription(subscriptions) or record
             self.database.save_billing_customer(
                 normalize_email(user.get("email")),
-                provider=record["provider"],
-                external_customer_id=record["externalCustomerId"],
-                external_subscription_id=record["externalSubscriptionId"],
-                external_subscription_item_id=record["externalSubscriptionItemId"],
-                subscription_status=record["subscriptionStatus"],
-                product_id=record["productId"],
-                variant_id=record["variantId"],
+                provider=standing["provider"],
+                external_customer_id=standing["externalCustomerId"],
+                external_subscription_id=standing["externalSubscriptionId"],
+                external_subscription_item_id=standing["externalSubscriptionItemId"],
+                subscription_status=standing["subscriptionStatus"],
+                product_id=standing["productId"],
+                variant_id=standing["variantId"],
                 checkout_url="",
-                customer_portal_url=record["customerPortalUrl"],
-                metadata=record["metadata"],
+                customer_portal_url=standing["customerPortalUrl"],
+                metadata=standing["metadata"],
+                include_inactive=True,
             )
             print(
                 f"[billing] {event.event_name} user={record['userId']} status={record['subscriptionStatus']}",

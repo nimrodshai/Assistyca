@@ -25,6 +25,21 @@ from packages.infrastructure.portal_db import normalize_email
 
 
 RevokeGrant = Callable[[dict[str, str]], "tuple[bool, str]"]
+# Cancels one subscription at the payment provider: (cancelled, why not).
+CancelSubscription = Callable[[dict[str, Any]], "tuple[bool, str]"]
+
+
+class SubscriptionNotCancelled(RuntimeError):
+    """A subscription the account pays could not be cancelled, so nothing was
+    erased: deleting the account and leaving the card being charged, with
+    nobody left to answer for it, is the one outcome worse than waiting."""
+
+    def __init__(self, reasons: list[str], *, cancelled: int = 0) -> None:
+        super().__init__("; ".join(reasons) or "A subscription could not be cancelled.")
+        self.reasons = reasons
+        # The ones that were cancelled before the failure stay cancelled: the
+        # account is kept, but those payments have already stopped.
+        self.cancelled = cancelled
 
 
 @dataclass
@@ -35,6 +50,7 @@ class AccountErasure:
     removed_paths: list[Path] = field(default_factory=list)
     failed_paths: list[Path] = field(default_factory=list)
     revoked_grants: int = 0
+    subscriptions_cancelled: int = 0
     revocation_warnings: list[str] = field(default_factory=list)
     contact_submissions_removed: int = 0
     signups_removed: int = 0
@@ -49,6 +65,8 @@ def erase_account(
     receipt_owner_key: str = "",
     member_receipt_owner_keys: Iterable[str] = (),
     revoke_grant: RevokeGrant | None = None,
+    cancel_subscription: CancelSubscription | None = None,
+    still_charges: Callable[[dict[str, Any]], bool] | None = None,
     db_path: Path | None = None,
 ) -> AccountErasure:
     """Delete the account named by ``email`` and everything stored under it.
@@ -56,6 +74,10 @@ def erase_account(
     Raises ``KeyError`` when no such account exists. Provider revocation and
     file deletion are best effort: a provider outage or a stubborn folder is
     reported on the result, never a reason to leave the rows behind.
+
+    Subscriptions are the exception. Every one still charging
+    (``still_charges``) is cancelled first, and if any cannot be, this raises
+    ``SubscriptionNotCancelled`` having erased nothing.
     """
 
     normalized_email = normalize_email(email)
@@ -68,6 +90,21 @@ def erase_account(
 
     result = AccountErasure(user=user)
     user_id = int(user.get("id") or 0)
+
+    # Before anything else: once the rows are gone, nothing here would know
+    # whose card a renewal is charging.
+    if cancel_subscription is not None:
+        failures: list[str] = []
+        for subscription in database.list_billing_subscriptions(user_id=user_id):
+            if still_charges is not None and not still_charges(subscription):
+                continue
+            cancelled, why = cancel_subscription(subscription)
+            if cancelled:
+                result.subscriptions_cancelled += 1
+            else:
+                failures.append(why or f"subscription {subscription.get('externalSubscriptionId')} was not cancelled")
+        if failures:
+            raise SubscriptionNotCancelled(failures, cancelled=result.subscriptions_cancelled)
 
     # Revoke before deleting: the ciphertext is the only way back to the grant,
     # and the row that holds it is about to go.

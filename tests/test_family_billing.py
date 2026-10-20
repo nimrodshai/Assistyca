@@ -25,6 +25,7 @@ from packages.infrastructure.family_billing import pay_code
 from packages.infrastructure.family_billing import subscription_is_paying
 from packages.infrastructure.family_billing import subscription_record_from_event
 from packages.infrastructure.family_billing import user_id_from_pay_code
+from packages.infrastructure.lemon_squeezy_api import LemonSqueezyRequestError
 from packages.infrastructure.lemon_squeezy_api import build_webhook_signature
 from packages.infrastructure.lemon_squeezy_api import parse_webhook_event
 from packages.infrastructure.portal_auth.server import PortalConfig, create_server
@@ -37,12 +38,14 @@ SIGNING_SECRET = "lemon-signing-secret"
 NOW = datetime(2026, 10, 18, 12, 0, tzinfo=timezone.utc)
 
 
-def subscription_event(event_name: str, *, user_id: str = "7", status: str = "active", ends_at: str = "") -> dict:
+def subscription_event(
+    event_name: str, *, user_id: str = "7", status: str = "active", ends_at: str = "", sub_id: str = "sub-1",
+) -> dict:
     return {
         "meta": {"event_name": event_name, "custom_data": {"user_id": user_id} if user_id else {}},
         "data": {
             "type": "subscriptions",
-            "id": "sub-1",
+            "id": sub_id,
             "attributes": {
                 "customer_id": 55,
                 "status": status,
@@ -157,6 +160,13 @@ class BillingServerTests(unittest.TestCase):
     def setUp(self) -> None:
         self.env = mock.patch.dict(os.environ, BILLING_ENV)
         self.env.start()
+        # Lemon Squeezy is never reached from a test; one that needs an
+        # answer from it patches its own over this.
+        self.offline = mock.patch(
+            "packages.infrastructure.lemon_squeezy_api.LemonSqueezyClient._request",
+            side_effect=LemonSqueezyRequestError("Lemon Squeezy is not reached from tests."),
+        )
+        self.offline.start()
         self.temp_dir = tempfile.TemporaryDirectory()
         self.server = create_server(
             "127.0.0.1", 0, Path(__file__).resolve().parents[1],
@@ -175,6 +185,7 @@ class BillingServerTests(unittest.TestCase):
         self.server.server_close()
         self.thread.join(timeout=5)
         self.temp_dir.cleanup()
+        self.offline.stop()
         self.env.stop()
 
     def _get(self, path: str) -> tuple[int, str]:
@@ -237,6 +248,127 @@ class BillingServerTests(unittest.TestCase):
             status, location = self._get(f"/pay/{self._code()}")
         self.assertEqual((status, location), (302, "https://assistyca.lemonsqueezy.com/billing?x=1"))
         checkout.assert_not_called()
+
+    def test_a_payment_for_a_switched_off_account_is_kept_and_answered(self) -> None:
+        # An unanswered event is sent again and again; one about an account
+        # an admin switched off is still a payment that happened.
+        with self.database._connection() as conn:  # noqa: SLF001 - fixture setup
+            conn.execute("UPDATE users SET is_active = 0 WHERE id = ?", (int(self.user["id"]),))
+        self.assertEqual(self._webhook(subscription_event("subscription_created", user_id=str(self.user["id"]))), 200)
+        customer = self.database.get_billing_customer("family@example.com", include_inactive=True)
+        self.assertEqual(customer["externalSubscriptionId"], "sub-1")
+
+    def test_two_parents_paying_are_two_subscriptions_and_one_ending_leaves_the_other(self) -> None:
+        user_id = str(self.user["id"])
+        self.assertEqual(self._webhook(subscription_event("subscription_created", user_id=user_id, sub_id="sub-1")), 200)
+        self.assertEqual(self._webhook(subscription_event("subscription_created", user_id=user_id, sub_id="sub-2")), 200)
+        self.assertEqual(self._webhook(subscription_event("subscription_expired", user_id=user_id, sub_id="sub-1", status="expired")), 200)
+        self.assertEqual(
+            {(row["externalSubscriptionId"], row["subscriptionStatus"]) for row in self.database.list_billing_subscriptions(user_id=int(user_id))},
+            {("sub-1", "expired"), ("sub-2", "active")},
+        )
+        # Still paying through the other parent's subscription, and the pay
+        # link manages that one rather than selling a third.
+        customer = self.database.get_billing_customer("family@example.com", include_inactive=True)
+        self.assertTrue(subscription_is_paying(customer))
+        self.assertEqual(customer["externalSubscriptionId"], "sub-2")
+        with mock.patch("packages.infrastructure.lemon_squeezy_api.LemonSqueezyClient.create_checkout") as checkout:
+            status, _ = self._get(f"/pay/{self._code()}")
+        self.assertEqual(status, 302)
+        checkout.assert_not_called()
+
+    def test_a_paying_family_is_sent_to_a_fresh_page_for_managing_it(self) -> None:
+        # The portal link on a subscription is signed for about a day, so the
+        # one kept from the webhook is only the fallback.
+        self.assertEqual(self._webhook(subscription_event("subscription_created", user_id=str(self.user["id"]))), 200)
+        fresh = {"id": "sub-1", "urls": {"customer_portal": "https://assistyca.lemonsqueezy.com/billing?fresh=1"}}
+        with mock.patch("packages.infrastructure.lemon_squeezy_api.LemonSqueezyClient.retrieve_subscription", return_value=fresh) as asked:
+            status, location = self._get(f"/pay/{self._code()}")
+        self.assertEqual((status, location), (302, "https://assistyca.lemonsqueezy.com/billing?fresh=1"))
+        asked.assert_called_once_with("sub-1")
+        with mock.patch(
+            "packages.infrastructure.lemon_squeezy_api.LemonSqueezyClient.retrieve_subscription",
+            side_effect=LemonSqueezyRequestError("down"),
+        ):
+            status, location = self._get(f"/pay/{self._code()}")
+        self.assertEqual((status, location), (302, "https://assistyca.lemonsqueezy.com/billing?x=1"))
+
+    def test_a_paying_family_with_no_link_to_manage_it_is_told_where_it_is_managed(self) -> None:
+        # No chat tool changes a subscription, so the page never sends them
+        # back to the chat for it.
+        self.assertEqual(self._webhook(subscription_event("subscription_created", user_id=str(self.user["id"]))), 200)
+        with mock.patch("packages.infrastructure.portal_auth.server.PortalAuthHandler._customer_portal_url", return_value=""):
+            with self.opener.open(f"{self.base_url}/pay/{self._code()}", timeout=15) as response:
+                status, page = int(response.status), response.read().decode("utf-8")
+        self.assertEqual(status, 200)
+        self.assertNotIn("WhatsApp", page)
+        self.assertIn("Lemon Squeezy", page)
+
+    def _delete_account(self) -> tuple[int, dict]:
+        code, _ = self.server.store.issue_challenge("family@example.com")
+        _, _, result = self.server.store.verify_code("family@example.com", code)
+        request = urllib_request.Request(
+            f"{self.base_url}/api/account", method="DELETE",
+            headers={"Authorization": f"Bearer {(result or {}).get('token')}"},
+        )
+        try:
+            with urllib_request.urlopen(request, timeout=15) as response:
+                return int(response.status), json.loads(response.read().decode("utf-8"))
+        except urllib_error.HTTPError as exc:
+            return int(exc.code), json.loads(exc.read().decode("utf-8") or "{}")
+
+    def test_deleting_the_account_cancels_every_subscription_still_charging_first(self) -> None:
+        user_id = str(self.user["id"])
+        self._webhook(subscription_event("subscription_created", user_id=user_id, sub_id="sub-1"))
+        self._webhook(subscription_event("subscription_created", user_id=user_id, sub_id="sub-2"))
+        self._webhook(subscription_event("subscription_cancelled", user_id=user_id, sub_id="sub-2", status="cancelled",
+                                         ends_at="2026-11-18T12:00:00Z"))
+        # After the trial too: leaving is never behind the paywall.
+        self.database.set_user_trial("family@example.com", trial_days=1)
+        with self.database._connection() as conn:  # noqa: SLF001 - fixture setup
+            conn.execute("UPDATE users SET trial_started_at = ? WHERE id = ?",
+                         ((datetime.now(timezone.utc) - timedelta(days=30)).isoformat(), int(user_id)))
+        self._webhook(subscription_event("subscription_updated", user_id=user_id, sub_id="sub-1", status="unpaid"))
+        asked: list[tuple] = []
+
+        def lemon(method, path, **kwargs):
+            asked.append((method, path))
+            return {"data": {"type": "subscriptions", "id": path.rsplit("/", 1)[-1], "attributes": {"status": "cancelled"}}}
+
+        with mock.patch("packages.infrastructure.lemon_squeezy_api.LemonSqueezyClient._request", side_effect=lemon):
+            status, body = self._delete_account()
+        self.assertEqual(status, 200, body)
+        self.assertEqual(asked, [("DELETE", "/subscriptions/sub-1")], "the one still charging, and only it")
+        self.assertIsNone(self.database.get_user("family@example.com"))
+
+    def test_a_subscription_that_cannot_be_cancelled_keeps_the_account_as_it_was(self) -> None:
+        self._webhook(subscription_event("subscription_created", user_id=str(self.user["id"])))
+        with mock.patch(
+            "packages.infrastructure.lemon_squeezy_api.LemonSqueezyClient._request",
+            side_effect=LemonSqueezyRequestError("Lemon Squeezy did not respond.", status_code=503),
+        ) as lemon:
+            status, body = self._delete_account()
+        self.assertEqual((status, body.get("error")), (503, "billing_not_cancelled"), body)
+        self.assertEqual(lemon.call_count, 2, "tried again once before giving up")
+        self.assertIsNotNone(self.database.get_user("family@example.com"), "nothing deleted while it still charges")
+        self.assertEqual(len(self.database.list_billing_subscriptions(user_id=int(self.user["id"]))), 1)
+
+    def test_one_of_two_subscriptions_cancelled_is_reported_with_the_account_kept(self) -> None:
+        user_id = str(self.user["id"])
+        self._webhook(subscription_event("subscription_created", user_id=user_id, sub_id="sub-1"))
+        self._webhook(subscription_event("subscription_created", user_id=user_id, sub_id="sub-2"))
+
+        def lemon(method, path, **kwargs):
+            if path.endswith("sub-2"):
+                raise LemonSqueezyRequestError("Lemon Squeezy did not respond.", status_code=503)
+            return {"data": {"type": "subscriptions", "id": "sub-1", "attributes": {"status": "cancelled"}}}
+
+        with mock.patch("packages.infrastructure.lemon_squeezy_api.LemonSqueezyClient._request", side_effect=lemon):
+            status, body = self._delete_account()
+        self.assertEqual((status, body.get("error")), (503, "billing_not_cancelled"), body)
+        self.assertIsNotNone(self.database.get_user("family@example.com"), "nothing deleted while one still charges")
+        # What did change is said: one payment is already stopped.
+        self.assertEqual((body.get("subscriptionsCancelled"), body.get("subscriptionsNotCancelled")), (1, 1), body)
 
     def test_an_admin_sees_each_clients_payment_link(self) -> None:
         # For paying on a family's behalf, or trying the checkout on staging.

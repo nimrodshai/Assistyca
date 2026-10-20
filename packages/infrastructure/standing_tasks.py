@@ -318,11 +318,18 @@ class StandingTaskRunner:
             email = normalize_text(user.get("email"))
         if not email:
             raise RuntimeError("Standing action does not resolve to an account.")
+        # Imported here: the nudges module imports this one.
+        from packages.infrastructure.family_week_nudges import owner_phone
+
         payload = action.get("payload") if isinstance(action.get("payload"), dict) else {}
-        owner_wa_id = normalize_text(payload.get("recipientWaId")) or normalize_text(connection.get("ownerWaId"))
-        if not owner_wa_id:
-            linked = self.database.list_user_whatsapp_numbers(user_id=user_id)
-            owner_wa_id = normalize_text(linked[0].get("waId")) if linked else ""
+        # A message that names no phone is the account holder's: written as
+        # her own turn, from her phone - never the newest linked one, which
+        # is a family member's once someone has joined, and would have her
+        # message written to them, about her, with their mail.
+        owner_wa_id = (
+            normalize_text(payload.get("recipientWaId")) or normalize_text(connection.get("ownerWaId"))
+            or owner_phone(self.database, user_id)
+        )
         return {
             **connection, "userId": user_id, "email": email, "ownerWaId": owner_wa_id,
             **household.phone_conversation(self.database, user_id=user_id, wa_id=owner_wa_id),

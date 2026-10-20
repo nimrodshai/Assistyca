@@ -41,6 +41,11 @@ FAMILY_BUSY_MAX_DAYS = 14
 # connections. Sent on when a turn is a family member's but arrived without
 # their signed phone, so it never falls back to the account holder's mail.
 NOBODY_VIEWER = "nobody"
+# The scheduled messages built out of someone's mail: the inbox watch's
+# alerts, an answer in a thread they follow, and what a look through their
+# mailbox found. Each holds what the mail said, so it is as private as the
+# mailbox - listed to, and stopped by, the person whose mailbox it is.
+CONNECTION_ACTION_SOURCES = frozenset({"inbox_watch", "thread_follow", "mailbox_findings"})
 
 
 def _digits(value: Any) -> str:
@@ -69,6 +74,30 @@ def read_connection_viewer(secret: str, email: str, value: Any) -> str | None:
     if not number.isdigit() or not signature or not str(secret or ""):
         return None
     return number if hmac.compare_digest(signature, _mac(secret, email, number)) else None
+
+
+def action_connection_owner(action: dict[str, Any] | None) -> str | None:
+    """Whose connection a scheduled action was built from, as
+    connection_owner says it ("" the account holder, else a member's phone),
+    or None when it was not built from anyone's mail."""
+
+    payload = (action or {}).get("payload")
+    payload = payload if isinstance(payload, dict) else {}
+    if str(payload.get("source") or "").strip() not in CONNECTION_ACTION_SOURCES:
+        return None
+    # Such a message goes to its owner: a member's phone is named on it, and
+    # the account holder's carries none.
+    return _digits(payload.get("recipientWaId"))
+
+
+def action_visible_to(action: dict[str, Any] | None, viewer: str) -> bool:
+    """Whether the person a request is for (connection_owner) may see and
+    stop this scheduled action. The family's own tasks are everyone's; one
+    built from mail is only its owner's, and a viewer that did not verify
+    owns none."""
+
+    owner = action_connection_owner(action)
+    return owner is None or owner == str(viewer or "")
 
 
 def _moment(value: Any, zone: ZoneInfo, *, all_day: bool) -> datetime | None:
@@ -122,4 +151,4 @@ def busy_blocks(events: Iterable[dict[str, Any]], zone: ZoneInfo) -> list[dict[s
     ]
 
 
-__all__ = ["CONNECTION_VIEWER_HEADER", "FAMILY_BUSY_ENDPOINT", "FAMILY_BUSY_MAX_DAYS", "NOBODY_VIEWER", "busy_blocks", "read_connection_viewer", "sign_connection_viewer"]
+__all__ = ["CONNECTION_ACTION_SOURCES", "CONNECTION_VIEWER_HEADER", "action_connection_owner", "action_visible_to", "FAMILY_BUSY_ENDPOINT", "FAMILY_BUSY_MAX_DAYS", "NOBODY_VIEWER", "busy_blocks", "read_connection_viewer", "sign_connection_viewer"]

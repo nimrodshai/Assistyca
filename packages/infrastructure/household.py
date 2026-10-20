@@ -976,6 +976,37 @@ def describe_household(
     return described
 
 
+# What of a family member a grandparent's turn is shown: enough to know who
+# is who in the week. What the parents told about each of them - an email, a
+# phone, a note - stays with the parents.
+_GUEST_MEMBER_KEYS = ("name", "role", "age", "school", "onWhatsApp", "addressAs")
+# What of the week itself stays out: the grown-ups' own hours, and the
+# getting to know, which is the parents' conversation.
+_GUEST_HIDDEN_KEYS = ("gettingToKnow", "weekGaps", "addressAs")
+
+
+def guest_view(block: dict[str, Any] | None) -> dict[str, Any] | None:
+    """The family as a grandparent's turn reads it (can_connect_own_sources
+    false): the children's week and who drives it, and nothing else the
+    parents keep - not their notes on each person, not their own work hours,
+    not the questions still open about the week."""
+
+    if not isinstance(block, dict):
+        return block
+    view = {key: value for key, value in block.items() if key not in _GUEST_HIDDEN_KEYS}
+    view["members"] = [
+        {key: member[key] for key in _GUEST_MEMBER_KEYS if key in member}
+        for member in block.get("members") or []
+        if isinstance(member, dict)
+    ]
+    view["week"] = [
+        {key: value for key, value in activity.items() if key not in {"driveDuringWork", "fineDuringWork"}}
+        for activity in block.get("week") or []
+        if isinstance(activity, dict) and not activity.get("grownUp")
+    ]
+    return view
+
+
 __all__ = [
     "GETTING_TO_KNOW_STATUSES",
     "INVITE_TTL_DAYS",
@@ -984,6 +1015,7 @@ __all__ = [
     "can_connect_own_sources",
     "can_change_week",
     "describe_speaker",
+    "guest_view",
     "invite_candidates",
     "is_named",
     "member_nudges",

@@ -49,6 +49,7 @@ from packages.infrastructure.agent_proposals import describe_agent_photo_context
 from packages.infrastructure.calendar_write import build_event_times
 from packages.infrastructure.chat_flow import chat_flow_rules
 from packages.infrastructure.connection_owner import FAMILY_BUSY_ENDPOINT
+from packages.infrastructure.connection_owner import action_visible_to
 from packages.infrastructure.gmail_send import normalize_addresses
 from packages.infrastructure.link_labels import link_label
 from packages.infrastructure.mailbox_findings import describe_finding
@@ -1340,10 +1341,17 @@ def _signed_out_note(context: LoopContext, number: str) -> str:
 def describe_delete_account(context: LoopContext) -> str:
     """Everything a deletion removes, named in full, so the yes is an informed one."""
 
+    # Money first in their mind: a subscription is cancelled before anything
+    # is erased, so a deleted account is never charged again.
+    money = (
+        "; their subscription is cancelled first, so they will not be charged again"
+        if (context.billing or {}).get("paying")
+        else ("; nothing is charged for it, now or later" if context.billing else "")
+    )
     return (
         f"delete the Assistyca account for {context.email} permanently: the saved Google and Microsoft "
         "sign-ins are revoked, every saved receipt, insurance policy and source document, list, reminder, remembered fact and this chat's history "
-        "is erased, every linked phone is unlinked, and none of it can be brought back"
+        f"is erased, every linked phone is unlinked, and none of it can be brought back{money}"
     )
 
 
@@ -1369,6 +1377,31 @@ def _tool_delete_account(context: LoopContext, args: dict[str, Any]) -> dict[str
             ),
         })
     code = str(response.get("error") or "")
+    if code == "billing_not_cancelled":
+        stopped = int(response.get("subscriptionsCancelled") or 0)
+        if stopped:
+            # One payment stopped before another refused: the account and
+            # everything in it are kept, but that payment does not come back.
+            return _error(
+                "billing_not_cancelled",
+                "The account has more than one subscription. paymentsStopped of them were already stopped with the "
+                "payment provider, and paymentsStillCharging could not be cancelled just now, so the account was not "
+                "deleted: everything in it is still there, and it will not be deleted while it could still be "
+                "charged. Tell them plainly and calmly what did change - those payments are already stopped - and "
+                "that nothing else did, and that asking again in a few minutes cancels the rest and deletes the "
+                "account together.",
+                can_retry=True,
+                paymentsStopped=stopped,
+                paymentsStillCharging=int(response.get("subscriptionsNotCancelled") or 0),
+            )
+        return _error(
+            "billing_not_cancelled",
+            "The subscription could not be cancelled with the payment provider just now, so nothing was deleted: "
+            "the account is exactly as it was, and it will not be deleted while it could still be charged. Say so "
+            "plainly and calmly, and that asking again in a few minutes cancels the subscription and deletes the "
+            "account together.",
+            can_retry=True,
+        )
     if code == "last_admin":
         return _error(
             "not_supported",
@@ -1979,9 +2012,14 @@ def _day_drives(context: LoopContext, *, first: date | None = None, last: date |
 
 
 def _household_payload(context: LoopContext) -> dict[str, Any]:
+    """The family as a tool reads it for this turn. Every tool reads it here,
+    so a grandparent's turn is handed the guest view - the children's week
+    and who drives it - whichever tool asks, never the parents' notes and
+    contact details on each person or the grown-ups' own hours."""
+
     database = context.database
     scope = week_scope(context)
-    return household.describe_household(
+    described = household.describe_household(
         profile=None if scope else database.get_household_profile(user_id=context.user_id),
         members=database.list_household_members(user_id=context.user_id, group_id=scope),
         activities=database.list_household_activities(user_id=context.user_id, group_id=scope),
@@ -1991,6 +2029,16 @@ def _household_payload(context: LoopContext) -> dict[str, Any]:
         owner_names=[] if scope else _owner_names(context),
         day_drives=_day_drives(context),
     )
+    return household.guest_view(described) if _is_guest(context) else described
+
+
+def _is_guest(context: LoopContext) -> bool:
+    """Whether this turn is a grandparent's (or anyone else's who is not a
+    parent), from their own phone: the children's week and their own drives
+    are theirs to read, and nothing else the parents keep."""
+
+    speaker = context.speaker or {}
+    return bool(speaker) and not household.can_connect_own_sources(speaker.get("role"))
 
 
 def _checked_driver(context: LoopContext, value: str | None, *, members: list[dict[str, Any]], owners: list[str]) -> tuple[str | None, dict[str, Any] | None]:
@@ -2427,6 +2475,8 @@ def _own_scheduled_action(context: LoopContext, action_id: int) -> dict[str, Any
     action = getter(int(action_id)) if callable(getter) and int(action_id or 0) > 0 else None
     if not isinstance(action, dict) or int(action.get("userId") or 0) != int(context.user_id):
         return None
+    if not action_visible_to(action, context.connection_owner):
+        return None
     return action if str(action.get("status") or "").lower() in {"pending", "running"} else None
 
 
@@ -2455,7 +2505,44 @@ def _exception_names(context: LoopContext, activities: list[dict[str, Any]]) -> 
     return names
 
 
+def _visible_exceptions(context: LoopContext, exceptions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The holds as this person may know them. A pause on an action built
+    from someone else's mail is theirs, like the action itself: it is left
+    off, and a hold on nothing else is not there at all - not its days, not
+    its reason, not as an action "no longer set". A grandparent is shown
+    the holds on the week alone, without the reasons."""
+
+    getter = getattr(context.database, "get_scheduled_action", None)
+    hidden: dict[str, bool] = {}
+    guest = _is_guest(context)
+
+    def is_hidden(ref: str) -> bool:
+        if ref not in hidden:
+            action = getter(int(ref)) if callable(getter) and ref.isdigit() else None
+            hidden[ref] = (
+                isinstance(action, dict) and int(action.get("userId") or 0) == int(context.user_id)
+                and not action_visible_to(action, context.connection_owner)
+            )
+        return hidden[ref]
+
+    visible = []
+    for exception in exceptions:
+        targets = schedule_exceptions.normalize_targets(exception.get("targets"))
+        # A grandparent reads the holds on the week, never the parents'
+        # scheduled tasks or the reasons they gave.
+        kept = [
+            target for target in targets
+            if not (target["kind"] in schedule_exceptions.ACTION_TARGET_KINDS and guest)
+            and not (target["kind"] == "action" and is_hidden(target["ref"]))
+        ]
+        if kept:
+            shown = exception if len(kept) == len(targets) else {**exception, "targets": kept}
+            visible.append({**shown, "reason": ""} if guest else shown)
+    return visible
+
+
 def _describe_exceptions(context: LoopContext, exceptions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    exceptions = _visible_exceptions(context, exceptions)
     activities = {
         str(activity["id"]): activity
         for activity in context.database.list_household_activities(user_id=context.user_id, group_id=week_scope(context))
@@ -2865,6 +2952,14 @@ def _tool_remove_exception(context: LoopContext, args: dict[str, Any]) -> dict[s
         exception_id = int(args.get("id"))
     except (TypeError, ValueError):
         return _error("choice_required", "id is the number of an exception from CONTEXT.exceptions.")
+    scope = week_scope(context)
+    held = [
+        exception for exception in context.database.list_schedule_exceptions(user_id=context.user_id, group_id=scope)
+        if int(exception.get("id") or 0) == exception_id
+    ]
+    if held and not _visible_exceptions(context, held):
+        # A pause on someone else's mail alert is theirs to lift.
+        return _error("not_found", f"There is no exception {exception_id}.", exceptions=exceptions_payload(context))
     if not context.database.remove_schedule_exception(
         user_id=context.user_id, exception_id=exception_id, group_id=week_scope(context),
     ):
@@ -3069,9 +3164,23 @@ def _tool_set_connect_offer(context: LoopContext, args: dict[str, Any]) -> dict[
             days = 3
         ask_again_on = (_household_today(context) + timedelta(days=days)).isoformat()
     try:
-        profile = context.database.save_household_profile(
-            user_id=context.user_id, connect_offer=status, connect_ask_again_on=ask_again_on,
+        # Each parent connects their own mail, so each answers the offer for
+        # themselves: a partner's "not now" is kept on their own row and
+        # never stops it being put to the account holder.
+        member = (
+            context.database.get_household_member_by_wa_id(context.sender_wa_id, user_id=context.user_id)
+            if context.speaker and not context.speaker.get("isOwner") else None
         )
+        if context.speaker and not context.speaker.get("isOwner") and not member:
+            return _error("not_found", "This phone is not on the family any more, so there is no offer to keep.")
+        if member:
+            profile = context.database.save_household_member_connect_offer(
+                user_id=context.user_id, member_id=int(member["id"]), connect_offer=status, connect_ask_again_on=ask_again_on,
+            )
+        else:
+            profile = context.database.save_household_profile(
+                user_id=context.user_id, connect_offer=status, connect_ask_again_on=ask_again_on,
+            )
     except Exception as exc:  # noqa: BLE001
         return _error("internal", f"That could not be saved: {exc}", can_retry=True)
     return _ok({
