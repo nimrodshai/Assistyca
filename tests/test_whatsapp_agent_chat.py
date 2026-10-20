@@ -1356,6 +1356,35 @@ class WhatsAppLoopTests(_WhatsAppApiCase):
         transcript = self.database.list_recent_whatsapp_agent_messages(user_id=int(self.user["id"]))
         self.assertEqual(transcript[0]["text"], "What's on my calendar tomorrow? [voice note]")
 
+    def test_a_voice_note_after_the_trial_still_reaches_the_way_out(self) -> None:
+        # Leaving is never behind the paywall, and saying it aloud is still
+        # saying it: the words are written down and the turn decides.
+        self.database.set_user_trial("owner@example.com", trial_days=2)
+        with self.database._connection() as conn:  # noqa: SLF001 - fixture setup
+            conn.execute(
+                "UPDATE users SET trial_started_at = ? WHERE id = ?",
+                ((datetime.now(timezone.utc) - timedelta(days=5)).isoformat(), int(self.user["id"])),
+            )
+        with (
+            mock.patch(
+                "packages.infrastructure.whatsapp_agent_chat.download_whatsapp_media",
+                return_value={"mimeType": "audio/ogg", "imageBase64": VOICE_BASE64, "dataBase64": VOICE_BASE64, "size": 260},
+            ),
+            mock.patch(
+                "packages.infrastructure.whatsapp_agent_chat.transcribe_voice_note",
+                return_value="Delete my account please",
+            ) as transcribe,
+            mock.patch(
+                "packages.infrastructure.portal_auth.server.call_openai_response",
+                side_effect=[_loop_round(reply={"reply": "Before I delete it - are you sure?"})],
+            ) as model,
+        ):
+            response = self._post_webhook(inbound_audio_payload(media_id="media-voice-7", message_id="wamid.voice-7"))
+
+        transcribe.assert_called_once()
+        self.assertIn("Delete my account please", model.call_args.kwargs["input"][0]["content"])
+        self.assertIn("are you sure", self._reply(response))
+
     def test_a_voice_note_that_cannot_be_made_out_is_said_so_without_a_model_turn(self) -> None:
         from packages.infrastructure.voice_notes import VoiceNoteError
 

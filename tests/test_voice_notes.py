@@ -258,6 +258,25 @@ class TranscribeEndpointTests(unittest.TestCase):
         self.assertIs(kwargs["usage_recorder"], self.server.database)
         self.assertFalse(kwargs["config"].strict_tracking)
 
+    def test_a_recording_after_the_trial_is_still_written_down(self) -> None:
+        # "Delete my account" said aloud has to reach the turn, which alone
+        # decides what a finished trial may still do.
+        from datetime import datetime, timedelta, timezone
+
+        token = self._token()
+        self.server.database.set_user_trial("owner@example.com", trial_days=2)
+        with self.server.database._connection() as conn:  # noqa: SLF001 - fixture setup
+            conn.execute(
+                "UPDATE users SET trial_started_at = ? WHERE email = ?",
+                ((datetime.now(timezone.utc) - timedelta(days=5)).isoformat(), "owner@example.com"),
+            )
+        with mock.patch(
+            "packages.infrastructure.voice_notes.call_openai_transcription",
+            return_value=SimpleNamespace(text="Delete my account."),
+        ):
+            status, payload = self._post({"voiceNote": {"audioBase64": AUDIO_BASE64, "mimeType": "audio/webm"}}, token)
+        self.assertEqual((status, payload.get("text")), (200, "Delete my account."), payload)
+
     def test_a_recording_nobody_is_signed_in_for_is_refused(self) -> None:
         status, payload = self._post({"voiceNote": {"audioBase64": AUDIO_BASE64, "mimeType": "audio/webm"}})
 

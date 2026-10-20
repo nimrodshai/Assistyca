@@ -10720,15 +10720,15 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
         The words come back to the browser and go into the composer, where
         the person sees them before they send: a misheard word is fixed
         with a tap instead of sent to the model. The call is billed to the
-        account like a turn, and gated like one.
+        account like a turn. It is not held behind the trial: "delete my
+        account" said aloud has to become words before the turn - which
+        alone decides what a finished trial may still do - can hear it.
         """
 
         authenticated = self._require_authenticated_user()
         if authenticated is None:
             return
-        session, authenticated_user = authenticated
-        if not self._require_active_trial(authenticated_user):
-            return
+        session, _ = authenticated
         if not account_feature_allowed(self.database, feature_id="voice_notes"):
             json_response(self, HTTPStatus.FORBIDDEN, {
                 "ok": False,
