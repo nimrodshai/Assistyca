@@ -77,6 +77,7 @@ from packages.infrastructure.agent_proposals import normalize_agent_proposal_for
 from packages.infrastructure.agent_proposals import normalize_agent_proposal_for_turn
 from packages.infrastructure.agent_proposals import normalize_agent_proposal_revision_conversation
 from packages.infrastructure.agent_proposals import normalize_agent_proposal_revision_response
+from packages.infrastructure.account_erasure import SubscriptionNotCancelled
 from packages.infrastructure.account_erasure import erase_account
 from packages.infrastructure.agent_proposals import normalize_agent_photo_context
 from packages.infrastructure.agent_proposals import normalize_agent_source_context
@@ -103,13 +104,16 @@ from packages.infrastructure.family_billing import PAY_PAGE_PREFIX
 from packages.infrastructure.family_billing import create_family_checkout_url
 from packages.infrastructure.family_billing import load_family_billing_config
 from packages.infrastructure.family_billing import pay_code
+from packages.infrastructure.family_billing import BILLING_PROVIDER
 from packages.infrastructure.family_billing import account_subscription
 from packages.infrastructure.family_billing import fresh_customer_portal_url
 from packages.infrastructure.family_billing import subscription_is_paying
+from packages.infrastructure.family_billing import subscription_still_charges
 from packages.infrastructure.family_billing import subscription_record_from_event
 from packages.infrastructure.family_billing import user_id_from_pay_code
 from packages.infrastructure.lemon_squeezy_api import LemonSqueezyClient
 from packages.infrastructure.lemon_squeezy_api import LemonSqueezyError
+from packages.infrastructure.lemon_squeezy_api import LemonSqueezyRequestError
 from packages.infrastructure.lemon_squeezy_api import LemonSqueezySignatureError
 from packages.infrastructure.lemon_squeezy_api import load_lemon_squeezy_config
 from packages.infrastructure.lemon_squeezy_api import parse_webhook_event
@@ -6998,8 +7002,18 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 receipt_owner_key=build_agent_receipt_owner_key(email),
                 member_receipt_owner_keys=household_receipt_owner_keys(self.database, email),
                 revoke_grant=self._revoke_connection_grant,
+                cancel_subscription=self._cancel_billing_subscription,
+                still_charges=subscription_still_charges,
                 db_path=self.config.db_path,
             )
+        except SubscriptionNotCancelled as exc:
+            print(f"[billing] account erase held for {email}: a subscription was not cancelled ({exc})", flush=True)
+            json_response(self, HTTPStatus.SERVICE_UNAVAILABLE, {
+                "ok": False,
+                "error": "billing_not_cancelled",
+                "message": "The subscription could not be cancelled just now, so nothing was deleted. Try again in a few minutes.",
+            })
+            return
         except KeyError as exc:
             json_response(self, HTTPStatus.NOT_FOUND, {
                 "ok": False,
@@ -13584,6 +13598,8 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 receipt_owner_key=build_agent_receipt_owner_key(email),
                 member_receipt_owner_keys=household_receipt_owner_keys(self.database, email),
                 revoke_grant=self._revoke_connection_grant,
+                cancel_subscription=self._cancel_billing_subscription,
+                still_charges=subscription_still_charges,
                 db_path=self.config.db_path,
             )
         except ValueError as exc:
@@ -13591,6 +13607,14 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 "ok": False,
                 "error": "invalid_request",
                 "message": str(exc),
+            })
+            return
+        except SubscriptionNotCancelled as exc:
+            print(f"[billing] account erase held for {email}: a subscription was not cancelled ({exc})", flush=True)
+            json_response(self, HTTPStatus.SERVICE_UNAVAILABLE, {
+                "ok": False,
+                "error": "billing_not_cancelled",
+                "message": "The subscription could not be cancelled just now, so nothing was deleted. Try again in a few minutes.",
             })
             return
         except KeyError as exc:
@@ -14500,6 +14524,33 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 flush=True,
             )
         return {"disconnected": len(records), "googleRevoked": revoked_all}
+
+    def _cancel_billing_subscription(self, record: dict[str, Any]) -> tuple[bool, str]:
+        """Cancel one subscription at Lemon Squeezy so nothing more is
+        charged, trying once more after a failure. A subscription Lemon
+        Squeezy no longer knows charges nothing and counts as cancelled."""
+
+        subscription_id = normalize_text(record.get("externalSubscriptionId"))
+        if normalize_text(record.get("provider")) != BILLING_PROVIDER:
+            return False, f"subscription {subscription_id} is with {record.get('provider') or 'an unknown provider'}"
+        lemon = load_lemon_squeezy_config()
+        if not lemon.api_key:
+            return False, f"subscription {subscription_id}: Lemon Squeezy is not configured"
+        why = ""
+        for _attempt in range(2):
+            try:
+                LemonSqueezyClient(lemon).cancel_subscription(subscription_id)
+            except LemonSqueezyRequestError as exc:
+                if exc.status_code == 404:
+                    return True, ""
+                why = f"subscription {subscription_id}: {exc.message}"
+                continue
+            except (LemonSqueezyError, ValueError) as exc:
+                why = f"subscription {subscription_id}: {exc}"
+                continue
+            print(f"[billing] subscription {subscription_id} cancelled with its account", flush=True)
+            return True, ""
+        return False, why
 
     def _revoke_connection_grant(self, record: dict[str, str]) -> tuple[bool, str]:
         """Hand one stored connection back to the provider that issued it.

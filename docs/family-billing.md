@@ -16,7 +16,13 @@ How a family pays to keep the assistant once the free trial is over
   checkout returns them to WhatsApp.
 - An account that already pays is sent by the same link to Lemon Squeezy's
   page for managing or cancelling the subscription, so a second tap never
-  buys twice.
+  buys twice. That page's address is signed for about a day, so it is asked
+  of Lemon Squeezy fresh each time; the one kept from the last webhook is
+  only the fallback.
+- Deleting the account cancels every subscription it still pays first, and
+  the question before the deletion says so. If Lemon Squeezy cannot cancel
+  one (tried twice), nothing is deleted: the person is told, and asking
+  again cancels and deletes together. This works after the trial too.
 
 ## How a payment finds its account
 
@@ -27,8 +33,11 @@ code is the account id plus a signature made with the session secret, so a
 link can only ever pay for its own account and nothing has to be stored.
 
 `POST /webhooks/lemon-squeezy` receives the subscription events, checks the
-`X-Signature` against `LEMON_SQUEEZY_SIGNING_SECRET`, and writes the
-subscription into `billing_customers` for that account.
+`X-Signature` against `LEMON_SQUEEZY_SIGNING_SECRET`, and keeps the
+subscription in `billing_subscriptions` by its own id. Both parents may pay
+for one family; `billing_customers` holds the one that stands for the
+account (`family_billing.account_subscription`: running beats cancelled and
+running out, which beats ended), so the family pays while any of them does.
 
 ## What counts as paying
 

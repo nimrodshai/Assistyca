@@ -1341,10 +1341,17 @@ def _signed_out_note(context: LoopContext, number: str) -> str:
 def describe_delete_account(context: LoopContext) -> str:
     """Everything a deletion removes, named in full, so the yes is an informed one."""
 
+    # Money first in their mind: a subscription is cancelled before anything
+    # is erased, so a deleted account is never charged again.
+    money = (
+        "; their subscription is cancelled first, so they will not be charged again"
+        if (context.billing or {}).get("paying")
+        else ("; nothing is charged for it, now or later" if context.billing else "")
+    )
     return (
         f"delete the Assistyca account for {context.email} permanently: the saved Google and Microsoft "
         "sign-ins are revoked, every saved receipt, insurance policy and source document, list, reminder, remembered fact and this chat's history "
-        "is erased, every linked phone is unlinked, and none of it can be brought back"
+        f"is erased, every linked phone is unlinked, and none of it can be brought back{money}"
     )
 
 
@@ -1370,6 +1377,15 @@ def _tool_delete_account(context: LoopContext, args: dict[str, Any]) -> dict[str
             ),
         })
     code = str(response.get("error") or "")
+    if code == "billing_not_cancelled":
+        return _error(
+            "billing_not_cancelled",
+            "The subscription could not be cancelled with the payment provider just now, so nothing was deleted: "
+            "the account is exactly as it was, and it will not be deleted while it could still be charged. Say so "
+            "plainly and calmly, and that asking again in a few minutes cancels the subscription and deletes the "
+            "account together.",
+            can_retry=True,
+        )
     if code == "last_admin":
         return _error(
             "not_supported",

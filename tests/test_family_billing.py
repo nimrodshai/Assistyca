@@ -293,6 +293,55 @@ class BillingServerTests(unittest.TestCase):
             status, location = self._get(f"/pay/{self._code()}")
         self.assertEqual((status, location), (302, "https://assistyca.lemonsqueezy.com/billing?x=1"))
 
+    def _delete_account(self) -> tuple[int, dict]:
+        code, _ = self.server.store.issue_challenge("family@example.com")
+        _, _, result = self.server.store.verify_code("family@example.com", code)
+        request = urllib_request.Request(
+            f"{self.base_url}/api/account", method="DELETE",
+            headers={"Authorization": f"Bearer {(result or {}).get('token')}"},
+        )
+        try:
+            with urllib_request.urlopen(request, timeout=15) as response:
+                return int(response.status), json.loads(response.read().decode("utf-8"))
+        except urllib_error.HTTPError as exc:
+            return int(exc.code), json.loads(exc.read().decode("utf-8") or "{}")
+
+    def test_deleting_the_account_cancels_every_subscription_still_charging_first(self) -> None:
+        user_id = str(self.user["id"])
+        self._webhook(subscription_event("subscription_created", user_id=user_id, sub_id="sub-1"))
+        self._webhook(subscription_event("subscription_created", user_id=user_id, sub_id="sub-2"))
+        self._webhook(subscription_event("subscription_cancelled", user_id=user_id, sub_id="sub-2", status="cancelled",
+                                         ends_at="2026-11-18T12:00:00Z"))
+        # After the trial too: leaving is never behind the paywall.
+        self.database.set_user_trial("family@example.com", trial_days=1)
+        with self.database._connection() as conn:  # noqa: SLF001 - fixture setup
+            conn.execute("UPDATE users SET trial_started_at = ? WHERE id = ?",
+                         ((datetime.now(timezone.utc) - timedelta(days=30)).isoformat(), int(user_id)))
+        self._webhook(subscription_event("subscription_updated", user_id=user_id, sub_id="sub-1", status="unpaid"))
+        asked: list[tuple] = []
+
+        def lemon(method, path, **kwargs):
+            asked.append((method, path))
+            return {"data": {"type": "subscriptions", "id": path.rsplit("/", 1)[-1], "attributes": {"status": "cancelled"}}}
+
+        with mock.patch("packages.infrastructure.lemon_squeezy_api.LemonSqueezyClient._request", side_effect=lemon):
+            status, body = self._delete_account()
+        self.assertEqual(status, 200, body)
+        self.assertEqual(asked, [("DELETE", "/subscriptions/sub-1")], "the one still charging, and only it")
+        self.assertIsNone(self.database.get_user("family@example.com"))
+
+    def test_a_subscription_that_cannot_be_cancelled_keeps_the_account_as_it_was(self) -> None:
+        self._webhook(subscription_event("subscription_created", user_id=str(self.user["id"])))
+        with mock.patch(
+            "packages.infrastructure.lemon_squeezy_api.LemonSqueezyClient._request",
+            side_effect=LemonSqueezyRequestError("Lemon Squeezy did not respond.", status_code=503),
+        ) as lemon:
+            status, body = self._delete_account()
+        self.assertEqual((status, body.get("error")), (503, "billing_not_cancelled"), body)
+        self.assertEqual(lemon.call_count, 2, "tried again once before giving up")
+        self.assertIsNotNone(self.database.get_user("family@example.com"), "nothing deleted while it still charges")
+        self.assertEqual(len(self.database.list_billing_subscriptions(user_id=int(self.user["id"]))), 1)
+
     def test_an_admin_sees_each_clients_payment_link(self) -> None:
         # For paying on a family's behalf, or trying the checkout on staging.
         self.database.register_user("boss@example.com", is_admin=True)

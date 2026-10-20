@@ -411,6 +411,17 @@ class LemonSqueezyClient:
         response = self._request("GET", f"/subscriptions/{urllib_parse.quote(normalized_subscription_id, safe='')}")
         return extract_single_resource(response)
 
+    def cancel_subscription(self, subscription_id: str) -> dict[str, Any]:
+        """Cancel a subscription: nothing more is charged, and it runs to the
+        end of the period already paid for."""
+
+        normalized_subscription_id = normalize_text(subscription_id)
+        if not normalized_subscription_id:
+            raise ValueError("Lemon Squeezy subscription ID is required.")
+
+        response = self._request("DELETE", f"/subscriptions/{urllib_parse.quote(normalized_subscription_id, safe='')}")
+        return extract_single_resource(response)
+
     def list_subscriptions(
         self,
         *,

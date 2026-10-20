@@ -41,6 +41,9 @@ PAY_PAGE_PREFIX = "/pay/"
 PAYING_STATUSES = frozenset({"active", "on_trial", "past_due"})
 # Cancelled, but paid until ends_at.
 PAID_UNTIL_END_STATUSES = frozenset({"cancelled"})
+# Nothing more is ever charged on these. Anything else - running, paused,
+# a card being retried or given up on - can still take money.
+NO_MORE_CHARGES_STATUSES = frozenset({"cancelled", "expired"})
 
 # The events that describe a subscription. Payment events describe an
 # invoice instead, and each one is followed by a subscription_updated, so
@@ -181,6 +184,14 @@ def subscription_is_paying(customer: dict[str, Any] | None, *, now: datetime | N
     return False
 
 
+def subscription_still_charges(record: dict[str, Any] | None) -> bool:
+    """Whether a subscription could still take money, and so has to be
+    cancelled before the account it pays for is deleted."""
+
+    status = str((record or {}).get("subscriptionStatus") or "").strip().lower()
+    return bool(str((record or {}).get("externalSubscriptionId") or "").strip()) and status not in NO_MORE_CHARGES_STATUSES
+
+
 def account_subscription(subscriptions: list[dict[str, Any]], *, now: datetime | None = None) -> dict[str, Any] | None:
     """The one subscription that stands for an account when it has several -
     both parents paid, say. One that is running wins over one cancelled and
@@ -252,6 +263,7 @@ __all__ = [
     "load_family_billing_config",
     "pay_code",
     "subscription_is_paying",
+    "subscription_still_charges",
     "subscription_record_from_event",
     "user_id_from_pay_code",
 ]
