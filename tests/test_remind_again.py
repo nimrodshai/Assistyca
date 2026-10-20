@@ -390,7 +390,7 @@ class TheTapTests(unittest.TestCase):
         self.assertNotIn("remindAgain", payload, "the second word offers no third")
         self.assertIn("DRIVE: take Tom - Kindergarten at 08:00, Gan Rimon", payload["instruction"])
         self.assertIn("asked for one more word five minutes before", payload["instruction"])
-        self.assertEqual(payload["fallbackText"], "Time to leave: take Tom - Kindergarten at 08:00, Gan Rimon.")
+        self.assertEqual(payload["fallbackText"], "Time to leave now.")
         # A second tap on the same button changes nothing.
         again = schedule_second_word(self.database, user_id=self.user_id, interactive_id=f"remindagain:{word['id']}", now=self.now)
         self.assertEqual(again["outcome"], "already")

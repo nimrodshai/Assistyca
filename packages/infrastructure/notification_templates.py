@@ -104,8 +104,8 @@ ROUTINE_PICTURES_FILED_AS_MARKETING = frozenset({("assistyca_routine_today", "en
 # the day's figures. Drop-offs are not counted: the line says "Pick-ups".
 OPEN_PICKUPS_SLOT = "openPickups"
 PICKUP_STATUS_WORDS = {
-    "en": {"none": "all covered", "one": "1 still needs someone", "many": "{count} still need someone"},
-    "he": {"none": "כולם מכוסים", "one": "אחד עוד בלי אחראי", "many": "{count} עוד בלי אחראי"},
+    "en": {"none": "all sorted", "one": "1 still needs someone", "many": "{count} still need someone"},
+    "he": {"none": "הכול מסודר", "one": "אחד עוד בלי מי שאוסף", "many": "{count} עוד בלי מי שאוסף"},
 }
 # Kinds whose only template opens with a picture: sent only with one.
 IMAGE_TEMPLATE_KINDS = frozenset({TEMPLATE_KIND_WEEK_AHEAD})

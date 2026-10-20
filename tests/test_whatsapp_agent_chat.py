@@ -32,6 +32,7 @@ from packages.infrastructure.whatsapp_agent_chat import (
     lift_links_from_reply,
     infer_timezone_from_wa_id,
     resolve_scheduled_message_run_at,
+    send_with_link_buttons,
     send_with_picture,
 )
 
@@ -882,6 +883,48 @@ class LinkButtonTests(unittest.TestCase):
         self.assertEqual(payload["type"], "cta_url")
         self.assertLessEqual(len(payload["action"]["parameters"]["display_text"]), 20)
         self.assertEqual(payload["action"]["parameters"]["url"], "https://assistyca.com/lists/open/abc")
+
+
+class LinkButtonWordsTests(unittest.TestCase):
+    """The words we put round a button are in the reader's language, and a
+    second link's bubble never repeats its own label."""
+
+    def _send(self, reply, links, **kwargs):
+        sent: list[dict] = []
+        send_with_link_buttons(
+            reply, links, send_text=lambda text: sent.append({"text": text}) or "wamid.t",
+            send_interactive=lambda payload: sent.append(payload) or "wamid.b", **kwargs,
+        )
+        return sent
+
+    def test_a_second_link_has_a_short_line_over_it_not_its_label(self) -> None:
+        first, second = "https://assistyca.com/lists/open/a", "https://assistyca.com/receipts/open/b"
+        sent = self._send(
+            f"שתי הרשימות כאן:\n{first}\n{second}",
+            [{"url": first, "label": "לרשימות"}, {"url": second, "label": "לקבלות"}],
+        )
+        self.assertEqual(sent[1]["body"]["text"], "וגם זה.")
+        self.assertEqual(sent[1]["action"]["parameters"]["display_text"], "לקבלות")
+
+    def test_a_reply_that_was_only_the_link_gets_words_in_its_language(self) -> None:
+        link = "https://assistyca.com/week/open/abc"
+        sent = self._send(link, [{"url": link, "label": "לפתוח את השבוע"}], language="he")
+        self.assertEqual(sent[0]["body"]["text"], "אפשר לפתוח מהכפתור.")
+        sent = self._send(link, [{"url": link, "label": "Open your week"}])
+        self.assertEqual(sent[0]["body"]["text"], "Tap the button to open it.")
+
+    def test_the_loop_labels_its_buttons_in_the_persons_language(self) -> None:
+        from packages.infrastructure.agent_loop import _list_link_label
+        from packages.infrastructure.link_labels import link_label
+
+        self.assertEqual(link_label("week", "he"), "לפתוח את השבוע")
+        self.assertEqual(link_label("week", ""), "Open your week")
+        self.assertEqual(link_label("sign_in", "he", provider="Google"), "כניסה עם Google")
+        self.assertEqual(_list_link_label({"id": 0}, "he"), "לרשימות")
+        self.assertEqual(_list_link_label({"id": 0}), "Open my lists")
+        self.assertEqual(_list_link_label({"id": 3, "name": "קניות"}, "he"), "קניות")
+        for labels in __import__("packages.infrastructure.link_labels", fromlist=["LINK_LABELS"]).LINK_LABELS.values():
+            self.assertLessEqual(len(labels["he"].format(name="", provider="Google", number="12")), 20)
 
 
 class PictureReplyTests(unittest.TestCase):

@@ -30,6 +30,11 @@ from typing import Any, Callable
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from packages.infrastructure.account_types import account_feature_allowed
+from packages.infrastructure.link_labels import ANOTHER_LINK_BODY
+from packages.infrastructure.link_labels import BUTTON_ONLY_BODY
+from packages.infrastructure.link_labels import in_language
+from packages.infrastructure.link_labels import link_label
+from packages.infrastructure.message_language import detect_message_language
 from packages.infrastructure.message_language import remember_message_language
 from packages.infrastructure.message_language import resolve_message_language
 from packages.infrastructure.person_address import address_word
@@ -1255,28 +1260,32 @@ def send_with_link_buttons(
     *,
     send_text: Callable[[str], str],
     send_interactive: Callable[[dict[str, Any]], str],
+    language: str = "",
 ) -> str:
     """Send a reply with each known link as a button under it.
 
     The first button sits under the reply itself; any further link gets a
-    small message of its own. Should a button not go through, the plain
-    text with the address goes instead, so the person always gets the link.
+    small message of its own, with a short line over it rather than its
+    label twice. Should a button not go through, the plain text with the
+    address goes instead, so the person always gets the link. Words of our
+    own go in language, else the language the reply is written in.
     """
 
     text, used = lift_links_from_reply(reply_text, links)
     if not used:
         return send_text(reply_text)
+    language = language or detect_message_language(reply_text)
     first, rest = used[0], used[1:]
-    body = text or "Tap the button to open it."
+    body = text or in_language(BUTTON_ONLY_BODY, language)
     if len(body) > LINK_BUTTON_BODY_LIMIT:
         # Too long for one bubble with a button: the words first, then the button.
         send_text(body)
-        body = "Tap the button below to open it."
+        body = in_language(BUTTON_ONLY_BODY, language)
     message_id = send_interactive(build_link_button_payload(body=body, label=first["label"], url=first["url"]))
     if not message_id:
         return send_text(reply_text)
     for link in rest:
-        if not send_interactive(build_link_button_payload(body=link["label"], label=link["label"], url=link["url"])):
+        if not send_interactive(build_link_button_payload(body=in_language(ANOTHER_LINK_BODY, language), label=link["label"], url=link["url"])):
             send_text(f"{link['label']}:\n{link['url']}")
     return message_id
 
@@ -1293,6 +1302,7 @@ def send_with_picture(
     send_text: Callable[[str], str],
     send_image: Callable[[str, str], str],
     send_interactive: Callable[[dict[str, Any]], str],
+    language: str = "",
 ) -> str:
     """Send a reply as the caption of the picture it goes with - a day or a
     week drawn as a calendar page - then each known link as a button of its
@@ -1312,20 +1322,18 @@ def send_with_picture(
         message_id = ""
     if not message_id:
         message_id = send_text(f"{text}\n{picture_url}".strip() if caption else picture_url)
+    language = language or detect_message_language(reply_text)
     for link in used:
-        if not send_interactive(build_link_button_payload(body=link["label"], label=link["label"], url=link["url"])):
+        if not send_interactive(build_link_button_payload(body=in_language(ANOTHER_LINK_BODY, language), label=link["label"], url=link["url"])):
             send_text(f"{link['label']}:\n{link['url']}")
     return message_id
 
 
-SIGN_IN_BUTTON_LABELS = {"google": "Sign in with Google", "microsoft": "Microsoft sign-in"}
-
-
-def sign_in_link_buttons(links: dict[str, str] | None) -> list[dict[str, str]]:
+def sign_in_link_buttons(links: dict[str, str] | None, language: str = "") -> list[dict[str, str]]:
     """The provider sign-in links, each with the words its button shows."""
 
     return [
-        {"url": str(url), "label": SIGN_IN_BUTTON_LABELS.get(provider, "Sign in")}
+        {"url": str(url), "label": link_label("sign_in", language, provider=str(provider).capitalize())}
         for provider, url in (links or {}).items()
         if str(url or "").startswith("https://")
     ]
@@ -2447,9 +2455,14 @@ class WhatsAppAgentChat:
         google = self.connect_links.get("google")
         microsoft = self.connect_links.get("microsoft")
         if google:
-            options.append(make_option("connect", provider="google", link=google, label="Sign in with Google"))
+            options.append(make_option(
+                "connect", provider="google", link=google, label=link_label("sign_in", self._reply_language(), provider="Google"),
+            ))
         if kind == "mailbox" and microsoft:
-            options.append(make_option("connect", provider="microsoft", link=microsoft, label="Sign in with Microsoft"))
+            options.append(make_option(
+                "connect", provider="microsoft", link=microsoft,
+                label=link_label("sign_in", self._reply_language(), provider="Microsoft"),
+            ))
         if not options:
             options.append(make_option("say", say="connect my email" if kind == "mailbox" else "connect my calendar"))
         return options
@@ -2531,10 +2544,11 @@ class WhatsAppAgentChat:
             return send_with_picture(
                 reply_text, pictures[0], links,
                 send_text=self._send_owner_text, send_image=self._send_owner_image,
-                send_interactive=self._send_owner_interactive,
+                send_interactive=self._send_owner_interactive, language=self._reply_language(),
             )
         return send_with_link_buttons(
             reply_text, links, send_text=self._send_owner_text, send_interactive=self._send_owner_interactive,
+            language=self._reply_language(),
         )
 
     def _send_owner_image(self, image_url: str, caption: str) -> str:

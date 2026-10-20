@@ -32,6 +32,7 @@ from zoneinfo import ZoneInfoNotFoundError
 from packages.infrastructure import household
 from packages.infrastructure.message_language import DEFAULT_MESSAGE_LANGUAGE
 from packages.infrastructure.message_language import normalize_message_language
+from packages.infrastructure.message_language import resolve_message_language
 from packages.infrastructure.notification_templates import TEMPLATE_KIND_PAYLOAD_KEY
 from packages.infrastructure.notification_templates import TEMPLATE_KIND_REMINDER
 from packages.infrastructure.portal_db import normalize_text
@@ -164,9 +165,16 @@ def _parse_moment(value: Any) -> datetime | None:
     return moment.astimezone(timezone.utc)
 
 
-def second_word(facts: list[str], *, reader: str = "", language: str = "the language they write to you in") -> dict[str, str]:
+# The word five minutes before when the assistant cannot write it.
+SECOND_WORD_FALLBACK = {"en": "Time to leave now.", "he": "הגיע הזמן לצאת."}
+
+
+def second_word(
+    facts: list[str], *, reader: str = "", language: str = "the language they write to you in", reader_language: str = "",
+) -> dict[str, str]:
     """The title, instruction and fallback of the word five minutes before,
-    from the same facts the first word had."""
+    from the same facts the first word had; the fallback is a short sentence
+    in reader_language, never the facts themselves."""
 
     whose = (
         f"This message is for {reader}, who is in this family and is the one driving. " if reader
@@ -181,15 +189,25 @@ def second_word(facts: list[str], *, reader: str = "", language: str = "the lang
             opening + whose + f"In one short sentence, in {language}, say it is time to leave now and what for. "
             "The fact is exact; add nothing, and use no tool.\nDRIVE: " + facts[0]
         )
-        fallback = f"Time to leave: {facts[0]}."
     else:
         instruction = (
-            opening + whose + f"In one or two short sentences, in {language}, say it is time to leave now for this one "
-            "trip, in time order. Say each once. The facts are exact; add nothing, and use no tool.\nDRIVES:\n"
+            opening + whose + f"In one sentence, in {language}, say it is time to leave now for these, in time "
+            "order, the way a parent would. Say each once. The facts are exact; add nothing, and use no tool.\nDRIVES:\n"
             + "\n".join(facts)
         )
-        fallback = "Time to leave, one trip:\n" + "\n".join(f"• {fact}" for fact in facts)
+    fallback = SECOND_WORD_FALLBACK.get(_language(reader_language)) or SECOND_WORD_FALLBACK["en"]
     return {"title": "Time to leave", "instruction": instruction, "fallback": fallback}
+
+
+def _reader_language(database: Any, user_id: int, wa_id: str) -> str:
+    """The language of whoever the word goes to: a family member on their
+    own phone, else the account holder."""
+
+    try:
+        member = database.get_household_member_by_wa_id(wa_id, user_id=user_id) if wa_id else None
+        return resolve_message_language(database, user_id=user_id, member_id=int((member or {}).get("id") or 0))
+    except Exception:  # noqa: BLE001 - not knowing is English
+        return ""
 
 
 def schedule_second_word(
@@ -233,12 +251,13 @@ def schedule_second_word(
         return {"outcome": "imminent", **about}
     if not database.claim_household_nudge(user_id=int(user_id), nudge_key=f"remind-again:{action_id}"):
         return {"outcome": "already", "runAt": run_at.astimezone(zone), **about}
+    recipient_wa_id = normalize_text(payload.get("recipientWaId"))
     words = second_word(
         facts or [normalize_text(payload.get("fallbackText")) or "your drive"],
         reader=reader,
         language="the language the family writes to you in" if reader else "the language they write to you in",
+        reader_language=_reader_language(database, int(user_id), recipient_wa_id),
     )
-    recipient_wa_id = normalize_text(payload.get("recipientWaId"))
     second_payload: dict[str, Any] = {
         "title": words["title"],
         "instruction": words["instruction"],

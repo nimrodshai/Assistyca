@@ -334,7 +334,7 @@ class AwayOwnerTests(unittest.TestCase):
         self.assertTrue(away["canSendJoinLink"])
         self.assertIn("awayOwner.state", output["note"])
         self.assertEqual(reply, (
-            "2 of your runs while you're away have nobody yet, and while you're away there's no one I can ask. Who's "
+            "2 pickups and drop-offs while you're away have nobody yet, and while you're away there's no one I can ask. Who's "
             "taking them? If it's Yoni, I can send a link to join from their own phone, so they get the word themselves."
         ))
         owners = [a["payload"]["title"] for a in self.nudges_on_monday() if a["recipientRef"] == "owner"]
@@ -369,6 +369,18 @@ class AwayOwnerTests(unittest.TestCase):
         self.assertIn("Today in your family's week", owners)
         self.assertNotIn("While you're away", owners)
 
+    def test_the_hebrew_floor_says_who_is_missing_in_a_parents_words(self) -> None:
+        from packages.infrastructure.agent_loop import _away_owner_floor
+
+        away = {
+            "backOn": "2099-09-22", "holdFrom": self.MONDAY, "holdTo": self.MONDAY, "partner": {"name": "יוני"},
+            "state": "open_nobody_to_ask", "canSendJoinLink": False,
+            "runs": [{"date": "2099-09-22", "day": "Tuesday", "leg": "collect", "child": "עומר", "at": "17:00", "coveredBy": None}],
+        }
+        he = _away_owner_floor(away)["he"]
+        self.assertEqual(he, "עוד אין מי שאוסף את עומר ביום שלישי ב־17:00. מי לוקח?")
+        self.assertNotIn("הסעות", he)
+
     def test_all_covered_and_no_runs(self) -> None:
         self.database.save_household_member(user_id=self.user_id, name="Rina", role="other")
         for leg in ("drop_off", "pick_up"):
@@ -376,7 +388,7 @@ class AwayOwnerTests(unittest.TestCase):
         output, reply = self.away()
         self.assertEqual(output["awayOwner"]["state"], "all_covered")
         self.assertEqual({r["coveredBy"] for r in output["awayOwner"]["runs"]}, {"Rina"})
-        self.assertEqual(reply, "Everything while you're away has someone on it. You'll hear from me again on Tuesday ☺️")
+        self.assertEqual(reply, "Everything while you're away is sorted. You'll hear from me again on Tuesday ☺️")
         self.database.save_household_activity(user_id=self.user_id, activity_id=int(self.gan["id"]), days=["tue"])
         output, reply = self.away()
         self.assertEqual((output["awayOwner"]["state"], output["awayOwner"]["runs"]), ("no_runs", []))

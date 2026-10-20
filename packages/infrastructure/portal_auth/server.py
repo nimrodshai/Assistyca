@@ -11532,6 +11532,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             email=session.email,
             user_id=user_id,
             timezone_name=timezone_name,
+            language="" if group else self._writer_language(user_id, sender_wa_id if speaker else ""),
             tool_context=tool_context,
             connect_links={} if group else dict(tool_context.get("connectLinks") or {}),
             channel="whatsapp" if channel == "whatsapp" else "portal",
@@ -16200,6 +16201,17 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
 
         base = self._public_base_url()
         return lambda code: f"{base}{JOIN_PAGE_PREFIX}{normalize_text(code).upper()}" if normalize_text(code) else ""
+
+    def _writer_language(self, user_id: int, member_wa_id: str = "") -> str:
+        """The language the person writing in this turn writes in - the
+        family member on member_wa_id, else the account holder - so the
+        words on the turn's buttons are theirs. Empty reads as English."""
+
+        try:
+            member = self.database.get_household_member_by_wa_id(member_wa_id, user_id=user_id) if member_wa_id else None
+            return resolve_message_language(self.database, user_id=user_id, member_id=int((member or {}).get("id") or 0))
+        except Exception:  # noqa: BLE001 - not knowing is English, never a failed turn
+            return ""
 
     def _household_speaker(self, user_id: int, sender_wa_id: str, conversation: list[dict[str, Any]]) -> dict[str, Any]:
         """Who is writing from this phone when it is not the account holder:

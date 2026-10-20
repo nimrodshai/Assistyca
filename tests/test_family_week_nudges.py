@@ -294,7 +294,7 @@ class NudgerTests(unittest.TestCase):
         self.assertIn("A grown-up's own work hours only when a drive falls inside them", payload["instruction"])
         self.assertIn("Say each fact once", payload["instruction"])
         self.assertNotIn("NOBODY DOWN FOR", payload["instruction"])
-        self.assertTrue(payload["fallbackText"].startswith("Today:\n• "))
+        self.assertEqual(payload["fallbackText"], "Good morning. Today is all sorted.")
         self.assertEqual(payload["templateKind"], "morning_digest")
         self.assertNotIn("offerInstruction", payload)
         # The day's figures for the Utility template: the bus is nobody's drive.
@@ -325,6 +325,20 @@ class NudgerTests(unittest.TestCase):
         [word] = [a for a in self.queued() if a["payload"]["title"] == "Time to leave soon"]
         self.assertIn("The person (a woman, written to in that form)", word["payload"]["instruction"])
 
+    def test_a_hebrew_family_gets_its_fallback_sentences_in_hebrew(self) -> None:
+        # Every floor was English and passed our fact lines on. A Hebrew
+        # family gets a short Hebrew sentence instead.
+        self.database.save_household_profile(user_id=self.user_id, language="he")
+        self.nudger.run_pending(now=at(SUNDAY, 7, 5))
+        [morning] = [a for a in self.queued() if a["payload"]["title"] == "Today in your family's week"]
+        self.assertEqual(morning["payload"]["fallbackText"], "בוקר טוב. היום הכול מסודר.")
+        self.nudger.run_pending(now=at(SUNDAY, 20, 15))
+        [evening] = [a for a in self.queued() if a["payload"]["title"] == "Tomorrow still needs someone"]
+        self.assertEqual(evening["payload"]["fallbackText"], "מחר עוד יש משהו שאין מי שלוקח. מי יכול?")
+        self.nudger.run_pending(now=at(SUNDAY + timedelta(days=1), 17, 5))
+        [word] = [a for a in self.queued() if a["payload"]["title"] == "Time to leave soon"]
+        self.assertEqual(word["payload"]["fallbackText"], "עוד מעט צריך לצאת - Noa ב־17:30.")
+
     def test_a_morning_missed_by_hours_is_not_sent_late(self) -> None:
         self.nudger.run_pending(now=at(SUNDAY, 13, 0))
         self.assertEqual(self.queued(), [])
@@ -346,7 +360,8 @@ class NudgerTests(unittest.TestCase):
         # Asked, not pressed: "decide now" manufactured an urgency there was not.
         self.assertNotIn("decide now", action["payload"]["instruction"])
         self.assertIn("easy to answer with a name", action["payload"]["instruction"])
-        self.assertTrue(action["payload"]["fallbackText"].startswith("Tomorrow still needs someone - who will do it?\n• "))
+        # The floor is a short sentence, never our fact lines.
+        self.assertEqual(action["payload"]["fallbackText"], "Something tomorrow still needs someone to take it. Who can?")
 
     def test_the_evening_before_holds_the_owners_drives_up_against_her_calendar(self) -> None:
         # Monday: Dana collects Noa from ballet at 17:30, and her calendar has
@@ -370,7 +385,8 @@ class NudgerTests(unittest.TestCase):
         self.assertIn("Ballet (Noa) at 16:30: nobody is down for the drop-off", instruction)
         self.assertIn("CLASHES WITH YOUR CALENDAR:\nBallet (Noa), the pickup at 17:30: you are down for it, but your calendar has Team meeting 17:00-18:00", instruction)
         self.assertIn("ask who could take that drive instead", instruction)
-        self.assertIn("Tomorrow clashes with your calendar:\n• Ballet (Noa), the pickup at 17:30", action["payload"]["fallbackText"])
+        self.assertIn("Tomorrow something in your calendar is at the same time as a pickup or drop-off", action["payload"]["fallbackText"])
+        self.assertNotIn("Ballet (Noa), the pickup", action["payload"]["fallbackText"])
         # The next poll neither reads the calendar again nor says it twice.
         nudger.run_pending(now=at(SUNDAY, 20, 20))
         self.assertEqual(len(calls), 1)
@@ -396,7 +412,7 @@ class NudgerTests(unittest.TestCase):
         [action] = self.queued()
         self.assertNotIn("TOMORROW:", action["payload"]["instruction"])
         self.assertIn("Dentist 17:15-17:45", action["payload"]["instruction"])
-        self.assertTrue(action["payload"]["fallbackText"].startswith("Tomorrow clashes with your calendar:"))
+        self.assertTrue(action["payload"]["fallbackText"].startswith("Tomorrow something in your calendar"))
 
     def test_the_calendar_is_not_read_when_the_owner_is_not_driving_and_never_holds_the_evening_up(self) -> None:
         calls: list[tuple] = []
@@ -475,7 +491,7 @@ class NudgerTests(unittest.TestCase):
         self.assertIn("never name the grouping", trip["payload"]["instruction"])
         self.assertIn("DRIVES:\ntake Tom - Kindergarten at 07:50\ntake Noa - School at 08:05, Shaked", trip["payload"]["instruction"])
         self.assertNotIn("Physio", trip["payload"]["instruction"])
-        self.assertTrue(trip["payload"]["fallbackText"].startswith("Soon, one trip:\n• take Tom"))
+        self.assertEqual(trip["payload"]["fallbackText"], "Time to head out soon - Tom at 07:50, then Noa at 08:05.")
         # The 09:00 run comes on its own, worded as the single drive it is.
         self.assertEqual(self.nudger.run_pending(now=at(SUNDAY, 8, 32))["rides"], 1)
         later = [a for a in self.queued() if a["payload"]["title"] == "Time to leave soon"]
@@ -659,7 +675,7 @@ class WeekAheadTests(unittest.TestCase):
         self.assertIn("nothing the picture already shows", payload["instruction"])
         self.assertNotIn("one or two sentences in time order", payload["instruction"])
         self.assertIn("08:00-12:45 School (Lahav), takes: you, nobody collects them yet", payload["instruction"])
-        self.assertTrue(payload["fallbackText"].startswith("Today:\n• "))
+        self.assertEqual(payload["fallbackText"], "Good morning. One thing today still needs someone - who can?")
         code = payload["imageUrl"].rsplit("/", 1)[-1].removesuffix(".png")
         picture = self.database.get_household_week_image(code) or {}
         self.assertTrue(picture.get("image", b"").startswith(b"\x89PNG"))
@@ -732,7 +748,7 @@ class WeekAheadTests(unittest.TestCase):
         self.assertIn("Sunday 2026-09-20: 08:00–12:45 School · Lahav", payload["instruction"])
         self.assertIn("collects: nobody", payload["instruction"])
         self.assertIn("ask who takes them", payload["instruction"])
-        self.assertIn("3 drop-offs or pickups still have nobody", payload["fallbackText"])
+        self.assertEqual(payload["fallbackText"], "Next week a few things still need someone - who can?")
         code = payload["imageUrl"].rsplit("/", 1)[1][:-4]
         image = self.database.get_household_week_image(code)
         self.assertTrue(image["image"].startswith(b"\x89PNG"))
@@ -770,7 +786,7 @@ class WeekAheadTests(unittest.TestCase):
         [action] = self.week_ahead()
         self.assertNotIn("imageUrl", action["payload"])
         self.assertIn("one line per day", action["payload"]["instruction"])
-        self.assertIn("Sunday 2026-09-20", action["payload"]["fallbackText"])
+        self.assertNotIn("Sunday 2026-09-20", action["payload"]["fallbackText"])
 
 
 if __name__ == "__main__":
@@ -820,8 +836,7 @@ class DriveDuringWorkNudgeTests(unittest.TestCase):
         self.assertIn("whether it is fine as it is", instruction)
         self.assertEqual(
             action["payload"]["fallbackText"],
-            "Tomorrow, inside your own work hours:\n• Gretz school (Noa), the pickup at 13:30: you are down for it, but it "
-            "falls inside your own Work at the office 09:00-17:00",
+            "Tomorrow a pickup or drop-off falls inside your work hours. Does that work, or should someone else do it?",
         )
         self.nudger.run_pending(now=at(SUNDAY, 20, 25))
         self.assertEqual(len(self.queued()), 1)
@@ -1156,7 +1171,7 @@ class OpenPickupTests(unittest.TestCase):
         self.assertIn("Nobody is down yet for a drive of the family's that is coming up shortly.", ask["payload"]["instruction"])
         self.assertIn("asking who is doing it - them or somebody else", ask["payload"]["instruction"])
         self.assertTrue(ask["payload"]["instruction"].endswith("\nOPEN: nobody is down yet to collect Lahav - Shaked Elementary at 12:45"))
-        self.assertEqual(ask["payload"]["fallbackText"], "Soon: nobody is down yet to collect Lahav - Shaked Elementary at 12:45. Who will do it?")
+        self.assertEqual(ask["payload"]["fallbackText"], "Nobody is down yet for Lahav at 12:45. Who can take it?")
         self.assertEqual(self.nudger.run_pending(now=at(self.tuesday, 12, 30))["rides"], 0)
         # Stav's pickup at 16:15 and the bus at 14:00 are not the owner's: quiet.
         for hour, minute in ((13, 40), (15, 50)):
@@ -1189,7 +1204,7 @@ class OpenPickupTests(unittest.TestCase):
         ))
         self.assertEqual(
             trip["payload"]["fallbackText"],
-            "Soon, one trip:\n• collect Laor - Gan at 12:30\n• nobody is down yet to collect Lahav - Shaked Elementary at 12:45 Who will do the open one?",
+            "Time to head out soon - Laor at 12:30. Nobody is down yet for Lahav at 12:45. Who can take it?",
         )
         self.assertEqual(self.nudger.run_pending(now=at(self.tuesday, 12, 20))["rides"], 0)
 
@@ -1335,22 +1350,22 @@ class NamelessOwnerOnPartnersPhoneTests(unittest.TestCase):
     def test_the_account_holders_drive_reads_as_the_partners_partner(self) -> None:
         self.database.save_household_profile(user_id=self.user_id, address_form="f")
         morning = self.stavs_morning()
+        self.assertIn("takes: your partner, collects: you", morning["instruction"])
         for text in (morning["instruction"], morning["fallbackText"]):
-            self.assertIn("takes: your partner, collects: you", text)
             self.assertNotIn("takes: me", text)
         self.assertIn("the account holder, a woman", morning["instruction"])
         self.assertIn("בת הזוג שלך", morning["instruction"])
 
     def test_with_the_gender_unknown_the_word_is_the_other_parent(self) -> None:
         morning = self.stavs_morning()
-        self.assertIn("takes: your partner", morning["fallbackText"])
+        self.assertIn("takes: your partner", morning["instruction"])
         self.assertIn("ההורה השני", morning["instruction"])
         self.assertNotIn("בת הזוג", morning["instruction"])
 
     def test_a_named_account_holder_is_still_named(self) -> None:
         self.database.save_account_fact(user_id=self.user_id, key="name", fact="Their name is Dana.")
         morning = self.stavs_morning()
-        self.assertIn("takes: Dana, collects: you", morning["fallbackText"])
+        self.assertIn("takes: Dana, collects: you", morning["instruction"])
         self.assertNotIn("your partner", morning["instruction"])
 
 

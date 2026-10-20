@@ -141,6 +141,10 @@ def load_scheduled_action_config() -> ScheduledActionConfig:
     )
 
 
+# Under a reminder about a list that has since been deleted.
+LIST_GONE_NOTE = {"en": "(That list isn't there anymore.)", "he": "(הרשימה הזאת כבר לא קיימת.)"}
+
+
 def describe_list_for_message(record: dict[str, Any], *, limit: int = 40) -> str:
     """The list as lines of text: the name, then what is still on it."""
 
@@ -610,7 +614,9 @@ class ScheduledActionScheduler:
         record = self.database.get_account_list(user_id=int(action.get("userId") or 0), list_id=list_id)
         if record is None:
             payload["listMissing"] = True
-            return f"{message_text}\n\n(The list this was about is no longer there.)"
+            language = resolve_message_language(self.database, user_id=int(action.get("userId") or 0))
+            gone = LIST_GONE_NOTE.get(language) or LIST_GONE_NOTE["en"]
+            return f"{message_text}\n\n{gone}"
         return f"{message_text}\n\n{describe_list_for_message(record)}"
 
     def _thread_for_phone(self, user_id: int, wa_id: str) -> str:

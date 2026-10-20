@@ -50,6 +50,7 @@ from packages.infrastructure.calendar_write import build_event_times
 from packages.infrastructure.chat_flow import chat_flow_rules
 from packages.infrastructure.connection_owner import FAMILY_BUSY_ENDPOINT
 from packages.infrastructure.gmail_send import normalize_addresses
+from packages.infrastructure.link_labels import link_label
 from packages.infrastructure.mailbox_findings import describe_finding
 from packages.infrastructure.recovery_reply import ALLOWED_LINK_HOSTS
 from packages.infrastructure.recovery_reply import build_situation
@@ -291,6 +292,9 @@ class LoopContext:
     # What each offered link is for, in a few words, so a channel that can
     # show a button under the reply has something to write on it.
     link_labels: dict[str, str] = field(default_factory=dict)
+    # The language the person writes in ("he", "en"), so the words on those
+    # buttons are theirs (link_labels.link_label); empty reads as English.
+    language: str = ""
     # Some recovery links are not optional prose. If a provider rejected the
     # saved sign-in, the client needs the newly minted link even when the
     # language model forgets to repeat it.
@@ -524,7 +528,7 @@ def _run_lookup(context: LoopContext, proposal_type: str, fields: dict[str, Any]
             # No builder was wired in; the browser has a session, so the
             # bare page address still opens.
             link = str(manager.get("url") or "").strip()
-            _offer_link(context, link, RECEIPTS_LINK_LABEL)
+            _offer_link(context, link, link_label("receipts", context.language))
         if link:
             data["receiptsPage"] = link
             data["receiptsPageSharing"] = RECEIPTS_LINK_SHARING
@@ -578,7 +582,6 @@ def _describe_search_limits(response: dict[str, Any]) -> list[str]:
     return notes[:4]
 
 
-RECEIPTS_LINK_LABEL = "Open receipts"
 # Who a page link may go to, said beside the link in the tool result. A
 # week or lists link opens only what the family shares; a receipts link
 # opens what one person's mail held.
@@ -605,11 +608,8 @@ def _receipts_page_link(context: LoopContext) -> str:
         print(f"agent.loop.receipts_link_failed error={exc!r}", flush=True)
         return ""
     context.receipts_page = link
-    _offer_link(context, link, RECEIPTS_LINK_LABEL)
+    _offer_link(context, link, link_label("receipts", context.language))
     return link
-
-
-WEEK_LINK_LABEL = "Open your week"
 
 
 def _week_page_link(context: LoopContext) -> str:
@@ -625,7 +625,7 @@ def _week_page_link(context: LoopContext) -> str:
         print(f"agent.loop.week_link_failed error={exc!r}", flush=True)
         return ""
     context.week_page = link
-    _offer_link(context, link, WEEK_LINK_LABEL)
+    _offer_link(context, link, link_label("week", context.language))
     return link
 
 
@@ -727,7 +727,7 @@ def _mailbox_failure_options(
         if failure.get("action") != "reconnect" or not provider or provider in seen:
             continue
         seen.add(provider)
-        label = "Reconnect Google" if provider == "google" else "Reconnect Microsoft"
+        label = link_label("reconnect", context.language, provider="Google" if provider == "google" else "Microsoft")
         link = str(context.connect_links.get(provider) or "").strip()
         if link:
             _offer_link(context, link, label)
@@ -945,9 +945,9 @@ def _tool_look_up_property(context: LoopContext, args: dict[str, Any]) -> dict[s
     # Only links a tool handed out survive the reply guard; each becomes a button.
     for plan in result.get("plans") or []:
         if isinstance(plan, dict) and plan.get("url"):
-            _offer_link(context, str(plan["url"]), f"Plan {plan.get('number') or 'page'}")
+            _offer_link(context, str(plan["url"]), link_label("plan", context.language, number=plan.get("number") or ""))
     tabu = result.get("tabuExtract") if isinstance(result.get("tabuExtract"), dict) else {}
-    _offer_link(context, str(tabu.get("url") or ""), "Order Tabu extract")
+    _offer_link(context, str(tabu.get("url") or ""), link_label("tabu", context.language))
     return _ok({key: value for key, value in result.items() if key != "found"})
 
 
@@ -1205,7 +1205,7 @@ def _tool_connect_link(context: LoopContext, args: dict[str, Any]) -> dict[str, 
             "Connecting from this chat is not available right now. The person can connect it from their "
             "Assistyca portal, and you will pick the question up once it is connected.",
         )
-    _offer_link(context, link, f"Connect {provider.capitalize()}")
+    _offer_link(context, link, link_label("connect", context.language, provider=provider.capitalize()))
     return _ok({
         "provider": provider,
         "link": link,
@@ -1696,7 +1696,7 @@ def _tool_create_group_chat(context: LoopContext, args: dict[str, Any]) -> dict[
 
     _remember_group_chat(context, group_id=group_id, name=name, invite_link=invite_link)
     context.links_offered.append(invite_link)
-    context.link_labels[invite_link] = f"Join {name}"
+    context.link_labels[invite_link] = link_label("join_group", context.language, name=name)
     context.required_links.append(invite_link)
     return _ok({
         "name": name,
@@ -2774,23 +2774,22 @@ def _away_owner_floor(away: dict[str, Any]) -> dict[str, str]:
             run = open_runs[0]
             run_day = date.fromisoformat(run["date"])
             what_en = f"{run['child']}'s {run['at']} {'pickup' if run['leg'] == 'collect' else 'drop-off'} on {run['day']} has"
-            what_he = (
-                f"{'לאיסוף' if run['leg'] == 'collect' else 'להבאה'} של {run['child']} ב־{run['at']} "
-                f"ביום {_HEBREW_WEEKDAYS[run_day.weekday()]} עוד אין"
+            he = (
+                f"עוד אין מי {'שאוסף' if run['leg'] == 'collect' else 'שלוקח'} את {run['child']} "
+                f"ביום {_HEBREW_WEEKDAYS[run_day.weekday()]} ב־{run['at']}. מי לוקח?"
             )
         else:
-            what_en = f"{len(open_runs)} of your runs while you're away have"
-            what_he = f"ל־{len(open_runs)} מההסעות בזמן שאין אותך עוד אין"
+            what_en = f"{len(open_runs)} pickups and drop-offs while you're away have"
+            he = f"בימים האלה עוד יש {len(open_runs)} איסופים והבאות שאין מי שלוקח. מי לוקח?"
         en = f"{what_en} nobody yet, and while you're away there's no one I can ask. Who's taking {'it' if len(open_runs) == 1 else 'them'}?"
-        he = f"{what_he} אף אחד, וכשאין אותך אין לי את מי לשאול. מי לוקח את זה?"
         if away.get("canSendJoinLink") and name:
             en += f" If it's {name}, I can send a link to join from their own phone, so they get the word themselves."
             he += f" אם זה {name}, אפשר לשלוח קישור להצטרף מהטלפון, וככה התזכורת תגיע ישר."
         return {"en": en, "he": he}
     if state == "all_covered":
         return {
-            "en": f"Everything while you're away has someone on it. You'll hear from me again on {back_en} ☺️",
-            "he": f"לכל ההסעות בזמן הזה יש מישהו. נדבר שוב ב{back_he} ☺️",
+            "en": f"Everything while you're away is sorted. You'll hear from me again on {back_en} ☺️",
+            "he": f"בזמן הזה הכול מסודר. נדבר שוב ב{back_he} ☺️",
         }
     return {"en": f"Have a good time. You'll hear from me again on {back_en}.", "he": f"שיהיה בכיף. נדבר שוב ב{back_he}."}
 
@@ -2945,7 +2944,7 @@ def _tool_invite_family_member(context: LoopContext, args: dict[str, Any]) -> di
         return _error("internal", f"The invitation could not be made: {exc}", can_retry=True)
     if not link:
         return _error("internal", "The invitation could not be made just now.", can_retry=True)
-    _offer_link(context, link, f"Invite {member['name']}", in_text=True)
+    _offer_link(context, link, link_label("invite", context.language, name=member["name"]), in_text=True)
     role = household.normalize_role(member.get("role"))
     return _ok({
         "forName": member["name"],
@@ -2975,7 +2974,7 @@ def _tool_payment_link(context: LoopContext, args: dict[str, Any]) -> dict[str, 
             "not_supported",
             "Payment is not open yet. Say there is nothing for them to pay or do for now.",
         )
-    _offer_link(context, link, "Keep Assistyca")
+    _offer_link(context, link, link_label("pay", context.language))
     return _ok({
         "link": link,
         "price": str(context.billing.get("price") or ""),
@@ -3012,7 +3011,7 @@ def _tool_homework_login_link(context: LoopContext, args: dict[str, Any]) -> dic
         return _error("internal", f"The homework page could not be made: {exc}", can_retry=True)
     if not link:
         return _error("internal", "The homework page could not be made just now.", can_retry=True)
-    _offer_link(context, link, "Add the school login")
+    _offer_link(context, link, link_label("school_login", context.language))
     return _ok({
         "link": link,
         "expiresInHours": homework_check.HOMEWORK_LINK_TTL_HOURS,
@@ -3180,15 +3179,17 @@ def _offer_link(context: LoopContext, link: str, label: str, *, in_text: bool = 
         context.links_in_text.append(link)
 
 
-def _list_link_label(record: dict[str, Any]) -> str:
-    """What the button that opens this list says: the list's own name when it fits."""
+def _list_link_label(record: dict[str, Any], language: str = "") -> str:
+    """What the button that opens this list says, in the person's language:
+    the list's own name when it fits."""
 
     if int(record.get("id") or 0) <= 0:
-        return "Open my lists"
+        return link_label("lists", language)
     name = " ".join(str(record.get("name") or "").split())
-    if name and len(f"Open {name}") <= MAX_LINK_BUTTON_LABEL:
-        return f"Open {name}"
-    return "Open my todos" if str(record.get("kind") or "") == "todo" else "Open the list"
+    named = link_label("named_list", language, name=name) if name else ""
+    if named and len(named) <= MAX_LINK_BUTTON_LABEL:
+        return named
+    return link_label("todos" if str(record.get("kind") or "") == "todo" else "list", language)
 
 
 def _list_link(context: LoopContext, record: dict[str, Any]) -> str:
@@ -3201,7 +3202,7 @@ def _list_link(context: LoopContext, record: dict[str, Any]) -> str:
     except Exception as exc:  # noqa: BLE001 - a missing link is not a failed list
         print(f"agent.loop.list_link_failed error={exc!r}", flush=True)
         return ""
-    _offer_link(context, link, _list_link_label(record))
+    _offer_link(context, link, _list_link_label(record, context.language))
     return link
 
 
@@ -5755,7 +5756,7 @@ def _links_in_reply(reply: str, context: LoopContext) -> list[dict[str, str]]:
         bare = match.group(0).rstrip(".,;:!?")
         if bare in context.links_offered and bare not in seen and bare not in context.links_in_text:
             seen.add(bare)
-            found.append({"url": bare, "label": context.link_labels.get(bare) or "Open"})
+            found.append({"url": bare, "label": context.link_labels.get(bare) or link_label("open", context.language)})
     return found
 
 

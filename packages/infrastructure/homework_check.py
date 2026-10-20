@@ -132,9 +132,9 @@ def school_children(members: Iterable[dict[str, Any]] | None, today: date) -> li
     return names
 
 
-def offer_message(children: list[str]) -> dict[str, str]:
+def offer_message(children: list[str], language: str = "") -> dict[str, str]:
     """The question, as the instruction the assistant writes it from and the
-    plain sentence that stands in when it cannot."""
+    plain sentence that stands in when it cannot, in the reader's language."""
 
     who = ", ".join(children)
     instruction = (
@@ -149,6 +149,9 @@ def offer_message(children: list[str]) -> dict[str, str]:
         f"CHILDREN AT SCHOOL: {who}"
     )
     fallback = (
+        f"רוצה שאבדוק כל יום אחרי בית הספר מה יש ל{who} בשיעורי בית? אפשר לתת לי את פרטי הכניסה "
+        "למערכת של בית הספר בדף פרטי, והם נשמרים אצלי מוצפנים."
+        if language == "he" else
         f"Would you like me to check {who}'s homework every day when school ends? "
         "You'd give me the school platform's login on a private page, and it stays encrypted with me."
     )

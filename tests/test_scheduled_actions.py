@@ -992,8 +992,8 @@ class ScheduledPictureTests(unittest.TestCase):
             [c["template_name"] for c in calls],
             ["assistyca_routine_today_status", "assistyca_morning_digest_picture"],
         )
-        # A drop-off with nobody is not a pick-up: the line says all covered.
-        self.assertEqual(calls[0]["template_parameters"], ["all covered"])
+        # A drop-off with nobody is not a pick-up: the line says all sorted.
+        self.assertEqual(calls[0]["template_parameters"], ["all sorted"])
         self.assertIsNone(calls[1]["template_parameters"])
 
     def test_without_the_figures_the_status_one_is_skipped(self) -> None:

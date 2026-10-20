@@ -86,6 +86,9 @@ from packages.infrastructure import homework_check
 from packages.infrastructure import household
 from packages.infrastructure.account_types import account_feature_allowed
 from packages.infrastructure.portal_db import normalize_text
+from packages.infrastructure.message_language import DEFAULT_MESSAGE_LANGUAGE
+from packages.infrastructure.message_language import normalize_message_language
+from packages.infrastructure.message_language import resolve_message_language
 from packages.infrastructure.person_address import ADDRESS_FEMININE
 from packages.infrastructure.person_address import ADDRESS_MASCULINE
 from packages.infrastructure.person_address import address_word
@@ -749,9 +752,115 @@ def schedule_slots(
     }
 
 
+# The sentences that go when the assistant cannot write the message, in the
+# language of whoever reads it. They were English and passed our own fact
+# lines on ("Soon, one trip:\n• take Tom - Kindergarten at 08:00"); a floor
+# still reads like a person: short, with only what they need.
+FALLBACKS = {
+    "en": {
+        "leave": "Time to head out soon - {moments}.",
+        "open": "Nobody is down yet for {moments}. Who can take it?",
+        "leave_plain": "Time to head out soon.",
+        "open_plain": "Something coming up still needs someone. Who can take it?",
+        "then": ", then ",
+        "at": "{who} at {at}",
+        "morning_sorted": "Good morning. Today is all sorted.",
+        "morning_one": "Good morning. One thing today still needs someone - who can?",
+        "morning_many": "Good morning. {count} things today still need someone - who can?",
+        "evening_gaps": "Something tomorrow still needs someone to take it. Who can?",
+        "evening_clash": "Tomorrow something in your calendar is at the same time as a pickup or drop-off. Who could do it instead?",
+        "evening_work": "Tomorrow a pickup or drop-off falls inside your work hours. Does that work, or should someone else do it?",
+        "group_ride": "Time to head out soon - {driver}, {who} at {at}.",
+        "birthday": "{name}'s birthday is in {days} days.",
+        "birthday_turning": "{name} turns {age} in {days} days.",
+        "ask_again": "Whenever suits you, we can set up your family's week. Just tell me who's at home.",
+        "week_sorted": "Next week is all sorted.",
+        "week_open": "Next week a few things still need someone - who can?",
+        "away": "While you're away, {partner} has everything. You'll hear from me again on {day} ☺️",
+        "weekdays": ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"),
+    },
+    "he": {
+        "leave": "עוד מעט צריך לצאת - {moments}.",
+        "open": "עוד אין מי שלוקח: {moments}. מי יכול?",
+        "leave_plain": "עוד מעט צריך לצאת.",
+        "open_plain": "עוד מעט יש משהו שאין מי שלוקח. מי יכול?",
+        "then": ", ואז ",
+        "at": "{who} ב־{at}",
+        "morning_sorted": "בוקר טוב. היום הכול מסודר.",
+        "morning_one": "בוקר טוב. היום עוד יש דבר אחד בלי מי שלוקח. מי יכול?",
+        "morning_many": "בוקר טוב. היום עוד יש {count} דברים בלי מי שלוקח. מי יכול?",
+        "evening_gaps": "מחר עוד יש משהו שאין מי שלוקח. מי יכול?",
+        "evening_clash": "מחר יש משהו ביומן בדיוק כשצריך להביא או לאסוף. מי יכול במקום?",
+        "evening_work": "מחר יש הבאה או איסוף בתוך שעות העבודה. זה מסתדר, או שמישהו אחר ייקח?",
+        "group_ride": "עוד מעט צריך לצאת - {driver}, {who} ב־{at}.",
+        "birthday": "יום ההולדת של {name} בעוד {days} ימים.",
+        "birthday_turning": "יום ההולדת ה־{age} של {name} בעוד {days} ימים.",
+        "ask_again": "מתי שנוח, אפשר לסדר יחד את השבוע של המשפחה. רק לספר לי מי בבית.",
+        "week_sorted": "השבוע הבא מסודר.",
+        "week_open": "בשבוע הבא עוד יש כמה דברים בלי מי שלוקח. מי יכול?",
+        "away": "{partner} על הכול בינתיים. נדבר שוב ביום {day} ☺️",
+        "weekdays": ("שני", "שלישי", "רביעי", "חמישי", "שישי", "שבת", "ראשון"),
+    },
+}
+
+
+def _fallbacks(language: Any) -> dict[str, Any]:
+    return FALLBACKS.get(normalize_message_language(language) or DEFAULT_MESSAGE_LANGUAGE) or FALLBACKS["en"]
+
+
+def fallback_sentence(key: str, language: Any = "", **values: Any) -> str:
+    """One of the FALLBACKS in this reader's language, English when unknown."""
+
+    return str(_fallbacks(language)[key]).format(**values)
+
+
+def weekday_word(day: date, language: Any = "") -> str:
+    return _fallbacks(language)["weekdays"][day.weekday()]
+
+
+def _moments(moments: list[dict[str, Any]], language: Any) -> str:
+    """"Itai at 16:00, then Noa at 16:30", in the reader's language."""
+
+    return fallback_sentence("then", language).join(
+        fallback_sentence("at", language, who=moment.get("who") or "", at=moment.get("at") or "") for moment in moments
+    )
+
+
+def ride_moments(rides: list[dict[str, Any]], owner_names: list[str] | None = None, viewer_names: list[str] | None = None) -> list[dict[str, Any]]:
+    """Who, when and whether nobody has it yet, for each drive of a word -
+    what its fallback sentence says, and nothing more."""
+
+    return [
+        {"who": _who(ride["activity"], owner_names, viewer_names) or "", "at": ride.get("at") or "", "open": bool(ride.get("open"))}
+        for ride in rides
+    ]
+
+
+def ride_fallback(moments: list[dict[str, Any]], language: Any = "") -> str:
+    """The word before a drive when the assistant cannot write it: when to
+    head out and for whom, and who can take the ones nobody has."""
+
+    own = [moment for moment in moments if not moment.get("open")]
+    nobody = [moment for moment in moments if moment.get("open")]
+    parts = []
+    if own:
+        parts.append(fallback_sentence("leave", language, moments=_moments(own, language)))
+    if nobody:
+        parts.append(fallback_sentence("open", language, moments=_moments(nobody, language)))
+    return " ".join(parts)
+
+
+def morning_fallback(open_count: int, language: Any = "") -> str:
+    if open_count <= 0:
+        return fallback_sentence("morning_sorted", language)
+    if open_count == 1:
+        return fallback_sentence("morning_one", language)
+    return fallback_sentence("morning_many", language, count=open_count)
+
+
 def leave_words(
     facts: list[str], open_count: int, *, reader: str = "", reader_address: str = "",
-    partner: str = "", reader_away: bool = False,
+    partner: str = "", reader_away: bool = False, moments: list[dict[str, Any]] | None = None, reader_language: str = "",
 ) -> dict[str, str]:
     """The title, instruction and fallback for the word before a drive -
     or before a pickup nobody has taken, which asks instead of reminding.
@@ -763,7 +872,13 @@ def leave_words(
     by offering one more word five minutes before is settled when it is
     sent, by the shape it travels in (standing_tasks.build_task_run_message).
     partner is partner_note, when the facts say "your partner". reader_away
-    is a reader on hold today: an open run is never offered to them."""
+    is a reader on hold today: an open run is never offered to them.
+    moments (ride_moments) make the fallback sentence, in reader_language;
+    without them it is a plain one without names or times."""
+
+    fallback = ride_fallback(moments, reader_language) if moments else (
+        fallback_sentence("open_plain" if open_count else "leave_plain", reader_language)
+    )
 
     language = "the language the family writes to you in" if reader else "the language they write to you in"
     them = "them"
@@ -788,8 +903,7 @@ def leave_words(
                 + ("The fact is exact; add nothing, and use no tool.\nOPEN: " + facts[0] if one else
                    "The facts are exact; add nothing, and use no tool.\nOPEN:\n" + "\n".join(facts))
             ),
-            "fallback": (f"Soon: {facts[0]}. Who will do it?" if one else
-                         "Soon, still open - who will do it?\n" + "\n".join(f"• {fact}" for fact in facts)),
+            "fallback": fallback,
         }
     whose = f"This message is for {reader}, who is in this family and is the one driving shortly. " if reader else f"{person} is the one driving shortly. "
     open_note = (
@@ -803,7 +917,6 @@ def leave_words(
             whose + f"In one short sentence, in {language}, remind them what it is and when. "
             "The fact is exact; add nothing, and use no tool." + open_note + partner_aside + "\nDRIVE: " + facts[0]
         )
-        fallback = f"Soon: {facts[0]}."
     else:
         instruction = (
             whose + "These drives of theirs follow one another. Say them in one sentence, "
@@ -812,9 +925,6 @@ def leave_words(
             + ". How we group them is our bookkeeping: never name the grouping. Say each once. The facts are exact; "
             "add nothing, and use no tool." + open_note + partner_aside + "\nDRIVES:\n" + "\n".join(facts)
         )
-        fallback = "Soon, one trip:\n" + "\n".join(f"• {fact}" for fact in facts)
-    if open_count:
-        fallback += " Who will do the open one?" if open_count == 1 else " Who will do the open ones?"
     return {"title": "Time to leave soon", "instruction": instruction, "fallback": fallback}
 
 
@@ -1105,8 +1215,7 @@ class FamilyWeekNudger:
                             "it. Ask the room, not any one person, and leave it easy to answer with a name. The facts "
                             "are exact; add none, and use no tool.\nTOMORROW:\n" + "\n".join(tomorrow_gaps)
                         ),
-                        fallback="Tomorrow still needs someone - who can take it?\n"
-                                 + "\n".join(f"• {line}" for line in tomorrow_gaps),
+                        fallback=fallback_sentence("evening_gaps", resolve_message_language(self.database, user_id=user_id)),
                     )
                     counts["groupEvening"] += 1
 
@@ -1136,7 +1245,10 @@ class FamilyWeekNudger:
                         "language it writes in, naming them and what it is, so they have time to leave. The fact is "
                         f"exact; add nothing, and use no tool.\nDRIVE: {fact}"
                     ),
-                    fallback=f"Soon: {fact}.",
+                    fallback=fallback_sentence(
+                        "group_ride", resolve_message_language(self.database, user_id=user_id),
+                        driver=ride["driver"], who=who, at=ride["at"],
+                    ),
                 )
                 counts["groupRides"] += 1
         return {"ok": True, **counts}
@@ -1166,6 +1278,7 @@ class FamilyWeekNudger:
             # when it ends, while there is still time.
             week_paused = family_week_paused(exceptions, today)
             owner_names = self._owner_names(user_id)
+            language = resolve_message_language(self.database, user_id=user_id)
             # The account holder away is never asked to do her own runs. When
             # she handed those days to her partner she is also left in peace:
             # one calm word on the first morning, and after that only a run
@@ -1207,8 +1320,8 @@ class FamilyWeekNudger:
                             with_picture=bool(image_url),
                             address=address_word(resolve_address_form(self.database, user_id=user_id)),
                         ),
-                        schedule=schedule_slots(todays, today, members, owner_names),
-                        fallback="Today:\n" + "\n".join(f"• {line}" for line in lines),
+                        schedule=(slots := schedule_slots(todays, today, members, owner_names)),
+                        fallback=morning_fallback(slots["open"], language),
                     )
                     counts["morning"] += 1
 
@@ -1264,11 +1377,9 @@ class FamilyWeekNudger:
                             "may work close by"
                         )
                     fallback_parts = [
-                        part for part in (
-                            "Tomorrow still needs someone - who will do it?\n" + "\n".join(f"• {line}" for line in tomorrow_gaps) if tomorrow_gaps else "",
-                            "Tomorrow clashes with your calendar:\n" + "\n".join(f"• {line}" for line in tomorrow_clashes) if tomorrow_clashes else "",
-                            "Tomorrow, inside your own work hours:\n" + "\n".join(f"• {line}" for line in tomorrow_work) if tomorrow_work else "",
-                        ) if part
+                        fallback_sentence(key, language) for key, present in (
+                            ("evening_gaps", tomorrow_gaps), ("evening_clash", tomorrow_clashes), ("evening_work", tomorrow_work),
+                        ) if present
                     ]
                     address = address_word(resolve_address_form(self.database, user_id=user_id))
                     self._queue(
@@ -1296,7 +1407,7 @@ class FamilyWeekNudger:
                             + ("\nCLASHES WITH YOUR CALENDAR:\n" + "\n".join(tomorrow_clashes) if tomorrow_clashes else "")
                             + ("\nINSIDE YOUR OWN WORK HOURS:\n" + "\n".join(tomorrow_work) if tomorrow_work else "")
                         ),
-                        fallback="\n".join(fallback_parts),
+                        fallback=" ".join(fallback_parts),
                     )
                     counts["evening"] += 1
 
@@ -1327,6 +1438,7 @@ class FamilyWeekNudger:
                 words = leave_words(
                     facts, open_count, reader_away=away_today is not None,
                     reader_address=address_word(resolve_address_form(self.database, user_id=user_id)),
+                    moments=ride_moments(said, owner_names), reader_language=language,
                 )
                 self._queue(
                     user_id=user_id, now=reference, timezone_name=timezone_name,
@@ -1366,7 +1478,10 @@ class FamilyWeekNudger:
                             "them this birthday is coming. The fact is exact; add none, and use no tool.\n"
                             f"BIRTHDAY: {fact}"
                         ),
-                        fallback=f"A birthday is coming: {fact}.",
+                        fallback=fallback_sentence(
+                            "birthday_turning" if turning is not None else "birthday", language,
+                            name=member["name"], days=days_left, age=turning,
+                        ),
                         offer=(
                             "In a few short, warm sentences, in the language the person writes to you in, tell them this "
                             "birthday is coming, and offer to start a ready-made to-do list to get ready for it - for a "
@@ -1393,7 +1508,7 @@ class FamilyWeekNudger:
                     user_id=user_id, now=reference, timezone_name=timezone_name,
                     title="Getting to know your family",
                     instruction="Nothing to say today: write one short line that you are here when they want to set up their family's week.",
-                    fallback="Whenever suits you, I can set up your family's week - just tell me who is at home.",
+                    fallback=fallback_sentence("ask_again", language),
                     offer=(
                         "A few days ago the person said they would rather get to know each other later, so you could hold "
                         "their family's week for them. In one or two light sentences, in the language they write to you "
@@ -1450,7 +1565,7 @@ class FamilyWeekNudger:
         if not service_window_open(self.database, user_id, now=reference):
             print(f"[family-week] homework offer skipped user={user_id}: outside the 24-hour window", flush=True)
             return False
-        words = homework_check.offer_message(children)
+        words = homework_check.offer_message(children, resolve_message_language(self.database, user_id=user_id))
         self._queue(
             user_id=user_id, now=reference, timezone_name=timezone_name, title=words["title"],
             instruction=words["instruction"], fallback=words["fallback"], window_only=True,
@@ -1689,18 +1804,15 @@ class FamilyWeekNudger:
                 "takes and who collects, and anything that still has nobody. The facts are exact; add none, and "
                 f"use no tool.\nWEEK:\n{facts}"
             )
-        fallback = "Here is your family's week ahead." + (
-            f" {open_legs} drop-off{'s' if open_legs != 1 else ''} or pickup{'s' if open_legs != 1 else ''} still "
-            "have nobody - who takes them?" if open_legs else " Everything has someone."
-        )
-        if not image_url:
-            fallback = "Your family's week ahead:\n" + "\n".join(summary.facts[:7])
+        def fallback(language: str) -> str:
+            return fallback_sentence("week_open" if open_legs else "week_sorted", language)
+
         sent = 0
         if not owner_away and claim(key):
             self._queue(
                 user_id=user_id, now=reference, timezone_name=timezone_name, title="Your family's week ahead",
-                instruction=instruction, fallback=fallback, image_url=image_url, kind=TEMPLATE_KIND_WEEK_AHEAD,
-                schedule=week_slots,
+                instruction=instruction, fallback=fallback(resolve_message_language(self.database, user_id=user_id)),
+                image_url=image_url, kind=TEMPLATE_KIND_WEEK_AHEAD, schedule=week_slots,
             )
             sent += 1
         for member in members:
@@ -1711,7 +1823,9 @@ class FamilyWeekNudger:
                 continue
             self._queue(
                 user_id=user_id, now=reference, timezone_name=timezone_name, title="Your family's week ahead",
-                instruction=instruction, fallback=fallback, image_url=image_url, recipient_wa_id=wa_id,
+                instruction=instruction,
+                fallback=fallback(resolve_message_language(self.database, user_id=user_id, member_id=int(member.get("id") or 0))),
+                image_url=image_url, recipient_wa_id=wa_id,
                 kind=TEMPLATE_KIND_WEEK_AHEAD, schedule=week_slots,
             )
             sent += 1
@@ -1745,6 +1859,7 @@ class FamilyWeekNudger:
             # the word is written to them, in their own gender, not to a crowd.
             addressed = f"{first} ({address_word(member.get('addressForm'))})" if address_word(member.get("addressForm")) else first
             suffix = f":{member['id']}"
+            language = resolve_message_language(self.database, user_id=user_id, member_id=int(member.get("id") or 0))
             # Someone on hold - abroad, ill - hears nothing on the days it
             # covers: their drives are open and go to whoever settles them.
             # It follows the day a message goes out, so the evening before
@@ -1764,8 +1879,8 @@ class FamilyWeekNudger:
                     instruction=self._morning_instruction(
                         lines=lines, reader=addressed, with_picture=bool(image_url), partner=partner,
                     ),
-                    schedule=schedule_slots(todays, today, members, owner_names),
-                    fallback="Today:\n" + "\n".join(f"• {line}" for line in lines),
+                    schedule=(slots := schedule_slots(todays, today, members, owner_names)),
+                    fallback=morning_fallback(slots["open"], language),
                 )
                 counts["morning"] += 1
             if "evening" in wants and in_evening and gap_lines(
@@ -1800,7 +1915,7 @@ class FamilyWeekNudger:
                             f"{first}. " + self._partner_note(user_id, owner_names, gaps)
                             + "The facts are exact; add none, and use no tool.\nTOMORROW:\n" + "\n".join(gaps)
                         ),
-                        fallback="Tomorrow still needs someone - who will do it?\n" + "\n".join(f"• {line}" for line in gaps),
+                        fallback=fallback_sentence("evening_gaps", language),
                     )
                     counts["evening"] += 1
             if "rides" not in wants:
@@ -1835,6 +1950,7 @@ class FamilyWeekNudger:
                 facts, open_count, reader=first,
                 reader_address=address_word(member.get("addressForm")),
                 partner=self._partner_note(user_id, owner_names, facts),
+                moments=ride_moments(said, owner_names, names), reader_language=language,
             )
             self._queue(
                 user_id=user_id, now=reference, timezone_name=timezone_name, recipient_wa_id=wa_id,
@@ -1857,6 +1973,7 @@ class FamilyWeekNudger:
         ends = date.fromisoformat(normalize_text(hold.get("endsOn"))[:10])
         back = ends + timedelta(days=1)
         form = address_word(resolve_address_form(self.database, user_id=user_id))
+        language = resolve_message_language(self.database, user_id=user_id)
         self._queue(
             user_id=user_id, now=reference, timezone_name=timezone_name, title="While you're away",
             kind=TEMPLATE_KIND_MORNING_DIGEST,
@@ -1871,7 +1988,7 @@ class FamilyWeekNudger:
                 + f"\nPARTNER: {partner}" + (f"\nREASON: {reason}" if reason else "")
                 + f"\nBACK: {back.strftime('%A')} ({back.isoformat()})"
             ),
-            fallback=f"While you're away, {partner} has everything. You'll hear from me again on {back.strftime('%A')} ☺️",
+            fallback=fallback_sentence("away", language, partner=partner, day=weekday_word(back, language)),
         )
 
     def _partner_note(self, user_id: int, owner_names: list[str], lines: list[str]) -> str:

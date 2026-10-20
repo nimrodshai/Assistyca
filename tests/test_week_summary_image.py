@@ -67,7 +67,7 @@ class WeekSummaryFactsTests(unittest.TestCase):
         self.assertEqual(detect_language(members, days[1].plans), "he")
         summary = build_week_summary(week_start=SUNDAY, days=days, members=members, owner_names=["נמרוד"])
         self.assertEqual(summary.language, "he")
-        self.assertIn("מביא/ה: נמרוד · אוסף/ת: הסעה", summary.facts[1])
+        self.assertIn("מי מביא: נמרוד · מי אוסף: הסעה", summary.facts[1])
         self.assertNotIn("‪", summary.facts[1], "no bidi controls reach the model")
 
     def test_the_week_starts_on_the_sunday_after_a_saturday(self) -> None:

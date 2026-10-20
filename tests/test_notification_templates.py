@@ -125,24 +125,24 @@ class UtilityTemplateTests(unittest.TestCase):
         self.assertEqual(schedule_parameters(None), [])
 
     def test_where_the_pickups_stand_in_a_few_fixed_words(self) -> None:
-        self.assertEqual(pickup_status(0, "en"), "all covered")
+        self.assertEqual(pickup_status(0, "en"), "all sorted")
         self.assertEqual(pickup_status(1, "en"), "1 still needs someone")
         self.assertEqual(pickup_status(3, "en"), "3 still need someone")
-        self.assertEqual(pickup_status(0, "he"), "כולם מכוסים")
-        self.assertEqual(pickup_status(1, "he"), "אחד עוד בלי אחראי")
-        self.assertEqual(pickup_status(2, "he"), "2 עוד בלי אחראי")
+        self.assertEqual(pickup_status(0, "he"), "הכול מסודר")
+        self.assertEqual(pickup_status(1, "he"), "אחד עוד בלי מי שאוסף")
+        self.assertEqual(pickup_status(2, "he"), "2 עוד בלי מי שאוסף")
         self.assertEqual(pickup_status(None, "en"), "")
 
     def test_the_week_picture_tries_the_plain_one_then_the_status_one(self) -> None:
         self.assertEqual(routine_picture_templates("week_ahead", "he", {"openPickups": 2}), [
             ("assistyca_routine_week", "he", []),
-            ("assistyca_routine_week_status", "he", ["2 עוד בלי אחראי"]),
+            ("assistyca_routine_week_status", "he", ["2 עוד בלי מי שאוסף"]),
         ])
         self.assertEqual(routine_picture_templates("reminder", "en", {"openPickups": 2}), [])
 
     def test_today_in_english_skips_the_plain_one_meta_filed_as_marketing(self) -> None:
         self.assertEqual(routine_picture_templates("morning_digest", "en", {"openPickups": 0}), [
-            ("assistyca_routine_today_status", "en", ["all covered"]),
+            ("assistyca_routine_today_status", "en", ["all sorted"]),
         ])
         self.assertEqual(routine_picture_templates("morning_digest", "he", {"openPickups": 0})[0], ("assistyca_routine_today", "he", []))
 
