@@ -532,6 +532,24 @@ class ServerTests(unittest.TestCase):
         self.assertFalse(removed["ok"], removed)
         self.assertNotIn("skipping the Wix", json.dumps(removed))
 
+    def test_a_reminder_or_task_naming_no_phone_goes_to_the_account_holder(self) -> None:
+        bodies = (
+            {"actionType": "send_message", "channel": "whatsapp", "messageText": "Call the plumber",
+             "runAt": (datetime.now(timezone.utc) + timedelta(hours=2)).isoformat(), "timezone": "Asia/Jerusalem"},
+            {"actionType": "run_task", "channel": "whatsapp", "instruction": "read today's calendar",
+             "title": "Morning meetings", "schedule": {"frequency": "daily", "timeLocal": "08:00"},
+             "timezone": "Asia/Jerusalem"},
+        )
+        with mock.patch.dict("os.environ", {
+            "ASSISTYCA_WHATSAPP_ACCESS_TOKEN": "platform-token", "ASSISTYCA_WHATSAPP_PHONE_NUMBER_ID": "platform-phone",
+        }):
+            for body in bodies:
+                status, created = self.request("POST", "/api/scheduled-actions", body)
+                self.assertIn(status, (200, 201), created)
+                action = self.database.get_scheduled_action(int(created["action"]["id"]))
+                # Never the phone that joined last, which is the grandmother's.
+                self.assertEqual(action["payload"]["recipientWaId"], HOLDER_PHONE, body["actionType"])
+
     def test_lifting_a_shared_hold_leaves_the_pause_on_the_other_parents_mail_alert(self) -> None:
         from packages.infrastructure.agent_loop import TOOLS_BY_NAME
         from packages.infrastructure.agent_loop import exceptions_payload

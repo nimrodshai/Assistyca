@@ -270,6 +270,7 @@ from packages.infrastructure.family_week_nudges import CALENDAR_DAY_ENDPOINT as 
 from packages.infrastructure.family_week_nudges import FamilyWeekNudger
 from packages.infrastructure.family_week_nudges import LoopbackCalendarReader
 from packages.infrastructure.family_week_nudges import load_family_week_nudge_config
+from packages.infrastructure.family_week_nudges import owner_phone
 from packages.infrastructure.school_days import SchoolCalendar
 from packages.infrastructure.school_days import normalize_day_status
 from packages.infrastructure.list_due_nudges import ListDueNudger
@@ -12471,7 +12472,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 "message": "That WhatsApp number is not linked to this account.",
             })
             return
-        recipient_wa_id = requested_wa_id or (reachable[0] if reachable else "")
+        recipient_wa_id = requested_wa_id or self._account_holders_whatsapp_number(session, user_id, reachable)
         if not recipient_wa_id:
             json_response(self, HTTPStatus.CONFLICT, {
                 "ok": False,
@@ -12530,6 +12531,17 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
             for record in self.database.list_user_whatsapp_numbers(user_id=user_id)
         ]
         return [number for number in [owner_wa_id, *linked_numbers] if number]
+
+    def _account_holders_whatsapp_number(self, session: PortalSession, user_id: int, reachable: list[str]) -> str:
+        """Where a reminder or task that names no phone goes: the account
+        holder's own - the older notification number, else her own linked
+        phone - never the newest linked one, which is a family member's once
+        someone has joined."""
+
+        connection = self.database.get_whatsapp_connection(session.email)
+        owner_wa_id = normalize_whatsapp_lookup_id((connection or {}).get("ownerWaId"))
+        own = owner_wa_id or normalize_whatsapp_lookup_id(owner_phone(self.database, user_id))
+        return own if own in reachable else ""
 
     def _create_standing_task(
         self,
@@ -12592,7 +12604,7 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                     "message": "That WhatsApp number is not linked to this account.",
                 })
                 return
-            recipient_wa_id = requested_wa_id or (reachable[0] if reachable else "")
+            recipient_wa_id = requested_wa_id or self._account_holders_whatsapp_number(session, user_id, reachable)
             if not recipient_wa_id:
                 json_response(self, HTTPStatus.CONFLICT, {
                     "ok": False,
