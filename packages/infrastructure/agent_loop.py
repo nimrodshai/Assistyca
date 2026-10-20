@@ -2957,9 +2957,21 @@ def _tool_remove_exception(context: LoopContext, args: dict[str, Any]) -> dict[s
         exception for exception in context.database.list_schedule_exceptions(user_id=context.user_id, group_id=scope)
         if int(exception.get("id") or 0) == exception_id
     ]
-    if held and not _visible_exceptions(context, held):
+    visible = _visible_exceptions(context, held)
+    if held and not visible:
         # A pause on someone else's mail alert is theirs to lift.
         return _error("not_found", f"There is no exception {exception_id}.", exceptions=exceptions_payload(context))
+    if held:
+        # Lift only what this person can see; a pause on the other parent's
+        # mail alert in the same hold stays, and stays theirs.
+        targets = schedule_exceptions.normalize_targets(held[0].get("targets"))
+        shown = schedule_exceptions.normalize_targets(visible[0].get("targets"))
+        rest = [target for target in targets if target not in shown]
+        if rest:
+            context.database.narrow_schedule_exception(
+                user_id=context.user_id, exception_id=exception_id, targets=rest, group_id=scope,
+            )
+            return _ok({"removed": exception_id, "note": "Everything it held is back on as usual."})
     if not context.database.remove_schedule_exception(
         user_id=context.user_id, exception_id=exception_id, group_id=week_scope(context),
     ):
