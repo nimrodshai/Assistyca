@@ -7012,6 +7012,8 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 "ok": False,
                 "error": "billing_not_cancelled",
                 "message": "The subscription could not be cancelled just now, so nothing was deleted. Try again in a few minutes.",
+                "subscriptionsCancelled": exc.cancelled,
+                "subscriptionsNotCancelled": len(exc.reasons),
             })
             return
         except KeyError as exc:
@@ -13615,6 +13617,8 @@ class PortalAuthHandler(SimpleHTTPRequestHandler):
                 "ok": False,
                 "error": "billing_not_cancelled",
                 "message": "The subscription could not be cancelled just now, so nothing was deleted. Try again in a few minutes.",
+                "subscriptionsCancelled": exc.cancelled,
+                "subscriptionsNotCancelled": len(exc.reasons),
             })
             return
         except KeyError as exc:

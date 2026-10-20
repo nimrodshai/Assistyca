@@ -34,9 +34,12 @@ class SubscriptionNotCancelled(RuntimeError):
     erased: deleting the account and leaving the card being charged, with
     nobody left to answer for it, is the one outcome worse than waiting."""
 
-    def __init__(self, reasons: list[str]) -> None:
+    def __init__(self, reasons: list[str], *, cancelled: int = 0) -> None:
         super().__init__("; ".join(reasons) or "A subscription could not be cancelled.")
         self.reasons = reasons
+        # The ones that were cancelled before the failure stay cancelled: the
+        # account is kept, but those payments have already stopped.
+        self.cancelled = cancelled
 
 
 @dataclass
@@ -101,7 +104,7 @@ def erase_account(
             else:
                 failures.append(why or f"subscription {subscription.get('externalSubscriptionId')} was not cancelled")
         if failures:
-            raise SubscriptionNotCancelled(failures)
+            raise SubscriptionNotCancelled(failures, cancelled=result.subscriptions_cancelled)
 
     # Revoke before deleting: the ciphertext is the only way back to the grant,
     # and the row that holds it is about to go.

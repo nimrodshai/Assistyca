@@ -342,6 +342,23 @@ class BillingServerTests(unittest.TestCase):
         self.assertIsNotNone(self.database.get_user("family@example.com"), "nothing deleted while it still charges")
         self.assertEqual(len(self.database.list_billing_subscriptions(user_id=int(self.user["id"]))), 1)
 
+    def test_one_of_two_subscriptions_cancelled_is_reported_with_the_account_kept(self) -> None:
+        user_id = str(self.user["id"])
+        self._webhook(subscription_event("subscription_created", user_id=user_id, sub_id="sub-1"))
+        self._webhook(subscription_event("subscription_created", user_id=user_id, sub_id="sub-2"))
+
+        def lemon(method, path, **kwargs):
+            if path.endswith("sub-2"):
+                raise LemonSqueezyRequestError("Lemon Squeezy did not respond.", status_code=503)
+            return {"data": {"type": "subscriptions", "id": "sub-1", "attributes": {"status": "cancelled"}}}
+
+        with mock.patch("packages.infrastructure.lemon_squeezy_api.LemonSqueezyClient._request", side_effect=lemon):
+            status, body = self._delete_account()
+        self.assertEqual((status, body.get("error")), (503, "billing_not_cancelled"), body)
+        self.assertIsNotNone(self.database.get_user("family@example.com"), "nothing deleted while one still charges")
+        # What did change is said: one payment is already stopped.
+        self.assertEqual((body.get("subscriptionsCancelled"), body.get("subscriptionsNotCancelled")), (1, 1), body)
+
     def test_an_admin_sees_each_clients_payment_link(self) -> None:
         # For paying on a family's behalf, or trying the checkout on staging.
         self.database.register_user("boss@example.com", is_admin=True)

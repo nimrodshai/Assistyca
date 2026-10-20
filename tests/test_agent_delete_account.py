@@ -41,6 +41,19 @@ class DeleteAccountToolTests(unittest.TestCase):
         self.assertEqual(result["error"]["code"], "billing_not_cancelled")
         self.assertIn("nothing was deleted", result["error"]["whatHappened"])
 
+    def test_a_payment_already_stopped_is_said_and_never_called_unchanged(self) -> None:
+        context = LoopContext(
+            api=lambda *args, **kwargs: (
+                {"ok": False, "error": "billing_not_cancelled", "subscriptionsCancelled": 1, "subscriptionsNotCancelled": 1}, 503,
+            ),
+            database=_Database(), email="owner@example.com", user_id=1, timezone_name="Asia/Jerusalem",
+        )
+        result = _tool_delete_account(context, {})
+        self.assertEqual(result["error"]["code"], "billing_not_cancelled")
+        self.assertEqual((result["error"]["paymentsStopped"], result["error"]["paymentsStillCharging"]), (1, 1))
+        self.assertNotIn("exactly as it was", result["error"]["whatHappened"])
+        self.assertIn("already stopped", result["error"]["whatHappened"])
+
     def test_the_question_says_the_subscription_ends_with_the_account(self) -> None:
         context = LoopContext(
             api=None, database=_Database(), email="owner@example.com", user_id=1, timezone_name="Asia/Jerusalem",

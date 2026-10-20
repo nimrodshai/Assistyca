@@ -1378,6 +1378,22 @@ def _tool_delete_account(context: LoopContext, args: dict[str, Any]) -> dict[str
         })
     code = str(response.get("error") or "")
     if code == "billing_not_cancelled":
+        stopped = int(response.get("subscriptionsCancelled") or 0)
+        if stopped:
+            # One payment stopped before another refused: the account and
+            # everything in it are kept, but that payment does not come back.
+            return _error(
+                "billing_not_cancelled",
+                "The account has more than one subscription. paymentsStopped of them were already stopped with the "
+                "payment provider, and paymentsStillCharging could not be cancelled just now, so the account was not "
+                "deleted: everything in it is still there, and it will not be deleted while it could still be "
+                "charged. Tell them plainly and calmly what did change - those payments are already stopped - and "
+                "that nothing else did, and that asking again in a few minutes cancels the rest and deletes the "
+                "account together.",
+                can_retry=True,
+                paymentsStopped=stopped,
+                paymentsStillCharging=int(response.get("subscriptionsNotCancelled") or 0),
+            )
         return _error(
             "billing_not_cancelled",
             "The subscription could not be cancelled with the payment provider just now, so nothing was deleted: "
