@@ -102,6 +102,13 @@ These were made by the owner; hold replies to them.
   (`רוצה`, `אפשר`, `מה דעתך`); never the plural dodge (`רוצים`, `תגידו`).
   Kept in `person_address.py`. One stray word in another language does not
   flip the reply's language.
+- **Hebrew as a parent texts it, not translated English.** A confirmation is
+  the act in a parent's words and nothing more: "סגור, אתה מחזיר את להב
+  היום" - never "להב אצלך היום" (that says he stays at your place) and never
+  a word about our keeping ("לא ארים עוד את האיסוף הזה" is not Hebrew). When
+  it is unclear whether it is one day or every week, one question ("רק היום,
+  או מעכשיו כל יום שלישי?"); a named day is not asked about (owner,
+  2026-10-20).
 - **Getting to know the family** is one question at a time, but a question
   can be about a whole school day, so a parent can answer it all at once.
   Once, at the first school week, it offers to take the timetable as a

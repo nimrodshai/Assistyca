@@ -588,7 +588,11 @@ class ToolTests(unittest.TestCase):
         # "Stav can't tomorrow" leaves the day open; a stranger is refused here too.
         opened = self.run_tool("assign_day_drive", id=school["id"], day=tomorrow, leg="pick_up", who="")
         self.assertTrue(opened["saved"]["nobodyYet"])
-        self.assertIn("raised again", opened["note"])
+        self.assertIn("keep asking about it until someone takes it", opened["note"])
+        # The note is for the model: a promise in it ("raised again") came
+        # back as "לא ארים עוד את האיסוף הזה".
+        self.assertTrue(opened["note"].startswith("For you, not to tell them:"))
+        self.assertNotIn("raised again", opened["note"])
         self.assertFalse(self.run_tool("assign_day_drive", id=school["id"], day=tomorrow, leg="pick_up", who="Dad")["ok"])
         self.assertEqual(self.run_tool("assign_day_drive", id=school["id"], day="2020-01-01", leg="pick_up", who="me")["error"]["code"], "choice_required")
         self.assertEqual(self.run_tool("assign_day_drive", id=school["id"] + 9, day=tomorrow, leg="pick_up", who="me")["error"]["code"], "not_found")
@@ -596,6 +600,21 @@ class ToolTests(unittest.TestCase):
         self.assertTrue(removed["ok"])
         self.assertNotIn("dayDrives", _household_payload(self.context))
         self.assertEqual(self.run_tool("remove_day_drive", id=opened["saved"]["id"])["error"]["code"], "not_found")
+
+    def test_a_drive_word_with_no_day_is_asked_about_once_and_promises_nothing(self) -> None:
+        # "I'll take Lahav's pickup" may be today or every Tuesday: one short
+        # question beats a guess. A named day is not asked about. And no tool
+        # text hands the model a promise to translate back to the parent.
+        from packages.infrastructure.agent_loop import AGENT_LOOP_INSTRUCTIONS, TOOLS_BY_NAME
+        self.assertIn("When their words leave it open", AGENT_LOOP_INSTRUCTIONS)
+        self.assertIn("'רק היום, או מעכשיו כל יום שלישי?'", AGENT_LOOP_INSTRUCTIONS)
+        self.assertIn("A yes to every week is save_week_activity", AGENT_LOOP_INSTRUCTIONS)
+        self.assertIn("When they named the day ('today', 'tomorrow', a date)", AGENT_LOOP_INSTRUCTIONS)
+        self.assertIn("ask them once before calling it", TOOLS_BY_NAME["assign_day_drive"].description)
+        for name in ("assign_day_drive", "accept_drive_during_work"):
+            with self.subTest(tool=name):
+                self.assertNotIn("raised again", TOOLS_BY_NAME[name].description)
+        self.assertNotIn("never mention it again", AGENT_LOOP_INSTRUCTIONS)
 
     def test_saving_work_hours_names_the_drive_they_swallow_until_she_says_it_is_fine(self) -> None:
         self.run_tool("save_family_member", name="Noa", previous_name=None, role="child", age=7, school=None, email=None, phone=None, notes=None)
