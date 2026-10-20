@@ -78,13 +78,32 @@ class AssistantVoiceTests(unittest.TestCase):
         # the saving instead - "I've put Yoav, Noa and Itai in the family",
         # "Noa's birthday is saved" - which nobody says either. A word and
         # the next question is how a person takes an answer.
-        self.assertIn("a word at most", ASSISTANT_VOICE)
-        self.assertIn("straight on to what comes next", ASSISTANT_VOICE)
+        self.assertIn("most of the time no acknowledgement at all", ASSISTANT_VOICE)
+        self.assertIn("straight on to what comes", ASSISTANT_VOICE)
         self.assertIn("narrating what you did with it", ASSISTANT_VOICE)
         self.assertIn("the keeping is yours to do quietly", ASSISTANT_VOICE)
         self.assertNotIn("Never open by confirming receipt", ASSISTANT_VOICE)
         self.assertIn("turns a conversation into a form", ASSISTANT_VOICE)
         self.assertIn("never at the head of every message", ASSISTANT_VOICE)
+
+    def test_the_voice_does_not_open_every_reply_with_the_same_word(self) -> None:
+        # "Great." opened five of seven getting-to-know replies, because the
+        # voice handed the model "Got it.", "Great.", "Lovely." as examples.
+        # An acknowledgement, when there is one, is about what was said.
+        self.assertNotIn('"Great."', ASSISTANT_VOICE)
+        self.assertIn("about the particular thing they just said", ASSISTANT_VOICE)
+        self.assertIn("never open two messages in a conversation the same way", ASSISTANT_VOICE)
+        self.assertIn("Their emoji is not a cue to answer each with another", ASSISTANT_VOICE)
+
+    def test_the_voice_keeps_our_bookkeeping_words_to_ourselves(self) -> None:
+        # "One trip now", "the morning plan", "הסעות" for a parent's drive -
+        # our words reached the parent. The voice names them as ours.
+        self.assertIn("are our bookkeeping, not theirs", ASSISTANT_VOICE)
+        self.assertIn("in the words a parent uses", ASSISTANT_VOICE)
+        self.assertIn("'הסעה' is the school bus", ASSISTANT_VOICE)
+
+    def test_the_voice_punctuates_like_a_phone(self) -> None:
+        self.assertIn("a plain hyphen, never an em dash", ASSISTANT_VOICE)
 
     def test_the_voice_can_answer_a_joke_with_one(self) -> None:
         # "Can you collect him for me?" got "I can't collect Lahav myself" and
