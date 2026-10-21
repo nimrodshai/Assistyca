@@ -2343,12 +2343,12 @@ def _tool_assign_day_drive(context: LoopContext, args: dict[str, Any]) -> dict[s
     usual = household.clean(activity.get(household._LEG_KEYS[leg][0]))
     described = household.describe_day_drives([saved], [activity], today)
     note = (
-        f"Kept for {day.isoformat()} only; the week still says "
+        f"For you, not to tell them: this is for {day.isoformat()} only; the week still says "
         + (f"{usual!r}" if usual else "nobody")
         + f" for this {'drop-off' if leg == 'drop_off' else 'pickup'} on other {day.strftime('%A')}s."
     )
     if not who:
-        note += " With nobody on it that day, it is raised again until someone takes it."
+        note += " Nobody is on it that day, so the day's messages keep asking about it until someone takes it."
     return _ok({"saved": described[0] if described else saved, "note": note})
 
 
@@ -4694,7 +4694,8 @@ TOOLS: list[ToolSpec] = [
             "is never save_week_activity, which is every week. id is the activity from household.week. day "
             "is the date, YYYY-MM-DD: 'tomorrow' and 'today' are worked out from CONTEXT.today. leg is drop_off "
             "or pick_up. who is 'me' for the person, a family member's name, or an empty string when the usual "
-            "person is off that day and nobody has taken it yet, so it is raised again."
+            "person is off that day and nobody has taken it yet. When their words leave it open whether it is this "
+            "one day or every week, ask them once before calling it."
         ),
         parameters=_params({
             "id": {"type": "integer"},
@@ -4720,8 +4721,8 @@ TOOLS: list[ToolSpec] = [
         description=(
             "The person says a drive of theirs that falls inside their own work hours is fine as it is - they "
             "work close by, or leave early that day. household.week marks such a drive with driveDuringWork; "
-            "call this with the activity's id and the leg (drop_off or pick_up) so it is kept as settled and "
-            "never raised again. When they name somebody else for it instead, use save_week_activity."
+            "call this with the activity's id and the leg (drop_off or pick_up) so it counts as settled - that is "
+            "yours to keep, nothing to tell them. When they name somebody else for it instead, use save_week_activity."
         ),
         parameters=_params({"id": {"type": "integer"}, "leg": {"type": "string", "enum": list(household.DRIVE_LEGS)}}),
         side_effect=True,
@@ -5281,7 +5282,11 @@ _FAMILY = (
     "One day is not the week: when they answer about a single day - 'I'll pick up Lahav' to the question of "
     "who collects tomorrow, 'Stav takes him today', 'my mother collects on Thursday' (a date), 'Stav can't "
     "tomorrow' - keep it with assign_day_drive for that date, never save_week_activity, which would make it "
-    "every week. 'Every Tuesday', 'from now on', 'usually' is the week. household.dayDrives is what has been "
+    "every week. 'Every Tuesday', 'from now on', 'usually' is the week. When their words leave it open - 'I'll "
+    "take Lahav's pickup' with no day, nothing in the conversation pinning it to one - ask once, in a line, "
+    "rather than guess: 'רק היום, או מעכשיו כל יום שלישי?'. A yes to every week is save_week_activity. When "
+    "they named the day ('today', 'tomorrow', a date) or it plainly answers a question about one day, do not "
+    "ask. household.dayDrives is what has been "
     "decided for single days; read it before asking about a day, and treat a day with nobodyYet as still "
     "open. A 'who drives' word the week does not know - not them, not a family member, not the bus - is "
     "refused: ask who that is, save them as a family member if they are someone, or keep the day's answer "
@@ -5291,7 +5296,7 @@ _FAMILY = (
     "Raise it once, plainly, when it comes up - the evening before, the morning of, or the moment the hours "
     "or the drive are saved - and ask who could take it, or whether it works as it is: they may work round "
     "the corner or leave early that day. When they say it is fine, call accept_drive_during_work and never "
-    "mention it again; when they name somebody else, save_week_activity with that name. Never decide for "
+    "bring it up again, without telling them so; when they name somebody else, save_week_activity with that name. Never decide for "
     "them, and never keep asking.\n"
     "Getting to know the family, and then the offer to connect a mailbox and a calendar, are the two "
     "openings the conversation works through in turn: CONTEXT.chatFlow says which one this account is on "

@@ -102,6 +102,18 @@ class AssistantVoiceTests(unittest.TestCase):
         self.assertIn("in the words a parent uses", ASSISTANT_VOICE)
         self.assertIn("'הסעה' is the school bus", ASSISTANT_VOICE)
 
+    def test_the_voice_writes_hebrew_as_it_is_texted_and_confirms_the_act(self) -> None:
+        # "בסדר, להב אצלך היום. לא ארים עוד את האיסוף הזה." - the first half
+        # says the boy stays at his father's, the second is English in Hebrew
+        # words. A confirmation is the act, and none of our keeping.
+        self.assertIn("write the way an Israeli parent texts, not English put into Hebrew words", ASSISTANT_VOICE)
+        self.assertIn("say it the way it is said in Hebrew, or leave it out", ASSISTANT_VOICE)
+        self.assertIn("the confirmation is the fact itself", ASSISTANT_VOICE)
+        self.assertIn("'סגור, אתה מחזיר את להב היום' to a man", ASSISTANT_VOICE)
+        self.assertIn("'סגור, את אוספת את נועה מחר' to a woman", ASSISTANT_VOICE)
+        self.assertIn("'להב אצלך היום' says he is staying at their place", ASSISTANT_VOICE)
+        self.assertIn("nothing about our own keeping - whether you will mention it again", ASSISTANT_VOICE)
+
     def test_the_voice_punctuates_like_a_phone(self) -> None:
         self.assertIn("a plain hyphen, never an em dash", ASSISTANT_VOICE)
 

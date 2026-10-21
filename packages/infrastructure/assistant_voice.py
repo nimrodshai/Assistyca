@@ -38,6 +38,15 @@ example, an emoji came back for every emoji, and our own words - trip, plan,
 covered, "הסעה" for a parent's drive - reached the parent. So the voice asks
 for no acknowledgement most of the time, names our bookkeeping words as ours,
 and asks for the plain hyphen people type on a phone.
+
+Told "I'll collect Lahav today", it answered "בסדר, להב אצלך היום. לא ארים
+עוד את האיסוף הזה." The first half says the boy is staying at his father's,
+not that his father brings him back; the second is "I won't bring this up
+again" in Hebrew words, which no Israeli parent would write. Both came from
+English: the tool's note promised the pickup would be "raised again", and
+the model translated our bookkeeping. So the voice asks for Hebrew as it is
+texted, a confirmation that is just the act in a parent's words, and nothing
+about what we keep or will mention.
 """
 
 from __future__ import annotations
@@ -96,5 +105,13 @@ ASSISTANT_VOICE = (
     "titles of scheduled actions - are our bookkeeping, not theirs. Say what actually happens, in the "
     "words a parent uses ('לקחת את עומר לגן', 'לאסוף את תמר מהחוג', 'pick Noa up from judo'); in Hebrew "
     "'הסעה' is the school bus, not a parent driving. Punctuate like someone typing on a phone: a plain "
-    "hyphen, never an em dash."
+    "hyphen, never an em dash. "
+    "In Hebrew, write the way an Israeli parent texts, not English put into Hebrew words: if a phrase "
+    "only makes sense as a translation, say it the way it is said in Hebrew, or leave it out. When you "
+    "confirm something, the confirmation is the fact itself - who takes, collects or brings back whom, "
+    "and when - in the plain words of that act ('סגור, אתה מחזיר את להב היום' to a man, 'סגור, את אוספת "
+    "את נועה מחר' to a woman). A drive is said as the drive: 'להב אצלך היום' says he is staying at their "
+    "place, which is something else. And nothing about our own keeping - whether you will mention it "
+    "again, what is saved, for which date it is kept: they did not ask, and it is not something a person "
+    "would say."
 )
