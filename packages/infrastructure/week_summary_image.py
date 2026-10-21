@@ -768,11 +768,13 @@ def render_week_pdf(
             # What, who, when, where, then each leg, every line wrapped to
             # the block's width rather than cut. A block too short for all
             # of it keeps what matters most: the title, the time and who
-            # takes and collects; the place goes first, then the name (the
-            # colour says it), then the time - which then joins the title
-            # on its one line, so a half-hour swim still says when.
+            # takes and collects; the place goes first, then the name's own
+            # line - the name then joins the title, since the colour alone
+            # does not say whose it is - then the time, which joins the
+            # title too, so a half-hour swim still says when and for whom.
+            head = block.head
             groups: list[tuple[int, list[tuple[str, str, float, str] | _Leg]]] = []
-            groups.append((0, [(line, "WeekSans-Medium", 8, INK) for line in _wrap(block.head, "WeekSans-Medium", 8, text_width)[:2]]))
+            groups.append((0, [(line, "WeekSans-Medium", 8, INK) for line in _wrap(head, "WeekSans-Medium", 8, text_width)[:2]]))
             if block.who:
                 groups.append((3, [(line, "WeekSans-Medium", 7.2, INK) for line in _wrap(block.who, "WeekSans-Medium", 7.2, text_width)]))
             groups.append((2, [(_time_label(block), "WeekSans", 7.2, INK_SOFT)]))
@@ -801,9 +803,12 @@ def render_week_pdf(
             while total(groups) > room + FIT_SLACK and any(priority > 1 for priority, _items in groups):
                 lowest = max(priority for priority, _items in groups)
                 groups = [(priority, items) for priority, items in groups if priority != lowest]
+                if lowest == 3:
+                    head = f"{block.head} · {block.who}"
+                    groups[0] = (0, [(line, "WeekSans-Medium", 8, INK) for line in _wrap(head, "WeekSans-Medium", 8, text_width)[:2]])
             if not any(priority == 2 for priority, _items in groups):
                 title_width = text_width - _width(f" {_time_label(block)}", "WeekSans-Medium", 7.4)
-                head_line = _clip(block.head, "WeekSans-Medium", 7.4, max(20.0, title_width))
+                head_line = _clip(head, "WeekSans-Medium", 7.4, max(20.0, title_width))
                 groups[0] = (0, [(f"{head_line} {_time_label(block)}", "WeekSans-Medium", 7.4, INK)])
             lines: list[tuple[str, str, float, str] | _Leg] = [item for _priority, items in groups for item in items]
             first_line_y = top + 0.75 + BLOCK_PAD + 7
