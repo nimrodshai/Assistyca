@@ -105,6 +105,32 @@ class WeekSummaryDrawingTests(unittest.TestCase):
         for label, baseline in labels.items():
             self.assertTrue(any(abs(baseline - (line + half_a_digit)) < 0.01 for line in lines), f"{label} is not centred on a line")
 
+    def test_a_short_block_keeps_whose_it_is_on_its_title_line(self) -> None:
+        """An hour with two open legs has no room for the name's own line;
+        the name joins the title rather than leaving it to the colour."""
+
+        from unittest import mock
+
+        from packages.infrastructure import week_summary_image
+
+        drawn: list[str] = []
+        real_text = week_summary_image._Page.text
+
+        def text(page, x, y, value, **kwargs):
+            drawn.append(value)
+            real_text(page, x, y, value, **kwargs)
+
+        [day] = week({0: [
+            plan("Acrobatics", ["Lahav"], "16:15", "17:15", "", ""),
+            plan("Acrobatics", ["Laor"], "18:15", "19:30", "the bus", "me"),
+        ]})[:1]
+        summary = build_day_summary(day=day, members=MEMBERS, owner_names=OWNER, title="today")
+        with mock.patch.object(week_summary_image._Page, "text", text):
+            render_week_pdf(summary, members=MEMBERS, owner_names=OWNER)
+        self.assertIn("Acrobatics · Lahav", drawn)
+        self.assertIn("takes: nobody", drawn)
+        self.assertIn("\u202a16:15–17:15\u202c", drawn, "the time still fits beside it")
+
     def test_the_page_is_drawn_and_rasterised_at_screen_width(self) -> None:
         days = week({
             0: [plan("School", ["Lahav"], "08:00", "12:45", "me", "Stav", "Shaked"), plan("Gan", ["Laor"], "08:00", "16:15", "me", "")],
